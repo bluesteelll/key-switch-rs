@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+    type="win32"
+    name="KeySwitchRs"
+    version="1.0.0.0"
+    processorArchitecture="*"/>
+
+  <!--
+    Request high-integrity at launch. WH_KEYBOARD_LL installed from a
+    medium-integrity process is blocked by UIPI from observing keystrokes
+    delivered to higher-integrity windows (Task Manager, regedit, anything
+    started via "Run as administrator", UAC consent UI). Running at high
+    integrity removes that asymmetry.
+
+    uiAccess="false" because uiAccess="true" requires a signed binary
+    installed under a protected directory (Program Files), which we do not
+    ship as. The user will see one UAC consent prompt at launch.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel
+          level="requireAdministrator"
+          uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <!-- Declare compatibility with Windows 10 and 11 so the OS does not apply
+       legacy compatibility shims. -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

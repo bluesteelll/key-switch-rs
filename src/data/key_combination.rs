@@ -28,6 +28,7 @@ impl KeyCombination {
         Self { keys: vec![key] }
     }
 
+    #[allow(dead_code)] // Part of the public builder API; also used by tests.
     pub fn with(mut self, key: VIRTUAL_KEY) -> Self {
         if !self.keys.contains(&key) {
             self.keys.push(key);
@@ -36,7 +37,13 @@ impl KeyCombination {
     }
 
     pub fn from_keys(keys: Vec<VIRTUAL_KEY>) -> Self {
-        Self { keys }
+        let mut deduped: Vec<VIRTUAL_KEY> = Vec::with_capacity(keys.len());
+        for k in keys {
+            if !deduped.contains(&k) {
+                deduped.push(k);
+            }
+        }
+        Self { keys: deduped }
     }
 
     pub fn matches(&self, pressed_keys: &[VIRTUAL_KEY]) -> bool {

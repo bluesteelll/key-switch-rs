@@ -47,31 +47,29 @@ fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
             })
         }
 
-        SystemFunction::TaskManager => {
-            Some(RegistryLocation {
-                hkey: HKEY_CURRENT_USER,
-                subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
-                value_names: &["TaskManagerHotkey"],
-                parser: parse_task_manager_hotkey,
-            })
-        }
+        // Ctrl+Shift+Esc is handled directly by Winlogon and has no
+        // user-configurable registry value. The `TaskManagerHotkey` name under
+        // Policies\System used to appear in audits but does not actually exist
+        // as a hotkey definition — fall back to the default combination only.
+        SystemFunction::TaskManager => None,
 
         SystemFunction::ToggleCapsLock => None,
     }
 }
 
-pub fn get_system_hotkey(function: SystemFunction) -> Vec<KeyCombination> {
-    if let Some(location) = get_registry_location(function) {
-        if let Some(combo) = read_from_registry(&location) {
-            println!("[INFO] {:?}: registry combination {:?}", function, combo.keys);
-            return vec![combo];
-        }
-
-        println!("[INFO] {:?}: using default combination", function);
-        get_default_combination(function).into_iter().collect()
-    } else {
-        vec![]
+pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
+    if let Some(location) = get_registry_location(function)
+        && let Some(combo) = read_from_registry(&location)
+    {
+        println!("[INFO] {:?}: registry combination {:?}", function, combo.keys);
+        return Some(combo);
     }
+
+    let default = get_default_combination(function);
+    if default.is_some() {
+        println!("[INFO] {:?}: using default combination", function);
+    }
+    default
 }
 
 fn get_default_combination(function: SystemFunction) -> Option<KeyCombination> {
@@ -92,35 +90,51 @@ fn get_default_combination(function: SystemFunction) -> Option<KeyCombination> {
     }
 }
 
+/// RAII guard that closes an HKEY on drop. Prevents leaking the key handle if
+/// `read_value_and_parse` ever panics between open and the explicit close.
+struct HKeyGuard(HKEY);
+
+impl Drop for HKeyGuard {
+    fn drop(&mut self) {
+        // SAFETY: the inner HKEY is the result of a successful RegOpenKeyExW
+        // and has not been closed elsewhere.
+        unsafe {
+            let _ = RegCloseKey(self.0);
+        }
+    }
+}
+
 fn read_from_registry(location: &RegistryLocation) -> Option<KeyCombination> {
-    unsafe {
-        let subkey_wide: Vec<u16> = location.subkey
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+    let subkey_wide: Vec<u16> = location.subkey
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
-        let mut hkey = HKEY::default();
+    let mut hkey = HKEY::default();
 
-        if RegOpenKeyExW(
+    // SAFETY: subkey_wide is null-terminated and outlives the call; &mut hkey
+    // points to a stack-local that is valid for the duration of the call.
+    let open_result = unsafe {
+        RegOpenKeyExW(
             location.hkey,
             PCWSTR(subkey_wide.as_ptr()),
             None,
             KEY_READ,
             &mut hkey,
-        ).is_err() {
-            return None;
-        }
-
-        for value_name in location.value_names {
-            if let Some(combo) = read_value_and_parse(hkey, value_name, location.parser) {
-                let _ = RegCloseKey(hkey);
-                return Some(combo);
-            }
-        }
-
-        let _ = RegCloseKey(hkey);
-        None
+        )
+    };
+    if open_result.is_err() {
+        return None;
     }
+    let guard = HKeyGuard(hkey);
+
+    for value_name in location.value_names {
+        if let Some(combo) = read_value_and_parse(guard.0, value_name, location.parser) {
+            return Some(combo);
+        }
+    }
+
+    None
 }
 
 fn read_value_and_parse(
@@ -128,33 +142,51 @@ fn read_value_and_parse(
     value_name: &str,
     parser: fn(&str) -> Option<KeyCombination>,
 ) -> Option<KeyCombination> {
-    unsafe {
-        let value_name_wide: Vec<u16> = value_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+    let value_name_wide: Vec<u16> = value_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
-        let mut data: [u16; 128] = [0; 128];
-        let mut data_size = (std::mem::size_of_val(&data)) as u32;
-        let mut reg_type = REG_VALUE_TYPE(0);
+    let mut data: [u16; 128] = [0; 128];
+    let mut data_size = std::mem::size_of_val(&data) as u32;
+    let mut reg_type = REG_VALUE_TYPE(0);
 
-        let result = RegQueryValueExW(
+    // SAFETY: data buffer is sized and writable; data_size carries its capacity
+    // in bytes per RegQueryValueExW's contract.
+    let result = unsafe {
+        RegQueryValueExW(
             hkey,
             PCWSTR(value_name_wide.as_ptr()),
             None,
             Some(&mut reg_type),
             Some(data.as_mut_ptr() as *mut u8),
             Some(&mut data_size),
-        );
+        )
+    };
 
-        if result.is_ok() {
-            let str_len = data.iter().position(|&c| c == 0).unwrap_or(data.len());
-            let value_str = String::from_utf16_lossy(&data[..str_len]);
-            parser(&value_str)
-        } else {
-            None
-        }
+    if result.is_err() {
+        return None;
     }
+
+    // Reject non-string types instead of reinterpreting REG_DWORD/REG_BINARY
+    // bytes as UTF-16 and parsing garbage.
+    if reg_type != REG_SZ && reg_type != REG_EXPAND_SZ {
+        eprintln!(
+            "[WARN] registry value {:?} has type {:?}, expected REG_SZ/REG_EXPAND_SZ",
+            value_name, reg_type
+        );
+        return None;
+    }
+
+    // data_size is in bytes; clamp the scan to what the API actually wrote.
+    let returned_wchars = (data_size as usize) / 2;
+    let scan_len = returned_wchars.min(data.len());
+    let str_len = data[..scan_len]
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(scan_len);
+    let value_str = String::from_utf16_lossy(&data[..str_len]);
+    parser(&value_str)
 }
 
 fn parse_language_hotkey(value: &str) -> Option<KeyCombination> {
@@ -176,11 +208,6 @@ fn parse_win_key_combo(value: &str) -> Option<KeyCombination> {
         return Some(KeyCombination::from_keys(vec![VK_LWIN, vk]));
     }
 
-    None
-}
-
-fn parse_task_manager_hotkey(value: &str) -> Option<KeyCombination> {
-    let _ = value;
     None
 }
 
@@ -231,20 +258,11 @@ mod tests {
 
     #[test]
     fn test_get_system_hotkey_returns_combinations() {
-        let switch_lang = get_system_hotkey(SystemFunction::SwitchLanguage);
-        assert!(!switch_lang.is_empty());
-
-        let lock = get_system_hotkey(SystemFunction::LockWorkstation);
-        assert!(!lock.is_empty());
-
-        let desktop = get_system_hotkey(SystemFunction::ShowDesktop);
-        assert!(!desktop.is_empty());
-
-        let taskmgr = get_system_hotkey(SystemFunction::TaskManager);
-        assert!(!taskmgr.is_empty());
-
-        let caps = get_system_hotkey(SystemFunction::ToggleCapsLock);
-        assert!(caps.is_empty());
+        assert!(get_system_hotkey(SystemFunction::SwitchLanguage).is_some());
+        assert!(get_system_hotkey(SystemFunction::LockWorkstation).is_some());
+        assert!(get_system_hotkey(SystemFunction::ShowDesktop).is_some());
+        assert!(get_system_hotkey(SystemFunction::TaskManager).is_some());
+        assert!(get_system_hotkey(SystemFunction::ToggleCapsLock).is_none());
     }
 
     #[test]
