@@ -1,0 +1,237 @@
+// key-switch-rs configuration
+//
+// Reload requires restarting the program.
+//
+// ---- binding kinds ----
+//
+// Every binding specifies exactly one of:
+//
+//   keys:     "<combo>"               — classic press-this-combination
+//   sequence: (steps: [...], ...)     — Vim/Emacs-style ordered sequence
+//   chord:    (keys: [...], ...)      — simultaneous chord (j+k together)
+//
+// Examples:
+//
+//   ( keys: "Ctrl+Alt+L", action: PressKey("L") )
+//
+//   ( sequence: (steps: ["g", "g"], max_gap_ms: 500),
+//     action: PressKey("Home") )                 // press g, then g again
+//
+//   ( chord: (keys: ["j", "k"], window_ms: 50),
+//     action: PressKey("Escape") )               // press j and k together
+//
+// CAVEAT — Sequence/Chord eat their trigger keys: if a sequence fails to
+// complete (timeout or wrong next key) the suppressed key-downs are lost,
+// not replayed. Bind sequences/chords to keys you don't use in normal typing.
+//
+// ---- combo syntax (the `keys` field) ----
+//
+// "+"-joined list. Whitespace around segments is ignored and matching is
+// case-insensitive.
+//
+//   Modifiers : Ctrl/Control, Shift, Alt/Menu, Win/Super
+//   Letters   : A-Z
+//   Digits    : 0-9
+//   Function  : F1..F24
+//   Numpad    : Num0..Num9 (or Numpad0..Numpad9)
+//   Named     : CapsLock, Tab, Esc, Enter, Space, Backspace,
+//               Delete, Insert, Home, End, PageUp, PageDown,
+//               Up, Down, Left, Right, NumLock, ScrollLock,
+//               Pause, PrintScreen
+//   OEM punc  : ` - = , . ; / [ ] \ '
+//
+// Examples: "CapsLock", "Shift+CapsLock", "Ctrl+Alt+Delete", "Win+L",
+//           "Ctrl+Shift+Esc", "F13".
+//
+// ---- action variants ----
+//
+// SwitchLanguage          — next keyboard layout
+// SwitchLanguageBackward  — previous keyboard layout
+// ToggleCapsLock          — toggle CapsLock state
+// PressKey("<name>")      — synthesize a key press
+// PostMessage(            — PostMessage to foreground window
+//     msg: "WM_CLOSE",    //   string name, or a numeric code like 0x10
+//     wparam: 0,          //   optional, default 0
+//     lparam: 0,          //   optional, default 0
+// )
+// Launch(                 — spawn a process (detached)
+//     exe: "code.exe",    //   absolute path or PATH name
+//     args: ["D:\\proj"], //   optional, default []
+// )
+// OpenUrl("https://...")  — ShellExecute "open": URL, mailto:, file path, exe
+// Media(<key>)            — synthesize media/volume key. <key> is one of:
+//                            PlayPause, Stop, Next, Previous,
+//                            VolumeUp, VolumeDown, VolumeMute
+// Sequence([...])         — chained macro steps (see below)
+// DoNothing               — accept and drop the combo
+//
+// ---- trigger (when the action fires) ----
+//
+// Each binding has an optional `trigger:` field, defaulting to Immediate:
+//
+//   trigger: Immediate           — fire on key-down (the default)
+//   trigger: Tap(200)            — fire on key-up if released within 200 ms
+//   trigger: Hold(200)           — fire after key held for 200 ms
+//   trigger: DoubleTap(250)      — fire on second key-down within 250 ms
+//                                  of the first
+//
+// Multiple bindings on the same combo with different triggers coexist:
+// e.g. one Tap(200) binding for SwitchLanguage and one Hold(200) binding
+// for PressKey("LShift") on CapsLock arms both gestures on key-down, then
+// resolves whichever wins.
+//
+// Known WM_* names: WM_CLOSE, WM_QUIT, WM_DESTROY, WM_COMMAND,
+// WM_SYSCOMMAND, WM_INPUTLANGCHANGEREQUEST, WM_KEYDOWN, WM_KEYUP,
+// WM_SYSKEYDOWN, WM_SYSKEYUP, WM_HOTKEY. Anything else: pass a number.
+//
+// ---- sequence step variants ----
+//
+// Window(Minimize)        — Minimize | Maximize | Restore | Close
+//                            Operates on the window that was foreground
+//                            when the binding fired (captured once at the
+//                            start of the sequence — subsequent focus
+//                            changes don't redirect it).
+// Delay(100)              — sleep N ms (worker thread, not the hook)
+// Text("Hello 🚀")        — type Unicode (layout-independent, supports
+//                            emoji via UTF-16 surrogate pairs)
+// Key("Enter")            — synthesize one key press
+// Combo("Ctrl+S")         — synthesize a chord (modifiers held during press)
+//
+// ---- per-binding flags ----
+//
+// block_default: true   (default true)  — suppress the OS key event after
+//                                          the binding fires.
+// block_original_combo: true (default false)
+//                       — auto-block the OS-default hotkey that normally
+//                         triggers this action's underlying function.
+//                         Useful when remapping language switching: we set
+//                         keys: "CapsLock" but Windows still ships
+//                         Alt+Shift / Ctrl+Shift as the language hotkey,
+//                         and this flag silences it.
+//
+// ---- conditions (`when:` field) ----
+//
+// Gate a binding on the focused window. Missing or Always: binding fires
+// unconditionally. Variants (case-insensitive string comparisons):
+//
+//   Always
+//   AppEquals("code.exe")           — exe base name of focused window
+//   TitleContains("Spotify")        — substring of window title
+//   TitleEquals("Calculator")       — exact window title
+//   Not(<sub>)                      — negation
+//   And([<sub1>, <sub2>, ...])      — all must match
+//   Or([<sub1>, <sub2>, ...])       — any must match
+
+(
+    bindings: [
+        (
+            keys: "CapsLock",
+            action: SwitchLanguage,
+            block_original_combo: true,
+        ),
+        (
+            keys: "Shift+CapsLock",
+            action: ToggleCapsLock,
+        ),
+
+        // ---- examples (uncomment to enable) ----
+        //
+        // (
+        //     keys: "Ctrl+Shift+L",
+        //     action: PressKey("L"),
+        // ),
+        // (
+        //     keys: "Win+Q",
+        //     action: PostMessage(msg: "WM_CLOSE"),
+        // ),
+        // (
+        //     keys: "F13",
+        //     action: SwitchLanguageBackward,
+        // ),
+        //
+        // // Launch a process by hotkey
+        // ( keys: "Win+Alt+T", action: Launch(exe: "wt.exe") ),
+        // ( keys: "Win+Alt+C",
+        //   action: Launch(exe: "code.exe", args: ["D:\\projects"]) ),
+        //
+        // // Open a URL / file via the OS default handler
+        // ( keys: "Win+Alt+G", action: OpenUrl("https://github.com") ),
+        // ( keys: "Win+Alt+M", action: OpenUrl("mailto:me@example.com") ),
+        //
+        // // Media / volume controls
+        // ( keys: "Pause",       action: Media(PlayPause) ),
+        // ( keys: "Ctrl+Pause",  action: Media(Next) ),
+        // ( keys: "Alt+Up",      action: Media(VolumeUp) ),
+        // ( keys: "Alt+Down",    action: Media(VolumeDown) ),
+        // ( keys: "Alt+M",       action: Media(VolumeMute) ),
+        //
+        // // Per-app condition: Pause acts as media play/pause only when
+        // // Spotify is foreground.
+        // (
+        //     keys: "Pause",
+        //     action: Media(PlayPause),
+        //     when: AppEquals("Spotify.exe"),
+        // ),
+        //
+        // // Per-app condition with complex predicate.
+        // (
+        //     keys: "Ctrl+Alt+L",
+        //     action: PressKey("L"),
+        //     when: And([
+        //         AppEquals("chrome.exe"),
+        //         Not(TitleContains("Incognito")),
+        //     ]),
+        // ),
+        //
+        // // Two bindings on the same key — one for quick tap, one for hold.
+        // // Both arm on key-down; whichever wins on key-up / timer fires.
+        // (
+        //     keys: "CapsLock",
+        //     action: SwitchLanguage,
+        //     trigger: Tap(200),
+        //     block_original_combo: true,
+        // ),
+        // (
+        //     keys: "CapsLock",
+        //     action: PressKey("LShift"),
+        //     trigger: Hold(200),
+        // ),
+        //
+        // // Double-tap LShift to toggle CapsLock state.
+        // (
+        //     keys: "LShift",
+        //     action: ToggleCapsLock,
+        //     trigger: DoubleTap(250),
+        // ),
+        //
+        // // Sequence (Vim-style): F13, then F13 again within 500ms → fire.
+        // // F13 is used here intentionally — don't use letters from normal
+        // // typing, or your text will be eaten while sequences match.
+        // (
+        //     sequence: (steps: ["F13", "F13"], max_gap_ms: 500),
+        //     action: PressKey("Home"),
+        // ),
+        //
+        // // Chord (simultaneous): press F13 and F14 within 50ms → fire.
+        // (
+        //     chord: (keys: ["F13", "F14"], window_ms: 50),
+        //     action: PressKey("Escape"),
+        // ),
+        //
+        // // Macro: restore active window, type a note, save (Ctrl+S),
+        // // minimize back.
+        // (
+        //     keys: "Ctrl+Alt+N",
+        //     action: Sequence([
+        //         Window(Restore),
+        //         Delay(100),
+        //         Text("Note: groceries 🛒"),
+        //         Key("Enter"),
+        //         Text("Date: 2026-05-24"),
+        //         Combo("Ctrl+S"),
+        //         Delay(500),
+        //         Window(Minimize),
+        //     ]),
+        // ),
+    ],
+)
