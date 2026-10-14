@@ -51,6 +51,14 @@
 //! entry is gone or was re-armed does nothing. A late timer from an earlier
 //! press therefore cannot fire or delete a newer press (KS-11).
 //!
+//! A timer can also wake late relative to the key-up. A key-up before a
+//! Hold's deadline cancels it; a key-up at or after the deadline does not,
+//! because the key was held for the whole term: the entry stays armed and
+//! its timer fires it whenever it runs. Only [`Engine::on_timer`] ever fires
+//! a Hold, so a caller that runs timer decisions off the hook thread keeps
+//! every Hold action off it. With equal Tap and Hold terms on one key
+//! exactly one of the two fires (KS-25).
+//!
 //! ## Threads and locking
 //!
 //! The engine is single-threaded data and does not lock. For now the hook
@@ -83,8 +91,11 @@
 //! 5. If anything asked for suppression, the key is marked blocked.
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
-//! not passed, a pending Hold is cancelled, and the key-up is suppressed if
-//! one of them was pending or if the key was marked blocked.
+//! not passed, and a pending Hold is cancelled if its deadline has not
+//! passed. A Hold whose deadline has passed is left armed for its timer,
+//! which fires it even if the timer runs after the key-up (KS-25). The
+//! key-up is suppressed if a Tap or Hold was pending or if the key was
+//! marked blocked.
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: superset matching (KS-04),
@@ -117,7 +128,7 @@ pub use env::Env;
 
 use chords::{ChordOutcome, Chords};
 use env::EnvForeground;
-use gestures::Gestures;
+use gestures::{Gestures, HoldRelease};
 use keys::KeyState;
 use sequences::{SequenceOutcome, Sequences};
 
@@ -381,17 +392,18 @@ impl Engine {
         self.keys.release(vk);
 
         // Resolve every deferred gesture pending for this key. A Tap fires
-        // (if still within its term); a Hold is cancelled (released too
-        // early). Both can be pending at once on the same key: they were
-        // armed independently and resolve independently.
+        // if its term has not ended. A Hold is cancelled if its term has
+        // not ended, and otherwise left to its timer, which fires it (the
+        // key-up never does). Both can be pending at once on the same key:
+        // they were armed independently and resolve independently.
         let tap = self.gestures.resolve_tap(vk, now);
         let tap_fired = tap.is_some();
-        let hold_cancelled = self.gestures.cancel_hold(vk);
+        let hold = self.gestures.release_hold(vk, now);
 
         let mut decision = Decision::default();
         decision.fire.extend(tap);
 
-        if tap_fired || hold_cancelled {
+        if tap_fired || hold != HoldRelease::NotPending {
             // Gesture-bound key: suppress the key-up too, and clear the
             // blocked flag its key-down set so it does not leak.
             self.keys.take_blocked(vk.0);
