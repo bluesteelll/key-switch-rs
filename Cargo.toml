@@ -19,6 +19,11 @@ build = "build.rs"
 # harness out of src/main.rs: build.rs links the daemon with a
 # `requireAdministrator` manifest, and that harness would inherit it and fail
 # with "requires elevation" (os error 740) in a normal shell (KS-38).
+# Limit: an explicit target selection overrides `test = false`. With
+# `--release`, `--all-targets`, `--bins` or `--bin key-switch-rs` still build
+# that elevated harness, and Cargo cannot keep `rustc-link-arg-bin` off a
+# bin's own test target. Run plain `cargo test --release` instead. Debug
+# builds embed no manifest, so `cargo test --all-targets` is fine.
 # `swch` (src/bin/swch.rs) stays auto-discovered.
 [[bin]]
 name = "key-switch-rs"
