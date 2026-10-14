@@ -39,6 +39,20 @@ jobs:
         run: cargo test --locked
       - name: cargo build --release
         run: cargo build --release --locked
+      # build.rs embeds the requireAdministrator manifest into the daemon and
+      # nothing else. This catches build.rs losing it, for instance by
+      # misreading CARGO_CFG_TARGET_ENV (KS-42), which no unit test sees.
+      - name: UAC manifest in key-switch-rs.exe only
+        shell: bash
+        run: |
+          if ! grep -q requireAdministrator target/release/key-switch-rs.exe; then
+            echo "::error file=build.rs::target/release/key-switch-rs.exe embeds no requireAdministrator manifest"
+            exit 1
+          fi
+          if grep -q requireAdministrator target/release/swch.exe; then
+            echo "::error file=build.rs::target/release/swch.exe embeds the requireAdministrator manifest"
+            exit 1
+          fi
       # KS-38: `test = false` and `bench = false` on the daemon binary keep
       # `cargo test` and `cargo bench` from building a libtest harness out of
       # src/main.rs, which would carry the requireAdministrator manifest.
@@ -80,3 +94,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo check
         run: cargo check --all-targets --locked
+
+  windows-gnu:
+    name: release build (x86_64-pc-windows-gnu)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # A GNU-host toolchain ships its own MinGW linker (rust-mingw).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      # KS-42: build.rs must not hand the MSVC switches /MANIFEST:EMBED and
+      # /MANIFESTUAC to GNU ld, which takes them for input files and fails
+      # the link; it warns instead that no UAC manifest is embedded. Cargo
+      # repeats a build script's warnings when the build script is fresh.
+      - name: "KS-42: cargo build --release for windows-gnu"
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          out=$(cargo build --release --locked --target x86_64-pc-windows-gnu 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          if ! grep -q 'no UAC manifest is embedded' <<<"$out"; then
+            echo "::error file=build.rs::the windows-gnu release build did not warn that no UAC manifest is embedded (KS-42)"
+            exit 1
+          fi
