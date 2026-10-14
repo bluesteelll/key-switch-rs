@@ -178,6 +178,15 @@ impl Gestures {
         Some(self.holds.swap_remove(index).action)
     }
 
+    /// Drops the hold that `token` was started for, without firing it,
+    /// because the caller could not start its timer. Without this a Hold
+    /// released after its term would wait forever for a timer that never
+    /// runs.
+    pub(super) fn forget_hold(&mut self, token: TimerToken) {
+        self.holds
+            .retain(|p| !(p.vk == token.vk && p.generation == token.generation));
+    }
+
     /// The key's pending (not yet released) hold.
     fn pending_hold_index(&self, vk: VIRTUAL_KEY) -> Option<usize> {
         self.holds.iter().position(|p| p.vk == vk.0 && !p.released)
@@ -402,6 +411,28 @@ mod tests {
         assert_eq!(
             state.fire_hold(second.token),
             Some(BindAction::SwitchLanguage)
+        );
+    }
+
+    #[test]
+    fn forgotten_hold_never_fires_and_frees_its_key() {
+        // The caller could not start the timer for the first press.
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let timer = state
+            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
+            .unwrap();
+        state.forget_hold(timer.token);
+        assert!(!state.hold_pending(VK_F13));
+        assert_eq!(state.fire_hold(timer.token), None);
+        assert_eq!(
+            state.release_hold(VK_F13, t0 + ms(300)),
+            HoldRelease::NotPending
+        );
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(400))
+                .is_some()
         );
     }
 

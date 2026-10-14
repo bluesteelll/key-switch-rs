@@ -251,6 +251,21 @@ impl Scenario {
         self
     }
 
+    /// Drops every timer that has not fired yet, as when the caller cannot
+    /// start them, and tells the engine through [`Engine::forget_timer`].
+    pub(crate) fn lose_timers(mut self) -> Self {
+        for timer in std::mem::take(&mut self.timers) {
+            self.engine.forget_timer(timer.token);
+        }
+        let label = format!("timers lost at {}", self.clock());
+        self.steps.push(Step {
+            label,
+            suppressed: None,
+            fired: Vec::new(),
+        });
+        self
+    }
+
     /// The last key event was swallowed.
     #[track_caller]
     pub(crate) fn expect_suppressed(self) -> Self {

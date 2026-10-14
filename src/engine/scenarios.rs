@@ -486,6 +486,31 @@ fn hold_left_to_a_late_timer_does_not_block_the_next_press() {
     ]);
 }
 
+#[test]
+fn hold_whose_timer_cannot_start_never_fires() {
+    // KS-33: the caller could not start the timer and tells the engine.
+    // The Hold neither fires nor lingers: the key-up is still swallowed and
+    // the next press arms and fires a fresh Hold.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
+    )
+    .down("CapsLock")
+    .expect_suppressed()
+    .lose_timers()
+    .advance_ms(300)
+    .expect_nothing_fired()
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(200)
+    .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+}
+
 // ---- DoubleTap ----
 
 #[test]

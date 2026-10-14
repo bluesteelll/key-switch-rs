@@ -253,6 +253,13 @@ impl Engine {
         decision
     }
 
+    /// The caller could not start the timer for `token` (for example, a
+    /// thread could not be spawned). Its Hold is dropped: it never fires,
+    /// and its key can arm a new Hold on the next press.
+    pub fn forget_timer(&mut self, token: TimerToken) {
+        self.gestures.forget_hold(token);
+    }
+
     /// The foreground window changed. Key-ups may have been lost while a
     /// higher-integrity window had focus: resync every modifier from the OS
     /// and forget which key-ups were due to be swallowed.
