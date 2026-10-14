@@ -2,6 +2,16 @@
 name = "key-switch-rs"
 version = "0.1.0"
 edition = "2024"
+# MSRV: let-chains need 1.88 with edition 2024; the highest rust-version of
+# any dependency is 1.85 (notify-types).
+rust-version = "1.88"
+description = "Keyboard remapping daemon for Windows: hotkeys, tap/hold gestures, chords, sequences and macros from a hot-reloaded RON config, driven by the swch CLI."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bluesteelll/key-switch-rs"
+homepage = "https://bluesteelll.github.io/key-switch-rs/"
+readme = "README.md"
+keywords = ["keyboard", "remap", "hotkey", "windows", "keybinding"]
+categories = ["os::windows-apis", "command-line-utilities", "accessibility"]
 build = "build.rs"
 
 # The daemon. `test = false` keeps `cargo test` from building a unit-test

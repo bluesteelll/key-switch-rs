@@ -13,6 +13,10 @@ minor version; such entries sit under **Changed** and start with
 
 ### Added
 
+- Licence: `MIT OR Apache-2.0`, with `LICENSE-MIT` and `LICENSE-APACHE`.
+- Package metadata in `Cargo.toml`: description, licence, repository,
+  homepage, readme, keywords and categories, and `rust-version = "1.88"` as
+  the minimum supported Rust version.
 - This changelog.
 
 ### Changed
