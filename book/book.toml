@@ -1,0 +1,16 @@
+[book]
+title = "key-switch-rs"
+description = "Architecture, configuration reference, audit findings and roadmap for key-switch-rs, a Windows keyboard remapper written in Rust."
+authors = ["Celtokisa"]
+language = "en"
+src = "src"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+git-repository-url = "https://github.com/bluesteelll/key-switch-rs"
+edit-url-template = "https://github.com/bluesteelll/key-switch-rs/edit/master/book/{path}"
+site-url = "/key-switch-rs/"
+additional-js = ["mermaid.min.js", "mermaid-init.js", "mermaid-fit.js"]
+additional-css = ["mermaid-fit.css"]

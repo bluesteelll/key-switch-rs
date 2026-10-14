@@ -1,0 +1,4 @@
+/* Wide diagrams scroll horizontally instead of shrinking (see mermaid-fit.js). */
+pre.mermaid.mermaid-wide {
+    overflow-x: auto;
+}
