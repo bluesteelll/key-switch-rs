@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
@@ -66,7 +67,9 @@ impl KeyboardHook {
     /// key-count descending so more specific combinations are checked first
     /// in the callback.
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
-        bindings.sort_by(|a, b| b.kind.key_count().cmp(&a.kind.key_count()));
+        // `sort_by_key` is stable, so bindings with the same key count keep
+        // their config order.
+        bindings.sort_by_key(|b| Reverse(b.kind.key_count()));
         self.bindings.store(Arc::new(bindings));
     }
 
@@ -222,6 +225,30 @@ mod tests {
         assert_eq!(bindings[0].kind.key_count(), 3);
         assert_eq!(bindings[1].kind.key_count(), 2);
         assert_eq!(bindings[2].kind.key_count(), 1);
+    }
+
+    #[test]
+    fn equal_specificity_keeps_config_order() {
+        // The sort must be stable: among bindings with the same key count,
+        // the one listed first in the config is checked first.
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::SwitchLanguage),
+            Binding::new(
+                KeyCombination::new(VK_A).with(VK_CONTROL),
+                BindAction::DoNothing,
+            ),
+            Binding::new(KeyCombination::new(VK_F14), BindAction::ToggleCapsLock),
+            Binding::new(KeyCombination::new(VK_F15), BindAction::DoNothing),
+        ]);
+
+        let bindings = hook.bindings();
+        let first_keys: Vec<_> = bindings
+            .iter()
+            .map(|b| b.combination().unwrap().keys[0])
+            .collect();
+        assert_eq!(bindings[0].kind.key_count(), 2);
+        assert_eq!(&first_keys[1..], &[VK_F13, VK_F14, VK_F15]);
     }
 
     #[test]
