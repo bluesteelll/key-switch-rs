@@ -39,21 +39,36 @@ jobs:
         run: cargo test --locked
       - name: cargo build --release
         run: cargo build --release --locked
-      # KS-38: `test = false` on the daemon binary keeps cargo from building
-      # a unit-test harness out of src/main.rs, which would carry the
-      # requireAdministrator manifest. This checks what cargo really builds;
-      # --no-run builds the test executables and runs none of them.
-      - name: "KS-38: no test harness for the daemon binary"
-        shell: bash
-        env:
-          CARGO_TERM_COLOR: never
+      # KS-38: `test = false` and `bench = false` on the daemon binary keep
+      # `cargo test` and `cargo bench` from building a libtest harness out of
+      # src/main.rs, which would carry the requireAdministrator manifest.
+      # This reads what cargo really builds from its JSON messages, not from
+      # its human-readable output; --no-run builds the harnesses and runs
+      # none of them.
+      - name: "KS-38: no test or bench harness for the daemon binary"
+        shell: pwsh
         run: |
-          out=$(cargo test --release --no-run --locked 2>&1) || { printf '%s\n' "$out"; exit 1; }
-          printf '%s\n' "$out"
-          if grep -E 'unittests src[\\/]main\.rs' <<<"$out"; then
-            echo "::error file=Cargo.toml::cargo test --release built a unit-test harness from src/main.rs; the key-switch-rs [[bin]] needs test = false (KS-38)"
-            exit 1
-          fi
+          $offenders = @()
+          foreach ($command in 'test --release', 'bench') {
+            $cargoArgs = $command -split ' '
+            $messages = & cargo @cargoArgs --no-run --locked --message-format=json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $harnesses = $messages |
+              Where-Object { $_.StartsWith('{') } |
+              ForEach-Object { $_ | ConvertFrom-Json } |
+              Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test }
+            foreach ($harness in $harnesses) {
+              $kind = $harness.target.kind -join ','
+              Write-Output "cargo $command --no-run: $($harness.target.name) ($kind) -> $($harness.executable)"
+              if ($harness.target.name -eq 'key-switch-rs' -and $harness.target.kind -contains 'bin') {
+                $offenders += "cargo $command"
+              }
+            }
+          }
+          foreach ($offender in $offenders) {
+            Write-Output "::error file=Cargo.toml::$offender built a libtest harness from src/main.rs; the key-switch-rs [[bin]] needs test = false and bench = false (KS-38)"
+          }
+          if ($offenders.Count -gt 0) { exit 1 }
 
   msrv:
     name: MSRV (Rust 1.88)

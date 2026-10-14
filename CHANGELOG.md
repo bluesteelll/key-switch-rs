@@ -15,9 +15,10 @@ minor version; such entries sit under **Changed** and start with
 
 - CI on `windows-latest` for every push and pull request: `cargo fmt --check`,
   `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`
-  and `cargo build --release --locked`, a check that
-  `cargo test --release --no-run` builds no test harness for the daemon binary
-  (KS-38), plus `cargo check` with Rust 1.88, the minimum supported version.
+  and `cargo build --release --locked`, a check of cargo's JSON messages that
+  `cargo test --release --no-run` and `cargo bench --no-run` build no libtest
+  harness for the daemon binary (KS-38), plus `cargo check` with Rust 1.88,
+  the minimum supported version.
 - Documentation book (mdBook): overview, architecture, building and running,
   the `config.ron` reference, the audit (KS-01 to KS-42), gaps and
   documentation drift, and the roadmap. `.github/workflows/book.yml` publishes
