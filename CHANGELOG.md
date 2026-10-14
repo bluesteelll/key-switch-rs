@@ -1,0 +1,31 @@
+# Changelog
+
+All notable changes to key-switch-rs are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Until 1.0, a breaking change to the `config.ron` syntax or behaviour bumps the
+minor version; such entries sit under **Changed** and start with
+"**Breaking:**". Issue ids such as KS-38 refer to the
+[audit](https://bluesteelll.github.io/key-switch-rs/audit.html).
+
+## [Unreleased]
+
+### Added
+
+- This changelog.
+
+### Changed
+
+- The source is formatted with `cargo fmt`.
+
+## [0.1.0] - 2026-05-20
+
+Baseline: the code at commit
+[`7cb3521`](https://github.com/bluesteelll/key-switch-rs/commit/7cb3521),
+before this changelog existed. It was never tagged or released. The
+[audit](https://bluesteelll.github.io/key-switch-rs/audit.html) lists its
+known issues, KS-01 to KS-42.
+
+[Unreleased]: https://github.com/bluesteelll/key-switch-rs/compare/7cb3521...HEAD
+[0.1.0]: https://github.com/bluesteelll/key-switch-rs/tree/7cb3521
