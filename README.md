@@ -403,11 +403,33 @@ every problem in one pass. Common cases:
 
 ## Build
 
+Requires Rust 1.88 or newer.
+
 ```bash
 cargo build --release
 ```
 
 Executable: `target/release/key-switch-rs.exe`
+
+The `requireAdministrator` manifest is embedded only by the MSVC linker
+(`x86_64-pc-windows-msvc`, the default Windows toolchain). A release build for
+a `*-windows-gnu` target links without it and prints a cargo warning; start
+that daemon elevated yourself.
+
+### Tests
+
+```bash
+cargo test            # or: cargo test --release
+```
+
+The daemon binary has no test or bench harness (`test = false` and
+`bench = false` in `Cargo.toml`). Selecting targets explicitly brings it back:
+`cargo test --release` or `cargo bench` with `--all-targets`, `--bins` or
+`--bin key-switch-rs` builds a harness from `src/main.rs` that inherits the
+`requireAdministrator` manifest, and running it in a non-elevated shell fails
+with "The requested operation requires elevation" (os error 740). Use plain
+`cargo test --release` and plain `cargo bench`. Debug builds embed no manifest,
+so `cargo test --all-targets` works.
 
 ## Run
 
@@ -519,3 +541,17 @@ For a fully unattended/no-UAC-prompt setup, the alternative is
 `uiAccess="true"` in the manifest — but that requires a binary signed with a
 trusted code-signing certificate and installed under `C:\Program Files\`.
 See the AutoHotkey / kanata projects for prior art.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

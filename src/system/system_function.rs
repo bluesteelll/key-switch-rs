@@ -1,14 +1,11 @@
 use std::path::PathBuf;
 
 use windows::{
-    core::*,
     Win32::{
         Foundation::*,
-        UI::{
-            Input::KeyboardAndMouse::*,
-            WindowsAndMessaging::*,
-        },
+        UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
+    core::*,
 };
 
 use crate::core::constants::injected_sentinel;
@@ -84,7 +81,10 @@ impl SystemFunction {
     fn lock_workstation() {
         use std::process::Command;
         let exe = system32_path("rundll32.exe");
-        if let Err(e) = Command::new(&exe).args(["user32.dll,LockWorkStation"]).spawn() {
+        if let Err(e) = Command::new(&exe)
+            .args(["user32.dll,LockWorkStation"])
+            .spawn()
+        {
             eprintln!("LockWorkStation spawn error ({}): {}", exe.display(), e);
         }
     }
@@ -148,11 +148,14 @@ impl SystemFunction {
 
         // SAFETY: inputs is a valid stack array; SendInput reads via the size
         // we pass as cbSize.
-        let sent = unsafe {
-            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32)
-        };
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
-            eprintln!("SendInput dropped events for vk {:?}: sent {} of {}", vk, sent, inputs.len());
+            eprintln!(
+                "SendInput dropped events for vk {:?}: sent {} of {}",
+                vk,
+                sent,
+                inputs.len()
+            );
         }
     }
 }
@@ -175,14 +178,30 @@ mod tests {
 
     #[test]
     fn test_hardcoded_combinations() {
-        assert!(SystemFunction::LockWorkstation.get_system_combination().is_some());
-        assert!(SystemFunction::ShowDesktop.get_system_combination().is_some());
-        assert!(SystemFunction::TaskManager.get_system_combination().is_some());
+        assert!(
+            SystemFunction::LockWorkstation
+                .get_system_combination()
+                .is_some()
+        );
+        assert!(
+            SystemFunction::ShowDesktop
+                .get_system_combination()
+                .is_some()
+        );
+        assert!(
+            SystemFunction::TaskManager
+                .get_system_combination()
+                .is_some()
+        );
     }
 
     #[test]
     fn test_capslock_has_no_combination() {
-        assert!(SystemFunction::ToggleCapsLock.get_system_combination().is_none());
+        assert!(
+            SystemFunction::ToggleCapsLock
+                .get_system_combination()
+                .is_none()
+        );
     }
 
     #[test]

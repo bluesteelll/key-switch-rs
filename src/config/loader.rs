@@ -19,8 +19,8 @@ use crate::data::vk_name::parse_vk;
 
 use super::parsing::{parse_combo, parse_wm_name};
 use super::schema::{
-    ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawCondition, RawConfig,
-    RawStep, RawTrigger, RawWindowKind, SequenceSpec,
+    ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawCondition, RawConfig, RawStep,
+    RawTrigger, RawWindowKind, SequenceSpec,
 };
 
 /// Bundled default `config.ron`. Written to disk the first time the program
@@ -85,12 +85,9 @@ pub fn default_config_path() -> Result<PathBuf, ConfigError> {
         path: PathBuf::from("<current_exe>"),
         source: e,
     })?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| ConfigError::Other(format!(
-            "executable path {:?} has no parent directory",
-            exe
-        )))?;
+    let dir = exe.parent().ok_or_else(|| {
+        ConfigError::Other(format!("executable path {:?} has no parent directory", exe))
+    })?;
     Ok(dir.join("config.ron"))
 }
 
@@ -132,8 +129,8 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
     // human-edited config — no one expects to type `Some(...)` everywhere.
-    let options = ron::Options::default()
-        .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+    let options =
+        ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
 
     let raw: RawConfig = options.from_str(text).map_err(|e| ConfigError::Parse {
         path: PathBuf::from("<in-memory>"),
@@ -210,11 +207,10 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
     let keys_display = format_raw_binding_keys(raw);
     let err_prefix = format!("binding #{} [{}]", index, keys_display);
 
-    let kind = raw_binding_to_kind(raw)
-        .map_err(|e| format!("{}: {}", err_prefix, e))?;
+    let kind = raw_binding_to_kind(raw).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
-    let action = raw_action_to_bind_action(&raw.action)
-        .map_err(|e| format!("{}: {}", err_prefix, e))?;
+    let action =
+        raw_action_to_bind_action(&raw.action).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
     let trigger = raw_trigger_to_trigger(raw.trigger);
 
@@ -240,9 +236,8 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
 
 fn raw_binding_to_kind(raw: &RawBinding) -> Result<BindingKind, String> {
     // Exactly one of {keys, sequence, chord} must be set.
-    let kind_count = (raw.keys.is_some() as u8)
-        + (raw.sequence.is_some() as u8)
-        + (raw.chord.is_some() as u8);
+    let kind_count =
+        (raw.keys.is_some() as u8) + (raw.sequence.is_some() as u8) + (raw.chord.is_some() as u8);
     if kind_count == 0 {
         return Err(
             "binding has none of `keys` / `sequence` / `chord` set — must specify exactly one"
@@ -295,8 +290,8 @@ fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
     }
     let mut vks = Vec::with_capacity(chord.keys.len());
     for (i, k) in chord.keys.iter().enumerate() {
-        let vk = parse_vk(k)
-            .ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
+        let vk =
+            parse_vk(k).ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
         if vks.contains(&vk) {
             return Err(format!("Chord key #{}: duplicate {:?}", i, k));
         }
@@ -323,9 +318,9 @@ fn format_raw_binding_keys(raw: &RawBinding) -> String {
 
 fn raw_trigger_to_trigger(raw: RawTrigger) -> Trigger {
     match raw {
-        RawTrigger::Immediate    => Trigger::Immediate,
-        RawTrigger::Tap(ms)      => Trigger::Tap(ms),
-        RawTrigger::Hold(ms)     => Trigger::Hold(ms),
+        RawTrigger::Immediate => Trigger::Immediate,
+        RawTrigger::Tap(ms) => Trigger::Tap(ms),
+        RawTrigger::Hold(ms) => Trigger::Hold(ms),
         RawTrigger::DoubleTap(ms) => Trigger::DoubleTap(ms),
     }
 }
@@ -336,9 +331,7 @@ fn raw_condition_to_condition(raw: &RawCondition) -> Condition {
         RawCondition::AppEquals(s) => Condition::AppEquals(s.clone()),
         RawCondition::TitleContains(s) => Condition::TitleContains(s.clone()),
         RawCondition::TitleEquals(s) => Condition::TitleEquals(s.clone()),
-        RawCondition::Not(inner) => {
-            Condition::Not(Box::new(raw_condition_to_condition(inner)))
-        }
+        RawCondition::Not(inner) => Condition::Not(Box::new(raw_condition_to_condition(inner))),
         RawCondition::And(parts) => {
             Condition::And(parts.iter().map(raw_condition_to_condition).collect())
         }
@@ -350,18 +343,21 @@ fn raw_condition_to_condition(raw: &RawCondition) -> Condition {
 
 fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
     Ok(match raw {
-        RawAction::SwitchLanguage         => BindAction::SwitchLanguage,
+        RawAction::SwitchLanguage => BindAction::SwitchLanguage,
         RawAction::SwitchLanguageBackward => BindAction::SwitchLanguageBackward,
-        RawAction::ToggleCapsLock         => BindAction::ToggleCapsLock,
-        RawAction::DoNothing              => BindAction::DoNothing,
+        RawAction::ToggleCapsLock => BindAction::ToggleCapsLock,
+        RawAction::DoNothing => BindAction::DoNothing,
 
         RawAction::PressKey(key) => {
-            let vk = parse_vk(key)
-                .ok_or_else(|| format!("PressKey: unknown key {:?}", key))?;
+            let vk = parse_vk(key).ok_or_else(|| format!("PressKey: unknown key {:?}", key))?;
             BindAction::PressKey(vk)
         }
 
-        RawAction::PostMessage { msg, wparam, lparam } => {
+        RawAction::PostMessage {
+            msg,
+            wparam,
+            lparam,
+        } => {
             let code = match msg {
                 MessageRef::Code(c) => *c,
                 MessageRef::Name(n) => parse_wm_name(n).ok_or_else(|| {
@@ -388,10 +384,8 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
             // the BindAction (frozen binding list, hot-path lookups) is O(1).
             let mut converted = Vec::with_capacity(steps.len());
             for (i, raw_step) in steps.iter().enumerate() {
-                converted.push(
-                    raw_step_to_step(raw_step)
-                        .map_err(|e| format!("step #{}: {}", i, e))?,
-                );
+                converted
+                    .push(raw_step_to_step(raw_step).map_err(|e| format!("step #{}: {}", i, e))?);
             }
             BindAction::Sequence(Arc::new(converted))
         }
@@ -409,11 +403,11 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
 
 fn media_key_ref_to_key(raw: MediaKeyRef) -> MediaKey {
     match raw {
-        MediaKeyRef::PlayPause  => MediaKey::PlayPause,
-        MediaKeyRef::Stop       => MediaKey::Stop,
-        MediaKeyRef::Next       => MediaKey::Next,
-        MediaKeyRef::Previous   => MediaKey::Previous,
-        MediaKeyRef::VolumeUp   => MediaKey::VolumeUp,
+        MediaKeyRef::PlayPause => MediaKey::PlayPause,
+        MediaKeyRef::Stop => MediaKey::Stop,
+        MediaKeyRef::Next => MediaKey::Next,
+        MediaKeyRef::Previous => MediaKey::Previous,
+        MediaKeyRef::VolumeUp => MediaKey::VolumeUp,
         MediaKeyRef::VolumeDown => MediaKey::VolumeDown,
         MediaKeyRef::VolumeMute => MediaKey::VolumeMute,
     }
@@ -426,14 +420,12 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         RawStep::Text(text) => SequenceStep::TypeText(text.clone()),
 
         RawStep::Key(name) => {
-            let vk = parse_vk(name)
-                .ok_or_else(|| format!("Key: unknown key {:?}", name))?;
+            let vk = parse_vk(name).ok_or_else(|| format!("Key: unknown key {:?}", name))?;
             SequenceStep::PressKey(vk)
         }
 
         RawStep::Combo(combo) => {
-            let kc = parse_combo(combo)
-                .map_err(|e| format!("Combo {:?}: {}", combo, e))?;
+            let kc = parse_combo(combo).map_err(|e| format!("Combo {:?}: {}", combo, e))?;
             if kc.keys.is_empty() {
                 return Err(format!("Combo {:?}: empty", combo));
             }
@@ -443,8 +435,8 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         RawStep::Window(kind) => SequenceStep::Window(match kind {
             RawWindowKind::Minimize => WindowOp::Minimize,
             RawWindowKind::Maximize => WindowOp::Maximize,
-            RawWindowKind::Restore  => WindowOp::Restore,
-            RawWindowKind::Close    => WindowOp::Close,
+            RawWindowKind::Restore => WindowOp::Restore,
+            RawWindowKind::Close => WindowOp::Close,
         }),
 
         RawStep::Launch { exe, args } => SequenceStep::Launch {
@@ -592,7 +584,11 @@ mod tests {
         let bindings = from_ron_str(ron_text).unwrap();
         assert_eq!(
             bindings[0].action,
-            BindAction::PostMessage { msg: WM_CLOSE, wparam: 0, lparam: 0 },
+            BindAction::PostMessage {
+                msg: WM_CLOSE,
+                wparam: 0,
+                lparam: 0
+            },
         );
     }
 
@@ -610,7 +606,11 @@ mod tests {
         "#;
         let bindings = from_ron_str(ron_text).unwrap();
         match bindings[0].action {
-            BindAction::PostMessage { msg, wparam, lparam } => {
+            BindAction::PostMessage {
+                msg,
+                wparam,
+                lparam,
+            } => {
                 assert_eq!(msg, 0x10);
                 assert_eq!(wparam, 42);
                 assert_eq!(lparam, -1);
@@ -675,7 +675,11 @@ mod tests {
         "#;
         let err = from_ron_str(ron_text).unwrap_err();
         if let ConfigError::Bindings(errs) = err {
-            assert!(errs[0].contains("Bogus"), "error should mention bogus key: {:?}", errs);
+            assert!(
+                errs[0].contains("Bogus"),
+                "error should mention bogus key: {:?}",
+                errs
+            );
         } else {
             panic!("expected Bindings error, got {:?}", err);
         }
@@ -872,11 +876,11 @@ mod tests {
     #[test]
     fn parse_media_variants() {
         for (variant, expected) in [
-            ("PlayPause",  MediaKey::PlayPause),
-            ("Stop",       MediaKey::Stop),
-            ("Next",       MediaKey::Next),
-            ("Previous",   MediaKey::Previous),
-            ("VolumeUp",   MediaKey::VolumeUp),
+            ("PlayPause", MediaKey::PlayPause),
+            ("Stop", MediaKey::Stop),
+            ("Next", MediaKey::Next),
+            ("Previous", MediaKey::Previous),
+            ("VolumeUp", MediaKey::VolumeUp),
             ("VolumeDown", MediaKey::VolumeDown),
             ("VolumeMute", MediaKey::VolumeMute),
         ] {
@@ -885,8 +889,12 @@ mod tests {
                 variant
             );
             let bindings = from_ron_str(&ron).unwrap();
-            assert_eq!(bindings[0].action, BindAction::Media(expected),
-                "variant {} did not round-trip", variant);
+            assert_eq!(
+                bindings[0].action,
+                BindAction::Media(expected),
+                "variant {} did not round-trip",
+                variant
+            );
         }
     }
 
@@ -911,7 +919,10 @@ mod tests {
             assert!(matches!(&steps[0], SequenceStep::Launch { exe, .. } if exe == "notepad.exe"));
             assert!(matches!(steps[1], SequenceStep::Delay(200)));
             assert!(matches!(&steps[2], SequenceStep::OpenUrl(u) if u == "https://example.com"));
-            assert!(matches!(steps[3], SequenceStep::Media(MediaKey::VolumeMute)));
+            assert!(matches!(
+                steps[3],
+                SequenceStep::Media(MediaKey::VolumeMute)
+            ));
         } else {
             panic!("expected Sequence");
         }

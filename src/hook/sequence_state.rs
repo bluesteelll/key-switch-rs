@@ -84,7 +84,9 @@ impl SequenceState {
                     pending.remove(idx);
                     drop(pending);
                     act.execute();
-                    return SequenceOutcome::Completed { last_step_keys: last_keys };
+                    return SequenceOutcome::Completed {
+                        last_step_keys: last_keys,
+                    };
                 }
                 return SequenceOutcome::Advanced;
             }
@@ -104,7 +106,9 @@ impl SequenceState {
                 let last_keys: Vec<u16> = steps[0].keys.iter().map(|k| k.0).collect();
                 drop(pending);
                 act.execute();
-                return SequenceOutcome::Completed { last_step_keys: last_keys };
+                return SequenceOutcome::Completed {
+                    last_step_keys: last_keys,
+                };
             }
 
             pending.push(PendingSequence {
@@ -146,8 +150,12 @@ mod tests {
     fn second_step_completes_sequence() {
         let state = SequenceState::new();
         let steps = vec![combo(&[VK_G]), combo(&[VK_G])];
-        state.handle_keydown(&[VK_G], &BindAction::DoNothing, &steps,
-                              Duration::from_millis(10_000));
+        state.handle_keydown(
+            &[VK_G],
+            &BindAction::DoNothing,
+            &steps,
+            Duration::from_millis(10_000),
+        );
         // simulating release between presses — active_keys empty in real
         // flow, but second key-down delivers active=[G] again.
         let outcome = state.handle_keydown(
@@ -168,8 +176,12 @@ mod tests {
     fn mismatched_intermediate_aborts() {
         let state = SequenceState::new();
         let steps = vec![combo(&[VK_G]), combo(&[VK_H])];
-        state.handle_keydown(&[VK_G], &BindAction::DoNothing, &steps,
-                              Duration::from_millis(10_000));
+        state.handle_keydown(
+            &[VK_G],
+            &BindAction::DoNothing,
+            &steps,
+            Duration::from_millis(10_000),
+        );
         // Wrong key: expecting H, got A.
         let outcome = state.handle_keydown(
             &[VK_A],
@@ -192,13 +204,21 @@ mod tests {
         ];
 
         // First step: active=[Ctrl, X]
-        let o1 = state.handle_keydown(&[VK_CONTROL, VK_X], &BindAction::DoNothing,
-                                       &steps, Duration::from_millis(10_000));
+        let o1 = state.handle_keydown(
+            &[VK_CONTROL, VK_X],
+            &BindAction::DoNothing,
+            &steps,
+            Duration::from_millis(10_000),
+        );
         assert!(matches!(o1, SequenceOutcome::Advanced));
 
         // Second step: active=[Ctrl, S]
-        let o2 = state.handle_keydown(&[VK_CONTROL, VK_S], &BindAction::DoNothing,
-                                       &steps, Duration::from_millis(10_000));
+        let o2 = state.handle_keydown(
+            &[VK_CONTROL, VK_S],
+            &BindAction::DoNothing,
+            &steps,
+            Duration::from_millis(10_000),
+        );
         match o2 {
             SequenceOutcome::Completed { last_step_keys } => {
                 assert!(last_step_keys.contains(&VK_CONTROL.0));

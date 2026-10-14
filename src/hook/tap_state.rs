@@ -108,10 +108,7 @@ impl TapState {
                 thread::sleep(Duration::from_millis(term_ms));
                 // Lock + remove + fire under the same critical section so
                 // we don't race with cancel_hold_on_keyup.
-                let action = map_arc
-                    .lock()
-                    .expect("hold mutex poisoned")
-                    .remove(&vk_u16);
+                let action = map_arc.lock().expect("hold mutex poisoned").remove(&vk_u16);
                 if let Some(action) = action {
                     action.execute();
                 }
@@ -176,18 +173,10 @@ mod tests {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     fn tap_pending(state: &TapState, vk: VIRTUAL_KEY) -> bool {
-        state
-            .pending_taps
-            .lock()
-            .unwrap()
-            .contains_key(&vk.0)
+        state.pending_taps.lock().unwrap().contains_key(&vk.0)
     }
     fn hold_pending(state: &TapState, vk: VIRTUAL_KEY) -> bool {
-        state
-            .pending_holds
-            .lock()
-            .unwrap()
-            .contains_key(&vk.0)
+        state.pending_holds.lock().unwrap().contains_key(&vk.0)
     }
     fn double_tap_pending(state: &TapState, vk: VIRTUAL_KEY) -> bool {
         state

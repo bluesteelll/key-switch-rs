@@ -103,7 +103,9 @@ impl ChordState {
                 };
             }
 
-            return ChordOutcome::Suppress { completed_keys: None };
+            return ChordOutcome::Suppress {
+                completed_keys: None,
+            };
         }
 
         // No pending entry — start a fresh one with this VK as the first
@@ -115,7 +117,9 @@ impl ChordState {
             expires_at: now + window,
         });
 
-        ChordOutcome::Suppress { completed_keys: None }
+        ChordOutcome::Suppress {
+            completed_keys: None,
+        }
     }
 }
 
@@ -160,20 +164,34 @@ mod tests {
             Duration::from_millis(10_000),
         );
         match outcome {
-            ChordOutcome::Suppress { completed_keys: None } => {}
-            other => panic!("expected Suppress without completion, got {:?}",
-                match other { ChordOutcome::NotInChord => "NotInChord",
-                              ChordOutcome::Suppress { completed_keys } => {
-                                  if completed_keys.is_some() { "Completed" } else { "Suppress" }
-                              }}),
+            ChordOutcome::Suppress {
+                completed_keys: None,
+            } => {}
+            other => panic!(
+                "expected Suppress without completion, got {:?}",
+                match other {
+                    ChordOutcome::NotInChord => "NotInChord",
+                    ChordOutcome::Suppress { completed_keys } => {
+                        if completed_keys.is_some() {
+                            "Completed"
+                        } else {
+                            "Suppress"
+                        }
+                    }
+                }
+            ),
         }
     }
 
     #[test]
     fn second_chord_key_within_window_completes() {
         let state = ChordState::new();
-        state.handle_keydown(VK_J, &BindAction::DoNothing, &[VK_J, VK_K],
-                             Duration::from_millis(10_000));
+        state.handle_keydown(
+            VK_J,
+            &BindAction::DoNothing,
+            &[VK_J, VK_K],
+            Duration::from_millis(10_000),
+        );
         let outcome = state.handle_keydown(
             VK_K,
             &BindAction::DoNothing,
@@ -181,7 +199,9 @@ mod tests {
             Duration::from_millis(10_000),
         );
         match outcome {
-            ChordOutcome::Suppress { completed_keys: Some(keys) } => {
+            ChordOutcome::Suppress {
+                completed_keys: Some(keys),
+            } => {
                 assert_eq!(keys, vec![VK_J.0, VK_K.0]);
             }
             _ => panic!("expected completion"),
@@ -191,10 +211,18 @@ mod tests {
     #[test]
     fn third_chord_key_starts_fresh_after_completion() {
         let state = ChordState::new();
-        state.handle_keydown(VK_J, &BindAction::DoNothing, &[VK_J, VK_K],
-                             Duration::from_millis(10_000));
-        state.handle_keydown(VK_K, &BindAction::DoNothing, &[VK_J, VK_K],
-                             Duration::from_millis(10_000));
+        state.handle_keydown(
+            VK_J,
+            &BindAction::DoNothing,
+            &[VK_J, VK_K],
+            Duration::from_millis(10_000),
+        );
+        state.handle_keydown(
+            VK_K,
+            &BindAction::DoNothing,
+            &[VK_J, VK_K],
+            Duration::from_millis(10_000),
+        );
         // Both chord keys consumed; a third press of J should re-arm a
         // fresh pending entry — chord state must not be sticky.
         let outcome = state.handle_keydown(
@@ -203,7 +231,12 @@ mod tests {
             &[VK_J, VK_K],
             Duration::from_millis(10_000),
         );
-        assert!(matches!(outcome, ChordOutcome::Suppress { completed_keys: None }));
+        assert!(matches!(
+            outcome,
+            ChordOutcome::Suppress {
+                completed_keys: None
+            }
+        ));
     }
 
     #[test]
@@ -211,8 +244,12 @@ mod tests {
         // Chord listed as [K, J] should match the same pending entry as one
         // listed as [J, K] — order in the binding's `keys` shouldn't matter.
         let state = ChordState::new();
-        state.handle_keydown(VK_J, &BindAction::DoNothing, &[VK_K, VK_J],
-                             Duration::from_millis(10_000));
+        state.handle_keydown(
+            VK_J,
+            &BindAction::DoNothing,
+            &[VK_K, VK_J],
+            Duration::from_millis(10_000),
+        );
         let outcome = state.handle_keydown(
             VK_K,
             &BindAction::DoNothing,
@@ -221,7 +258,9 @@ mod tests {
         );
         assert!(matches!(
             outcome,
-            ChordOutcome::Suppress { completed_keys: Some(_) }
+            ChordOutcome::Suppress {
+                completed_keys: Some(_)
+            }
         ));
     }
 }

@@ -12,7 +12,7 @@
 //!      binding list stays live, so a broken save never bricks the daemon.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::Duration;
 

@@ -57,12 +57,10 @@ impl Condition {
     pub fn evaluate(&self, ctx: &ForegroundContext) -> bool {
         match self {
             Condition::Always => true,
-            Condition::AppEquals(target) => {
-                match ctx.app() {
-                    Some(actual) => actual.eq_ignore_ascii_case(target),
-                    None => false,
-                }
-            }
+            Condition::AppEquals(target) => match ctx.app() {
+                Some(actual) => actual.eq_ignore_ascii_case(target),
+                None => false,
+            },
             Condition::TitleContains(needle) => match ctx.title() {
                 Some(actual) => actual.to_lowercase().contains(&needle.to_lowercase()),
                 None => false,
@@ -105,17 +103,13 @@ impl ForegroundContext {
     /// Base name of the focused window's executable (e.g. `"chrome.exe"`),
     /// or `None` if the window/process is gone or inaccessible.
     pub fn app(&self) -> Option<&str> {
-        self.app
-            .get_or_init(|| self.fetch_app())
-            .as_deref()
+        self.app.get_or_init(|| self.fetch_app()).as_deref()
     }
 
     /// Title bar text of the focused window, or `None` if the window is
     /// gone or has no title (rare).
     pub fn title(&self) -> Option<&str> {
-        self.title
-            .get_or_init(|| self.fetch_title())
-            .as_deref()
+        self.title.get_or_init(|| self.fetch_title()).as_deref()
     }
 
     fn fetch_app(&self) -> Option<String> {
@@ -215,7 +209,7 @@ mod tests {
         let ctx = ForegroundContext::capture();
         let cond = Condition::And(vec![
             Condition::Not(Box::new(Condition::Always)), // false
-            Condition::Always,                            // not evaluated, but must not panic
+            Condition::Always,                           // not evaluated, but must not panic
         ]);
         assert!(!cond.evaluate(&ctx));
     }
