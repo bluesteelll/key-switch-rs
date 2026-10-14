@@ -21,7 +21,8 @@ for (const item of (A.items || [])) {
   log(`lane ${item.name}: start`)
   let res = null
   try {
-    res = await workflow('ks-lane', item)
+    // By path, so the phase works even in a session that started before ks-lane was registered by name.
+    res = await workflow({ scriptPath: WT + '/.claude/workflows/ks-lane.js' }, item)
   } catch (e) {
     res = { name: item.name, stage: 'error', merged: false, error: String(e && e.message ? e.message : e) }
   }
