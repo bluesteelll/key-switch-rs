@@ -3,7 +3,8 @@ name = "key-switch-rs"
 version = "0.1.0"
 edition = "2024"
 # MSRV: let-chains need 1.88 with edition 2024; the highest rust-version of
-# any dependency is 1.85 (notify-types).
+# any dependency is 1.85 (notify-types). The msrv job in
+# .github/workflows/ci.yml builds with this version; keep the two in sync.
 rust-version = "1.88"
 description = "Keyboard remapping daemon for Windows: hotkeys, tap/hold gestures, chords, sequences and macros from a hot-reloaded RON config, driven by the swch CLI."
 license = "MIT OR Apache-2.0"

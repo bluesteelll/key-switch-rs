@@ -13,6 +13,10 @@ minor version; such entries sit under **Changed** and start with
 
 ### Added
 
+- CI on `windows-latest` for every push and pull request: `cargo fmt --check`,
+  `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`
+  and `cargo build --release --locked`, plus `cargo check` with Rust 1.88, the
+  minimum supported version.
 - Licence: `MIT OR Apache-2.0`, with `LICENSE-MIT` and `LICENSE-APACHE`.
 - Package metadata in `Cargo.toml`: description, licence, repository,
   homepage, readme, keywords and categories, and `rust-version = "1.88"` as

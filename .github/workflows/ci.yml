@@ -1,0 +1,52 @@
+# Formats, lints, tests and release-builds every push and pull request.
+# The daemon is Windows-only, so every job runs on windows-latest. No job
+# runs key-switch-rs.exe: the tests cover pure logic only.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the older run,
+# except on master, where every commit gets a full result.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test, release build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: cargo test
+        run: cargo test --locked
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Keep in sync with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --all-targets --locked
