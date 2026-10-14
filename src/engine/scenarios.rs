@@ -386,6 +386,106 @@ fn tap_and_hold_with_equal_terms_fire_exactly_one() {
         .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
 }
 
+#[test]
+fn hold_released_after_its_term_fires_when_its_late_timer_wakes() {
+    // KS-25: the timer thread wakes late, and the key is released at +250,
+    // after the 200 ms term but before the timer runs. The key was held for
+    // the whole term, so the Hold fires, from its timer and never on the
+    // key-up, exactly once.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
+    )
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms_stalled(250)
+    .expect_nothing_fired()
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(10)
+    .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+    .advance_ms(500)
+    .expect_nothing_fired()
+    .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+}
+
+#[test]
+fn equal_tap_and_hold_terms_with_a_late_timer_fire_exactly_one() {
+    // KS-25 with the README's CapsLock pair and a late hold timer.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+    ] )"#;
+
+    // Released right at the term: the Tap is over, the Hold is due.
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .advance_ms_stalled(200)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+
+    // Released 1 ms before the term: the Tap fires and the late timer
+    // finds its Hold cancelled.
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .advance_ms_stalled(199)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(50)
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn hold_released_before_its_term_with_a_late_timer_is_cancelled() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
+    )
+    .down("CapsLock")
+    .advance_ms_stalled(199)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(50)
+    .expect_nothing_fired()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn hold_left_to_a_late_timer_does_not_block_the_next_press() {
+    // Press 1 is held past the term and released at +250, before its timer
+    // runs. Press 2 starts at +260 and is held. Press 1's late timer fires
+    // press 1's Hold; press 2 arms its own Hold, which fires at +460.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
+    )
+    .down("CapsLock")
+    .advance_ms_stalled(250)
+    .up("CapsLock")
+    .advance_ms_stalled(10)
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(10)
+    .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+    .advance_ms(189)
+    .expect_nothing_fired()
+    .advance_ms(1)
+    .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .expect_total_fired(&[
+        BindAction::PressKey(VK_LSHIFT),
+        BindAction::PressKey(VK_LSHIFT),
+    ]);
+}
+
 // ---- DoubleTap ----
 
 #[test]

@@ -16,7 +16,9 @@
 //! [`FakeEnv`] models the OS key state the way Windows keeps it: a key-down
 //! or key-up changes it only if the engine let the event through, and a
 //! generic modifier code reads as down while either side is. Timers that the
-//! engine requests fire during [`Scenario::advance_ms`], in due order.
+//! engine requests fire during [`Scenario::advance_ms`], in due order;
+//! [`Scenario::advance_ms_stalled`] holds them back to model a timer thread
+//! that wakes late.
 //!
 //! The `expect_*` methods check the most recent step: a key event, or an
 //! `advance_ms` together with the timers that fired during it. A failing
@@ -231,6 +233,20 @@ impl Scenario {
             label,
             suppressed: None,
             fired,
+        });
+        self
+    }
+
+    /// Moves the clock forward by `ms` without firing any timer, as when a
+    /// timer thread wakes late. The next [`advance_ms`](Self::advance_ms)
+    /// fires every timer that fell due in the meantime, at its own clock.
+    pub(crate) fn advance_ms_stalled(mut self, ms: u64) -> Self {
+        self.env.now += Duration::from_millis(ms);
+        let label = format!("advance {ms} ms to {}, timers stalled", self.clock());
+        self.steps.push(Step {
+            label,
+            suppressed: None,
+            fired: Vec::new(),
         });
         self
     }
