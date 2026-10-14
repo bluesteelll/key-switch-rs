@@ -3,18 +3,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows::Win32::{
     Foundation::*,
-    UI::{
-        Accessibility::HWINEVENTHOOK,
-        Input::KeyboardAndMouse::*,
-        WindowsAndMessaging::*,
-    },
+    UI::{Accessibility::HWINEVENTHOOK, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
 use crate::core::constants;
 use crate::data::binding::BindingKind;
 use crate::data::condition::ForegroundContext;
 use crate::data::trigger::Trigger;
-use crate::hook::chord_state::{mark_completed_keys_blocked, ChordOutcome};
+use crate::hook::chord_state::{ChordOutcome, mark_completed_keys_blocked};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::sequence_state::SequenceOutcome;
 
@@ -36,10 +32,17 @@ pub fn get_hook() -> &'static KeyboardHook {
 /// higher-integrity window (Task Manager / UAC / lock screen) that swallowed
 /// the corresponding key-up event.
 const MODIFIERS: &[VIRTUAL_KEY] = &[
-    VK_SHIFT,    VK_LSHIFT,   VK_RSHIFT,
-    VK_CONTROL,  VK_LCONTROL, VK_RCONTROL,
-    VK_MENU,     VK_LMENU,    VK_RMENU,
-    VK_LWIN,     VK_RWIN,
+    VK_SHIFT,
+    VK_LSHIFT,
+    VK_RSHIFT,
+    VK_CONTROL,
+    VK_LCONTROL,
+    VK_RCONTROL,
+    VK_MENU,
+    VK_LMENU,
+    VK_RMENU,
+    VK_LWIN,
+    VK_RWIN,
 ];
 
 /// Bounded buffer of normalized active keys, used per-keystroke to evaluate
@@ -236,24 +239,35 @@ fn handle_key_down(hook: &KeyboardHook, vk_code: VIRTUAL_KEY) -> bool {
                         }
                     }
                     Trigger::Tap(term_ms) => {
-                        if was_repeat { continue; }
-                        hook.tap_state.arm_tap(vk_code, binding.action.clone(), term_ms);
+                        if was_repeat {
+                            continue;
+                        }
+                        hook.tap_state
+                            .arm_tap(vk_code, binding.action.clone(), term_ms);
                         suppress = true;
                     }
                     Trigger::Hold(term_ms) => {
-                        if was_repeat { continue; }
-                        hook.tap_state.arm_hold(vk_code, binding.action.clone(), term_ms);
+                        if was_repeat {
+                            continue;
+                        }
+                        hook.tap_state
+                            .arm_hold(vk_code, binding.action.clone(), term_ms);
                         suppress = true;
                     }
                     Trigger::DoubleTap(term_ms) => {
-                        if was_repeat { continue; }
-                        hook.tap_state.handle_double_tap(vk_code, binding.action.clone(), term_ms);
+                        if was_repeat {
+                            continue;
+                        }
+                        hook.tap_state
+                            .handle_double_tap(vk_code, binding.action.clone(), term_ms);
                         suppress = true;
                     }
                 }
             }
             BindingKind::Sequence { steps, max_gap } => {
-                if was_repeat { continue; }
+                if was_repeat {
+                    continue;
+                }
                 match hook.sequence_state.handle_keydown(
                     active_keys.as_slice(),
                     &binding.action,
@@ -271,18 +285,22 @@ fn handle_key_down(hook: &KeyboardHook, vk_code: VIRTUAL_KEY) -> bool {
                 }
             }
             BindingKind::Chord { keys, window } => {
-                if was_repeat { continue; }
-                match hook.chord_state.handle_keydown(
-                    vk_code,
-                    &binding.action,
-                    keys,
-                    *window,
-                ) {
+                if was_repeat {
+                    continue;
+                }
+                match hook
+                    .chord_state
+                    .handle_keydown(vk_code, &binding.action, keys, *window)
+                {
                     ChordOutcome::NotInChord => {}
-                    ChordOutcome::Suppress { completed_keys: None } => {
+                    ChordOutcome::Suppress {
+                        completed_keys: None,
+                    } => {
                         suppress = true;
                     }
-                    ChordOutcome::Suppress { completed_keys: Some(fired) } => {
+                    ChordOutcome::Suppress {
+                        completed_keys: Some(fired),
+                    } => {
                         suppress = true;
                         mark_completed_keys_blocked(&hook.blocked_keys, &fired);
                     }
@@ -376,9 +394,9 @@ mod tests {
             AtomicU64::new(0),
             AtomicU64::new(0),
         ];
-        mark_blocked(&blocked, 20);   // VK_CAPITAL, slot 0
-        mark_blocked(&blocked, 16);   // VK_SHIFT,  slot 0
-        mark_blocked(&blocked, 200);  // slot 3
+        mark_blocked(&blocked, 20); // VK_CAPITAL, slot 0
+        mark_blocked(&blocked, 16); // VK_SHIFT,  slot 0
+        mark_blocked(&blocked, 200); // slot 3
 
         // Releasing VK_CAPITAL must not touch VK_SHIFT or 200.
         assert!(take_blocked(&blocked, 20));

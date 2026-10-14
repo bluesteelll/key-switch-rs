@@ -1,11 +1,6 @@
-
-
 use windows::{
+    Win32::{System::Registry::*, UI::Input::KeyboardAndMouse::*},
     core::*,
-    Win32::{
-        System::Registry::*,
-        UI::Input::KeyboardAndMouse::*,
-    },
 };
 
 use crate::data::key_combination::KeyCombination;
@@ -29,23 +24,19 @@ fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
             })
         }
 
-        SystemFunction::LockWorkstation => {
-            Some(RegistryLocation {
-                hkey: HKEY_CURRENT_USER,
-                subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-                value_names: &["LockWorkstationHotkey"],
-                parser: parse_win_key_combo,
-            })
-        }
+        SystemFunction::LockWorkstation => Some(RegistryLocation {
+            hkey: HKEY_CURRENT_USER,
+            subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+            value_names: &["LockWorkstationHotkey"],
+            parser: parse_win_key_combo,
+        }),
 
-        SystemFunction::ShowDesktop => {
-            Some(RegistryLocation {
-                hkey: HKEY_CURRENT_USER,
-                subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-                value_names: &["ShowDesktopHotkey"],
-                parser: parse_win_key_combo,
-            })
-        }
+        SystemFunction::ShowDesktop => Some(RegistryLocation {
+            hkey: HKEY_CURRENT_USER,
+            subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+            value_names: &["ShowDesktopHotkey"],
+            parser: parse_win_key_combo,
+        }),
 
         // Ctrl+Shift+Esc is handled directly by Winlogon and has no
         // user-configurable registry value. The `TaskManagerHotkey` name under
@@ -61,7 +52,10 @@ pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
     if let Some(location) = get_registry_location(function)
         && let Some(combo) = read_from_registry(&location)
     {
-        println!("[INFO] {:?}: registry combination {:?}", function, combo.keys);
+        println!(
+            "[INFO] {:?}: registry combination {:?}",
+            function, combo.keys
+        );
         return Some(combo);
     }
 
@@ -77,15 +71,11 @@ fn get_default_combination(function: SystemFunction) -> Option<KeyCombination> {
         SystemFunction::SwitchLanguage | SystemFunction::SwitchLanguageBackward => {
             Some(KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]))
         }
-        SystemFunction::LockWorkstation => {
-            Some(KeyCombination::from_keys(vec![VK_LWIN, VK_L]))
-        }
-        SystemFunction::ShowDesktop => {
-            Some(KeyCombination::from_keys(vec![VK_LWIN, VK_D]))
-        }
-        SystemFunction::TaskManager => {
-            Some(KeyCombination::from_keys(vec![VK_CONTROL, VK_SHIFT, VK_ESCAPE]))
-        }
+        SystemFunction::LockWorkstation => Some(KeyCombination::from_keys(vec![VK_LWIN, VK_L])),
+        SystemFunction::ShowDesktop => Some(KeyCombination::from_keys(vec![VK_LWIN, VK_D])),
+        SystemFunction::TaskManager => Some(KeyCombination::from_keys(vec![
+            VK_CONTROL, VK_SHIFT, VK_ESCAPE,
+        ])),
         SystemFunction::ToggleCapsLock => None,
     }
 }
@@ -105,7 +95,8 @@ impl Drop for HKeyGuard {
 }
 
 fn read_from_registry(location: &RegistryLocation) -> Option<KeyCombination> {
-    let subkey_wide: Vec<u16> = location.subkey
+    let subkey_wide: Vec<u16> = location
+        .subkey
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();

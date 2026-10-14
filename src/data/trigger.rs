@@ -41,9 +41,9 @@ impl Trigger {
 impl std::fmt::Display for Trigger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Trigger::Immediate    => write!(f, "Immediate"),
-            Trigger::Tap(ms)      => write!(f, "Tap({}ms)", ms),
-            Trigger::Hold(ms)     => write!(f, "Hold({}ms)", ms),
+            Trigger::Immediate => write!(f, "Immediate"),
+            Trigger::Tap(ms) => write!(f, "Tap({}ms)", ms),
+            Trigger::Hold(ms) => write!(f, "Hold({}ms)", ms),
             Trigger::DoubleTap(ms) => write!(f, "DoubleTap({}ms)", ms),
         }
     }

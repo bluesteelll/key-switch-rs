@@ -16,14 +16,11 @@ use std::time::Duration;
 
 use windows::Win32::{
     Foundation::*,
-    UI::{
-        Input::KeyboardAndMouse::*,
-        WindowsAndMessaging::*,
-    },
+    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
 use crate::core::constants::injected_sentinel;
-use crate::core::windows_actions::{launch_process, shell_open, MediaKey};
+use crate::core::windows_actions::{MediaKey, launch_process, shell_open};
 use crate::data::vk_name::vk_name;
 
 #[derive(Debug, Clone)]
@@ -256,10 +253,17 @@ fn vk_input(vk: VIRTUAL_KEY, extra_flags: KEYBD_EVENT_FLAGS) -> INPUT {
 fn is_modifier(vk: VIRTUAL_KEY) -> bool {
     matches!(
         vk,
-        VK_SHIFT    | VK_LSHIFT   | VK_RSHIFT
-        | VK_CONTROL  | VK_LCONTROL | VK_RCONTROL
-        | VK_MENU     | VK_LMENU    | VK_RMENU
-        | VK_LWIN     | VK_RWIN
+        VK_SHIFT
+            | VK_LSHIFT
+            | VK_RSHIFT
+            | VK_CONTROL
+            | VK_LCONTROL
+            | VK_RCONTROL
+            | VK_MENU
+            | VK_LMENU
+            | VK_RMENU
+            | VK_LWIN
+            | VK_RWIN
     )
 }
 
@@ -312,8 +316,16 @@ mod tests {
         let s = SequenceStep::TypeText(long);
         let rendered = format!("{}", s);
         // Format: `text "aaa...aaa"…` — quote first, ellipsis after.
-        assert!(rendered.ends_with("\"…"), "expected ellipsis after quote, got {}", rendered);
-        assert!(rendered.len() < 100, "rendered should be truncated, got {} bytes", rendered.len());
+        assert!(
+            rendered.ends_with("\"…"),
+            "expected ellipsis after quote, got {}",
+            rendered
+        );
+        assert!(
+            rendered.len() < 100,
+            "rendered should be truncated, got {} bytes",
+            rendered.len()
+        );
     }
 
     #[test]

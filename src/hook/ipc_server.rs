@@ -14,14 +14,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use interprocess::local_socket::traits::{ListenerExt, Stream as StreamTrait};
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};
 use windows::Win32::{
     Foundation::{LPARAM, WPARAM},
     UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT},
 };
 
 use crate::hook::keyboard_hook::KeyboardHook;
-use crate::ipc::{self, format_err, format_ok, Command};
+use crate::ipc::{self, Command, format_err, format_ok};
 
 /// Thread ID of the daemon's main loop, set by `App::run` before the IPC
 /// server starts. The `exit` command uses it to post `WM_QUIT` to the
@@ -125,7 +125,11 @@ fn dispatch(cmd: Command, hook: &'static KeyboardHook) -> String {
             Err(e) => format_err(&format!("disable failed: {}", e)),
         },
         Command::Status => {
-            let state = if hook.is_installed() { "running" } else { "disabled" };
+            let state = if hook.is_installed() {
+                "running"
+            } else {
+                "disabled"
+            };
             let count = hook.bindings().len();
             format_ok(&format!("{} ({} bindings live)", state, count))
         }

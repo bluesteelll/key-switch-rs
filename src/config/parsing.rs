@@ -1,9 +1,6 @@
 //! Parses combo strings (`"Ctrl+Shift+Esc"`) and WM_* names.
 
-use windows::Win32::UI::{
-    Input::KeyboardAndMouse::VIRTUAL_KEY,
-    WindowsAndMessaging::*,
-};
+use windows::Win32::UI::{Input::KeyboardAndMouse::VIRTUAL_KEY, WindowsAndMessaging::*};
 
 use crate::data::key_combination::KeyCombination;
 use crate::data::vk_name::parse_vk;
@@ -25,9 +22,8 @@ pub(crate) fn parse_combo(s: &str) -> Result<KeyCombination, String> {
         if segment.is_empty() {
             return Err(format!("empty segment in combo {:?} (stray '+'?)", s));
         }
-        let vk = parse_vk(segment).ok_or_else(|| {
-            format!("unknown key {:?} in combo {:?}", segment, s)
-        })?;
+        let vk = parse_vk(segment)
+            .ok_or_else(|| format!("unknown key {:?} in combo {:?}", segment, s))?;
         keys.push(vk);
     }
 
@@ -45,17 +41,17 @@ pub(crate) fn parse_wm_name(name: &str) -> Option<u32> {
         .collect();
 
     match normalized.as_str() {
-        "WM_CLOSE"                  => Some(WM_CLOSE),
-        "WM_QUIT"                   => Some(WM_QUIT),
-        "WM_DESTROY"                => Some(WM_DESTROY),
-        "WM_COMMAND"                => Some(WM_COMMAND),
-        "WM_SYSCOMMAND"             => Some(WM_SYSCOMMAND),
+        "WM_CLOSE" => Some(WM_CLOSE),
+        "WM_QUIT" => Some(WM_QUIT),
+        "WM_DESTROY" => Some(WM_DESTROY),
+        "WM_COMMAND" => Some(WM_COMMAND),
+        "WM_SYSCOMMAND" => Some(WM_SYSCOMMAND),
         "WM_INPUTLANGCHANGEREQUEST" => Some(WM_INPUTLANGCHANGEREQUEST),
-        "WM_KEYDOWN"                => Some(WM_KEYDOWN),
-        "WM_KEYUP"                  => Some(WM_KEYUP),
-        "WM_SYSKEYDOWN"             => Some(WM_SYSKEYDOWN),
-        "WM_SYSKEYUP"               => Some(WM_SYSKEYUP),
-        "WM_HOTKEY"                 => Some(WM_HOTKEY),
+        "WM_KEYDOWN" => Some(WM_KEYDOWN),
+        "WM_KEYUP" => Some(WM_KEYUP),
+        "WM_SYSKEYDOWN" => Some(WM_SYSKEYDOWN),
+        "WM_SYSKEYUP" => Some(WM_SYSKEYUP),
+        "WM_HOTKEY" => Some(WM_HOTKEY),
         _ => None,
     }
 }
@@ -115,14 +111,21 @@ mod tests {
     #[test]
     fn parse_combo_rejects_unknown() {
         let err = parse_combo("Ctrl+Foo").unwrap_err();
-        assert!(err.contains("Foo"), "error should mention failing segment: {}", err);
+        assert!(
+            err.contains("Foo"),
+            "error should mention failing segment: {}",
+            err
+        );
     }
 
     #[test]
     fn parse_wm_known() {
         assert_eq!(parse_wm_name("WM_CLOSE"), Some(WM_CLOSE));
         assert_eq!(parse_wm_name("wm_close"), Some(WM_CLOSE));
-        assert_eq!(parse_wm_name("WM_INPUTLANGCHANGEREQUEST"), Some(WM_INPUTLANGCHANGEREQUEST));
+        assert_eq!(
+            parse_wm_name("WM_INPUTLANGCHANGEREQUEST"),
+            Some(WM_INPUTLANGCHANGEREQUEST)
+        );
     }
 
     #[test]

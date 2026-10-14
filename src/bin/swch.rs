@@ -19,9 +19,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use interprocess::local_socket::traits::Stream as StreamTrait;
-use interprocess::local_socket::{prelude::*, GenericNamespaced, Stream};
+use interprocess::local_socket::{GenericNamespaced, Stream, prelude::*};
 
-use key_switch_rs::ipc::{parse_response, Command, PIPE_NAME};
+use key_switch_rs::ipc::{Command, PIPE_NAME, parse_response};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -78,15 +78,12 @@ fn cmd_open() -> Result<(), String> {
     }
 
     // Daemon lives next to us in the install directory.
-    let mut exe_path = std::env::current_exe()
-        .map_err(|e| format!("could not locate current_exe: {}", e))?;
+    let mut exe_path =
+        std::env::current_exe().map_err(|e| format!("could not locate current_exe: {}", e))?;
     exe_path.pop();
     exe_path.push("key-switch-rs.exe");
     if !exe_path.exists() {
-        return Err(format!(
-            "daemon binary not found at {}",
-            exe_path.display()
-        ));
+        return Err(format!("daemon binary not found at {}", exe_path.display()));
     }
 
     // Use ShellExecuteW with the "runas" verb to trigger UAC. The daemon's
@@ -94,11 +91,15 @@ fn cmd_open() -> Result<(), String> {
     // would just fail with "operation requires elevation" (os error 740)
     // when launched from a medium-integrity console.
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::PCWSTR;
 
-    let file_wide: Vec<u16> = exe_path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let file_wide: Vec<u16> = exe_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let verb_wide: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
 
     // SAFETY: both wide buffers are null-terminated and live for the call.

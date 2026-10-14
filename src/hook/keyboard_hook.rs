@@ -3,11 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use arc_swap::{ArcSwap, Guard};
 use windows::{
+    Win32::UI::{Accessibility::SetWinEventHook, WindowsAndMessaging::*},
     core::*,
-    Win32::UI::{
-        Accessibility::SetWinEventHook,
-        WindowsAndMessaging::*,
-    },
 };
 
 use crate::data::binding::Binding;
@@ -157,7 +154,9 @@ impl KeyboardHook {
     }
 
     pub fn uninstall(&self) -> Result<()> {
-        let we_handle = self.foreground_hook.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let we_handle = self
+            .foreground_hook
+            .swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !we_handle.is_null() {
             // SAFETY: handle was obtained from SetWinEventHook above.
             unsafe {
@@ -167,7 +166,9 @@ impl KeyboardHook {
             }
         }
 
-        let handle = self.hook_handle.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let handle = self
+            .hook_handle
+            .swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !handle.is_null() {
             // SAFETY: handle was obtained from SetWindowsHookExW above.
             unsafe {
@@ -200,10 +201,7 @@ mod tests {
 
     fn three_bindings() -> Vec<Binding> {
         vec![
-            Binding::new(
-                KeyCombination::new(VK_CAPITAL),
-                BindAction::SwitchLanguage,
-            ),
+            Binding::new(KeyCombination::new(VK_CAPITAL), BindAction::SwitchLanguage),
             Binding::new(
                 KeyCombination::new(VK_CAPITAL).with(VK_SHIFT),
                 BindAction::ToggleCapsLock,

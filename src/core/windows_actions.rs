@@ -1,20 +1,16 @@
 use std::sync::Arc;
 
 use windows::{
-    core::*,
     Win32::{
         Foundation::*,
-        UI::{
-            Input::KeyboardAndMouse::*,
-            Shell::ShellExecuteW,
-            WindowsAndMessaging::*,
-        },
+        UI::{Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
     },
+    core::*,
 };
 
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
-use crate::data::sequence::{spawn_sequence, SequenceStep};
+use crate::data::sequence::{SequenceStep, spawn_sequence};
 use crate::system::system_function::SystemFunction;
 
 #[allow(dead_code)] // Variants are part of the public surface; not every binary uses them all.
@@ -24,7 +20,11 @@ pub enum BindAction {
     SwitchLanguageBackward,
     ToggleCapsLock,
     PressKey(VIRTUAL_KEY),
-    PostMessage { msg: u32, wparam: usize, lparam: isize },
+    PostMessage {
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    },
     /// Macro-like body: list of steps executed in a spawned worker thread.
     /// The hook callback must return fast, so it only kicks off the thread —
     /// it never blocks waiting for delays or `SendInput` to drain.
@@ -34,7 +34,10 @@ pub enum BindAction {
     Sequence(Arc<Vec<SequenceStep>>),
     /// Spawn a new process. Detached: child outlives the daemon, no console
     /// window is attached to ours. Use absolute path or rely on PATH lookup.
-    Launch { exe: String, args: Vec<String> },
+    Launch {
+        exe: String,
+        args: Vec<String>,
+    },
     /// Hand a URL / mailto: / file path to the OS default handler via
     /// `ShellExecuteW`. Works for `https://...`, `mailto:...`, document files,
     /// even plain executables (equivalent to "open" verb).
@@ -62,11 +65,11 @@ pub enum MediaKey {
 impl MediaKey {
     pub fn as_vk(self) -> VIRTUAL_KEY {
         match self {
-            MediaKey::PlayPause  => VK_MEDIA_PLAY_PAUSE,
-            MediaKey::Stop       => VK_MEDIA_STOP,
-            MediaKey::Next       => VK_MEDIA_NEXT_TRACK,
-            MediaKey::Previous   => VK_MEDIA_PREV_TRACK,
-            MediaKey::VolumeUp   => VK_VOLUME_UP,
+            MediaKey::PlayPause => VK_MEDIA_PLAY_PAUSE,
+            MediaKey::Stop => VK_MEDIA_STOP,
+            MediaKey::Next => VK_MEDIA_NEXT_TRACK,
+            MediaKey::Previous => VK_MEDIA_PREV_TRACK,
+            MediaKey::VolumeUp => VK_VOLUME_UP,
             MediaKey::VolumeDown => VK_VOLUME_DOWN,
             MediaKey::VolumeMute => VK_VOLUME_MUTE,
         }
@@ -88,8 +91,16 @@ impl PartialEq for BindAction {
             | (DoNothing, DoNothing) => true,
             (PressKey(a), PressKey(b)) => a == b,
             (
-                PostMessage { msg: m1, wparam: w1, lparam: l1 },
-                PostMessage { msg: m2, wparam: w2, lparam: l2 },
+                PostMessage {
+                    msg: m1,
+                    wparam: w1,
+                    lparam: l1,
+                },
+                PostMessage {
+                    msg: m2,
+                    wparam: w2,
+                    lparam: l2,
+                },
             ) => m1 == m2 && w1 == w2 && l1 == l2,
             (Sequence(a), Sequence(b)) => Arc::ptr_eq(a, b),
             (Launch { exe: e1, args: a1 }, Launch { exe: e2, args: a2 }) => e1 == e2 && a1 == a2,
@@ -113,9 +124,11 @@ impl BindAction {
                 }
             }
             BindAction::PressKey(vk) => press_vk(*vk),
-            BindAction::PostMessage { msg, wparam, lparam } => {
-                post_message_to_foreground(*msg, *wparam, *lparam)
-            }
+            BindAction::PostMessage {
+                msg,
+                wparam,
+                lparam,
+            } => post_message_to_foreground(*msg, *wparam, *lparam),
             BindAction::Sequence(steps) => {
                 // Cheap Arc clone — the worker thread holds its own handle.
                 spawn_sequence(Arc::clone(steps));
@@ -252,7 +265,9 @@ impl std::fmt::Display for BindAction {
             BindAction::SwitchLanguage => write!(f, "switch language"),
             BindAction::SwitchLanguageBackward => write!(f, "switch language backward"),
             BindAction::ToggleCapsLock => write!(f, "toggle CapsLock"),
-            BindAction::PressKey(vk) => write!(f, "press key {}", crate::data::vk_name::vk_name(*vk)),
+            BindAction::PressKey(vk) => {
+                write!(f, "press key {}", crate::data::vk_name::vk_name(*vk))
+            }
             BindAction::PostMessage { msg, .. } => write!(f, "post message {:#X}", msg),
             BindAction::Sequence(steps) => write!(f, "sequence ({} steps)", steps.len()),
             BindAction::Launch { exe, args } => {

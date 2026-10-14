@@ -152,9 +152,17 @@ impl std::fmt::Display for Binding {
         };
 
         if self.is_auto_blocker {
-            write!(f, "[AUTO-BLOCK] {:<24} -> (blocked){}{}", keys_str, cond_suffix, trigger_suffix)
+            write!(
+                f,
+                "[AUTO-BLOCK] {:<24} -> (blocked){}{}",
+                keys_str, cond_suffix, trigger_suffix
+            )
         } else {
-            write!(f, "{:<34} -> {}{}{}", keys_str, self.action, cond_suffix, trigger_suffix)
+            write!(
+                f,
+                "{:<34} -> {}{}{}",
+                keys_str, self.action, cond_suffix, trigger_suffix
+            )
         }
     }
 }

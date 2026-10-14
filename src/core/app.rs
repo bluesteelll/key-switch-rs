@@ -1,10 +1,10 @@
 use windows::{
-    core::*,
     Win32::{
         Foundation::{LPARAM, WPARAM},
         System::{Console::*, Threading::*},
         UI::WindowsAndMessaging::*,
     },
+    core::*,
 };
 
 use std::path::PathBuf;
@@ -145,12 +145,7 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
             let main_thread_id = MAIN_THREAD_ID.load(Ordering::Acquire);
             if main_thread_id != 0 {
                 unsafe {
-                    let _ = PostThreadMessageW(
-                        main_thread_id,
-                        WM_QUIT,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
+                    let _ = PostThreadMessageW(main_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
                 }
             }
 
