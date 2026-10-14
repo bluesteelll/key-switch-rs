@@ -71,12 +71,20 @@
 //! ## Threads and locking
 //!
 //! The engine is single-threaded data and does not lock. For now the hook
-//! adapter keeps it behind a lock in `KeyboardHook`, because `Hold` timers
-//! still run on their own short-lived threads and call [`Engine::on_timer`]
-//! there; the Hold action then runs on that timer thread, as before. The
-//! adapter holds the lock only while the engine decides and runs every
-//! action after releasing it, so an action that re-enters the hook cannot
-//! deadlock. Moving the timers onto the hook thread is roadmap item 2.2.
+//! adapter keeps it behind a `Mutex` in `KeyboardHook`, reached only through
+//! `KeyboardHook::with_engine`, because `Hold` timers still run on their own
+//! short-lived `hold-timer` threads and call [`Engine::on_timer`] there; the
+//! Hold action then runs on that timer thread, as before. The adapter holds
+//! the lock only while the engine decides and runs every action after
+//! releasing it. `with_engine` refuses a nested call on the same thread
+//! (the event then passes) instead of deadlocking on the lock.
+//!
+//! The adapter's [`Env::now`] reads the clock inside the lock, and a timer
+//! thread waits until `Instant::now()` has reached its [`TimerRequest::due`]
+//! before it locks. A key-up and the Hold timer of the same press are
+//! therefore decided in clock order, which is what makes Tap and Hold with
+//! equal terms exclusive. Moving the timers onto the hook thread is roadmap
+//! item 2.2.
 //!
 //! ## Decision rules
 //!

@@ -22,6 +22,11 @@ use crate::data::condition::ForegroundInfo;
 pub trait Env {
     /// Monotonic time of the event being decided. The engine calls it once
     /// per event; every deadline it stores is derived from it.
+    ///
+    /// The hook adapter answers with `Instant::now()`, read while it holds
+    /// the engine lock, and its timer threads lock only once
+    /// `Instant::now()` has reached their due time. Events and timers are
+    /// thus decided in the order of this one clock.
     fn now(&self) -> Instant;
 
     /// Whether the operating system currently reports `vk` as held (its

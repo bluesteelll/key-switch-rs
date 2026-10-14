@@ -41,8 +41,30 @@ minor version; such entries sit under **Changed** and start with
 ### Changed
 
 - The source is formatted with `cargo fmt`.
+- The keyboard decisions moved into a pure decision core, `src/engine`
+  (roadmap Workstream A, scope additions). The hook callback translates each
+  event, asks `Engine::on_key` for a `Decision` and carries it out on the
+  same thread as before; Hold actions still run on their own `hold-timer`
+  thread. Tap and DoubleTap expire by deadline instead of a cleanup thread
+  per press, so only Hold still starts a timer thread. Scenario tests
+  (`engine::testing::Scenario`: a RON config, a script of key events and a
+  fake clock) cover every binding kind and trigger.
 
 ### Fixed
+
+- KS-11: a timer left over from an earlier press no longer acts on a newer
+  press of the same key. Two quick taps fire twice, a Hold no longer fires
+  early on the next press, and a quick series of DoubleTaps no longer loses
+  fires.
+- KS-25 (equal terms): with `Tap(n)` and `Hold(n)` on one key, exactly one
+  fires: `Tap` when the key is released before `n` ms, `Hold` when it is
+  held for `n` ms or more. A Hold whose key is released after its term but
+  before its timer thread wakes now fires when the timer wakes, still on
+  that thread, instead of being cancelled. Different terms behave as before
+  until roadmap item 2.2.
+- KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
+  thread per press, and a Hold timer thread that cannot be started is
+  logged instead of aborting the daemon; that Hold then does not fire.
 
 - KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
   harness from `src/main.rs` (`test = false` and `bench = false` on the
