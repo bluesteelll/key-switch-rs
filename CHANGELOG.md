@@ -19,6 +19,13 @@ minor version; such entries sit under **Changed** and start with
 
 - The source is formatted with `cargo fmt`.
 
+### Fixed
+
+- KS-42: `build.rs` passes the MSVC linker switches `/MANIFEST:EMBED` and
+  `/MANIFESTUAC` only when the target environment is `msvc`. A release build
+  for `x86_64-pc-windows-gnu` now links, and warns that no UAC manifest is
+  embedded.
+
 ## [0.1.0] - 2026-05-20
 
 Baseline: the code at commit

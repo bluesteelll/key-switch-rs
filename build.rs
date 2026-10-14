@@ -8,21 +8,107 @@
 // manifest stays in place for everything else (compatibility shims,
 // dpiAware, etc. — defaults are sane). Scoping is per-binary via
 // `cargo:rustc-link-arg-bin=<name>=<arg>`.
+//
+// The decision logic is a pure function so it can be unit-tested: cargo never
+// runs tests inside a build script, so src/lib.rs includes this file as a
+// `#[cfg(test)]` module and the tests below run with the library tests.
 
-fn main() {
-    let is_windows = std::env::var_os("CARGO_CFG_WINDOWS").is_some();
-    let is_release = std::env::var("PROFILE").as_deref() == Ok("release");
+/// The `cargo:` directives for one build of this package.
+///
+/// `is_windows`, `target_env` and `profile` are the values of
+/// `CARGO_CFG_WINDOWS` (set or not), `CARGO_CFG_TARGET_ENV` and `PROFILE`.
+fn directives(is_windows: bool, target_env: &str, profile: &str) -> Vec<String> {
+    let mut out = Vec::new();
 
-    if is_windows && is_release {
+    // `/MANIFEST:EMBED` and `/MANIFESTUAC` are MSVC linker switches. GNU ld
+    // takes them for input file names and the link fails (KS-42), so other
+    // Windows toolchains get a warning instead of the manifest.
+    if is_windows && profile == "release" && target_env == "msvc" {
         // Explicitly request manifest embedding for the daemon binary, then
         // override the UAC fragment to `requireAdministrator`. rustc's
         // default link line doesn't always enable `/MANIFEST:EMBED`, so
         // /MANIFESTUAC alone would no-op without this companion flag.
-        println!("cargo:rustc-link-arg-bin=key-switch-rs=/MANIFEST:EMBED");
-        println!(
+        out.push("cargo:rustc-link-arg-bin=key-switch-rs=/MANIFEST:EMBED".to_owned());
+        out.push(
             "cargo:rustc-link-arg-bin=key-switch-rs=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
+                .to_owned(),
         );
+    } else if is_windows && profile == "release" {
+        out.push(format!(
+            "cargo:warning=no UAC manifest is embedded: /MANIFESTUAC needs the MSVC linker \
+             (target env `{target_env}`), so key-switch-rs.exe will not request \
+             administrator rights; start it elevated yourself"
+        ));
     }
 
-    println!("cargo:rerun-if-changed=build.rs");
+    out.push("cargo:rerun-if-changed=build.rs".to_owned());
+    out
+}
+
+fn main() {
+    let is_windows = std::env::var_os("CARGO_CFG_WINDOWS").is_some();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+
+    for line in directives(is_windows, &target_env, &profile) {
+        println!("{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn link_args(lines: &[String]) -> Vec<&String> {
+        lines
+            .iter()
+            .filter(|l| l.starts_with("cargo:rustc-link-arg"))
+            .collect()
+    }
+
+    fn warnings(lines: &[String]) -> Vec<&String> {
+        lines
+            .iter()
+            .filter(|l| l.starts_with("cargo:warning="))
+            .collect()
+    }
+
+    #[test]
+    fn msvc_release_embeds_uac_manifest_into_daemon_only() {
+        let lines = directives(true, "msvc", "release");
+        assert_eq!(
+            link_args(&lines),
+            [
+                "cargo:rustc-link-arg-bin=key-switch-rs=/MANIFEST:EMBED",
+                "cargo:rustc-link-arg-bin=key-switch-rs=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'",
+            ]
+        );
+        assert!(warnings(&lines).is_empty());
+    }
+
+    #[test]
+    fn gnu_release_gets_no_msvc_linker_flags_but_a_warning() {
+        // KS-42: GNU ld treats /MANIFEST:EMBED and /MANIFESTUAC:... as input
+        // files, so a windows-gnu release build failed at link time.
+        let lines = directives(true, "gnu", "release");
+        assert!(link_args(&lines).is_empty(), "{lines:?}");
+        let warns = warnings(&lines);
+        assert_eq!(warns.len(), 1, "{lines:?}");
+        assert!(warns[0].contains("no UAC manifest"), "{}", warns[0]);
+    }
+
+    #[test]
+    fn debug_builds_embed_nothing_and_do_not_warn() {
+        for env in ["msvc", "gnu"] {
+            let lines = directives(true, env, "debug");
+            assert!(link_args(&lines).is_empty(), "{env}: {lines:?}");
+            assert!(warnings(&lines).is_empty(), "{env}: {lines:?}");
+        }
+    }
+
+    #[test]
+    fn non_windows_targets_embed_nothing_and_do_not_warn() {
+        let lines = directives(false, "gnu", "release");
+        assert_eq!(lines, ["cargo:rerun-if-changed=build.rs"]);
+    }
 }

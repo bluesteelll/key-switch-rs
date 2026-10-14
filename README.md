@@ -409,6 +409,11 @@ cargo build --release
 
 Executable: `target/release/key-switch-rs.exe`
 
+The `requireAdministrator` manifest is embedded only by the MSVC linker
+(`x86_64-pc-windows-msvc`, the default Windows toolchain). A release build for
+a `*-windows-gnu` target links without it and prints a cargo warning; start
+that daemon elevated yourself.
+
 ## Run
 
 Release builds ship two binaries:
