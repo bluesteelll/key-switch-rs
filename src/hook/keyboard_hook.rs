@@ -227,28 +227,47 @@ mod tests {
         assert_eq!(bindings[2].kind.key_count(), 1);
     }
 
+    /// 30 distinct single keys, in the order a config would list them.
+    const SINGLE_KEYS: [VIRTUAL_KEY; 30] = [
+        VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
+        VK_F13, VK_F14, VK_F15, VK_F16, VK_F17, VK_F18, VK_F19, VK_F20, VK_F21, VK_F22, VK_F23,
+        VK_F24, VK_0, VK_1, VK_2, VK_3, VK_4, VK_5,
+    ];
+
     #[test]
     fn equal_specificity_keeps_config_order() {
         // The sort must be stable: among bindings with the same key count,
-        // the one listed first in the config is checked first.
-        let hook = KeyboardHook::new();
-        hook.update_bindings(vec![
-            Binding::new(KeyCombination::new(VK_F13), BindAction::SwitchLanguage),
+        // the one listed first in the config is checked first (two bindings
+        // on one key with different `when` conditions rely on this).
+        //
+        // The list must be longer than 20 and not already sorted: for 20 or
+        // fewer elements `sort_unstable*` falls back to insertion sort, which
+        // happens to be stable, so a short list cannot tell the two apart.
+        // A 2-key binding in the middle forces the sort to move elements.
+        // With `sort_unstable_by_key` in `update_bindings` this test fails.
+        let mut config: Vec<Binding> = SINGLE_KEYS
+            .iter()
+            .map(|&vk| Binding::new(KeyCombination::new(vk), BindAction::DoNothing))
+            .collect();
+        config.insert(
+            15,
             Binding::new(
                 KeyCombination::new(VK_A).with(VK_CONTROL),
-                BindAction::DoNothing,
+                BindAction::SwitchLanguage,
             ),
-            Binding::new(KeyCombination::new(VK_F14), BindAction::ToggleCapsLock),
-            Binding::new(KeyCombination::new(VK_F15), BindAction::DoNothing),
-        ]);
+        );
+        assert!(config.len() > 20);
+
+        let hook = KeyboardHook::new();
+        hook.update_bindings(config);
 
         let bindings = hook.bindings();
-        let first_keys: Vec<_> = bindings
+        assert_eq!(bindings[0].kind.key_count(), 2);
+        let single_keys: Vec<_> = bindings[1..]
             .iter()
             .map(|b| b.combination().unwrap().keys[0])
             .collect();
-        assert_eq!(bindings[0].kind.key_count(), 2);
-        assert_eq!(&first_keys[1..], &[VK_F13, VK_F14, VK_F15]);
+        assert_eq!(single_keys, SINGLE_KEYS);
     }
 
     #[test]
