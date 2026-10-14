@@ -60,9 +60,10 @@ pub struct Binding {
     pub condition: Condition,
     /// Resolution mode — when the action fires given a matching trigger.
     /// `Immediate` (default) means "fire on the triggering event"; the
-    /// other variants defer to `tap_state`. Only meaningful for
-    /// `BindingKind::Combo`; the loader rejects deferred triggers paired
-    /// with `Sequence`/`Chord` (which have their own temporal semantics).
+    /// other variants defer to the gestures in `crate::engine`. Only
+    /// meaningful for `BindingKind::Combo`; the loader rejects deferred
+    /// triggers paired with `Sequence`/`Chord` (which have their own
+    /// temporal semantics).
     pub trigger: Trigger,
     pub(crate) is_auto_blocker: bool,
 }

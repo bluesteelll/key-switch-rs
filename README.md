@@ -53,9 +53,6 @@ key-switch-rs/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, engine lock
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
-    │   ├── tap_state.rs        - Tap / Hold / DoubleTap gesture resolver
-    │   ├── chord_state.rs      - simultaneous-chord state machine
-    │   ├── sequence_state.rs   - leader-key sequence state machine
     │   └── ipc_server.rs       - named-pipe listener; on/off/exit/status commands
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
