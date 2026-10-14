@@ -367,6 +367,76 @@ fn collect_active_keys(mask: &[AtomicBool; 256]) -> ActiveKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::constants::injected_sentinel;
+    use crate::core::windows_actions::BindAction;
+    use crate::data::binding::Binding;
+    use crate::data::key_combination::KeyCombination;
+    use crate::data::trigger::Trigger;
+
+    // These tests drive `decide_event` on a local `KeyboardHook`: no hook is
+    // installed, no action runs and no timer starts (`carry_out` is never
+    // called). `HookEnv` only reads `GetAsyncKeyState`, and a single-key
+    // binding on F13 matches whatever modifiers the machine has held.
+
+    fn hook_with(binding: Binding) -> KeyboardHook {
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![binding]);
+        hook
+    }
+
+    fn message(msg: u32) -> WPARAM {
+        WPARAM(msg as usize)
+    }
+
+    #[test]
+    fn physical_key_events_reach_the_engine() {
+        let hook = hook_with(Binding::new(
+            KeyCombination::new(VK_F13),
+            BindAction::DoNothing,
+        ));
+        let f13 = u32::from(VK_F13.0);
+
+        // All four key messages, and each key-up follows a suppressed
+        // key-down, so it must reach the engine to be suppressed too.
+        for (down, up) in [(WM_KEYDOWN, WM_KEYUP), (WM_SYSKEYDOWN, WM_SYSKEYUP)] {
+            let pressed =
+                decide_event(&hook, message(down), f13, 0).expect("a key-down reaches the engine");
+            assert!(pressed.suppress);
+            assert_eq!(pressed.fire, [BindAction::DoNothing]);
+
+            let released =
+                decide_event(&hook, message(up), f13, 0).expect("a key-up reaches the engine");
+            assert!(released.suppress);
+            assert!(released.fire.is_empty());
+        }
+
+        let unbound = decide_event(&hook, message(WM_KEYDOWN), u32::from(VK_A.0), 0)
+            .expect("an unbound key-down reaches the engine");
+        assert!(!unbound.suppress);
+        assert!(unbound.fire.is_empty());
+    }
+
+    #[test]
+    fn injected_and_unknown_events_bypass_the_engine() {
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_trigger(Trigger::Tap(10_000)),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), f13, injected_sentinel()),
+            None
+        );
+        // Had the injected key-down reached the engine, F13 would count as
+        // held and this physical key-down as an auto-repeat, which a Tap
+        // binding skips and passes.
+        let pressed = decide_event(&hook, message(WM_KEYDOWN), f13, 0)
+            .expect("a physical key-down reaches the engine");
+        assert!(pressed.suppress);
+
+        assert_eq!(decide_event(&hook, message(WM_CHAR), f13, 0), None);
+    }
 
     #[test]
     fn active_keys_dedup() {

@@ -301,4 +301,27 @@ mod tests {
         let hook = KeyboardHook::new();
         assert_eq!(hook.bindings().len(), 0);
     }
+
+    #[test]
+    fn with_engine_refuses_reentry_on_the_same_thread() {
+        // On its own thread, so a broken guard fails the test after the
+        // timeout instead of hanging the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let hook = KeyboardHook::new();
+            let nested = hook.with_engine(|_| hook.with_engine(|_| ()));
+            let _ = tx.send(nested);
+        });
+        let nested = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("re-entry deadlocked");
+        assert_eq!(nested, Some(None));
+    }
+
+    #[test]
+    fn with_engine_works_again_after_a_call() {
+        let hook = KeyboardHook::new();
+        assert_eq!(hook.with_engine(|_| 1), Some(1));
+        assert_eq!(hook.with_engine(|_| 2), Some(2));
+    }
 }
