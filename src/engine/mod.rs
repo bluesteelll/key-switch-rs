@@ -28,8 +28,7 @@
 //! It does not rule out safe wrappers that do Win32 work or read the clock,
 //! such as `ForegroundContext::capture`, `BindAction::execute` or
 //! `Instant::now()`. Outside tests the engine calls none of them, and
-//! review keeps it that way. The engine uses
-//! [`BindAction`](crate::core::windows_actions::BindAction) only as data
+//! review keeps it that way. The engine uses [`BindAction`] only as data
 //! (actions to fire, cloned into pending gestures) and never executes one.
 //!
 //! ## State

@@ -1,7 +1,7 @@
 //! The hook adapter: where Win32 keyboard events meet the decision core in
 //! [`crate::engine`]. It translates and carries out; it decides nothing.
 //!
-//! For every `WH_KEYBOARD_LL` event, [`keyboard_hook_callback`]:
+//! For every `WH_KEYBOARD_LL` event, `keyboard_hook_callback`:
 //!
 //! 1. passes `code < 0` on untouched, as the hook contract requires;
 //! 2. passes the daemon's own injected events (the sentinel in
@@ -11,7 +11,7 @@
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
 //! 4. asks [`Engine::on_key`](crate::engine::Engine::on_key) under the
-//!    engine lock, with one snapshot of the binding list and a [`HookEnv`]
+//!    engine lock, with one snapshot of the binding list and a `HookEnv`
 //!    that answers the engine's questions with live Win32 calls;
 //! 5. carries out the [`Decision`] after the lock and the snapshot are
 //!    released: first the timers it asks for, then its actions in order, on
@@ -20,7 +20,7 @@
 //! 6. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
-//! [`foreground_changed`] hands foreground switches to
+//! `foreground_changed` hands foreground switches to
 //! [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed)
 //! the same way.
 //!
@@ -37,7 +37,7 @@
 //! their deadlines. Roadmap item 2.2 moves the Hold timers onto the main
 //! thread and removes the lock.
 //!
-//! The lock ([`KeyboardHook::with_engine`]) is held only while the engine
+//! The lock (`KeyboardHook::with_engine`) is held only while the engine
 //! decides. No action, `SendInput`, thread spawn or binding snapshot is held
 //! across it into the carry-out. The engine reads the clock once per event,
 //! under the lock, and a timer takes the lock only once its due time has
