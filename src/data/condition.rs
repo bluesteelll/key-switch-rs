@@ -1,10 +1,12 @@
 //! Foreground-context predicates used to gate bindings.
 //!
 //! A `Condition` decides whether a binding fires given the currently focused
-//! window's executable name and title. The hook callback collects that
-//! context once per keystroke (only when at least one binding actually has a
-//! non-trivial condition — `Condition::Always` short-circuits) and reuses it
-//! for every binding match in that callback.
+//! window's executable name and title. It reads them through the
+//! [`ForegroundInfo`] trait, so the decision core in `crate::engine` can
+//! evaluate conditions against a fake foreground in tests. The hook adapter
+//! backs the trait with a [`ForegroundContext`] captured at most once per
+//! keystroke, and only when a binding has a condition other than `Always`
+//! (`Condition::Always` never touches the context).
 //!
 //! All string comparisons are case-insensitive. Windows treats exe and path
 //! names case-insensitively, and humans don't reliably remember the casing
@@ -54,7 +56,7 @@ impl Condition {
         matches!(self, Condition::Always)
     }
 
-    pub fn evaluate(&self, ctx: &ForegroundContext) -> bool {
+    pub fn evaluate(&self, ctx: &dyn ForegroundInfo) -> bool {
         match self {
             Condition::Always => true,
             Condition::AppEquals(target) => match ctx.app() {
@@ -74,6 +76,15 @@ impl Condition {
             Condition::Or(parts) => parts.iter().any(|c| c.evaluate(ctx)),
         }
     }
+}
+
+/// What a [`Condition`] can ask about the focused window. Both answers are
+/// `None` when there is no foreground window or it cannot be inspected.
+pub trait ForegroundInfo {
+    /// Base name of the focused window's executable, e.g. `"chrome.exe"`.
+    fn app(&self) -> Option<&str>;
+    /// Title bar text of the focused window.
+    fn title(&self) -> Option<&str>;
 }
 
 /// One-shot snapshot of the focused window's identifying info. Populated
@@ -156,6 +167,16 @@ impl ForegroundContext {
     }
 }
 
+impl ForegroundInfo for ForegroundContext {
+    fn app(&self) -> Option<&str> {
+        ForegroundContext::app(self)
+    }
+
+    fn title(&self) -> Option<&str> {
+        ForegroundContext::title(self)
+    }
+}
+
 /// Closes the process handle when dropped. Local RAII because the Win32
 /// `CloseHandle` requires the raw handle and panics from inside `fetch_app`
 /// would otherwise leak.
@@ -180,6 +201,46 @@ const _: Option<*mut c_void> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A foreground that needs no window: what the engine's tests use.
+    struct FakeForeground {
+        app: Option<&'static str>,
+        title: Option<&'static str>,
+    }
+
+    impl ForegroundInfo for FakeForeground {
+        fn app(&self) -> Option<&str> {
+            self.app
+        }
+
+        fn title(&self) -> Option<&str> {
+            self.title
+        }
+    }
+
+    #[test]
+    fn leaf_conditions_read_the_foreground_info() {
+        let code = FakeForeground {
+            app: Some("Code.exe"),
+            title: Some("main.rs - Visual Studio Code"),
+        };
+        assert!(Condition::AppEquals("code.exe".into()).evaluate(&code));
+        assert!(!Condition::AppEquals("chrome.exe".into()).evaluate(&code));
+        assert!(Condition::TitleContains("visual studio".into()).evaluate(&code));
+        assert!(Condition::TitleEquals("MAIN.RS - visual studio code".into()).evaluate(&code));
+        assert!(!Condition::TitleEquals("main.rs".into()).evaluate(&code));
+
+        // No foreground window: every leaf is false, so `Not` is true.
+        let nothing = FakeForeground {
+            app: None,
+            title: None,
+        };
+        assert!(!Condition::AppEquals("code.exe".into()).evaluate(&nothing));
+        assert!(!Condition::TitleContains("".into()).evaluate(&nothing));
+        assert!(
+            Condition::Not(Box::new(Condition::AppEquals("code.exe".into()))).evaluate(&nothing)
+        );
+    }
 
     /// `Always` short-circuits and never touches the context.
     #[test]
