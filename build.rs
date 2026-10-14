@@ -111,4 +111,27 @@ mod tests {
         let lines = directives(false, "gnu", "release");
         assert_eq!(lines, ["cargo:rerun-if-changed=build.rs"]);
     }
+
+    #[test]
+    fn daemon_bin_builds_no_test_harness() {
+        // KS-38: the daemon's requireAdministrator manifest also lands in a
+        // unit-test harness built from src/main.rs, which then fails with
+        // "requires elevation" (os error 740) in a normal shell. Cargo.toml
+        // must keep `test = false` on the key-switch-rs binary.
+        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let daemon = manifest
+            .split("[[bin]]")
+            .skip(1)
+            .map(|table| table.split("\n[").next().unwrap_or(table))
+            .find(|table| {
+                table
+                    .lines()
+                    .any(|l| l.trim() == r#"name = "key-switch-rs""#)
+            })
+            .expect("Cargo.toml must declare [[bin]] name = \"key-switch-rs\"");
+        assert!(
+            daemon.lines().any(|l| l.trim() == "test = false"),
+            "[[bin]] key-switch-rs must set test = false:\n{daemon}"
+        );
+    }
 }

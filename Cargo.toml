@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
+# The daemon. `test = false` keeps `cargo test` from building a unit-test
+# harness out of src/main.rs: build.rs links the daemon with a
+# `requireAdministrator` manifest, and that harness would inherit it and fail
+# with "requires elevation" (os error 740) in a normal shell (KS-38).
+# `swch` (src/bin/swch.rs) stays auto-discovered.
+[[bin]]
+name = "key-switch-rs"
+path = "src/main.rs"
+test = false
+
 [build-dependencies]
 # (no build-dependencies; manifest embedding is done via raw linker args
 #  in build.rs so we can target a single binary, not all of them.)
