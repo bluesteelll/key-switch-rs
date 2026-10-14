@@ -112,6 +112,70 @@ mod tests {
         assert_eq!(lines, ["cargo:rerun-if-changed=build.rs"]);
     }
 
+    /// Whether the `[[bin]]` table named `bin` in `manifest` sets
+    /// `test = false`; `None` when there is no such table.
+    ///
+    /// Each line is compared without its comment and without whitespace, so
+    /// `test=false`, `test = false` and `test = false # note` all count, and
+    /// any line of the form `[...]` starts a new table, indented or not.
+    /// Only the `[[bin]]` table form is read, not `bin = [{ ... }]`.
+    fn bin_disables_tests(manifest: &str, bin: &str) -> Option<bool> {
+        let mut tables: Vec<Vec<String>> = Vec::new();
+        let mut in_bin = false;
+        for line in manifest.lines() {
+            let line: String = line
+                .split('#')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect();
+            if line.starts_with('[') && line.ends_with(']') {
+                in_bin = line == "[[bin]]";
+                if in_bin {
+                    tables.push(Vec::new());
+                }
+            } else if in_bin && let Some(table) = tables.last_mut() {
+                table.push(line);
+            }
+        }
+        let name = format!(r#"name="{bin}""#);
+        let table = tables.iter().find(|table| table.contains(&name))?;
+        Some(table.iter().any(|l| l == "test=false"))
+    }
+
+    #[test]
+    fn bin_disables_tests_reads_the_named_bin_table() {
+        let both = "[[bin]]\nname = \"swch\"\ntest = false\n\n\
+                    [[bin]]\nname = \"key-switch-rs\"\npath = \"src/main.rs\"\n";
+        assert_eq!(bin_disables_tests(both, "key-switch-rs"), Some(false));
+        assert_eq!(bin_disables_tests(both, "swch"), Some(true));
+        assert_eq!(bin_disables_tests("[lib]\ntest = false\n", "swch"), None);
+        let enabled = "[[bin]]\nname = \"key-switch-rs\"\ntest = true\n";
+        assert_eq!(bin_disables_tests(enabled, "key-switch-rs"), Some(false));
+    }
+
+    #[test]
+    fn bin_disables_tests_ignores_whitespace_and_comments() {
+        for manifest in [
+            "[[bin]]\nname=\"key-switch-rs\"\ntest=false\n",
+            "[[bin]]\nname = \"key-switch-rs\" # daemon\ntest = false # KS-38\n",
+            "[[ bin ]]\n  name  =  \"key-switch-rs\"\n\ttest\t=\tfalse\n",
+        ] {
+            assert_eq!(
+                bin_disables_tests(manifest, "key-switch-rs"),
+                Some(true),
+                "{manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn bin_disables_tests_stops_at_an_indented_table_header() {
+        // `test = false` here belongs to [lib], not to the binary.
+        let manifest = "[[bin]]\nname = \"key-switch-rs\"\n  [lib]\n  test = false\n";
+        assert_eq!(bin_disables_tests(manifest, "key-switch-rs"), Some(false));
+    }
+
     #[test]
     fn daemon_bin_builds_no_test_harness() {
         // KS-38: the daemon's requireAdministrator manifest also lands in a
@@ -119,19 +183,10 @@ mod tests {
         // "requires elevation" (os error 740) in a normal shell. Cargo.toml
         // must keep `test = false` on the key-switch-rs binary.
         let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-        let daemon = manifest
-            .split("[[bin]]")
-            .skip(1)
-            .map(|table| table.split("\n[").next().unwrap_or(table))
-            .find(|table| {
-                table
-                    .lines()
-                    .any(|l| l.trim() == r#"name = "key-switch-rs""#)
-            })
-            .expect("Cargo.toml must declare [[bin]] name = \"key-switch-rs\"");
-        assert!(
-            daemon.lines().any(|l| l.trim() == "test = false"),
-            "[[bin]] key-switch-rs must set test = false:\n{daemon}"
+        assert_eq!(
+            bin_disables_tests(manifest, "key-switch-rs"),
+            Some(true),
+            "Cargo.toml must declare [[bin]] name = \"key-switch-rs\" with test = false"
         );
     }
 }
