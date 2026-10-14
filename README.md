@@ -422,13 +422,14 @@ that daemon elevated yourself.
 cargo test            # or: cargo test --release
 ```
 
-The daemon binary has no unit-test harness (`test = false` in `Cargo.toml`).
-Selecting targets explicitly brings it back: `cargo test --release` with
-`--all-targets`, `--bins` or `--bin key-switch-rs` builds a harness from
-`src/main.rs` that inherits the `requireAdministrator` manifest, and running it
-in a non-elevated shell fails with "The requested operation requires
-elevation" (os error 740). Use plain `cargo test --release`. Debug builds embed
-no manifest, so `cargo test --all-targets` works.
+The daemon binary has no test or bench harness (`test = false` and
+`bench = false` in `Cargo.toml`). Selecting targets explicitly brings it back:
+`cargo test --release` or `cargo bench` with `--all-targets`, `--bins` or
+`--bin key-switch-rs` builds a harness from `src/main.rs` that inherits the
+`requireAdministrator` manifest, and running it in a non-elevated shell fails
+with "The requested operation requires elevation" (os error 740). Use plain
+`cargo test --release` and plain `cargo bench`. Debug builds embed no manifest,
+so `cargo test --all-targets` works.
 
 ## Run
 

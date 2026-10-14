@@ -15,20 +15,23 @@ keywords = ["keyboard", "remap", "hotkey", "windows", "keybinding"]
 categories = ["os::windows-apis", "command-line-utilities", "accessibility"]
 build = "build.rs"
 
-# The daemon. `test = false` keeps `cargo test` from building a unit-test
-# harness out of src/main.rs: build.rs links the daemon with a
-# `requireAdministrator` manifest, and that harness would inherit it and fail
-# with "requires elevation" (os error 740) in a normal shell (KS-38).
-# Limit: an explicit target selection overrides `test = false`. With
-# `--release`, `--all-targets`, `--bins` or `--bin key-switch-rs` still build
-# that elevated harness, and Cargo cannot keep `rustc-link-arg-bin` off a
-# bin's own test target. Run plain `cargo test --release` instead. Debug
+# The daemon. `test = false` and `bench = false` keep `cargo test` and
+# `cargo bench` from building a libtest harness out of src/main.rs: build.rs
+# links the daemon with a `requireAdministrator` manifest, and that harness
+# would inherit it and fail with "requires elevation" (os error 740) in a
+# normal shell (KS-38). `cargo bench` builds with the bench profile, which
+# inherits release, so without `bench = false` every `cargo bench` would fail.
+# Limit: an explicit target selection overrides both flags, and Cargo cannot
+# keep `rustc-link-arg-bin` off a bin's own harness. `cargo test --release`
+# or `cargo bench` with `--all-targets`, `--bins` or `--bin key-switch-rs`
+# still builds that elevated harness; run them without those flags. Debug
 # builds embed no manifest, so `cargo test --all-targets` is fine.
 # `swch` (src/bin/swch.rs) stays auto-discovered.
 [[bin]]
 name = "key-switch-rs"
 path = "src/main.rs"
 test = false
+bench = false
 
 [build-dependencies]
 # (no build-dependencies; manifest embedding is done via raw linker args

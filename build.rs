@@ -112,14 +112,15 @@ mod tests {
         assert_eq!(lines, ["cargo:rerun-if-changed=build.rs"]);
     }
 
-    /// Whether the `[[bin]]` table named `bin` in `manifest` sets
-    /// `test = false`; `None` when there is no such table.
+    /// Whether the `[[bin]]` table named `bin` in `manifest` sets the target
+    /// flag `key`, such as `test` or `bench`, to `false`; `None` when there is
+    /// no such table.
     ///
     /// Each line is compared without its comment and without whitespace, so
     /// `test=false`, `test = false` and `test = false # note` all count, and
     /// any line of the form `[...]` starts a new table, indented or not.
     /// Only the `[[bin]]` table form is read, not `bin = [{ ... }]`.
-    fn bin_disables_tests(manifest: &str, bin: &str) -> Option<bool> {
+    fn bin_sets_false(manifest: &str, bin: &str, key: &str) -> Option<bool> {
         let mut tables: Vec<Vec<String>> = Vec::new();
         let mut in_bin = false;
         for line in manifest.lines() {
@@ -140,29 +141,45 @@ mod tests {
         }
         let name = format!(r#"name="{bin}""#);
         let table = tables.iter().find(|table| table.contains(&name))?;
-        Some(table.iter().any(|l| l == "test=false"))
+        Some(table.contains(&format!("{key}=false")))
     }
 
+    const DAEMON: &str = "key-switch-rs";
+
     #[test]
-    fn bin_disables_tests_reads_the_named_bin_table() {
-        let both = "[[bin]]\nname = \"swch\"\ntest = false\n\n\
+    fn bin_sets_false_reads_the_named_bin_table() {
+        let both = "[[bin]]\nname = \"swch\"\ntest = false\nbench = false\n\n\
                     [[bin]]\nname = \"key-switch-rs\"\npath = \"src/main.rs\"\n";
-        assert_eq!(bin_disables_tests(both, "key-switch-rs"), Some(false));
-        assert_eq!(bin_disables_tests(both, "swch"), Some(true));
-        assert_eq!(bin_disables_tests("[lib]\ntest = false\n", "swch"), None);
-        let enabled = "[[bin]]\nname = \"key-switch-rs\"\ntest = true\n";
-        assert_eq!(bin_disables_tests(enabled, "key-switch-rs"), Some(false));
+        for key in ["test", "bench"] {
+            assert_eq!(bin_sets_false(both, DAEMON, key), Some(false), "{key}");
+            assert_eq!(bin_sets_false(both, "swch", key), Some(true), "{key}");
+        }
+        let lib_only = "[lib]\ntest = false\nbench = false\n";
+        assert_eq!(bin_sets_false(lib_only, "swch", "test"), None);
+        let enabled = "[[bin]]\nname = \"key-switch-rs\"\ntest = true\nbench = true\n";
+        assert_eq!(bin_sets_false(enabled, DAEMON, "test"), Some(false));
+        assert_eq!(bin_sets_false(enabled, DAEMON, "bench"), Some(false));
     }
 
     #[test]
-    fn bin_disables_tests_ignores_whitespace_and_comments() {
+    fn bin_sets_false_matches_the_whole_key() {
+        // `test = false` says nothing about the bench harness, and
+        // `doctest = false` nothing about the unit-test harness.
+        let manifest = "[[bin]]\nname = \"key-switch-rs\"\ntest = false\ndoctest = false\n";
+        assert_eq!(bin_sets_false(manifest, DAEMON, "bench"), Some(false));
+        let manifest = "[[bin]]\nname = \"key-switch-rs\"\ndoctest = false\nbench = false\n";
+        assert_eq!(bin_sets_false(manifest, DAEMON, "test"), Some(false));
+    }
+
+    #[test]
+    fn bin_sets_false_ignores_whitespace_and_comments() {
         for manifest in [
             "[[bin]]\nname=\"key-switch-rs\"\ntest=false\n",
             "[[bin]]\nname = \"key-switch-rs\" # daemon\ntest = false # KS-38\n",
             "[[ bin ]]\n  name  =  \"key-switch-rs\"\n\ttest\t=\tfalse\n",
         ] {
             assert_eq!(
-                bin_disables_tests(manifest, "key-switch-rs"),
+                bin_sets_false(manifest, DAEMON, "test"),
                 Some(true),
                 "{manifest}"
             );
@@ -170,23 +187,27 @@ mod tests {
     }
 
     #[test]
-    fn bin_disables_tests_stops_at_an_indented_table_header() {
+    fn bin_sets_false_stops_at_an_indented_table_header() {
         // `test = false` here belongs to [lib], not to the binary.
         let manifest = "[[bin]]\nname = \"key-switch-rs\"\n  [lib]\n  test = false\n";
-        assert_eq!(bin_disables_tests(manifest, "key-switch-rs"), Some(false));
+        assert_eq!(bin_sets_false(manifest, DAEMON, "test"), Some(false));
     }
 
     #[test]
-    fn daemon_bin_builds_no_test_harness() {
-        // KS-38: the daemon's requireAdministrator manifest also lands in a
-        // unit-test harness built from src/main.rs, which then fails with
-        // "requires elevation" (os error 740) in a normal shell. Cargo.toml
-        // must keep `test = false` on the key-switch-rs binary.
+    fn daemon_bin_builds_no_test_or_bench_harness() {
+        // KS-38: the daemon's requireAdministrator manifest also lands in any
+        // libtest harness cargo builds from src/main.rs, and running that
+        // harness fails with "requires elevation" (os error 740) in a normal
+        // shell. `cargo test --release` builds one unless the binary sets
+        // `test = false`, and `cargo bench` (the bench profile inherits
+        // release) builds and runs one unless it sets `bench = false`.
         let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-        assert_eq!(
-            bin_disables_tests(manifest, "key-switch-rs"),
-            Some(true),
-            "Cargo.toml must declare [[bin]] name = \"key-switch-rs\" with test = false"
-        );
+        for key in ["test", "bench"] {
+            assert_eq!(
+                bin_sets_false(manifest, DAEMON, key),
+                Some(true),
+                "Cargo.toml must declare [[bin]] name = \"key-switch-rs\" with {key} = false"
+            );
+        }
     }
 }

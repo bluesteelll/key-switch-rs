@@ -37,13 +37,15 @@ minor version; such entries sit under **Changed** and start with
 
 ### Fixed
 
-- KS-38: `cargo test --release` no longer builds a unit-test harness from
-  `src/main.rs`. That harness inherited the daemon's `requireAdministrator`
+- KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
+  harness from `src/main.rs` (`test = false` and `bench = false` on the
+  daemon binary). That harness inherited the daemon's `requireAdministrator`
   manifest and failed with "The requested operation requires elevation"
-  (os error 740) in a non-elevated shell. An explicit target selection still
-  builds it: `cargo test --release` together with `--all-targets`, `--bins` or
-  `--bin key-switch-rs` hits the same error, so use plain
-  `cargo test --release`.
+  (os error 740) in a non-elevated shell; `cargo bench` uses the bench
+  profile, which inherits release, so it failed on every run. An explicit
+  target selection still builds the harness: `cargo test --release` or
+  `cargo bench` together with `--all-targets`, `--bins` or
+  `--bin key-switch-rs` hits the same error, so run them without those flags.
 - KS-42: `build.rs` passes the MSVC linker switches `/MANIFEST:EMBED` and
   `/MANIFESTUAC` only when the target environment is `msvc`. A release build
   for `x86_64-pc-windows-gnu` now links, and warns that no UAC manifest is
