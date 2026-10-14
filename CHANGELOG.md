@@ -18,6 +18,13 @@ minor version; such entries sit under **Changed** and start with
   and `cargo build --release --locked`, a check that
   `cargo test --release --no-run` builds no test harness for the daemon binary
   (KS-38), plus `cargo check` with Rust 1.88, the minimum supported version.
+- Documentation book (mdBook): overview, architecture, building and running,
+  the `config.ron` reference, the audit (KS-01 to KS-42), gaps and
+  documentation drift, and the roadmap. `.github/workflows/book.yml` publishes
+  it to [GitHub Pages](https://bluesteelll.github.io/key-switch-rs/) with the
+  Node 24 releases of its actions: `actions/checkout@v7`,
+  `actions/configure-pages@v6`, `actions/upload-pages-artifact@v5` and
+  `actions/deploy-pages@v5`.
 - Licence: `MIT OR Apache-2.0`, with `LICENSE-MIT` and `LICENSE-APACHE`.
 - Package metadata in `Cargo.toml`: description, licence, repository,
   homepage, readme, keywords and categories, and `rust-version = "1.88"` as
@@ -27,9 +34,6 @@ minor version; such entries sit under **Changed** and start with
 ### Changed
 
 - The source is formatted with `cargo fmt`.
-- The book's GitHub Pages workflow uses the Node 24 releases of its actions:
-  `actions/checkout@v7`, `actions/configure-pages@v6`,
-  `actions/upload-pages-artifact@v5` and `actions/deploy-pages@v5`.
 
 ### Fixed
 
