@@ -98,6 +98,12 @@ mod gestures;
 mod keys;
 mod sequences;
 
+#[cfg(test)]
+pub(crate) mod testing;
+
+#[cfg(test)]
+mod scenarios;
+
 use std::cmp::Reverse;
 use std::time::{Duration, Instant};
 

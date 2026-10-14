@@ -13,3 +13,8 @@ mod parsing;
 mod schema;
 
 pub use loader::{default_config_path, load};
+
+/// RON text to bindings without touching the disk, for the engine's
+/// scenario tests.
+#[cfg(test)]
+pub(crate) use loader::from_ron_str;
