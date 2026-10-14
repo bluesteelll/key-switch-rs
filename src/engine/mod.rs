@@ -23,6 +23,15 @@
 //! of that, the whole decision path runs under test with a fake `Env`
 //! (`testing::Scenario`), from a RON config and a script of key events.
 //!
+//! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
+//! FFI, because every Win32 call through the `windows` crate is `unsafe`.
+//! It does not rule out safe wrappers that do Win32 work or read the clock,
+//! such as `ForegroundContext::capture`, `BindAction::execute` or
+//! `Instant::now()`. Outside tests the engine calls none of them, and
+//! review keeps it that way. The engine uses
+//! [`BindAction`](crate::core::windows_actions::BindAction) only as data
+//! (actions to fire, cloned into pending gestures) and never executes one.
+//!
 //! ## State
 //!
 //! [`Engine`] owns all mutable state of the keyboard path, as plain data:
@@ -102,6 +111,8 @@
 //! leaking repeats (KS-06), side folding (KS-07), repeat-firing Immediate
 //! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
 //! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
+
+#![forbid(unsafe_code)]
 
 mod chords;
 mod env;
