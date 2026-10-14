@@ -39,6 +39,21 @@ jobs:
         run: cargo test --locked
       - name: cargo build --release
         run: cargo build --release --locked
+      # KS-38: `test = false` on the daemon binary keeps cargo from building
+      # a unit-test harness out of src/main.rs, which would carry the
+      # requireAdministrator manifest. This checks what cargo really builds;
+      # --no-run builds the test executables and runs none of them.
+      - name: "KS-38: no test harness for the daemon binary"
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          out=$(cargo test --release --no-run --locked 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          if grep -E 'unittests src[\\/]main\.rs' <<<"$out"; then
+            echo "::error file=Cargo.toml::cargo test --release built a unit-test harness from src/main.rs; the key-switch-rs [[bin]] needs test = false (KS-38)"
+            exit 1
+          fi
 
   msrv:
     name: MSRV (Rust 1.88)
