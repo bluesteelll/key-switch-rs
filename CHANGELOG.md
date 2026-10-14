@@ -26,6 +26,9 @@ minor version; such entries sit under **Changed** and start with
 ### Changed
 
 - The source is formatted with `cargo fmt`.
+- The book's GitHub Pages workflow uses the Node 24 releases of its actions:
+  `actions/checkout@v7`, `actions/configure-pages@v6`,
+  `actions/upload-pages-artifact@v5` and `actions/deploy-pages@v5`.
 
 ### Fixed
 
