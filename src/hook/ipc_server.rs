@@ -283,6 +283,33 @@ mod tests {
     }
 
     #[test]
+    fn pipe_sddl_grants_exactly_system_admins_and_interactive_users_and_labels_medium() {
+        // No test can read the label back from a created pipe (manual check
+        // M2), and `listener_with_the_pipe_security_admits_this_process`
+        // passes with no label at all. This pins the descriptor's shape, so
+        // that dropping the label or widening the DACL turns a test red.
+        let (dacl, sacl) = PIPE_SDDL
+            .split_once("S:")
+            .expect("PIPE_SDDL has a SACL part that carries the mandatory label");
+        assert_eq!(
+            sacl, "(ML;;NWNR;;;ME)",
+            "the only SACL entry is the medium mandatory label (no write up, no read up)"
+        );
+        assert!(
+            dacl.starts_with("D:P"),
+            "the DACL is protected, so nothing is inherited"
+        );
+        for ace in ["(A;;GA;;;SY)", "(A;;GA;;;BA)", "(A;;GRGW;;;IU)"] {
+            assert!(dacl.contains(ace), "the DACL grants {ace}");
+        }
+        assert_eq!(
+            dacl.matches('(').count(),
+            3,
+            "SYSTEM, Administrators and interactive users are the only DACL entries"
+        );
+    }
+
+    #[test]
     fn listener_with_the_pipe_security_admits_this_process() {
         // A pipe of its own, so no daemon on this machine is involved.
         let name = format!("key-switch-rs-unit-{}-sd.sock", std::process::id());
