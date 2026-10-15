@@ -8,6 +8,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::testing::Scenario;
 use crate::core::windows_actions::BindAction;
+use crate::data::binding::Binding;
+use crate::data::key_combination::KeyCombination;
 
 fn launch(exe: &str) -> BindAction {
     BindAction::Launch {
@@ -1068,6 +1070,131 @@ fn deferred_combo_arms_only_on_its_trigger_key() {
     .up("CapsLock")
     .expect_passed()
     .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+// ---- Exact modifiers ----
+
+#[test]
+fn capslock_binding_does_not_fire_while_shift_is_held() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .down("LShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn allow_extra_modifiers_lets_capslock_fire_while_shift_is_held() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn ctrl_j_does_not_fire_on_ctrl_shift_j() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: SwitchLanguage) ] )"#)
+        .down("LCtrl")
+        .down("LShift")
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("J")
+        .expect_passed()
+        .up("LShift")
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn allow_extra_modifiers_lets_ctrl_j_fire_on_ctrl_shift_j() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+J", action: SwitchLanguage, allow_extra_modifiers: true) ] )"#,
+    )
+    .down("LCtrl")
+    .down("LShift")
+    .down("J")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn either_shift_counts_as_the_same_modifier() {
+    // Exactness is per modifier family: the right Shift is not an extra
+    // modifier for "LShift+F13".
+    Scenario::from_ron(r#"( bindings: [ (keys: "LShift+F13", action: SwitchLanguage) ] )"#)
+        .down("LShift")
+        .down("RShift")
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn auto_blocker_matches_its_modifiers_exactly() {
+    // The Alt+Shift blocker that `block_original_combo` adds, built
+    // directly: loading it from RON would read the registry.
+    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
+        vec![VK_MENU, VK_SHIFT],
+    ))])
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .up("LShift")
+    .expect_suppressed()
+    .up("LAlt")
+    .expect_passed()
+    .down("LCtrl")
+    .expect_passed()
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_nothing_fired();
+}
+
+#[test]
+fn shift_capslock_fires_toggle_capslock_with_either_shift() {
+    // The default config's pair, without `block_original_combo`.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage),
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("LShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed()
+        .down("RShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .expect_suppressed()
+        .up("RShift")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::ToggleCapsLock]);
 }
 
 // ---- The harness itself ----

@@ -1274,6 +1274,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn allow_extra_modifiers_is_only_for_keys_bindings() {
+        for kind in [
+            r#"sequence: (steps: ["F13", "F14"])"#,
+            r#"chord: (keys: ["F13", "F14"])"#,
+        ] {
+            let ron = format!(
+                r#"( bindings: [ ( {kind}, action: DoNothing, allow_extra_modifiers: true ) ] )"#
+            );
+            let err = from_ron_str(&ron)
+                .expect_err("allow_extra_modifiers on a sequence/chord must be rejected");
+            match err {
+                ConfigError::Bindings(errs) => assert!(
+                    errs[0].contains("allow_extra_modifiers"),
+                    "error for {kind} should name the field: {errs:?}"
+                ),
+                other => panic!("expected Bindings error for {kind}, got {other:?}"),
+            }
+        }
+    }
+
     // ---- existing test, kept at the bottom ----
 
     #[test]
