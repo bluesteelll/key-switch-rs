@@ -1228,6 +1228,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chord_keys_that_overlap_are_rejected() {
+        // One physical key would count for both chord keys (KS-07).
+        for keys in [
+            r#"["Shift", "LShift"]"#,
+            r#"["Win", "RWin"]"#,
+            r#"["Ctrl", "RCtrl"]"#,
+        ] {
+            let ron = format!(r#"( bindings: [ ( chord: (keys: {keys}), action: DoNothing ) ] )"#);
+            let err = from_ron_str(&ron).expect_err("overlapping chord keys must be rejected");
+            match err {
+                ConfigError::Bindings(errs) => {
+                    assert!(
+                        errs[0].contains("duplicate"),
+                        "error for {keys} should say duplicate: {errs:?}"
+                    );
+                }
+                other => panic!("expected Bindings error for {keys}, got {other:?}"),
+            }
+        }
+    }
+
     // ---- existing test, kept at the bottom ----
 
     #[test]

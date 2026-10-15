@@ -744,6 +744,221 @@ fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
     .expect_suppressed();
 }
 
+// ---- Sided keys (KS-07) ----
+
+#[test]
+fn lshift_in_keys_fires_only_for_the_left_shift() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "LShift+F13", action: SwitchLanguage) ] )"#)
+        .down("LShift")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed()
+        .down("RShift")
+        .expect_passed()
+        .down("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_passed()
+        .up("RShift")
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn rwin_and_lwin_in_keys_fire_only_for_their_side() {
+    let config = r#"( bindings: [
+        (keys: "RWin+F13", action: SwitchLanguage),
+        (keys: "LWin+F14", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("RWin")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .up("RWin")
+        .down("LWin")
+        .down("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F13")
+        .up("LWin")
+        .down("LWin")
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("F14")
+        .up("LWin")
+        .down("RWin")
+        .down("F14")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F14")
+        .up("RWin")
+        .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn unsided_shift_and_win_in_keys_fire_for_either_side() {
+    let config = r#"( bindings: [
+        (keys: "Shift+F13", action: SwitchLanguage),
+        (keys: "Win+F14", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("LShift")
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .up("LShift")
+        .down("RShift")
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .up("RShift")
+        .down("LWin")
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("F14")
+        .up("LWin")
+        .down("RWin")
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn lshift_double_tap_fires_only_for_the_left_shift() {
+    // The template's commented example (`default_config.ron`).
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250)) ] )"#,
+    )
+    .down("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed()
+    .advance_ms(100)
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("LShift")
+    .expect_suppressed()
+    .advance_ms(500)
+    .down("RShift")
+    .expect_passed()
+    .up("RShift")
+    .expect_passed()
+    .advance_ms(100)
+    .down("RShift")
+    .expect_passed()
+    .expect_nothing_fired()
+    .up("RShift")
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn unsided_shift_in_a_chord_fires_for_either_side() {
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["Shift", "Space"], window_ms: 50), action: SwitchLanguage) ] )"#,
+    )
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(20)
+    .down("Space")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("Space")
+    .expect_suppressed()
+    .up("LShift")
+    .expect_suppressed()
+    .advance_ms(100)
+    .down("RShift")
+    .expect_suppressed()
+    .advance_ms(20)
+    .down("Space")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("Space")
+    .expect_suppressed()
+    .up("RShift")
+    .expect_suppressed()
+    .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn sided_shift_in_a_chord_is_only_its_side() {
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["LShift", "F13"], window_ms: 50), action: SwitchLanguage) ] )"#,
+    )
+    .down("RShift")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired();
+}
+
+#[test]
+fn sided_shift_in_a_sequence_step_matches_only_its_side() {
+    let config =
+        r#"( bindings: [ (sequence: (steps: ["F13", "LShift+F14"]), action: SwitchLanguage) ] )"#;
+    Scenario::from_ron(config)
+        .down("LShift")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .up("F13")
+        .expect_suppressed()
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F14")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed();
+
+    Scenario::from_ron(config)
+        .down("RShift")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .up("F13")
+        .expect_suppressed()
+        .down("F14")
+        .expect_passed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn win_in_the_last_sequence_step_does_not_swallow_its_key_up() {
+    // Win's key-down reached the OS, so its key-up must too.
+    Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["F13", "Win+F14"]), action: SwitchLanguage) ] )"#,
+    )
+    .down("Win")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .up("F13")
+    .expect_suppressed()
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("F14")
+    .expect_suppressed()
+    .up("Win")
+    .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]
