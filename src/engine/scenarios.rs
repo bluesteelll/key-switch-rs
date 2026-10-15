@@ -1909,6 +1909,52 @@ fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
         .expect_passed();
 }
 
+// ---- Auto-blockers (KS-05, KS-18) ----
+
+#[test]
+fn user_binding_on_the_language_hotkey_fires_in_either_file_order() {
+    // The audit's KS-18 repro: a binding on the hotkey's own keys, above or
+    // below the flagged one or the flagged one itself, lost its fire to the
+    // auto-blocker.
+    let configs = [
+        (
+            "flagged binding above",
+            r#"( bindings: [
+                (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                (keys: "Alt+Shift", action: SwitchLanguageBackward),
+            ] )"#,
+        ),
+        (
+            "flagged binding below",
+            r#"( bindings: [
+                (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            ] )"#,
+        ),
+        (
+            "flagged binding on the hotkey",
+            r#"( bindings: [
+                (keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true),
+            ] )"#,
+        ),
+    ];
+    for (name, config) in configs {
+        Scenario::from_ron_with_language_hotkey(config, &[VK_MENU, VK_SHIFT])
+            .with_context(name)
+            .check_nothing_stuck()
+            .down("LAlt")
+            .expect_passed()
+            .expect_nothing_fired()
+            .down("LShift")
+            .expect_suppressed()
+            .expect_fired(&[BindAction::SwitchLanguageBackward])
+            .up("LShift")
+            .expect_suppressed()
+            .up("LAlt")
+            .expect_passed();
+    }
+}
+
 // ---- The harness itself ----
 
 #[test]

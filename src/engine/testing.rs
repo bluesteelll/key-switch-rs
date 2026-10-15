@@ -39,9 +39,10 @@ use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::{Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
-use crate::config::from_ron_str;
+use crate::config::{from_ron_str, from_ron_str_with_hotkeys};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
+use crate::data::key_combination::KeyCombination;
 use crate::data::vk_name::parse_vk;
 
 /// An [`Env`] with a hand-driven clock, a modelled OS key state and a
@@ -137,11 +138,27 @@ pub(crate) struct Scenario {
 
 impl Scenario {
     /// Loads `text` like a `config.ron` (auto-blockers included, so avoid
-    /// `block_original_combo`, which reads the registry) and starts at +0 ms
-    /// with nothing held and no foreground window.
+    /// `block_original_combo`, which reads the registry; use
+    /// [`from_ron_with_language_hotkey`](Self::from_ron_with_language_hotkey)
+    /// instead) and starts at +0 ms with nothing held and no foreground
+    /// window.
     pub(crate) fn from_ron(text: &str) -> Self {
         let bindings =
             from_ron_str(text).unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
+        Self::with_bindings(bindings)
+    }
+
+    /// Like [`from_ron`](Self::from_ron), with `keys` standing in for the
+    /// Windows language hotkey that `block_original_combo` reads from the
+    /// registry. No other action has a hotkey.
+    pub(crate) fn from_ron_with_language_hotkey(text: &str, keys: &[VIRTUAL_KEY]) -> Self {
+        let hotkey = KeyCombination::from_keys(keys.iter().copied());
+        let language_hotkey = move |action: &BindAction| match action {
+            BindAction::SwitchLanguage | BindAction::SwitchLanguageBackward => Some(hotkey.clone()),
+            _ => None,
+        };
+        let bindings = from_ron_str_with_hotkeys(text, &language_hotkey)
+            .unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
         Self::with_bindings(bindings)
     }
 

@@ -599,13 +599,9 @@ mod tests {
             (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
             (keys: "F13", action: ToggleCapsLock, block_original_combo: true),
         ] )"#;
-        let ctrl_shift = |action: &BindAction| match action {
-            BindAction::SwitchLanguage | BindAction::SwitchLanguageBackward => {
-                Some(KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]))
-            }
-            _ => None,
-        };
-        let bindings = from_ron_str_with_hotkeys(ron_text, &ctrl_shift).expect("config loads");
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(&[VK_CONTROL, VK_SHIFT]))
+                .expect("config loads");
 
         assert_eq!(bindings.len(), 3);
         let mut blockers = bindings.iter().filter(|b| b.is_auto_blocker);
@@ -618,6 +614,120 @@ mod tests {
             blockers.next().is_none(),
             "ToggleCapsLock has no hotkey, so no blocker"
         );
+    }
+
+    /// Stands in for the registry: `keys` is the Windows language hotkey,
+    /// and no other action has a hotkey.
+    fn language_hotkey(
+        keys: &'static [VIRTUAL_KEY],
+    ) -> impl Fn(&BindAction) -> Option<KeyCombination> {
+        let hotkey = KeyCombination::from_keys(keys.iter().copied());
+        move |action: &BindAction| match action {
+            BindAction::SwitchLanguage | BindAction::SwitchLanguageBackward => Some(hotkey.clone()),
+            _ => None,
+        }
+    }
+
+    /// How many auto-blockers the loader added.
+    fn blockers(bindings: &[Binding]) -> usize {
+        bindings.iter().filter(|b| b.is_auto_blocker).count()
+    }
+
+    const ALT_SHIFT: &[VIRTUAL_KEY] = &[VK_MENU, VK_SHIFT];
+
+    #[test]
+    fn auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order() {
+        // KS-18: the dedup looked only at the bindings above the flagged one.
+        let configs = [
+            (
+                "flagged binding above",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                    (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                ] )"#,
+            ),
+            (
+                "flagged binding below",
+                r#"( bindings: [
+                    (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                ] )"#,
+            ),
+            (
+                "conditional deferred binding below",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                    (
+                        keys: "Shift+Alt",
+                        action: SwitchLanguageBackward,
+                        trigger: Tap(200),
+                        when: AppEquals("code.exe"),
+                    ),
+                ] )"#,
+            ),
+        ];
+        for (name, ron_text) in configs {
+            let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(blockers(&bindings), 0, "{name}");
+            assert_eq!(bindings.len(), 2, "{name}");
+        }
+    }
+
+    #[test]
+    fn auto_blocker_is_skipped_when_the_flagged_binding_uses_the_hotkey_keys() {
+        let ron_text = r#"( bindings: [
+            (keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(blockers(&bindings), 0);
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn auto_blockers_follow_the_bindings_of_the_file() {
+        let ron_text = r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, block_original_combo: true),
+            (keys: "F14", action: DoNothing),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(bindings.len(), 3);
+        assert!(
+            !bindings[0].is_auto_blocker,
+            "the file's bindings come first"
+        );
+        assert_eq!(
+            bindings[0].combination().expect("a keys binding").keys,
+            vec![KeySpec::Key(VK_F13)]
+        );
+        assert_eq!(
+            bindings[1].combination().expect("a keys binding").keys,
+            vec![KeySpec::Key(VK_F14)]
+        );
+        assert!(bindings[2].is_auto_blocker, "the blocker comes last");
+        assert_eq!(
+            bindings[2].combination(),
+            Some(&KeyCombination::from_keys(ALT_SHIFT.iter().copied()))
+        );
+    }
+
+    #[test]
+    fn auto_blocker_stays_when_a_binding_only_overlaps_the_hotkey() {
+        // Only the same keys take the hotkey over: a sided or larger combo,
+        // a chord or a sequence leaves the other presses of the hotkey to
+        // the blocker.
+        let ron_text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            (keys: "LAlt+LShift", action: SwitchLanguageBackward),
+            (keys: "Ctrl+Alt+Shift", action: SwitchLanguageBackward),
+            (chord: (keys: ["Alt", "Shift"]), action: SwitchLanguageBackward),
+            (sequence: (steps: ["Alt+Shift", "F13"]), action: SwitchLanguageBackward),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(blockers(&bindings), 1);
     }
 
     #[test]
