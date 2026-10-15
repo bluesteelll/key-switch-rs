@@ -56,11 +56,11 @@ minor version; such entries sit under **Changed** and start with
   `sequence` steps and `chord` keys (KS-07). `Shift`, `Ctrl`, `Alt` and
   `Win` (`Super`) match either key; `LShift`, `RShift`, `LCtrl`, `RCtrl`,
   `LAlt`, `RAlt`, `LWin` and `RWin` (and the long forms such as `LeftShift`
-  and `RightWin`) match only that key. `LWin` used to match both Win keys in `keys` and `sequence`,
-  and `Win` meant the left Win key only in `chord`. A `chord` whose keys
-  overlap, such as `["Shift", "LShift"]` or `["Win", "RWin"]`, is now a load
-  error. Output keys (`PressKey`, `Key`, `Combo`) are unchanged: `Win` still
-  sends the left Win key.
+  and `RightWin`) match only that key. `LWin` used to match both Win keys in
+  `keys` and `sequence`, and `Win` meant the left Win key only in `chord`. A
+  `chord` whose keys overlap, such as `["Shift", "LShift"]` or
+  `["Win", "RWin"]`, is now a load error. Output keys (`PressKey`, `Key`,
+  `Combo`) are unchanged: `Win` still sends the left Win key.
 - The auto-blocker line printed at load names its keys
   (`SwitchLanguage: registry combination Alt+Shift`) instead of key codes.
 - **Breaking:** modifiers match exactly (owner decision; roadmap open
