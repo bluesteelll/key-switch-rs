@@ -444,6 +444,47 @@ mod tests {
     }
 
     #[test]
+    fn equals_conditions_fold_case_like_title_contains() {
+        // "Kalkulyator" and "Privet.exe", written in Cyrillic.
+        let title = "\u{41a}\u{430}\u{43b}\u{44c}\u{43a}\u{443}\u{43b}\u{44f}\u{442}\u{43e}\u{440}";
+        let app = "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442}.exe";
+        let cyrillic = FakeForeground {
+            app: Some(app),
+            title: Some(title),
+        };
+        assert_ne!(title.to_uppercase(), title);
+        assert!(Condition::TitleContains(title.to_uppercase()).evaluate(&cyrillic));
+        assert!(
+            Condition::TitleEquals(title.to_uppercase()).evaluate(&cyrillic),
+            "TitleEquals ignores Cyrillic case like TitleContains"
+        );
+        assert!(
+            Condition::AppEquals(app.to_uppercase()).evaluate(&cyrillic),
+            "AppEquals ignores Cyrillic case"
+        );
+        assert!(!Condition::TitleEquals("\u{41a}\u{430}\u{43b}".into()).evaluate(&cyrillic));
+
+        // Lowercasing turns a word-final capital sigma into the final form,
+        // so a per-char fold would miss what TitleContains finds.
+        let greek = FakeForeground {
+            app: None,
+            title: Some("\u{39f}\u{394}\u{39f}\u{3a3}"),
+        };
+        let final_sigma = "\u{3bf}\u{3b4}\u{3bf}\u{3c2}";
+        assert!(Condition::TitleContains(final_sigma.into()).evaluate(&greek));
+        assert!(Condition::TitleEquals(final_sigma.into()).evaluate(&greek));
+
+        // The Kelvin sign lowercases to an ASCII k: one non-ASCII side is
+        // enough to need the Unicode comparison.
+        let kelvin = FakeForeground {
+            app: Some("\u{212a}.exe"),
+            title: None,
+        };
+        assert!(Condition::AppEquals("k.exe".into()).evaluate(&kelvin));
+        assert!(Condition::AppEquals("K.EXE".into()).evaluate(&kelvin));
+    }
+
+    #[test]
     fn image_file_name_is_the_part_after_the_last_backslash() {
         let file_name = |path: &str| {
             let path: Vec<u16> = path.encode_utf16().collect();
