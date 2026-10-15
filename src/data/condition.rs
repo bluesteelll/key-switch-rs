@@ -134,23 +134,7 @@ impl ForegroundContext {
         if pid == 0 {
             return None;
         }
-
-        // PROCESS_QUERY_LIMITED_INFORMATION is enough for GetModuleBaseNameW
-        // and is permitted against most processes including elevated ones,
-        // which PROCESS_QUERY_INFORMATION would deny.
-        //
-        // SAFETY: OpenProcess returns an owned handle that we close on drop
-        // via the RAII wrapper below.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
-        let _guard = ProcessHandleGuard(handle);
-
-        let mut buf = [0u16; 260]; // MAX_PATH; exe names are short.
-        // SAFETY: handle is valid; buf is sized and writable.
-        let len = unsafe { GetModuleBaseNameW(handle, None, &mut buf) };
-        if len == 0 {
-            return None;
-        }
-        Some(String::from_utf16_lossy(&buf[..len as usize]))
+        process_image_name(pid).ok()
     }
 
     fn fetch_title(&self) -> Option<String> {
@@ -175,6 +159,27 @@ impl ForegroundInfo for ForegroundContext {
     fn title(&self) -> Option<&str> {
         ForegroundContext::title(self)
     }
+}
+
+/// File name of the executable of process `pid`, e.g. `"notepad.exe"`.
+fn process_image_name(pid: u32) -> windows::core::Result<String> {
+    // PROCESS_QUERY_LIMITED_INFORMATION is enough for GetModuleBaseNameW
+    // and is permitted against most processes including elevated ones,
+    // which PROCESS_QUERY_INFORMATION would deny.
+    //
+    // SAFETY: OpenProcess returns an owned handle that we close on drop
+    // via the RAII wrapper below.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }?;
+    let _guard = ProcessHandleGuard(handle);
+
+    let mut buf = [0u16; 260]; // MAX_PATH; exe names are short.
+    // SAFETY: handle is valid; buf is sized and writable.
+    let len = unsafe { GetModuleBaseNameW(handle, None, &mut buf) };
+    if len == 0 {
+        // Built before `_guard` drops, so GetLastError is still the call's.
+        return Err(windows::core::Error::from_thread());
+    }
+    Ok(String::from_utf16_lossy(&buf[..len as usize]))
 }
 
 /// Closes the process handle when dropped. Local RAII because the Win32
