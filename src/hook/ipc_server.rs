@@ -9,12 +9,15 @@
 //! is the simplest reliable protocol for a CLI driver where commands are
 //! independent — no session state to carry across requests.
 
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 use interprocess::local_socket::traits::{ListenerExt, Stream as StreamTrait};
-use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};
+use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions, prelude::*};
+use interprocess::os::windows::{
+    ToWtf16, local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
+};
 use windows::Win32::{
     Foundation::{LPARAM, WPARAM},
     UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT},
@@ -32,19 +35,62 @@ pub fn set_main_thread_id(id: u32) {
     MAIN_THREAD_ID.store(id, Ordering::Release);
 }
 
+/// The pipe's security descriptor (KS-02), in the security descriptor
+/// string format. Without one, Windows gives the pipe its default DACL,
+/// whose owner entry is Administrators when the daemon runs elevated; that
+/// entry is deny-only in a normal console's token, so `swch` got "Access is
+/// denied".
+///
+/// There is no `O:` (owner) or `G:` (group) part: Windows takes both from
+/// the creator's token. interprocess 2.4.2 also writes the group into the
+/// owner slot when it copies a descriptor for the listener's later pipe
+/// instances, so a `G:` part would replace the owner.
+pub const PIPE_SDDL: &str = concat!(
+    // Protected DACL: nothing is inherited.
+    "D:P",
+    // LocalSystem: full control.
+    "(A;;GA;;;SY)",
+    // Administrators: full control. An elevated daemon creates every later
+    // pipe instance through this entry, whatever the logon type.
+    "(A;;GA;;;BA)",
+    // Interactive users: read and write, so a non-elevated swch reaches an
+    // elevated daemon. GW includes FILE_APPEND_DATA, which is also
+    // FILE_CREATE_PIPE_INSTANCE: a daemon started from a normal console
+    // creates its later instances through this entry.
+    "(A;;GRGW;;;IU)",
+    // Medium mandatory label: a process below medium integrity can neither
+    // write to nor read from the pipe; medium and high are admitted.
+    "S:(ML;;NWNR;;;ME)",
+);
+
+/// Parses [`PIPE_SDDL`].
+pub fn pipe_security() -> io::Result<SecurityDescriptor> {
+    security_from_sddl(PIPE_SDDL)
+}
+
+fn security_from_sddl(sddl: &str) -> io::Result<SecurityDescriptor> {
+    let wide = sddl
+        .to_wtf_16()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    SecurityDescriptor::deserialize(&wide)
+}
+
+/// Creates the listener on the namespaced pipe `pipe_name`
+/// (`\\.\pipe\<pipe_name>`), protected by [`PIPE_SDDL`]. The descriptor is
+/// parsed once here; the listener keeps a copy for its later instances.
+fn create_listener(pipe_name: &str) -> io::Result<Listener> {
+    let name = pipe_name.to_ns_name::<GenericNamespaced>()?;
+    ListenerOptions::new()
+        .name(name)
+        .security_descriptor(pipe_security()?)
+        .create_sync()
+}
+
 /// Spawn the listener thread. Returns immediately; the thread runs for the
 /// lifetime of the daemon. Bind errors are logged and the daemon continues
 /// without IPC (the user just won't be able to use `swch on/off/exit`).
 pub fn spawn(hook: &'static KeyboardHook) -> bool {
-    let name = match ipc::PIPE_NAME.to_ns_name::<GenericNamespaced>() {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("[WARN] could not build pipe name: {}", e);
-            return false;
-        }
-    };
-
-    let listener = match ListenerOptions::new().name(name).create_sync() {
+    let listener = match create_listener(ipc::PIPE_NAME) {
         Ok(l) => l,
         Err(e) => {
             eprintln!(
@@ -144,5 +190,47 @@ fn dispatch(cmd: Command, hook: &'static KeyboardHook) -> String {
             }
             response
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use interprocess::local_socket::Stream;
+
+    use super::*;
+
+    #[test]
+    fn pipe_sddl_parses() {
+        pipe_security().expect("PIPE_SDDL is a valid security descriptor string");
+    }
+
+    #[test]
+    fn malformed_sddl_is_rejected() {
+        // Shows that `pipe_sddl_parses` can fail.
+        assert!(security_from_sddl("D:P(A;;GA;;;NOT_A_SID)").is_err());
+    }
+
+    #[test]
+    fn listener_with_the_pipe_security_admits_this_process() {
+        // A pipe of its own, so no daemon on this machine is involved.
+        let name = format!("key-switch-rs-unit-{}-sd.sock", std::process::id());
+        let _listener = create_listener(&name)
+            .expect("CreateNamedPipeW accepts the descriptor, its medium label included");
+
+        // On a helper thread, so a pipe that never admits the client fails
+        // the test after the timeout instead of hanging the suite.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let connected = name
+                .to_ns_name::<GenericNamespaced>()
+                .and_then(Stream::connect);
+            let _ = tx.send(connected.map(drop));
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("connect did not return within 5 s")
+            .expect("the DACL admits this process's token");
     }
 }

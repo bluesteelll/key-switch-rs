@@ -100,6 +100,17 @@ minor version; such entries sit under **Changed** and start with
   already pressed. A key swallowed by a binding and released while
   remapping is off reaches Windows as a lone key-up. A running macro keeps
   running after `swch off` (roadmap item 2.1).
+- KS-02: the daemon's pipe has an explicit security descriptor: full
+  control for SYSTEM and Administrators, read and write for interactive
+  users, and a medium integrity label. `swch` in a normal console now
+  reaches a daemon started elevated by `swch open`, a double-click or a
+  Scheduled Task; it used to fail with "Access is denied. (os error 5)".
+  Everyone and anonymous logons no longer get read access, and processes
+  below medium integrity cannot open the pipe. Read and write go to every
+  interactive user of the machine, though: under fast user switching or
+  Remote Desktop another signed-in user can switch remapping on or off,
+  stop the daemon, or create a pipe instance that answers `swch` in the
+  daemon's place, until roadmap item 4.1 gives each session its own pipe.
 - KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
   on the key-down of one of its own keys: a non-modifier key, or any of its
   keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).

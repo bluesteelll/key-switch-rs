@@ -55,7 +55,7 @@ key-switch-rs/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, engine lock
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
-    │   └── ipc_server.rs       - named-pipe listener; on/off/exit/status commands
+    │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
     │   └── system_function.rs  - Windows system functions
@@ -519,7 +519,9 @@ Release builds ship two binaries:
   "Run as administrator").
 
 - **`swch.exe`** — CLI driver that talks to the running daemon via a named
-  pipe. Runs as normal user — **no UAC prompt**.
+  pipe. Runs as normal user — **no UAC prompt** — also against the elevated
+  daemon: the pipe grants SYSTEM and administrators full control and
+  interactive users read and write, with a medium integrity label.
 
 ### Typical session
 
@@ -544,7 +546,12 @@ Release builds ship two binaries:
 
 All commands except `open` connect to the daemon's named pipe
 (`\\.\pipe\key-switch-rs.sock`). If the daemon isn't running, they print a
-hint and exit 1.
+hint and exit 1. The pipe admits interactive users at medium integrity or
+above, so a normal console can control an elevated daemon. That includes
+every user signed in to the machine: under fast user switching or Remote
+Desktop another user can switch your remapping on or off, stop your daemon,
+or answer `swch` in its place, until roadmap item 4.1 gives each session its
+own pipe.
 
 ### Direct launch (without swch)
 
