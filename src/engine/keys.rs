@@ -1,5 +1,6 @@
-//! Per-key state: which keys the engine believes are held, and which keys'
-//! key-ups must be swallowed because their key-down was.
+//! Per-key state: which keys the engine believes are held, and whether each
+//! key's latest key-down was swallowed or passed, which its auto-repeats and
+//! its key-up follow.
 //!
 //! Held keys are kept by the code the hook reported, which is sided for
 //! modifiers (`VK_LSHIFT`), and the resync also writes the generic modifier
@@ -37,23 +38,36 @@ fn slot(vk: u16) -> Option<usize> {
     (index < 256).then_some(index)
 }
 
-/// Held and suppressed keys, one flag per virtual-key code.
+/// What became of a key's latest key-down, as far as the engine knows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LastDown {
+    /// Nothing on record: the key is up, or a foreground change forgot that
+    /// its key-down was suppressed.
+    Unknown,
+    /// The key-down reached the OS.
+    Passed,
+    /// The key-down was suppressed.
+    Suppressed,
+}
+
+/// Held and suppressed keys, one entry per virtual-key code.
 pub(super) struct KeyState {
     /// Keys the engine believes are held. Set by key-down, cleared by
     /// key-up, and overwritten from the OS for the modifier codes. Its
     /// previous value is also the auto-repeat detector.
     active: [bool; 256],
-    /// Keys whose key-down was suppressed: their auto-repeats and their
-    /// key-up must be suppressed too, so an application never sees a repeat
-    /// or a release without a press. Each key is tracked independently.
-    blocked: [bool; 256],
+    /// What became of each key's latest key-down. A suppressed key-down
+    /// makes its auto-repeats and its key-up suppressed too, so an
+    /// application never sees a repeat or a release without a press; a
+    /// passed one makes them pass. Each key is tracked independently.
+    last_down: [LastDown; 256],
 }
 
 impl KeyState {
     pub(super) fn new() -> Self {
         Self {
             active: [false; 256],
-            blocked: [false; 256],
+            last_down: [LastDown::Unknown; 256],
         }
     }
 
@@ -85,27 +99,50 @@ impl KeyState {
         }
     }
 
+    /// Records that the key-down of `vk` was suppressed.
     pub(super) fn mark_blocked(&mut self, vk: u16) {
         if let Some(index) = slot(vk) {
-            self.blocked[index] = true;
+            self.last_down[index] = LastDown::Suppressed;
         }
     }
 
-    /// Whether the `vk` flag is set, leaving it set.
-    pub(super) fn is_blocked(&self, vk: u16) -> bool {
-        slot(vk).is_some_and(|index| self.blocked[index])
+    /// Records that the key-down of `vk` reached the OS.
+    pub(super) fn mark_passed(&mut self, vk: u16) {
+        if let Some(index) = slot(vk) {
+            self.last_down[index] = LastDown::Passed;
+        }
     }
 
-    /// Clears the `vk` flag and reports whether it was set.
+    /// Whether the key-down of `vk` is on record as suppressed, leaving the
+    /// record in place.
+    pub(super) fn is_blocked(&self, vk: u16) -> bool {
+        slot(vk).is_some_and(|index| self.last_down[index] == LastDown::Suppressed)
+    }
+
+    /// Whether the key-down of `vk` is on record as passed.
+    pub(super) fn is_passed(&self, vk: u16) -> bool {
+        slot(vk).is_some_and(|index| self.last_down[index] == LastDown::Passed)
+    }
+
+    /// Forgets the key-down of `vk` and reports whether it was suppressed.
     pub(super) fn take_blocked(&mut self, vk: u16) -> bool {
         match slot(vk) {
-            Some(index) => std::mem::replace(&mut self.blocked[index], false),
+            Some(index) => {
+                std::mem::replace(&mut self.last_down[index], LastDown::Unknown)
+                    == LastDown::Suppressed
+            }
             None => false,
         }
     }
 
+    /// Forgets every suppressed key-down. A passed key-down stays on record:
+    /// the OS saw it, so its repeats and key-up must still pass.
     pub(super) fn clear_all_blocked(&mut self) {
-        self.blocked = [false; 256];
+        for record in &mut self.last_down {
+            if *record == LastDown::Suppressed {
+                *record = LastDown::Unknown;
+            }
+        }
     }
 
     /// Whether the engine believes the key with this exact code is held.
@@ -227,6 +264,37 @@ mod tests {
         state.clear_all_blocked();
         assert!(!state.take_blocked(20));
         assert!(!state.take_blocked(200));
+    }
+
+    #[test]
+    fn clear_all_keeps_passed_key_downs() {
+        let mut state = KeyState::new();
+        state.mark_blocked(20);
+        state.mark_passed(65);
+        state.clear_all_blocked();
+        assert!(!state.is_blocked(20));
+        assert!(!state.is_passed(20));
+        assert!(state.is_passed(65));
+    }
+
+    #[test]
+    fn latest_key_down_replaces_the_record_and_take_forgets_it() {
+        let mut state = KeyState::new();
+        assert!(!state.is_passed(20));
+        state.mark_blocked(20);
+        state.mark_passed(20);
+        assert!(state.is_passed(20));
+        assert!(!state.is_blocked(20));
+        state.mark_blocked(20);
+        assert!(state.is_blocked(20));
+        assert!(!state.is_passed(20));
+
+        state.mark_passed(20);
+        assert!(!state.take_blocked(20));
+        assert!(!state.is_passed(20));
+
+        state.mark_passed(300);
+        assert!(!state.is_passed(300));
     }
 
     /// Reports only LShift and the generic Shift as down.

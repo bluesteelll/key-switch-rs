@@ -36,9 +36,9 @@
 //! [`Engine`] owns all mutable state of the keyboard path, as plain data:
 //!
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
-//!   (also the auto-repeat detector), and the keys whose key-down was
-//!   suppressed, so that their auto-repeats and key-up are suppressed as
-//!   well.
+//!   (also the auto-repeat detector), and whether each key's latest
+//!   key-down was suppressed or passed, so that its auto-repeats and key-up
+//!   are treated the same way.
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
@@ -115,10 +115,13 @@
 //!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
 //!      advances or completes one is suppressed.
 //! 5. A first key-down is suppressed if anything asked for it, and the key
-//!    is then marked blocked; a first key-down that passes clears the mark.
-//!    An auto-repeat is suppressed exactly when its key is marked blocked,
-//!    whatever the bindings asked: it continues its key-down (KS-06).
-//!    Actions still fire on repeats as rule 4 says.
+//!    is then marked blocked; a first key-down that passes is marked
+//!    passed. An auto-repeat continues its key-down (KS-06): it is
+//!    suppressed if its key is marked blocked and passed if it is marked
+//!    passed, whatever the bindings asked. A foreground change forgets the
+//!    blocked marks; a repeat without a mark is suppressed if a binding
+//!    asked for it and leaves no mark, so its key-up passes. Actions still
+//!    fire on repeats as rule 4 says.
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
@@ -294,7 +297,8 @@ impl Engine {
 
     /// The foreground window changed. Key-ups may have been lost while a
     /// higher-integrity window had focus: resync every modifier from the OS
-    /// and forget which key-ups were due to be swallowed.
+    /// and forget which key-downs were swallowed, so that no key-up stays
+    /// due to be swallowed. Keys whose key-down passed keep that record.
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
         self.keys.clear_all_blocked();
@@ -431,15 +435,29 @@ impl Engine {
             // after a swallowed key-down, and one that starts matching (a
             // modifier released under exact matching) swallows the repeats
             // and the key-up of a key-down the OS saw (KS-06).
-            decision.suppress = self.keys.is_blocked(vk.0);
+            //
+            // A foreground change forgets swallowed key-downs, and the resync
+            // can find a modifier held whose key-down the hook never saw. A
+            // repeat without a record keeps what the bindings asked, so a
+            // held Immediate key stays swallowed, and records nothing:
+            // whether the OS has the key down is unknown, and a key-up that
+            // passes at worst ends a press the OS never saw, while one
+            // swallowed wrongly leaves the key held there.
+            if self.keys.is_blocked(vk.0) {
+                decision.suppress = true;
+            } else if self.keys.is_passed(vk.0) {
+                decision.suppress = false;
+            }
         } else if decision.suppress {
             self.keys.mark_blocked(vk.0);
         } else {
             // This key-down reaches the OS, so its repeats and key-up must
-            // too. Clear a block left by an earlier press whose key-up was
+            // too. Replace a block left by an earlier press whose key-up was
             // never seen, or whose swallowed key-down the resync erased
-            // (KS-14), so this key reads as one the OS saw go down.
-            self.keys.take_blocked(vk.0);
+            // (KS-14), so this key reads as one the OS saw go down. A Tap or
+            // Hold that such an earlier press left pending still swallows
+            // the key-up (KS-14).
+            self.keys.mark_passed(vk.0);
         }
         decision
     }
