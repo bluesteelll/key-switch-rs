@@ -1,6 +1,6 @@
-use std::cmp::Reverse;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::{ArcSwap, Guard};
 use windows::{
@@ -9,13 +9,30 @@ use windows::{
 };
 
 use crate::data::binding::Binding;
-use crate::hook::chord_state::ChordState;
+use crate::engine::{self, Engine};
 use crate::hook::keyboard_hook_callback;
-use crate::hook::sequence_state::SequenceState;
-use crate::hook::tap_state::TapState;
 
-#[allow(clippy::declare_interior_mutable_const)]
-const ATOMIC_FALSE: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Set while this thread runs a closure inside
+    /// [`KeyboardHook::with_engine`]. Per thread, so it needs no atomics.
+    static DECIDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks this thread as deciding until dropped, also on unwind.
+struct DecidingGuard;
+
+impl DecidingGuard {
+    fn enter() -> Self {
+        DECIDING.with(|deciding| deciding.set(true));
+        Self
+    }
+}
+
+impl Drop for DecidingGuard {
+    fn drop(&mut self) {
+        DECIDING.with(|deciding| deciding.set(false));
+    }
+}
 
 pub struct KeyboardHook {
     /// Bindings list. Hot path reads via `ArcSwap::load()` which is
@@ -27,18 +44,11 @@ pub struct KeyboardHook {
     bindings: ArcSwap<Vec<Binding>>,
     pub hook_handle: AtomicPtr<std::ffi::c_void>,
     pub foreground_hook: AtomicPtr<std::ffi::c_void>,
-    /// Bitmap of keys whose key-down was blocked: the matching key-up must also
-    /// be swallowed. One bit per virtual-key code (0..256), packed into four
-    /// 64-bit atomics. Replaces an earlier single-key field that lost track of
-    /// every-but-the-most-recent block.
-    pub blocked_keys: [AtomicU64; 4],
-    pub active_keys: [AtomicBool; 256],
-    /// Pending Tap / Hold / DoubleTap gestures. See [`TapState`].
-    pub tap_state: TapState,
-    /// Pending simultaneous-chord gestures (`BindingKind::Chord`).
-    pub chord_state: ChordState,
-    /// Pending leader-sequence gestures (`BindingKind::Sequence`).
-    pub sequence_state: SequenceState,
+    /// The decision core: held and blocked keys and every pending gesture.
+    /// Behind a lock until roadmap item 2.2 moves the Hold timers onto the
+    /// hook thread, because a `hold-timer` thread must reach it too. Only
+    /// [`with_engine`](Self::with_engine) touches it.
+    engine: Mutex<Engine>,
 }
 
 impl KeyboardHook {
@@ -49,17 +59,32 @@ impl KeyboardHook {
             bindings: ArcSwap::from_pointee(Vec::new()),
             hook_handle: AtomicPtr::new(std::ptr::null_mut()),
             foreground_hook: AtomicPtr::new(std::ptr::null_mut()),
-            blocked_keys: [
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-                AtomicU64::new(0),
-            ],
-            active_keys: [ATOMIC_FALSE; 256],
-            tap_state: TapState::new(),
-            chord_state: ChordState::new(),
-            sequence_state: SequenceState::new(),
+            engine: Mutex::new(Engine::new()),
         }
+    }
+
+    /// Runs `f` on the engine under its lock and returns what `f` returns.
+    ///
+    /// Returns `None`, without locking, when this thread is already inside
+    /// `with_engine`. `std::sync::Mutex` may deadlock or panic on such a
+    /// re-entrant lock, and the hook callback is re-entered on its own
+    /// thread if anything under the lock pumps messages; the caller then
+    /// passes the event instead of hanging the keyboard. Nothing under the
+    /// lock does that today (see the adapter's module docs).
+    ///
+    /// `f` must only decide: no action, `SendInput` or thread spawn under the
+    /// lock. A lock poisoned by an earlier panic is taken over as it is: the
+    /// engine's state is plain data, and a panic in the hook callback cannot
+    /// be unwound into a usable state anyway.
+    pub(crate) fn with_engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
+        if DECIDING.with(Cell::get) {
+            return None;
+        }
+        let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
+        // Declared after the lock guard, so it is dropped first: the flag is
+        // cleared before the lock is released.
+        let _deciding = DecidingGuard::enter();
+        Some(f(&mut engine))
     }
 
     /// Atomically replace the binding list. Callable any number of times
@@ -67,9 +92,9 @@ impl KeyboardHook {
     /// key-count descending so more specific combinations are checked first
     /// in the callback.
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
-        // `sort_by_key` is stable, so bindings with the same key count keep
-        // their config order.
-        bindings.sort_by_key(|b| Reverse(b.kind.key_count()));
+        // A stable sort, so bindings with the same key count keep their
+        // config order.
+        engine::sort_by_specificity(&mut bindings);
         self.bindings.store(Arc::new(bindings));
     }
 
@@ -300,5 +325,28 @@ mod tests {
     fn initial_bindings_are_empty() {
         let hook = KeyboardHook::new();
         assert_eq!(hook.bindings().len(), 0);
+    }
+
+    #[test]
+    fn with_engine_refuses_reentry_on_the_same_thread() {
+        // On its own thread, so a broken guard fails the test after the
+        // timeout instead of hanging the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let hook = KeyboardHook::new();
+            let nested = hook.with_engine(|_| hook.with_engine(|_| ()));
+            let _ = tx.send(nested);
+        });
+        let nested = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("re-entry deadlocked");
+        assert_eq!(nested, Some(None));
+    }
+
+    #[test]
+    fn with_engine_works_again_after_a_call() {
+        let hook = KeyboardHook::new();
+        assert_eq!(hook.with_engine(|_| 1), Some(1));
+        assert_eq!(hook.with_engine(|_| 2), Some(2));
     }
 }

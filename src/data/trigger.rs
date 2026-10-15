@@ -4,7 +4,7 @@
 //! A binding now owns its trigger as a top-level field. The hot path
 //! dispatches every matching binding into either the immediate-execute path
 //! (default) or one of the deferred-gesture paths (`Tap`, `Hold`,
-//! `DoubleTap`) handled by `crate::hook::tap_state`.
+//! `DoubleTap`) handled by the decision core in `crate::engine`.
 //!
 //! Multiple bindings on the same combo with different triggers coexist:
 //! e.g. one `Tap(200)` binding and one `Hold(200)` binding on `CapsLock`

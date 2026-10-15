@@ -5,6 +5,7 @@
 pub mod config;
 pub mod core;
 pub mod data;
+pub mod engine;
 pub mod hook;
 pub mod ipc;
 pub mod system;
