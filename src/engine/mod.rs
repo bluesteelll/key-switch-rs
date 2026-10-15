@@ -333,6 +333,13 @@ impl Engine {
         self.keys.forget_blocked();
     }
 
+    /// Remapping was switched off or on (`swch off`, `swch on`): every
+    /// pending gesture is dropped and the held keys are taken from the OS.
+    pub fn reset(&mut self, env: &dyn Env) {
+        *self = Self::new();
+        self.keys.sync_modifiers(env, None);
+    }
+
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
         let now = env.now();
         let was_repeat = self.keys.press(vk);
