@@ -1197,6 +1197,142 @@ fn shift_capslock_fires_toggle_capslock_with_either_shift() {
         .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::ToggleCapsLock]);
 }
 
+// ---- Auto-repeat follows its key-down (KS-06) ----
+
+#[test]
+fn repeat_of_a_key_whose_down_passed_is_passed_and_so_is_its_key_up() {
+    // Ctrl+CapsLock reaches Windows (exact modifiers). Once Ctrl is
+    // released, CapsLock's repeats match "CapsLock" exactly, but the OS saw
+    // the key-down, so neither a repeat nor the key-up may be swallowed.
+    // Whether such a repeat fires the action is KS-10 (roadmap 1.1).
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .down("LCtrl")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(500)
+        .repeat("CapsLock")
+        .expect_passed()
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_passed()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_passed()
+        .up("CapsLock")
+        .expect_passed();
+}
+
+#[test]
+fn double_tap_lshift_held_past_the_repeat_delay_swallows_its_repeats_too() {
+    // Holding the left Shift for a Shift+click: its key-down was swallowed,
+    // so its repeats must be too, or the OS sees Shift go down and never
+    // up.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250)) ] )"#,
+    )
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(500)
+    .repeat("LShift")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_suppressed()
+    .up("LShift")
+    .expect_suppressed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn chord_keys_held_past_the_repeat_delay_swallow_their_repeats_too() {
+    let config = r#"( bindings: [ (chord: (keys: ["Shift", "Space"], window_ms: 50), action: SwitchLanguage) ] )"#;
+    // Shift held alone: the chord never completes.
+    Scenario::from_ron(config)
+        .down("LShift")
+        .expect_suppressed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_total_fired(&[]);
+
+    // Space held after the chord completed.
+    Scenario::from_ron(config)
+        .down("RShift")
+        .expect_suppressed()
+        .advance_ms(20)
+        .down("Space")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(500)
+        .repeat("Space")
+        .expect_suppressed()
+        .up("Space")
+        .expect_suppressed()
+        .up("RShift")
+        .expect_suppressed();
+}
+
+#[test]
+fn repeat_of_a_suppressed_key_is_suppressed_after_its_hold_fired() {
+    // KS-06 with the README's CapsLock pair: the Hold fires at 200 ms and
+    // the key stays down past the typematic delay.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(200)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .advance_ms(300)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+}
+
+#[test]
+fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() {
+    // Ctrl and Alt are released while L is still held: L's repeats no
+    // longer match, but its key-down was swallowed, so they stay swallowed
+    // and so does its key-up, once. The next L press is plain typing.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Alt+L", action: Launch(exe: "notepad.exe")) ] )"#,
+    )
+    .down("Ctrl")
+    .down("Alt")
+    .down("L")
+    .expect_suppressed()
+    .expect_fired(&[launch("notepad.exe")])
+    .up("Ctrl")
+    .expect_passed()
+    .up("Alt")
+    .expect_passed()
+    .advance_ms(500)
+    .repeat("L")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("L")
+    .expect_suppressed()
+    .down("L")
+    .expect_passed()
+    .up("L")
+    .expect_passed()
+    .expect_total_fired(&[launch("notepad.exe")]);
+}
+
 // ---- The harness itself ----
 
 #[test]
