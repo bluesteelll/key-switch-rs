@@ -1679,6 +1679,29 @@ fn shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_wh
 }
 
 #[test]
+fn key_up_of_a_suppressed_press_is_suppressed_only_once() {
+    // "Its key-up is suppressed exactly once": the swallowed key-up spends
+    // the record. A later key-up of the same key, here for a press the hook
+    // never saw (remapping was off), is a different press that Windows has
+    // down, so it must reach Windows or Shift stays held there.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .advance_ms(1000)
+        .down_unseen("LShift")
+        .up("LShift")
+        .expect_passed()
+        .expect_nothing_stuck();
+}
+
+#[test]
 fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
     // The focus change forgets that Shift's key-down was swallowed, but
     // Windows still never saw it go down, so the resync leaves Shift held
