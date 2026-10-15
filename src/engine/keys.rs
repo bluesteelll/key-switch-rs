@@ -51,7 +51,8 @@ enum LastDown {
     Suppressed,
     /// The key-down was suppressed, then a foreground change forgot it: its
     /// key-up is no longer due to be suppressed. Windows still never saw the
-    /// key go down, so the resync leaves it alone.
+    /// key go down, so its auto-repeats stay suppressed and the resync
+    /// leaves it alone.
     Forgotten,
 }
 
@@ -134,9 +135,11 @@ impl KeyState {
     }
 
     /// Whether the key-down of `vk` is on record as suppressed, leaving the
-    /// record in place.
+    /// record in place. A key-down that a foreground change forgot counts
+    /// too: Windows never saw it, so the key's auto-repeats must not reach
+    /// Windows either.
     pub(super) fn is_blocked(&self, vk: u16) -> bool {
-        slot(vk).is_some_and(|index| self.last_down[index] == LastDown::Suppressed)
+        slot(vk).is_some_and(|index| self.key_down_swallowed(index))
     }
 
     /// Whether the key-down of `vk` is on record as passed.
@@ -156,9 +159,9 @@ impl KeyState {
     }
 
     /// Forgets every suppressed key-down, so that no key-up stays due to be
-    /// suppressed. The record still says the key-down never reached the OS.
-    /// A passed key-down stays on record: the OS saw it, so its repeats and
-    /// key-up must still pass.
+    /// suppressed. The record still says the key-down never reached the OS,
+    /// so the key's auto-repeats stay suppressed. A passed key-down stays on
+    /// record: the OS saw it, so its repeats and key-up must still pass.
     pub(super) fn forget_blocked(&mut self) {
         for record in &mut self.last_down {
             if *record == LastDown::Suppressed {

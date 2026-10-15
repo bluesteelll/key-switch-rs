@@ -361,10 +361,10 @@ Shift is unaffected.
   swallowed, because Windows never saw it go down: it still counts as held
   for matching, and its auto-repeats stay auto-repeats (KS-14). One gap
   remains:
-  - A foreground change while the key is held forgets that its press was
-    swallowed (its release might go to another window). Its repeats are
-    then swallowed only while an `Immediate` binding matches them, and its
-    release reaches Windows (roadmap item 2.3).
+  - A foreground change while the key is held forgets that its release is
+    due to be swallowed (the release might go to another window). Its
+    repeats stay swallowed, but its release reaches Windows unless a `Tap`
+    or `Hold` of the press is still pending (roadmap item 2.3).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized

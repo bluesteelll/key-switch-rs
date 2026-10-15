@@ -750,8 +750,8 @@ fn key_outside_the_chord_passes() {
 
 #[test]
 fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
-    // The focus change forgets that J's key-down was swallowed; the chord
-    // completing on K marks every chord key again, so J's key-up is
+    // The focus change forgets that J's key-up is due to be swallowed; the
+    // chord completing on K marks every chord key again, so J's key-up is
     // swallowed as well and the app never sees an unmatched J key-up.
     Scenario::from_ron(
         r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 500), action: SwitchLanguage) ] )"#,
@@ -1401,10 +1401,10 @@ fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() 
 
 #[test]
 fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
-    // The focus change forgets that F13's key-down was swallowed. Its
-    // repeats then follow the binding, which still swallows them, so the
-    // new window gets the Left presses and no raw F13. The key-up passes,
-    // like every key-up whose swallowed key-down a focus change forgot
+    // The focus change forgets that F13's key-up is due to be swallowed,
+    // but not that its key-down was: its repeats stay swallowed, so the new
+    // window gets the Left presses and no raw F13. The key-up passes, like
+    // every key-up whose swallowed key-down a focus change forgot
     // (foreground_change_forgets_pending_key_up_suppression).
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
         .down("F13")
@@ -1473,9 +1473,9 @@ fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
 #[test]
 fn press_after_a_lost_key_up_and_a_focus_change_follows_its_binding() {
     // F13's key-up went to another desktop, so the engine still holds F13
-    // and reads the next press as a repeat (KS-29). The focus change forgot
-    // the swallowed key-down, so the binding decides: it fires and the
-    // press is swallowed, never fired and passed in one decision.
+    // and reads the next press as a repeat (KS-29). Its key-down was
+    // swallowed, so the repeat is swallowed too; the binding fires on it
+    // (KS-10), so the press is never fired and passed in one decision.
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
         .down("F13")
         .expect_suppressed()

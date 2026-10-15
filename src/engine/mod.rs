@@ -121,18 +121,21 @@
 //! 5. A first key-down is suppressed if anything asked for it, and the key
 //!    is then marked blocked; a first key-down that passes is marked
 //!    passed. An auto-repeat continues its key-down (KS-06): it is
-//!    suppressed if its key is marked blocked and passed if it is marked
-//!    passed, whatever the bindings asked. A foreground change forgets the
-//!    blocked marks; a repeat without a mark is suppressed if a binding
-//!    asked for it and leaves no mark, so its key-up passes. Actions still
-//!    fire on repeats as rule 4 says.
+//!    suppressed if its key is marked blocked, also after a foreground
+//!    change, and passed if it is marked passed, whatever the bindings
+//!    asked. A repeat without a mark (a modifier the resync found held,
+//!    whose key-down the engine never saw) is suppressed if a binding asked
+//!    for it and leaves no mark. Actions still fire on repeats as rule 4
+//!    says.
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
 //! passed. A Hold whose deadline has passed is left armed for its timer,
 //! which fires it even if the timer runs after the key-up (KS-25). The
 //! key-up is suppressed if a Tap or Hold was pending or if the key was
-//! marked blocked.
+//! marked blocked. A foreground change forgets which key-ups were due to be
+//! suppressed: such a key-up passes unless a Tap or Hold of its press is
+//! pending (roadmap item 2.3).
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: repeat-firing Immediate
@@ -304,11 +307,14 @@ impl Engine {
     /// higher-integrity window had focus: resync the modifiers from the OS
     /// and forget which key-downs were swallowed, so that no key-up stays
     /// due to be swallowed. Keys whose key-down passed keep that record.
+    /// A swallowed key-down stays on record as not seen by Windows, so the
+    /// key's auto-repeats stay swallowed.
     ///
     /// The resync skips a modifier whose key-down was swallowed: Windows
     /// never saw it go down, so its key state says nothing (KS-14). Such a
-    /// modifier whose key-up was lost stays held for the engine until its
-    /// next press and release (roadmap item 2.3 owns that repair).
+    /// key whose key-up was lost stays held for the engine until its next
+    /// press, which reads as an auto-repeat and is swallowed, and its
+    /// release (roadmap item 2.3 owns that repair).
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
         self.keys.forget_blocked();
@@ -446,13 +452,14 @@ impl Engine {
             // modifier released under exact matching) swallows the repeats
             // and the key-up of a key-down the OS saw (KS-06).
             //
-            // A foreground change forgets swallowed key-downs, and the resync
-            // can find a modifier held whose key-down the hook never saw. A
-            // repeat without a record keeps what the bindings asked, so a
-            // held Immediate key stays swallowed, and records nothing:
-            // whether the OS has the key down is unknown, and a key-up that
-            // passes at worst ends a press the OS never saw, while one
-            // swallowed wrongly leaves the key held there.
+            // A key-down that a foreground change forgot still counts as
+            // swallowed here: Windows never saw it, so a repeat that reached
+            // Windows would be the first key-down it sees, in whatever
+            // window took the foreground.
+            //
+            // The resync can find a modifier held whose key-down the hook
+            // never saw. A repeat without a record keeps what the bindings
+            // asked and records nothing.
             if self.keys.is_blocked(vk.0) {
                 decision.suppress = true;
             } else if self.keys.is_passed(vk.0) {
