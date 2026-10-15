@@ -1404,6 +1404,118 @@ fn shift_held_after_the_auto_blocker_and_alt_released_is_not_left_stuck() {
     .expect_passed();
 }
 
+#[test]
+fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
+    // The focus change forgets that F13's key-down was swallowed. Its
+    // repeats then follow the binding, which still swallows them, so the
+    // new window gets the Left presses and no raw F13. The key-up passes,
+    // like every key-up whose swallowed key-down a focus change forgot
+    // (foreground_change_forgets_pending_key_up_suppression).
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)])
+        .foreground_changed()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)])
+        .advance_ms(33)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)])
+        .up("F13")
+        .expect_passed()
+        .expect_nothing_fired();
+}
+
+#[test]
+fn capslock_held_across_a_focus_change_does_not_reach_windows() {
+    // The default config. A CapsLock repeat that reached Windows would be
+    // the first CapsLock key-down it sees and would turn CapsLock on.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage),
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .foreground_changed()
+        .advance_ms(500)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .up("CapsLock")
+        .expect_passed();
+}
+
+#[test]
+fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
+    // Roadmap item 2.3's acceptance for an Immediate binding: the window
+    // the binding opens takes the foreground while T is still held.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Alt+T", action: Launch(exe: "wt.exe")) ] )"#)
+        .down("Win")
+        .expect_passed()
+        .down("Alt")
+        .expect_passed()
+        .down("T")
+        .expect_suppressed()
+        .expect_fired(&[launch("wt.exe")])
+        .foreground_changed()
+        .advance_ms(500)
+        .repeat("T")
+        .expect_suppressed()
+        .advance_ms(33)
+        .repeat("T")
+        .expect_suppressed()
+        .up("T")
+        .expect_passed();
+}
+
+#[test]
+fn press_after_a_lost_key_up_and_a_focus_change_follows_its_binding() {
+    // F13's key-up went to another desktop, so the engine still holds F13
+    // and reads the next press as a repeat (KS-29). The focus change forgot
+    // the swallowed key-down, so the binding decides: it fires and the
+    // press is swallowed, never fired and passed in one decision.
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up_unseen("F13")
+        .foreground_changed()
+        .advance_ms(1000)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
+    // A focus change forgets only swallowed key-downs. CapsLock's key-down
+    // reached Windows, so its repeats and its key-up still pass once Ctrl
+    // is released and "CapsLock" matches.
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .down("LCtrl")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_passed()
+        .foreground_changed()
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("CapsLock")
+        .expect_passed()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_passed()
+        .up("CapsLock")
+        .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]
