@@ -1701,6 +1701,107 @@ fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
     .expect_total_fired(&[]);
 }
 
+#[test]
+fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
+    // The chord opens a window that takes the foreground while J and K are
+    // still held. Their key-downs were swallowed, so Windows must not see
+    // their repeats either (no "jjj" in the new window). Their key-ups pass,
+    // like every key-up whose swallowed key-down a focus change forgot.
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: Launch(exe: "wt.exe")) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("J")
+    .expect_suppressed()
+    .advance_ms(20)
+    .down("K")
+    .expect_suppressed()
+    .expect_fired(&[launch("wt.exe")])
+    .foreground_changed()
+    .advance_ms(480)
+    .repeat("J")
+    .expect_suppressed()
+    .repeat("K")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("J")
+    .expect_suppressed()
+    .up("J")
+    .expect_passed()
+    .up("K")
+    .expect_passed()
+    .expect_total_fired(&[launch("wt.exe")]);
+}
+
+#[test]
+fn deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
+    // Roadmap item 2.3's example: the Hold opens a terminal, which takes the
+    // foreground while CapsLock is still held. A CapsLock repeat that reached
+    // Windows would be the first CapsLock key-down it sees and would turn
+    // CapsLock on in the terminal.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: Launch(exe: "wt.exe"), trigger: Hold(300)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(300)
+    .expect_fired(&[launch("wt.exe")])
+    .foreground_changed()
+    .advance_ms(200)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .up("CapsLock")
+    .expect_passed()
+    .expect_total_fired(&[launch("wt.exe")]);
+
+    // A Tap still pending at the key-up: the key-up stays swallowed with it.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(2000)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("CapsLock")
+    .expect_suppressed()
+    .foreground_changed()
+    .advance_ms(500)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .advance_ms(100)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed() {
+    // Ctrl+F13 opens a window and Ctrl is released while F13 is still
+    // held. "Ctrl+F13" no longer matches F13's repeats, but its key-down was
+    // swallowed, so they stay swallowed.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+F13", action: Launch(exe: "wt.exe")) ] )"#)
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[launch("wt.exe")])
+        .foreground_changed()
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(33)
+        .repeat("F13")
+        .expect_suppressed()
+        .up("F13")
+        .expect_passed()
+        .expect_total_fired(&[launch("wt.exe")]);
+}
+
 // ---- The harness itself ----
 
 #[test]

@@ -294,7 +294,10 @@ mod tests {
         state.mark_blocked(20);
         state.mark_passed(65);
         state.forget_blocked();
-        assert!(!state.is_blocked(20));
+        assert!(
+            state.is_blocked(20),
+            "a forgotten key-down was still swallowed, so its repeats are too"
+        );
         assert!(!state.is_passed(20));
         assert!(state.is_passed(65));
     }
