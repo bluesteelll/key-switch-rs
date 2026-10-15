@@ -244,7 +244,9 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
 /// engine resyncs the modifiers and forgets which key-ups were due to be
 /// swallowed, repairing what the keyboard hook may have missed while a
-/// higher-integrity window had focus.
+/// higher-integrity window had focus. A modifier whose key-down the engine
+/// swallowed is not resynced (Windows never saw it go down, KS-14), so a
+/// lost key-up of such a modifier is not repaired here.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,

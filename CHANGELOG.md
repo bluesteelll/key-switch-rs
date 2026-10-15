@@ -99,9 +99,7 @@ minor version; such entries sit under **Changed** and start with
   was swallowed (roadmap item 2.3): its repeats are then swallowed only
   while an `Immediate` binding matches them, as before, and its release
   reaches Windows; a key whose key-down reached Windows keeps its repeats
-  and its release across the change. A modifier whose `Tap` or `Hold` is
-  still pending can still be left held when the combo stops matching
-  mid-hold (`"Ctrl+Shift"` with `Hold(1000)`, Ctrl released first; KS-14).
+  and its release across the change.
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
@@ -116,6 +114,19 @@ minor version; such entries sit under **Changed** and start with
   before its timer thread wakes now fires when the timer wakes, still on
   that thread, instead of being cancelled. Different terms behave as before
   until roadmap item 2.2.
+- KS-14: the resync of modifiers from the Windows key state leaves alone a
+  modifier whose key-down was swallowed, also after a foreground change.
+  Windows never saw that key go down, so the next event of any other key
+  used to read it as released. It now stays held for matching and its
+  auto-repeats stay auto-repeats: with the `Alt+Shift` auto-blocker,
+  `Alt+Shift+X` bindings fire in either key order; Shift held by a
+  `DoubleTap` binding still counts for `Shift+CapsLock`; one long Shift
+  press no longer fires its `DoubleTap(600)`; and `"Ctrl+Shift"` with
+  `Hold(1000)`, Ctrl released first, no longer leaves Shift held in Windows.
+  Shift pressed after Alt with the default config's auto-blocker now stays
+  swallowed for its whole press, auto-repeats and release included, even
+  after Alt is released; its repeats used to reach Windows from the first
+  one on (roadmap item 1.2 stops the blocker swallowing it).
 - KS-32 (partly; an unverified report): when a `sequence` completes, the
   key-up of a modifier held in its last step (for example `Win` in
   `"Win+F14"`) is no longer swallowed.

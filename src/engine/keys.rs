@@ -17,7 +17,8 @@ use crate::data::key_spec::KeySpec;
 /// Modifier virtual keys kept in sync with the OS key state. These are the
 /// keys most prone to getting stuck after a focus transition into a
 /// higher-integrity window (Task Manager / UAC / lock screen) that swallowed
-/// the corresponding key-up event.
+/// the corresponding key-up event. A modifier whose key-down the engine
+/// swallowed is left out of the sync: Windows never saw it go down (KS-14).
 const MODIFIERS: [VIRTUAL_KEY; 11] = [
     VK_SHIFT,
     VK_LSHIFT,
@@ -41,20 +42,25 @@ fn slot(vk: u16) -> Option<usize> {
 /// What became of a key's latest key-down, as far as the engine knows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LastDown {
-    /// Nothing on record: the key is up, or a foreground change forgot that
-    /// its key-down was suppressed.
+    /// Nothing on record: the key is up, or the engine never saw its
+    /// key-down (a modifier the resync found held).
     Unknown,
     /// The key-down reached the OS.
     Passed,
     /// The key-down was suppressed.
     Suppressed,
+    /// The key-down was suppressed, then a foreground change forgot it: its
+    /// key-up is no longer due to be suppressed. Windows still never saw the
+    /// key go down, so the resync leaves it alone.
+    Forgotten,
 }
 
 /// Held and suppressed keys, one entry per virtual-key code.
 pub(super) struct KeyState {
     /// Keys the engine believes are held. Set by key-down, cleared by
-    /// key-up, and overwritten from the OS for the modifier codes. Its
-    /// previous value is also the auto-repeat detector.
+    /// key-up, and overwritten from the OS for the modifier codes whose
+    /// key-down the engine did not swallow. Its previous value is also the
+    /// auto-repeat detector.
     active: [bool; 256],
     /// What became of each key's latest key-down. A suppressed key-down
     /// makes its auto-repeats and its key-up suppressed too, so an
@@ -73,14 +79,28 @@ impl KeyState {
 
     /// Reconciles the modifier flags with the OS key state. `skip` is the
     /// key of the event being delivered: its OS state is not updated until
-    /// the hook returns, so it would read as stale.
+    /// the hook returns, so it would read as stale. A modifier whose
+    /// key-down was suppressed, even one a foreground change forgot, is left
+    /// alone as well: Windows never saw it go down, so its key state says up
+    /// while the key is held, and overwriting the flag would also turn the
+    /// key's next auto-repeat into a fresh press (KS-14).
     pub(super) fn sync_modifiers(&mut self, env: &dyn Env, skip: Option<VIRTUAL_KEY>) {
         for modifier in MODIFIERS {
-            if Some(modifier) == skip {
+            let index = modifier.0 as usize;
+            if Some(modifier) == skip || self.key_down_swallowed(index) {
                 continue;
             }
-            self.active[modifier.0 as usize] = env.os_key_down(modifier);
+            self.active[index] = env.os_key_down(modifier);
         }
+    }
+
+    /// Whether the latest key-down at `index` was suppressed, forgotten by a
+    /// foreground change or not.
+    fn key_down_swallowed(&self, index: usize) -> bool {
+        matches!(
+            self.last_down[index],
+            LastDown::Suppressed | LastDown::Forgotten
+        )
     }
 
     /// Records a key-down. Returns true if the key was already held, which
@@ -135,12 +155,14 @@ impl KeyState {
         }
     }
 
-    /// Forgets every suppressed key-down. A passed key-down stays on record:
-    /// the OS saw it, so its repeats and key-up must still pass.
-    pub(super) fn clear_all_blocked(&mut self) {
+    /// Forgets every suppressed key-down, so that no key-up stays due to be
+    /// suppressed. The record still says the key-down never reached the OS.
+    /// A passed key-down stays on record: the OS saw it, so its repeats and
+    /// key-up must still pass.
+    pub(super) fn forget_blocked(&mut self) {
         for record in &mut self.last_down {
             if *record == LastDown::Suppressed {
-                *record = LastDown::Unknown;
+                *record = LastDown::Forgotten;
             }
         }
     }
@@ -257,21 +279,21 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_resets_every_flag() {
+    fn forget_blocked_resets_every_flag() {
         let mut state = KeyState::new();
         state.mark_blocked(20);
         state.mark_blocked(200);
-        state.clear_all_blocked();
+        state.forget_blocked();
         assert!(!state.take_blocked(20));
         assert!(!state.take_blocked(200));
     }
 
     #[test]
-    fn clear_all_keeps_passed_key_downs() {
+    fn forget_blocked_keeps_passed_key_downs() {
         let mut state = KeyState::new();
         state.mark_blocked(20);
         state.mark_passed(65);
-        state.clear_all_blocked();
+        state.forget_blocked();
         assert!(!state.is_blocked(20));
         assert!(!state.is_passed(20));
         assert!(state.is_passed(65));
@@ -368,6 +390,38 @@ mod tests {
         assert!(
             state.press(VK_LSHIFT),
             "its next key-down is still an auto-repeat"
+        );
+    }
+
+    #[test]
+    fn resync_still_repairs_a_modifier_whose_key_down_passed() {
+        // Its key-up went to a window the hook does not see.
+        let mut state = KeyState::new();
+        state.press(VK_LCONTROL);
+        state.mark_passed(VK_LCONTROL.0);
+
+        state.sync_modifiers(&NothingDown, Some(VK_A));
+
+        assert!(!state.is_active(VK_LCONTROL));
+    }
+
+    #[test]
+    fn forgotten_modifier_is_left_alone_by_the_resync() {
+        let mut state = KeyState::new();
+        state.press(VK_LSHIFT);
+        state.mark_blocked(VK_LSHIFT.0);
+        state.forget_blocked();
+
+        state.sync_modifiers(&NothingDown, None);
+
+        assert!(
+            state.is_active(VK_LSHIFT),
+            "a focus change does not make Windows see the key-down"
+        );
+        assert!(!state.is_passed(VK_LSHIFT.0));
+        assert!(
+            !state.take_blocked(VK_LSHIFT.0),
+            "its key-up is no longer due to be suppressed"
         );
     }
 }

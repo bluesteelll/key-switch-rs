@@ -38,7 +38,8 @@
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
 //!   (also the auto-repeat detector), and whether each key's latest
 //!   key-down was suppressed or passed, so that its auto-repeats and key-up
-//!   are treated the same way.
+//!   are treated the same way. A foreground change marks the suppressed
+//!   ones as forgotten: their key-ups are no longer due to be suppressed.
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
@@ -92,7 +93,10 @@
 //! except where a rule names the audit issue that changed it. On a key-down:
 //!
 //! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
-//!    the key being delivered.
+//!    the key being delivered and every modifier whose key-down was
+//!    suppressed, even one a foreground change forgot: Windows never saw
+//!    that key go down, so it stays held for matching and its auto-repeats
+//!    stay auto-repeats (KS-14).
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
 //! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
 //!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
@@ -132,8 +136,8 @@
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: repeat-firing Immediate
-//! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
-//! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
+//! actions (KS-10), specificity across trigger kinds (KS-13) and the
+//! sequence matching rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -269,7 +273,8 @@ impl Engine {
     pub fn on_key(&mut self, event: KeyEvent, bindings: &[Binding], env: &dyn Env) -> Decision {
         // Repair phantom-held modifiers from any earlier focus transition
         // before matching. The key being delivered is skipped: its OS state
-        // lags until the hook returns.
+        // lags until the hook returns. So is every modifier whose key-down
+        // was swallowed: the OS never saw it go down (KS-14).
         self.keys.sync_modifiers(env, Some(event.vk));
 
         match event.direction {
@@ -296,12 +301,17 @@ impl Engine {
     }
 
     /// The foreground window changed. Key-ups may have been lost while a
-    /// higher-integrity window had focus: resync every modifier from the OS
+    /// higher-integrity window had focus: resync the modifiers from the OS
     /// and forget which key-downs were swallowed, so that no key-up stays
     /// due to be swallowed. Keys whose key-down passed keep that record.
+    ///
+    /// The resync skips a modifier whose key-down was swallowed: Windows
+    /// never saw it go down, so its key state says nothing (KS-14). Such a
+    /// modifier whose key-up was lost stays held for the engine until its
+    /// next press and release (roadmap item 2.3 owns that repair).
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
-        self.keys.clear_all_blocked();
+        self.keys.forget_blocked();
     }
 
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
@@ -452,11 +462,8 @@ impl Engine {
             self.keys.mark_blocked(vk.0);
         } else {
             // This key-down reaches the OS, so its repeats and key-up must
-            // too. Replace a block left by an earlier press whose key-up was
-            // never seen, or whose swallowed key-down the resync erased
-            // (KS-14), so this key reads as one the OS saw go down. A Tap or
-            // Hold that such an earlier press left pending still swallows
-            // the key-up (KS-14).
+            // too. Replace whatever an earlier press left on record, so this
+            // key reads as one the OS saw go down.
             self.keys.mark_passed(vk.0);
         }
         decision

@@ -356,15 +356,15 @@ Shift is unaffected.
   for every binding kind. A key held past the repeat delay therefore does
   not leak repeats after a swallowed press (which would leave it held in
   Windows once its release is swallowed), and a key whose press reached
-  Windows keeps its repeats and its release. Two gaps remain:
+  Windows keeps its repeats and its release. The resync of modifiers from
+  the Windows key state leaves alone a modifier whose key-down was
+  swallowed, because Windows never saw it go down: it still counts as held
+  for matching, and its auto-repeats stay auto-repeats (KS-14). One gap
+  remains:
   - A foreground change while the key is held forgets that its press was
     swallowed (its release might go to another window). Its repeats are
     then swallowed only while an `Immediate` binding matches them, and its
     release reaches Windows (roadmap item 2.3).
-  - A modifier whose `Tap` or `Hold` is still pending can be left held in
-    Windows when the combo stops matching mid-hold, for example
-    `"Ctrl+Shift"` with `Hold(1000)` when Ctrl is released first and Shift
-    stays down past the repeat delay (KS-14).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized
@@ -424,7 +424,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 | Field                  | Default  | Meaning                                                                                                                                                                              |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `block_default`        | `true`   | Suppress the original OS key event so the foreground app does not also see it. Set to `false` to let the keystroke pass through after the binding fires.                             |
-| `block_original_combo` | `false`  | Auto-install a no-op binding for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. |
+| `block_original_combo` | `false`  | Auto-install a no-op binding for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
 | `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `when`                 | `Always` | Foreground-window guard. The binding fires only when the predicate matches. See [`Conditions`](#conditions-when-field) below.                                                        |
 
