@@ -427,7 +427,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 | Field                  | Default  | Meaning                                                                                                                                                                              |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `block_default`        | `true`   | Suppress the original OS key event so the foreground app does not also see it. Set to `false` to let the keystroke pass through after the binding fires.                             |
-| `block_original_combo` | `false`  | Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
+| `block_original_combo` | `false`  | Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. An auto-blocker that is added ignores the flagged binding's `when:` and acts in every window until roadmap item 1.2 (KS-35): with `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey (`Alt+Shift` by default) stays blocked there, so neither switches the layout in the game. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
 | `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `when`                 | `Always` | Foreground-window guard. The binding fires only when the predicate matches. See [`Conditions`](#conditions-when-field) below.                                                        |
 
@@ -462,12 +462,16 @@ Variants:
 | Variant                       | Matches when                                                          |
 | ----------------------------- | --------------------------------------------------------------------- |
 | `Always` (default)            | Always — same as omitting `when:`                                     |
-| `AppEquals("<exe>")`          | Focused window's process base-name equals `<exe>` (case insensitive)  |
+| `AppEquals("<exe>")`          | File name of the focused window's executable, with `.exe`, equals `<exe>` (case insensitive): `"code.exe"` matches `C:\...\Microsoft VS Code\Code.exe` |
 | `TitleContains("<s>")`        | Window title contains `<s>` (case insensitive)                        |
 | `TitleEquals("<s>")`          | Window title equals `<s>` exactly (case insensitive)                  |
 | `Not(<cond>)`                 | Negation                                                              |
 | `And([<c1>, <c2>, ...])`      | All sub-conditions hold                                               |
 | `Or([<c1>, <c2>, ...])`       | At least one sub-condition holds                                      |
+
+Windows of UWP apps such as Calculator and Settings belong to
+`ApplicationFrameHost.exe`, so `AppEquals` cannot tell them apart; match
+them with `TitleContains`.
 
 ### Errors
 

@@ -128,6 +128,8 @@
 //                         It acts only on the hotkey pressed on its own:
 //                         Shift pressed while Alt and Tab are held still
 //                         reaches Windows.
+//                         Until roadmap item 1.2 it ignores the binding's
+//                         when: and acts in every window (KS-35).
 // allow_extra_modifiers: true (default false)
 //                       - keys bindings only: also fire while modifiers
 //                         the binding does not name are held. A load

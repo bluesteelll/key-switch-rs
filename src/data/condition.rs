@@ -12,15 +12,16 @@
 //! names case-insensitively, and humans don't reliably remember the casing
 //! of window titles either.
 
-use std::ffi::c_void;
-
-use windows::Win32::{
-    Foundation::*,
-    System::{
-        ProcessStatus::GetModuleBaseNameW,
-        Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+use windows::{
+    Win32::{
+        Foundation::*,
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_NATIVE, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        },
+        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
     },
-    UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
+    core::{Owned, PWSTR},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -123,6 +124,9 @@ impl ForegroundContext {
         self.title.get_or_init(|| self.fetch_title()).as_deref()
     }
 
+    /// `None` when there is no window, its process is gone or cannot be
+    /// opened, or its image path has 1024 or more UTF-16 units. Unpaired
+    /// surrogates in the file name come back as U+FFFD.
     fn fetch_app(&self) -> Option<String> {
         if self.hwnd.is_invalid() {
             return None;
@@ -161,47 +165,54 @@ impl ForegroundInfo for ForegroundContext {
     }
 }
 
+/// Capacity, in UTF-16 units, of the buffer for a process image path: four
+/// times MAX_PATH, so long-path installs fit without a heap retry.
+const IMAGE_PATH_CAPACITY: usize = 1024;
+
 /// File name of the executable of process `pid`, e.g. `"notepad.exe"`.
 fn process_image_name(pid: u32) -> windows::core::Result<String> {
-    // PROCESS_QUERY_LIMITED_INFORMATION is enough for GetModuleBaseNameW
-    // and is permitted against most processes including elevated ones,
-    // which PROCESS_QUERY_INFORMATION would deny.
+    // QueryFullProcessImageNameW needs only PROCESS_QUERY_LIMITED_INFORMATION,
+    // which Windows also grants against elevated and protected processes.
+    // Reading the module list needs PROCESS_VM_READ on top, so it failed on
+    // this handle for every process (KS-03).
     //
-    // SAFETY: OpenProcess returns an owned handle that we close on drop
-    // via the RAII wrapper below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }?;
-    let _guard = ProcessHandleGuard(handle);
+    // SAFETY: OpenProcess takes no pointers. In `Ok` it returns a valid
+    // handle that nothing else owns or closes, so `Owned` may close it.
+    let process =
+        unsafe { Owned::new(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?) };
 
-    let mut buf = [0u16; 260]; // MAX_PATH; exe names are short.
-    // SAFETY: handle is valid; buf is sized and writable.
-    let len = unsafe { GetModuleBaseNameW(handle, None, &mut buf) };
-    if len == 0 {
-        // Built before `_guard` drops, so GetLastError is still the call's.
-        return Err(windows::core::Error::from_thread());
+    let mut buffer = [0u16; IMAGE_PATH_CAPACITY];
+    let mut size = IMAGE_PATH_CAPACITY as u32;
+    // The native form (`\Device\HarddiskVolume3\...`) ends in the same file
+    // name as the Win32 form and skips its device-to-drive-letter
+    // translation: about 2 us per lookup instead of 20 us, on the hook
+    // thread.
+    //
+    // SAFETY: `*process` is a live handle with the access right the call
+    // needs. The PWSTR points at `buffer`, which outlives the call, and
+    // `size` holds its capacity in UTF-16 units, so the call writes within
+    // it.
+    unsafe {
+        QueryFullProcessImageNameW(
+            *process,
+            PROCESS_NAME_NATIVE,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )?;
     }
-    Ok(String::from_utf16_lossy(&buf[..len as usize]))
+    let path = &buffer[..(size as usize).min(IMAGE_PATH_CAPACITY)];
+    let file_name =
+        image_file_name(path).ok_or_else(|| windows::core::Error::from(ERROR_INVALID_DATA))?;
+    Ok(String::from_utf16_lossy(file_name))
 }
 
-/// Closes the process handle when dropped. Local RAII because the Win32
-/// `CloseHandle` requires the raw handle and panics from inside `fetch_app`
-/// would otherwise leak.
-struct ProcessHandleGuard(HANDLE);
-
-impl Drop for ProcessHandleGuard {
-    fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            // SAFETY: handle came from OpenProcess above and hasn't been
-            // closed by anyone else.
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(self.0);
-            }
-        }
-    }
+/// The UTF-16 units of `path` after its last `\`, or `None` when there are
+/// none.
+fn image_file_name(path: &[u16]) -> Option<&[u16]> {
+    path.rsplit(|&unit| unit == u16::from(b'\\'))
+        .next()
+        .filter(|name| !name.is_empty())
 }
-
-// Silence "unused" on the c_void import which is pulled in transitively by
-// the windows crate's ProcessHandleGuard semantics but not directly named.
-const _: Option<*mut c_void> = None;
 
 #[cfg(test)]
 mod tests {
@@ -430,5 +441,35 @@ mod tests {
         );
         assert!(Condition::AppEquals(exe).evaluate(&ctx));
         assert_eq!(ctx.title(), Some(MessageOnlyWindow::TITLE));
+    }
+
+    #[test]
+    fn image_file_name_is_the_part_after_the_last_backslash() {
+        let file_name = |path: &str| {
+            let path: Vec<u16> = path.encode_utf16().collect();
+            image_file_name(&path).map(String::from_utf16_lossy)
+        };
+        assert_eq!(
+            file_name(r"C:\Windows\System32\notepad.exe").as_deref(),
+            Some("notepad.exe")
+        );
+        assert_eq!(
+            file_name(r"\Device\HarddiskVolume3\Apps\App.EXE").as_deref(),
+            Some("App.EXE")
+        );
+        assert_eq!(file_name("notepad.exe").as_deref(), Some("notepad.exe"));
+        assert_eq!(file_name(r"C:\dir\"), None);
+        assert_eq!(file_name(""), None);
+    }
+
+    #[test]
+    #[ignore = "manual: start it, then focus a Notepad window within 5 s; it expects ForegroundContext::capture().app() to be notepad.exe in any case"]
+    fn foreground_context_names_the_focused_notepad() {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let ctx = ForegroundContext::capture();
+        assert_eq!(
+            ctx.app().map(str::to_ascii_lowercase).as_deref(),
+            Some("notepad.exe")
+        );
     }
 }

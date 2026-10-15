@@ -127,6 +127,25 @@ minor version; such entries sit under **Changed** and start with
   check is now a `status` request, so it no longer leaves an
   `IPC read error` or `IPC write error` warning in the daemon console
   (KS-39, an unverified report).
+- KS-03: `AppEquals` matches the foreground application. The daemon read
+  the executable name with `GetModuleBaseNameW`, which fails on the
+  limited process handle it opens, so every `AppEquals` was false,
+  `Not(AppEquals(..))` was true even inside that application, and
+  `And([AppEquals(..), ..])` never held. It now reads the image path with
+  `QueryFullProcessImageNameW` and compares the executable's file name:
+  `notepad.exe` for `C:\Windows\System32\notepad.exe`. A binding with
+  `when: Not(AppEquals("game.exe"))` now stays silent in that game. The
+  auto-blocker of a `block_original_combo` binding still ignores the
+  binding's `when:` and acts in every window until roadmap item 1.2
+  (KS-35). With `when: Not(AppEquals("game.exe"))` added to the default
+  config's CapsLock binding, CapsLock now reaches the game as CapsLock
+  while the Windows hotkey (`Alt+Shift` by default) stays blocked there,
+  so neither switches the layout in the game. Windows of UWP apps such as
+  Calculator and Settings belong to `ApplicationFrameHost.exe`; match
+  those by title. Manual check (no automated test can focus a window):
+  with `( keys: "F9", action: PressKey("A"), when: AppEquals("notepad.exe") )`
+  loaded, F9 presses the A key in Notepad (it types that key's letter in
+  the active layout) and reaches every other window unchanged.
 - KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
   on the key-down of one of its own keys: a non-modifier key, or any of its
   keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).
