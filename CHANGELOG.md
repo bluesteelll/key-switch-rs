@@ -65,7 +65,6 @@ minor version; such entries sit under **Changed** and start with
 - KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
   thread per press, and a Hold timer thread that cannot be started is
   logged instead of aborting the daemon; that Hold then does not fire.
-
 - KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
   harness from `src/main.rs` (`test = false` and `bench = false` on the
   daemon binary). That harness inherited the daemon's `requireAdministrator`
