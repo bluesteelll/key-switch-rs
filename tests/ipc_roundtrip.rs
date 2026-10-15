@@ -1,11 +1,15 @@
-//! The `swch` client (`ipc::request`) against test pipes with unique names.
+//! The `swch` client (`ipc::request`) against test pipes with unique names,
+//! and the daemon's pipe server (`ipc_server::spawn`) driven through a
+//! stand-in for the daemon.
 //!
 //! No test here installs a keyboard hook or talks to a daemon: every pipe
-//! is created by the test itself, under a name no daemon uses.
+//! is created by the test itself, under a name no daemon uses, and the
+//! server gets a `DaemonControl` that only records what it is asked.
 
 use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU8;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,6 +19,7 @@ use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use interprocess::os::windows::named_pipe::{DuplexPipeStream, PipeListenerOptions, pipe_mode};
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 
+use key_switch_rs::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use key_switch_rs::ipc::{Command, REPLY_TIMEOUT, RequestError, pipe_path, request};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -38,6 +43,74 @@ fn listener(name: &str) -> Listener {
     listener_options(name)
         .create_sync()
         .expect("the test pipe can be created")
+}
+
+/// A stand-in for the daemon: a remapping flag, two bindings, and a record
+/// of every switch it was asked for.
+struct TestControl {
+    enabled: AtomicBool,
+    bindings: usize,
+    toggles: Mutex<Vec<bool>>,
+}
+
+impl DaemonControl for TestControl {
+    fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.enabled.store(enabled, Ordering::Release);
+        self.toggles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(enabled);
+        Ok(())
+    }
+
+    fn status(&self) -> DaemonStatus {
+        DaemonStatus {
+            enabled: self.enabled.load(Ordering::Acquire),
+            bindings: self.bindings,
+        }
+    }
+
+    fn request_exit(&self) -> Result<(), String> {
+        Err("the test daemon does not exit".to_owned())
+    }
+}
+
+#[test]
+fn status_off_on_status_round_trip_without_a_hook() {
+    let name = unique_pipe_name("server");
+    let control = Arc::new(TestControl {
+        enabled: AtomicBool::new(true),
+        bindings: 2,
+        toggles: Mutex::new(Vec::new()),
+    });
+    ipc_server::spawn(&name, control.clone()).expect("the server starts on its own pipe");
+    let send = |command: Command| {
+        request(&name, &command, REPLY_TIMEOUT)
+            .unwrap_or_else(|error| panic!("{command:?}: no reply: {error}"))
+    };
+
+    assert_eq!(
+        send(Command::Status),
+        (true, "running (2 bindings live)".to_owned())
+    );
+    assert_eq!(send(Command::Off), (true, "disabled".to_owned()));
+    assert!(!control.enabled.load(Ordering::Acquire));
+    assert_eq!(
+        send(Command::Status),
+        (true, "disabled (2 bindings live)".to_owned())
+    );
+    assert_eq!(send(Command::On), (true, "enabled".to_owned()));
+    assert_eq!(
+        send(Command::Status),
+        (true, "running (2 bindings live)".to_owned())
+    );
+    assert_eq!(
+        *control
+            .toggles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+        [false, true]
+    );
 }
 
 #[test]

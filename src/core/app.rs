@@ -8,12 +8,54 @@ use windows::{
 };
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::data::binding::Binding;
-use crate::hook::{config_watcher, ipc_server, keyboard_hook_callback};
+use crate::hook::ipc_server::{self, DaemonControl, DaemonStatus};
+use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::{config_watcher, keyboard_hook_callback};
+use crate::ipc;
 
 static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// The daemon's side of the IPC commands, called on the IPC connection
+/// workers. `on` and `off` only flip the remapping switch of the
+/// process-wide hook; `exit` posts `WM_QUIT` to the main thread, which then
+/// removes the hooks itself.
+struct DaemonHandle {
+    hook: &'static KeyboardHook,
+    /// The thread that pumps `GetMessageW`, or 0 if unknown.
+    main_thread_id: u32,
+}
+
+impl DaemonControl for DaemonHandle {
+    fn set_enabled(&self, enabled: bool) -> std::result::Result<(), String> {
+        self.hook
+            .set_enabled(enabled)
+            .map(drop)
+            .ok_or_else(|| "the engine is busy on this thread".to_owned())
+    }
+
+    fn status(&self) -> DaemonStatus {
+        DaemonStatus {
+            enabled: self.hook.is_enabled(),
+            bindings: self.hook.bindings().len(),
+        }
+    }
+
+    fn request_exit(&self) -> std::result::Result<(), String> {
+        if self.main_thread_id == 0 {
+            return Err("main thread id unknown, cannot post WM_QUIT".to_owned());
+        }
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; WM_QUIT carries no pointer in
+        // its parameters. A thread id that is no longer valid only makes the
+        // call fail, and that error is returned.
+        unsafe { PostThreadMessageW(self.main_thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+            .map_err(|error| error.to_string())
+    }
+}
 
 pub struct App {
     pending_bindings: Vec<Binding>,
@@ -79,8 +121,6 @@ impl App {
     pub fn run(mut self) -> Result<()> {
         let main_tid = unsafe { GetCurrentThreadId() };
         MAIN_THREAD_ID.store(main_tid, Ordering::Release);
-        // The IPC `exit` command needs the same thread id to post WM_QUIT.
-        ipc_server::set_main_thread_id(main_tid);
 
         self.print_welcome();
         self.setup_ctrl_c_handler()?;
@@ -91,10 +131,25 @@ impl App {
         hook.install()?;
         println!("✓ Hook installed successfully");
 
-        if ipc_server::spawn(hook) {
-            println!("✓ IPC server listening (use `swch on/off/exit`)\n");
-        } else {
-            println!();
+        // The IPC `exit` command posts WM_QUIT to this thread, like Ctrl+C.
+        let control = Arc::new(DaemonHandle {
+            hook,
+            main_thread_id: main_tid,
+        });
+        match ipc_server::spawn(ipc::PIPE_NAME, control) {
+            Ok(()) => println!("✓ IPC server listening (use `swch on/off/exit`)\n"),
+            Err(e) => {
+                eprintln!(
+                    "[WARN] could not create IPC listener at pipe {:?}: {}",
+                    ipc::PIPE_NAME,
+                    e
+                );
+                eprintln!(
+                    "[INFO] another daemon instance may already be running. \
+                     `swch` commands will not reach this process."
+                );
+                println!();
+            }
         }
 
         // Spawn the file watcher AFTER the hook is live, and keep it alive
@@ -152,5 +207,57 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
             BOOL(1)
         }
         _ => BOOL(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::windows_actions::BindAction;
+    use crate::data::key_combination::KeyCombination;
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
+
+    /// A hook of its own, leaked because `DaemonHandle` holds a `'static`
+    /// one like the daemon's. No hook is installed through it.
+    fn leaked_hook() -> &'static KeyboardHook {
+        let hook = Box::leak(Box::new(KeyboardHook::new()));
+        hook.update_bindings(vec![Binding::new(
+            KeyCombination::new(VK_F13),
+            BindAction::DoNothing,
+        )]);
+        hook
+    }
+
+    #[test]
+    fn daemon_handle_status_follows_the_hook_flag() {
+        let hook = leaked_hook();
+        let handle = DaemonHandle {
+            hook,
+            main_thread_id: 0,
+        };
+        assert_eq!(
+            handle.status(),
+            DaemonStatus {
+                enabled: true,
+                bindings: 1
+            }
+        );
+
+        handle.set_enabled(false).expect("not inside with_engine");
+        assert!(!hook.is_enabled());
+        assert!(!handle.status().enabled);
+
+        handle.set_enabled(true).expect("not inside with_engine");
+        assert!(handle.status().enabled);
+        assert!(!hook.is_installed(), "switching remapping installs nothing");
+    }
+
+    #[test]
+    fn daemon_handle_refuses_exit_without_a_main_thread() {
+        let handle = DaemonHandle {
+            hook: leaked_hook(),
+            main_thread_id: 0,
+        };
+        assert!(handle.request_exit().is_err());
     }
 }

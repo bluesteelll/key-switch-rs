@@ -42,7 +42,9 @@ minor version; such entries sit under **Changed** and start with
   on `sequence` and `chord` bindings.
 - `tests/ipc_roundtrip.rs`: the `swch` client against test pipes with
   unique names: a server that never answers, a missing pipe, a pipe that
-  refuses the client, a busy pipe and a server that answers.
+  refuses the client, a busy pipe and a server that answers, and the
+  daemon's pipe server answering `status`, `off`, `on`, `status` through a
+  stand-in for the daemon, with no keyboard hook installed.
 
 ### Changed
 

@@ -1,6 +1,10 @@
 //! Daemon-side IPC listener. Spawned as a background thread by `App::run`,
-//! accepts connections on the named pipe, dispatches commands to the hook
-//! and `App`, and writes formatted responses back.
+//! accepts connections on a named pipe, hands each command to a
+//! [`DaemonControl`] and writes the formatted response back.
+//!
+//! The server knows nothing of the keyboard hook: the daemon passes its own
+//! `DaemonControl` (`core::app`), and the tests pass a stand-in on a pipe
+//! name of their own (`tests/ipc_roundtrip.rs`).
 //!
 //! Cross-platform via `interprocess::local_socket` — on Windows this maps
 //! to a Win32 named pipe (`\\.\pipe\<NAME>`), no network stack involved.
@@ -10,7 +14,7 @@
 //! independent — no session state to carry across requests.
 
 use std::io::{self, BufRead, BufReader};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use interprocess::local_socket::traits::{ListenerExt, Stream as StreamTrait};
@@ -18,21 +22,30 @@ use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions, p
 use interprocess::os::windows::{
     ToWtf16, local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
-use windows::Win32::{
-    Foundation::{LPARAM, WPARAM},
-    UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT},
-};
 
-use crate::hook::keyboard_hook::KeyboardHook;
-use crate::ipc::{self, Command, format_err, format_ok};
+use crate::ipc::{Command, format_err, format_ok};
 
-/// Thread ID of the daemon's main loop, set by `App::run` before the IPC
-/// server starts. The `exit` command uses it to post `WM_QUIT` to the
-/// right thread — the same mechanism Ctrl+C handling uses.
-static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+/// What the IPC commands do to the daemon. Called on the connection
+/// workers, one per request, possibly several at once.
+pub trait DaemonControl: Send + Sync {
+    /// Turns remapping on or off (`on`, `off`). Asking for the position it
+    /// already has is not an error.
+    fn set_enabled(&self, enabled: bool) -> Result<(), String>;
 
-pub fn set_main_thread_id(id: u32) {
-    MAIN_THREAD_ID.store(id, Ordering::Release);
+    /// What `status` reports.
+    fn status(&self) -> DaemonStatus;
+
+    /// Asks the daemon to shut down (`exit`).
+    fn request_exit(&self) -> Result<(), String>;
+}
+
+/// What `status` reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DaemonStatus {
+    /// Whether remapping is on.
+    pub enabled: bool,
+    /// How many bindings are live.
+    pub bindings: usize,
 }
 
 /// The pipe's security descriptor (KS-02), in the security descriptor
@@ -86,26 +99,12 @@ fn create_listener(pipe_name: &str) -> io::Result<Listener> {
         .create_sync()
 }
 
-/// Spawn the listener thread. Returns immediately; the thread runs for the
-/// lifetime of the daemon. Bind errors are logged and the daemon continues
-/// without IPC (the user just won't be able to use `swch on/off/exit`).
-pub fn spawn(hook: &'static KeyboardHook) -> bool {
-    let listener = match create_listener(ipc::PIPE_NAME) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!(
-                "[WARN] could not create IPC listener at pipe {:?}: {}",
-                ipc::PIPE_NAME,
-                e
-            );
-            eprintln!(
-                "[INFO] another daemon instance may already be running. \
-                 `swch` commands will not reach this process."
-            );
-            return false;
-        }
-    };
-
+/// Creates the pipe `pipe_name` and spawns the `ipc-server` thread that
+/// serves it with `control`. Returns once the pipe exists; the thread runs
+/// for the lifetime of the process. An error means no pipe and no thread:
+/// the caller decides whether to go on without IPC.
+pub fn spawn(pipe_name: &str, control: Arc<dyn DaemonControl>) -> io::Result<()> {
+    let listener = create_listener(pipe_name)?;
     thread::Builder::new()
         .name("ipc-server".into())
         .spawn(move || {
@@ -115,20 +114,19 @@ pub fn spawn(hook: &'static KeyboardHook) -> bool {
                         // Each request is independent; spawn a short-lived
                         // worker so a slow client can't block subsequent
                         // commands.
-                        thread::spawn(move || handle_connection(stream, hook));
+                        let control = Arc::clone(&control);
+                        thread::spawn(move || handle_connection(stream, control.as_ref()));
                     }
                     Err(e) => {
                         eprintln!("[WARN] IPC accept error: {}", e);
                     }
                 }
             }
-        })
-        .expect("spawn ipc-server thread");
-
-    true
+        })?;
+    Ok(())
 }
 
-fn handle_connection<S>(stream: S, hook: &'static KeyboardHook)
+fn handle_connection<S>(stream: S, control: &dyn DaemonControl)
 where
     S: StreamTrait,
 {
@@ -146,7 +144,7 @@ where
     let mut stream = reader.into_inner();
 
     let response = match Command::parse(&line) {
-        Ok(cmd) => dispatch(cmd, hook),
+        Ok(cmd) => dispatch(cmd, control),
         Err(e) => format_err(&e),
     };
 
@@ -156,51 +154,122 @@ where
     let _ = stream.flush();
 }
 
-fn dispatch(cmd: Command, hook: &'static KeyboardHook) -> String {
+/// Carries out one command and formats the reply line.
+fn dispatch(cmd: Command, control: &dyn DaemonControl) -> String {
     match cmd {
-        Command::On => match hook.set_enabled(true) {
-            Some(_) => format_ok("enabled"),
-            None => format_err("the engine is busy on this thread"),
+        Command::On => match control.set_enabled(true) {
+            Ok(()) => format_ok("enabled"),
+            Err(e) => format_err(&format!("could not turn remapping on: {e}")),
         },
-        Command::Off => match hook.set_enabled(false) {
-            Some(_) => format_ok("disabled"),
-            None => format_err("the engine is busy on this thread"),
+        Command::Off => match control.set_enabled(false) {
+            Ok(()) => format_ok("disabled"),
+            Err(e) => format_err(&format!("could not turn remapping off: {e}")),
         },
         Command::Status => {
-            let state = if hook.is_enabled() {
-                "running"
-            } else {
-                "disabled"
-            };
-            let count = hook.bindings().len();
-            format_ok(&format!("{} ({} bindings live)", state, count))
+            let DaemonStatus { enabled, bindings } = control.status();
+            let state = if enabled { "running" } else { "disabled" };
+            format_ok(&format!("{state} ({bindings} bindings live)"))
         }
-        Command::Exit => {
-            let main_tid = MAIN_THREAD_ID.load(Ordering::Acquire);
-            if main_tid == 0 {
-                return format_err("main thread id unknown — cannot post WM_QUIT");
-            }
-            // Post AFTER constructing the response so the client gets it
-            // before the daemon tears down.
-            let response = format_ok("shutting down");
-            // SAFETY: PostThreadMessageW takes a valid thread id; we use
-            // the one stashed by App::run from GetCurrentThreadId.
-            unsafe {
-                let _ = PostThreadMessageW(main_tid, WM_QUIT, WPARAM(0), LPARAM(0));
-            }
-            response
-        }
+        Command::Exit => match control.request_exit() {
+            Ok(()) => format_ok("shutting down"),
+            Err(e) => format_err(&format!("could not shut down: {e}")),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
     use interprocess::local_socket::Stream;
 
     use super::*;
+
+    /// A stand-in for the daemon: a flag, three bindings and a count of
+    /// exit requests. With `fail` every request it can refuse fails.
+    struct FakeControl {
+        enabled: AtomicBool,
+        fail: bool,
+        exits: AtomicU32,
+    }
+
+    impl FakeControl {
+        fn new(fail: bool) -> Self {
+            Self {
+                enabled: AtomicBool::new(true),
+                fail,
+                exits: AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl DaemonControl for FakeControl {
+        fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+            if self.fail {
+                return Err("the fake refuses".to_owned());
+            }
+            self.enabled.store(enabled, Ordering::Release);
+            Ok(())
+        }
+
+        fn status(&self) -> DaemonStatus {
+            DaemonStatus {
+                enabled: self.enabled.load(Ordering::Acquire),
+                bindings: 3,
+            }
+        }
+
+        fn request_exit(&self) -> Result<(), String> {
+            if self.fail {
+                return Err("the fake refuses".to_owned());
+            }
+            self.exits.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn dispatch_switches_remapping_and_status_reports_the_flag() {
+        let control = FakeControl::new(false);
+        assert_eq!(
+            dispatch(Command::Status, &control),
+            "OK: running (3 bindings live)\n"
+        );
+        assert_eq!(dispatch(Command::Off, &control), "OK: disabled\n");
+        assert_eq!(
+            dispatch(Command::Status, &control),
+            "OK: disabled (3 bindings live)\n"
+        );
+        assert_eq!(
+            dispatch(Command::Off, &control),
+            "OK: disabled\n",
+            "already off is not an error"
+        );
+        assert_eq!(dispatch(Command::On, &control), "OK: enabled\n");
+        assert_eq!(
+            dispatch(Command::Status, &control),
+            "OK: running (3 bindings live)\n"
+        );
+    }
+
+    #[test]
+    fn dispatch_reports_a_control_failure_as_err() {
+        let control = FakeControl::new(true);
+        for command in [Command::On, Command::Exit] {
+            let reply = dispatch(command.clone(), &control);
+            assert!(reply.starts_with("ERR: "), "{command:?}: {reply:?}");
+            assert!(reply.contains("the fake refuses"), "{command:?}: {reply:?}");
+        }
+    }
+
+    #[test]
+    fn dispatch_exit_asks_the_daemon_to_quit_once() {
+        let control = FakeControl::new(false);
+        assert_eq!(dispatch(Command::Exit, &control), "OK: shutting down\n");
+        assert_eq!(control.exits.load(Ordering::Acquire), 1);
+    }
 
     #[test]
     fn pipe_sddl_parses() {

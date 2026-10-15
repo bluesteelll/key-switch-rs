@@ -19,6 +19,7 @@ Modular architecture:
 ```text
 key-switch-rs/
 ├── build.rs                - emits /MANIFESTUAC linker arg for the daemon binary only
+├── tests/ipc_roundtrip.rs  - pipe server and swch client over a real pipe, no keyboard hook
 └── src/
     ├── lib.rs              - public crate surface (so swch binary can import shared modules)
     ├── ipc.rs              - IPC protocol and the swch client (bounded connect, 5 s reply deadline)
