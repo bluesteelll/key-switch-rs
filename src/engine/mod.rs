@@ -125,17 +125,20 @@
 //!    change, and passed if it is marked passed, whatever the bindings
 //!    asked. A repeat without a mark (a modifier the resync found held,
 //!    whose key-down the engine never saw) is suppressed if a binding asked
-//!    for it and leaves no mark. Actions still fire on repeats as rule 4
-//!    says.
+//!    for it; once one passes, the key is marked passed. Actions still fire
+//!    on repeats as rule 4 says. A completed chord or sequence marks the
+//!    keys whose key-ups it swallows as blocked, but only keys still held
+//!    whose key-down did not pass (KS-30, KS-32).
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
 //! passed. A Hold whose deadline has passed is left armed for its timer,
 //! which fires it even if the timer runs after the key-up (KS-25). The
-//! key-up is suppressed if a Tap or Hold was pending or if the key was
-//! marked blocked. A foreground change forgets which key-ups were due to be
-//! suppressed: such a key-up passes unless a Tap or Hold of its press is
-//! pending (roadmap item 2.3).
+//! key-up of a key marked passed always passes. Otherwise it is suppressed
+//! if the key was marked blocked or if a Tap or Hold was pending. A
+//! foreground change forgets which key-ups were due to be suppressed: such
+//! a key-up passes unless a Tap or Hold of its press is pending (roadmap
+//! item 2.3).
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: repeat-firing Immediate
@@ -417,7 +420,7 @@ impl Engine {
                             decision.suppress = true;
                             decision.fire.push(action);
                             for key in last_step_keys {
-                                self.keys.mark_blocked(key);
+                                self.keys.mark_completed(key);
                             }
                         }
                     }
@@ -436,7 +439,7 @@ impl Engine {
                             decision.suppress = true;
                             decision.fire.push(action);
                             for key in keys {
-                                self.keys.mark_blocked(key);
+                                self.keys.mark_completed(key);
                             }
                         }
                     }
@@ -458,12 +461,16 @@ impl Engine {
             // window took the foreground.
             //
             // The resync can find a modifier held whose key-down the hook
-            // never saw. A repeat without a record keeps what the bindings
-            // asked and records nothing.
+            // never saw, so Windows has it down. A repeat without a record
+            // keeps what the bindings asked. If it passes, the press is one
+            // Windows saw: record that, so its later repeats and its key-up
+            // pass too, and no completed chord swallows that key-up.
             if self.keys.is_blocked(vk.0) {
                 decision.suppress = true;
             } else if self.keys.is_passed(vk.0) {
                 decision.suppress = false;
+            } else if !decision.suppress {
+                self.keys.mark_passed(vk.0);
             }
         } else if decision.suppress {
             self.keys.mark_blocked(vk.0);
@@ -492,14 +499,15 @@ impl Engine {
         let mut decision = Decision::default();
         decision.fire.extend(tap);
 
-        if tap_fired || hold != HoldRelease::NotPending {
-            // Gesture-bound key: suppress the key-up too, and clear the
-            // blocked flag its key-down set so it does not leak.
-            self.keys.take_blocked(vk.0);
-            decision.suppress = true;
-        } else {
-            decision.suppress = self.keys.take_blocked(vk.0);
-        }
+        // A key-up whose key-down reached Windows always reaches it too, or
+        // the key stays held there. Otherwise it is suppressed if the
+        // key-down is on record as suppressed, or if a Tap or Hold of the
+        // press was pending: a focus change may have forgotten the record,
+        // and the gesture is still evidence of a swallowed press.
+        let was_passed = self.keys.is_passed(vk.0);
+        let was_blocked = self.keys.take_blocked(vk.0);
+        let gesture_bound = tap_fired || hold != HoldRelease::NotPending;
+        decision.suppress = was_blocked || (gesture_bound && !was_passed);
         decision
     }
 }

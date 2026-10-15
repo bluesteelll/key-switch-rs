@@ -356,7 +356,8 @@ Shift is unaffected.
   for every binding kind. A key held past the repeat delay therefore does
   not leak repeats after a swallowed press (which would leave it held in
   Windows once its release is swallowed), and a key whose press reached
-  Windows keeps its repeats and its release. The resync of modifiers from
+  Windows keeps its repeats and its release, even when a `chord` or
+  `sequence` completes while it is held. The resync of modifiers from
   the Windows key state leaves alone a modifier whose key-down was
   swallowed, because Windows never saw it go down: it still counts as held
   for matching, and its auto-repeats stay auto-repeats (KS-14). One gap

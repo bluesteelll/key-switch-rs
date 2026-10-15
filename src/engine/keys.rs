@@ -127,6 +127,19 @@ impl KeyState {
         }
     }
 
+    /// Records that a completed chord or sequence swallows the key-up of
+    /// `vk`, if the key is held and its key-down did not reach the OS. A key
+    /// already released has no key-up left to swallow (KS-30), and one whose
+    /// key-down passed must keep its key-up (KS-32).
+    pub(super) fn mark_completed(&mut self, vk: u16) {
+        if let Some(index) = slot(vk)
+            && self.active[index]
+            && self.last_down[index] != LastDown::Passed
+        {
+            self.last_down[index] = LastDown::Suppressed;
+        }
+    }
+
     /// Records that the key-down of `vk` reached the OS.
     pub(super) fn mark_passed(&mut self, vk: u16) {
         if let Some(index) = slot(vk) {
@@ -397,6 +410,35 @@ mod tests {
             state.press(VK_LSHIFT),
             "its next key-down is still an auto-repeat"
         );
+    }
+
+    #[test]
+    fn completion_marks_only_held_keys_whose_key_down_did_not_pass() {
+        let mut state = KeyState::new();
+        state.press(VK_F14);
+        state.mark_passed(VK_F14.0);
+        state.press(VK_J);
+        state.mark_blocked(VK_J.0);
+        state.forget_blocked();
+
+        state.mark_completed(VK_F14.0);
+        state.mark_completed(VK_J.0);
+        state.mark_completed(VK_K.0);
+        state.mark_completed(300);
+
+        assert!(
+            state.is_passed(VK_F14.0),
+            "a held key whose key-down passed keeps its key-up"
+        );
+        assert!(
+            state.take_blocked(VK_J.0),
+            "a held key whose swallowed key-down a focus change forgot has its key-up swallowed again"
+        );
+        assert!(
+            !state.is_blocked(VK_K.0),
+            "a key already released is not marked"
+        );
+        assert!(!state.is_blocked(300));
     }
 
     #[test]

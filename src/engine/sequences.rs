@@ -11,9 +11,10 @@
 //!
 //! **Suppression** mirrors chords: every key-down that starts or advances a
 //! sequence is suppressed, and on completion the key-ups of the last step's
-//! non-modifier keys are suppressed too. If a sequence times out or breaks,
-//! the suppressed key-downs are lost; there is no replay. Don't bind
-//! sequences to keys used in normal typing.
+//! non-modifier keys are suppressed too, for the keys still held whose
+//! key-down did not reach the OS (the engine checks; KS-32). If a sequence
+//! times out or breaks, the suppressed key-downs are lost; there is no
+//! replay. Don't bind sequences to keys used in normal typing.
 
 use std::time::{Duration, Instant};
 
@@ -41,7 +42,8 @@ pub(super) enum SequenceOutcome {
     /// The sequence started or advanced: suppress the key-down.
     Advanced,
     /// The sequence completed: suppress the key-down, fire `action` and
-    /// suppress the key-ups of the keys in `last_step_keys`.
+    /// suppress the key-ups of the keys in `last_step_keys` that are held
+    /// and whose key-down did not pass.
     Completed {
         action: BindAction,
         last_step_keys: Vec<u16>,
@@ -121,7 +123,8 @@ impl Sequences {
 /// last step's non-modifier keys. A modifier in that step reached the OS on
 /// its key-down, unless it was the completing key, which the engine marks
 /// with the event itself; marking it here would swallow a key-up whose
-/// key-down the OS saw.
+/// key-down the OS saw. The engine also skips a non-modifier key whose
+/// key-down passed, such as F14 pressed first for `["F14+F15", "F14+F16"]`.
 fn last_step_keys(steps: &[KeyCombination]) -> Vec<u16> {
     steps
         .last()
