@@ -127,10 +127,10 @@ pub(crate) type SystemCombination = dyn Fn(&BindAction) -> Option<KeyCombination
 /// Pure (no-I/O) conversion from RON text to `Vec<Binding>`. Kept available
 /// to the crate so tests can exercise the schema without touching the disk.
 ///
-/// The returned list is already expanded with auto-blocker bindings for any
-/// entries that set `block_original_combo: true`, with the hotkeys read from
-/// the registry. Callers can hand the list straight to
-/// `KeyboardHook::update_bindings`.
+/// The returned list holds the file's bindings in file order, followed by
+/// the auto-blockers for the entries that set `block_original_combo: true`,
+/// with the hotkeys read from the registry. Callers can hand the list
+/// straight to `KeyboardHook::update_bindings`.
 pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
     from_ron_str_with_hotkeys(text, &BindAction::get_system_combination)
 }
@@ -175,36 +175,46 @@ pub(crate) fn from_ron_str_with_hotkeys(
     Ok(expand_with_auto_blockers(user_bindings, system_combination))
 }
 
-/// Inserts a no-op binding for the OS-default hotkey of any binding that
-/// declared `block_original_combo: true`. The auto-blocker silences Windows'
-/// own behaviour for that combo so the user's remap is the only thing the
-/// foreground app sees.
+/// Appends an auto-blocker for the Windows hotkey of every binding that
+/// declared `block_original_combo: true`, so that Windows' own behaviour for
+/// that hotkey does not run next to the user's remap.
 ///
-/// Idempotent: if two user bindings demand the same auto-blocker (or if a
-/// user binding already covers the system combo), the auto-blocker is added
-/// only once.
+/// One blocker per distinct hotkey, after all of the file's bindings. None
+/// for a hotkey whose exact keys a `keys` binding of the file uses, the
+/// flagged one included, whatever its trigger or `when:`: that binding takes
+/// the hotkey over, and its own `block_default` and `when:` decide whether
+/// Windows sees the hotkey (KS-18).
 fn expand_with_auto_blockers(
     user_bindings: Vec<Binding>,
     system_combination: &SystemCombination,
 ) -> Vec<Binding> {
-    let mut result: Vec<Binding> = Vec::with_capacity(user_bindings.len());
-
-    for binding in user_bindings {
+    let mut hotkeys: Vec<KeyCombination> = Vec::new();
+    for binding in &user_bindings {
         if binding.block_original_combo
-            && let Some(system_combo) = system_combination(&binding.action)
+            && let Some(hotkey) = system_combination(&binding.action)
+            && !hotkeys.contains(&hotkey)
         {
-            // Only `Combo`-kind bindings can collide with an auto-blocker
-            // (sequence/chord don't represent a single hold-this-set combo).
-            let already_present = result
-                .iter()
-                .any(|b| matches!(b.combination(), Some(c) if *c == system_combo));
-            if !already_present {
-                result.push(Binding::new_auto_blocker(system_combo));
-            }
+            hotkeys.push(hotkey);
         }
-        result.push(binding);
     }
 
+    let mut blockers = Vec::with_capacity(hotkeys.len());
+    for hotkey in hotkeys {
+        // Only `keys` bindings hold a set of keys the way a hotkey does;
+        // sequences and chords have no `combination()`.
+        match user_bindings
+            .iter()
+            .position(|b| b.combination() == Some(&hotkey))
+        {
+            Some(index) => {
+                println!("[INFO] no auto-blocker for {hotkey}: binding #{index} uses the same keys")
+            }
+            None => blockers.push(Binding::new_auto_blocker(hotkey)),
+        }
+    }
+
+    let mut result = user_bindings;
+    result.extend(blockers);
     result
 }
 
@@ -516,8 +526,9 @@ mod tests {
             )
         "#;
         let bindings = from_ron_str(ron_text).unwrap();
-        // 2 entries: the user binding + the auto-blocker inserted because of
-        // block_original_combo. Order: auto-blocker first, then user.
+        // 2 entries: the user binding + the auto-blocker added because of
+        // block_original_combo. Order: user binding first, then the
+        // auto-blocker.
         assert_eq!(bindings.len(), 2);
 
         let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();

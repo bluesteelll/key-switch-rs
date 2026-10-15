@@ -53,8 +53,8 @@ const DELAYS_MS: [u64; 13] = [0, 1, 20, 33, 49, 50, 199, 200, 201, 250, 500, 600
 
 struct Config {
     name: &'static str,
-    /// Put the `Alt+Shift` auto-blocker in front, as the loader does for
-    /// `block_original_combo`.
+    /// Put the `Alt+Shift` auto-blocker that `block_original_combo` adds in
+    /// front of the bindings (`with_alt_shift_blocker`).
     blocker: bool,
     ron: &'static str,
 }

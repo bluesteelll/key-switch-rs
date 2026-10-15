@@ -74,6 +74,12 @@ minor version; such entries sit under **Changed** and start with
   Add `allow_extra_modifiers: true` to a binding for the old behaviour. On
   layouts with AltGr, right Alt arrives together with a left Ctrl, so a
   binding on `RAlt` needs `Ctrl+RAlt` or `allow_extra_modifiers: true`.
+- **Breaking:** a `keys` binding on exactly the keys of the Windows hotkey
+  now replaces the `block_original_combo` auto-blocker for that hotkey
+  (KS-18). With a `when:` on that binding, such as
+  `( keys: "Alt+Shift", action: SwitchLanguageBackward, when: AppEquals("code.exe") )`,
+  the Windows hotkey now reaches Windows in every other window; it used to
+  be blocked everywhere.
 
 ### Fixed
 
@@ -133,6 +139,17 @@ minor version; such entries sit under **Changed** and start with
   swallowed for its whole press, auto-repeats and release included, even
   after Alt is released; its repeats used to reach Windows from the first
   one on (roadmap item 1.2 stops the blocker swallowing it).
+- KS-18: `block_original_combo` no longer adds an auto-blocker when a
+  `keys` binding anywhere in the file uses the same keys as the Windows
+  hotkey, in any order and with any trigger or `when:`, the flagged binding
+  itself included. That binding now runs its action wherever it sits in the
+  file; a binding on `Alt+Shift` below the flagged one, or
+  `( keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true )`
+  on its own, never did. The console says so at load
+  (`[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys`);
+  with a `when:` on that binding the Windows hotkey is not blocked where the
+  condition does not hold. Auto-blockers are listed after the file's
+  bindings at startup.
 - KS-30 (an unverified report): a completed `chord` no longer marks keys
   already released for a swallowed key-up, and no longer swallows the
   key-up of a chord key whose key-down reached Windows (J pressed again

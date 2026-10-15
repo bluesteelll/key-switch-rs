@@ -25,8 +25,9 @@ pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
 ] )"#;
 
 /// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
-/// Windows language hotkey, followed by the bindings of `ron`, in the
-/// loader's order. The blocker is built directly: loading it from RON would
+/// Windows language hotkey, followed by the bindings of `ron`. The blocker
+/// comes first, where it used to shadow a binding on the same keys; the
+/// loader now appends it. It is built directly: loading it from RON would
 /// read the registry.
 pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
     let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
