@@ -138,7 +138,7 @@
 // ---- conditions (`when:` field) ----
 //
 // Gate a binding on the focused window. Missing or Always: binding fires
-// unconditionally. Variants (case-insensitive string comparisons):
+// unconditionally. Variants (string comparisons ignore case, in every alphabet):
 //
 //   Always
 //   AppEquals("code.exe")           — exe base name of focused window

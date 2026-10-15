@@ -8,9 +8,10 @@
 //! keystroke, and only when a binding has a condition other than `Always`
 //! (`Condition::Always` never touches the context).
 //!
-//! All string comparisons are case-insensitive. Windows treats exe and path
-//! names case-insensitively, and humans don't reliably remember the casing
-//! of window titles either.
+//! Every string comparison ignores case with Unicode lowercasing
+//! (`str::to_lowercase`), so Cyrillic or Greek titles match in any case.
+//! Windows treats exe and path names case-insensitively, and humans don't
+//! reliably remember the casing of window titles either.
 
 use windows::{
     Win32::{
@@ -30,16 +31,16 @@ pub enum Condition {
     /// when the config doesn't specify `when:`.
     #[default]
     Always,
-    /// True when the focused window's process is `<exe>.exe` (case
-    /// insensitive). Compares against the executable's base name, so
+    /// True when the file name of the focused window's executable, `.exe`
+    /// included, equals the string (case-insensitive, Unicode-aware), so
     /// `"code.exe"` matches `C:\...\Microsoft VS Code\Code.exe`.
     AppEquals(String),
-    /// True when the focused window's title contains the substring (case
-    /// insensitive). Useful for picking out an app by tab name even when
-    /// many windows share the same executable.
+    /// True when the focused window's title contains the substring
+    /// (case-insensitive, Unicode-aware). Useful for picking out an app by
+    /// tab name even when many windows share the same executable.
     TitleContains(String),
     /// True when the focused window's title is exactly the given string
-    /// (case insensitive).
+    /// (case-insensitive, Unicode-aware).
     TitleEquals(String),
     /// Negation.
     Not(Box<Condition>),
@@ -61,7 +62,7 @@ impl Condition {
         match self {
             Condition::Always => true,
             Condition::AppEquals(target) => match ctx.app() {
-                Some(actual) => actual.eq_ignore_ascii_case(target),
+                Some(actual) => equal_ignoring_case(actual, target),
                 None => false,
             },
             Condition::TitleContains(needle) => match ctx.title() {
@@ -69,13 +70,24 @@ impl Condition {
                 None => false,
             },
             Condition::TitleEquals(target) => match ctx.title() {
-                Some(actual) => actual.eq_ignore_ascii_case(target),
+                Some(actual) => equal_ignoring_case(actual, target),
                 None => false,
             },
             Condition::Not(inner) => !inner.evaluate(ctx),
             Condition::And(parts) => parts.iter().all(|c| c.evaluate(ctx)),
             Condition::Or(parts) => parts.iter().any(|c| c.evaluate(ctx)),
         }
+    }
+}
+
+/// Equality under the lowercasing `TitleContains` uses, so a title that
+/// `TitleEquals(s)` accepts also contains `s`. ASCII strings lowercase byte
+/// by byte, so two of them compare without allocating.
+fn equal_ignoring_case(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a.to_lowercase() == b.to_lowercase()
     }
 }
 

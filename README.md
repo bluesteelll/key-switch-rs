@@ -436,7 +436,8 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 Gate a binding on what window is focused. The hook collects foreground info
 (exe name + window title) only when at least one binding actually uses a
 non-trivial condition — the common case "no `when:` anywhere" pays nothing.
-All string comparisons are case-insensitive.
+All string comparisons ignore case in every alphabet:
+`TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор".
 
 ```ron
 // Media-Pause only acts as play/pause in Spotify:

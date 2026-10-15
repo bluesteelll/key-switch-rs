@@ -227,6 +227,10 @@ minor version; such entries sit under **Changed** and start with
   binding of yours that matches the same press: with `LAlt+LShift` bound,
   that binding fires, and the `Alt+Shift` blocker still swallows Shift
   pressed with the right Alt.
+- KS-28 (an unverified report): `TitleEquals` and `AppEquals` ignore case
+  in every alphabet, with the same Unicode lowercasing as `TitleContains`:
+  `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор". They
+  used to ignore case for ASCII letters only.
 - KS-30 (an unverified report): a completed `chord` no longer marks keys
   already released for a swallowed key-up, and no longer swallows the
   key-up of a chord key whose key-down reached Windows (J pressed again
