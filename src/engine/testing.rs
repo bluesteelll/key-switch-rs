@@ -14,22 +14,31 @@
 //! parses to LWin). Use `"RShift"` and so on for the right-hand keys.
 //!
 //! [`FakeEnv`] models the OS key state the way Windows keeps it: a key-down
-//! or key-up changes it only if the engine let the event through, and a
-//! generic modifier code reads as down while either side is. Timers that the
-//! engine requests fire during [`Scenario::advance_ms`], in due order;
-//! [`Scenario::advance_ms_stalled`] holds them back to model a timer thread
-//! that wakes late.
+//! or key-up changes it only if the engine let the event through, or if the
+//! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`]),
+//! and a generic modifier code reads as down while either side is. Timers
+//! that the engine requests fire during [`Scenario::advance_ms`], in due
+//! order; [`Scenario::advance_ms_stalled`] holds them back to model a timer
+//! thread that wakes late.
 //!
 //! The `expect_*` methods check the most recent step: a key event, or an
 //! `advance_ms` together with the timers that fired during it. A failing
-//! expectation panics with the whole transcript of the scenario.
+//! expectation panics with the whole transcript of the scenario, and with
+//! the context set by [`Scenario::with_context`], such as the seed of a
+//! generated script.
+//!
+//! Two checks can also run on every later step:
+//! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
+//! press are suppressed or passed like its key-down) and
+//! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
+//! while the script has it up).
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-use super::{Decision, Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
+use super::{Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
 use crate::config::from_ron_str;
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
@@ -115,6 +124,15 @@ pub(crate) struct Scenario {
     held: [bool; 256],
     timers: Vec<TimerRequest>,
     steps: Vec<Step>,
+    /// Printed under a failure message.
+    context: Option<String>,
+    /// Whether [`check_press_symmetry`](Self::check_press_symmetry) is on.
+    check_symmetry: bool,
+    /// With the symmetry check on: whether the key-down of each key's
+    /// current press was suppressed, `None` for a key with no checked press.
+    press_suppressed: [Option<bool>; 256],
+    /// Whether [`check_nothing_stuck`](Self::check_nothing_stuck) is on.
+    check_stuck: bool,
 }
 
 impl Scenario {
@@ -139,7 +157,32 @@ impl Scenario {
             held: [false; 256],
             timers: Vec::new(),
             steps: Vec::new(),
+            context: None,
+            check_symmetry: false,
+            press_suppressed: [None; 256],
+            check_stuck: false,
         }
+    }
+
+    /// Sets a line printed with any failure, after the failure message.
+    pub(crate) fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// From now on, every auto-repeat and the key-up of a press must be
+    /// suppressed exactly when its key-down was. A press whose key-down came
+    /// before this call is not checked.
+    pub(crate) fn check_press_symmetry(mut self) -> Self {
+        self.check_symmetry = true;
+        self
+    }
+
+    /// From now on, every step is followed by
+    /// [`expect_nothing_stuck`](Self::expect_nothing_stuck).
+    pub(crate) fn check_nothing_stuck(mut self) -> Self {
+        self.check_stuck = true;
+        self
     }
 
     /// Sets the foreground window that `when:` conditions see.
@@ -186,29 +229,44 @@ impl Scenario {
         let vk = physical_key(key);
         self.held[vk.0 as usize] = false;
         self.env.os_down[vk.0 as usize] = false;
+        self.press_suppressed[vk.0 as usize] = None;
         let label = format!("up {key} unseen by the hook at {}", self.clock());
-        self.steps.push(Step {
-            label,
-            suppressed: None,
-            fired: Vec::new(),
-        });
+        self.push_step(label, None, Vec::new());
+        self
+    }
+
+    /// Presses `key` without the hook seeing it, as when it went down while
+    /// remapping was off or before the daemon started: the OS key state
+    /// changes, the engine is not told. Windows saw this key-down, so the
+    /// symmetry check counts the press as passed.
+    #[track_caller]
+    pub(crate) fn down_unseen(mut self, key: &str) -> Self {
+        if self.is_held(key) {
+            self.fail(&format!("down_unseen {key}: the key is already held"));
+        }
+        let vk = physical_key(key);
+        self.held[vk.0 as usize] = true;
+        self.env.os_down[vk.0 as usize] = true;
+        if self.check_symmetry {
+            self.press_suppressed[vk.0 as usize] = Some(false);
+        }
+        let label = format!("down {key} unseen by the hook at {}", self.clock());
+        self.push_step(label, None, Vec::new());
         self
     }
 
     /// Reports a foreground window change to the engine.
+    #[track_caller]
     pub(crate) fn foreground_changed(mut self) -> Self {
         self.engine.on_foreground_changed(&self.env);
         let label = format!("foreground change at {}", self.clock());
-        self.steps.push(Step {
-            label,
-            suppressed: None,
-            fired: Vec::new(),
-        });
+        self.push_step(label, None, Vec::new());
         self
     }
 
     /// Moves the clock forward by `ms`, firing every timer that falls due on
     /// the way, earliest first, with the clock set to its due time.
+    #[track_caller]
     pub(crate) fn advance_ms(mut self, ms: u64) -> Self {
         let target = self.env.now + Duration::from_millis(ms);
         let mut fired = Vec::new();
@@ -229,40 +287,30 @@ impl Scenario {
         }
         self.env.now = target;
         let label = format!("advance {ms} ms to {}", self.clock());
-        self.steps.push(Step {
-            label,
-            suppressed: None,
-            fired,
-        });
+        self.push_step(label, None, fired);
         self
     }
 
     /// Moves the clock forward by `ms` without firing any timer, as when a
     /// timer thread wakes late. The next [`advance_ms`](Self::advance_ms)
     /// fires every timer that fell due in the meantime, at its own clock.
+    #[track_caller]
     pub(crate) fn advance_ms_stalled(mut self, ms: u64) -> Self {
         self.env.now += Duration::from_millis(ms);
         let label = format!("advance {ms} ms to {}, timers stalled", self.clock());
-        self.steps.push(Step {
-            label,
-            suppressed: None,
-            fired: Vec::new(),
-        });
+        self.push_step(label, None, Vec::new());
         self
     }
 
     /// Drops every timer that has not fired yet, as when the caller cannot
     /// start them, and tells the engine through [`Engine::forget_timer`].
+    #[track_caller]
     pub(crate) fn lose_timers(mut self) -> Self {
         for timer in std::mem::take(&mut self.timers) {
             self.engine.forget_timer(timer.token);
         }
         let label = format!("timers lost at {}", self.clock());
-        self.steps.push(Step {
-            label,
-            suppressed: None,
-            fired: Vec::new(),
-        });
+        self.push_step(label, None, Vec::new());
         self
     }
 
@@ -311,29 +359,90 @@ impl Scenario {
         self
     }
 
+    /// No key is down in the modelled OS while the script has it up: every
+    /// key-down that reached Windows has had its key-up reach it too.
+    #[track_caller]
+    pub(crate) fn expect_nothing_stuck(self) -> Self {
+        self.fail_if_stuck();
+        self
+    }
+
+    #[track_caller]
     fn key_event(mut self, key: &str, direction: KeyDirection, what: &str) -> Self {
         let vk = physical_key(key);
         let decision = self
             .engine
             .on_key(KeyEvent { vk, direction }, &self.bindings, &self.env);
+        let suppressed = decision.suppress;
         let down = direction == KeyDirection::Down;
         // The OS only learns about events the hook passes on.
-        if !decision.suppress {
+        if !suppressed {
             self.env.os_down[vk.0 as usize] = down;
         }
         self.held[vk.0 as usize] = down;
         let label = format!("{what} {key} at {}", self.clock());
-        self.record(label, decision);
+        self.timers.extend(decision.timers);
+        self.push_step(label, Some(suppressed), decision.fire);
+        if self.check_symmetry {
+            self.check_press(vk, key, what, suppressed);
+        }
         self
     }
 
-    fn record(&mut self, label: String, decision: Decision) {
-        self.timers.extend(decision.timers);
+    /// The symmetry check for one key event of `vk`: a key-down starts a
+    /// press, and its auto-repeats and its key-up must match it.
+    #[track_caller]
+    fn check_press(&mut self, vk: VIRTUAL_KEY, key: &str, what: &str, suppressed: bool) {
+        let index = vk.0 as usize;
+        if what == "down" {
+            self.press_suppressed[index] = Some(suppressed);
+            return;
+        }
+        if let Some(down) = self.press_suppressed[index]
+            && down != suppressed
+        {
+            let label = &self
+                .steps
+                .last()
+                .expect("invariant: the event was just recorded")
+                .label;
+            self.fail(&format!(
+                "{label}: press of {key}: key-down {}, {what} {}",
+                outcome(down),
+                outcome(suppressed)
+            ));
+        }
+        if what == "up" {
+            self.press_suppressed[index] = None;
+        }
+    }
+
+    /// Records a step, then runs the stuck check if it is on.
+    #[track_caller]
+    fn push_step(&mut self, label: String, suppressed: Option<bool>, fired: Vec<BindAction>) {
         self.steps.push(Step {
             label,
-            suppressed: Some(decision.suppress),
-            fired: decision.fire,
+            suppressed,
+            fired,
         });
+        if self.check_stuck {
+            self.fail_if_stuck();
+        }
+    }
+
+    /// Fails, naming the last step, if a key is down in the modelled OS
+    /// while the script has it up.
+    #[track_caller]
+    fn fail_if_stuck(&self) {
+        if let Some(vk) = (0..256).find(|&vk| self.env.os_down[vk] && !self.held[vk]) {
+            let label = self
+                .steps
+                .last()
+                .map_or("start", |step| step.label.as_str());
+            self.fail(&format!(
+                "{label}: VK 0x{vk:02X} is down in Windows but physically up"
+            ));
+        }
     }
 
     fn is_held(&self, key: &str) -> bool {
@@ -355,15 +464,14 @@ impl Scenario {
     #[track_caller]
     fn expect_suppression(self, expected: bool) -> Self {
         let step = self.last_step();
-        let word = |s: bool| if s { "suppressed" } else { "passed" };
         match step.suppressed {
             Some(actual) if actual == expected => {}
             Some(actual) => {
                 let message = format!(
                     "{}: expected the event to be {}, it was {}",
                     step.label,
-                    word(expected),
-                    word(actual)
+                    outcome(expected),
+                    outcome(actual)
                 );
                 self.fail(&message);
             }
@@ -390,6 +498,15 @@ impl Scenario {
                 step.label, step.fired
             );
         }
-        panic!("scenario: {message}\ntranscript:\n{transcript}");
+        let context = self
+            .context
+            .as_ref()
+            .map(|context| format!("context: {context}\n"))
+            .unwrap_or_default();
+        panic!("scenario: {message}\n{context}transcript:\n{transcript}");
     }
+}
+
+fn outcome(suppressed: bool) -> &'static str {
+    if suppressed { "suppressed" } else { "passed" }
 }

@@ -1531,3 +1531,50 @@ fn a_failed_expectation_panics() {
 fn releasing_a_key_that_is_up_is_a_script_error() {
     Scenario::from_ron(r#"( bindings: [] )"#).up("A");
 }
+
+#[test]
+#[should_panic(expected = "press of F13: key-down suppressed, up passed")]
+fn press_symmetry_check_reports_a_key_up_that_differs_from_its_key_down() {
+    // A foreground change forgets that F13's key-down was swallowed, so its
+    // key-up passes (roadmap item 2.3).
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
+        .check_press_symmetry()
+        .down("F13")
+        .foreground_changed()
+        .up("F13");
+}
+
+#[test]
+#[should_panic(expected = "press of LShift: key-down passed, repeat suppressed")]
+fn press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down() {
+    // LShift went down while the hook was not looking, so Windows has it
+    // down and the engine first learns of it from the modifier resync, with
+    // no record of its key-down. A repeat without a record is swallowed
+    // when a binding asks for it.
+    Scenario::from_ron(r#"( bindings: [ (keys: "LShift", action: SwitchLanguage) ] )"#)
+        .check_press_symmetry()
+        .down_unseen("LShift")
+        .down("A")
+        .up("A")
+        .repeat("LShift");
+}
+
+#[test]
+fn nothing_stuck_holds_for_a_plain_press_and_an_unseen_release() {
+    Scenario::from_ron(r#"( bindings: [] )"#)
+        .check_nothing_stuck()
+        .down("A")
+        .up("A")
+        .down("Shift")
+        .up_unseen("Shift")
+        .expect_nothing_stuck();
+}
+
+#[test]
+#[should_panic(expected = "context: seed 7")]
+fn context_is_printed_with_a_failure() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .with_context("seed 7")
+        .down("CapsLock")
+        .expect_passed();
+}
