@@ -205,6 +205,13 @@ const _: Option<*mut c_void> = None;
 
 #[cfg(test)]
 mod tests {
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+        },
+        core::{PCWSTR, w},
+    };
+
     use super::*;
 
     /// A foreground that needs no window: what the engine's tests use.
@@ -302,5 +309,126 @@ mod tests {
             ]),
         ]);
         assert!(cond.evaluate(&ctx));
+    }
+
+    /// File name of this test binary, e.g. `key_switch_rs-<hash>.exe`.
+    fn test_exe_file_name() -> String {
+        std::env::current_exe()
+            .expect("invariant: the test binary knows its own path")
+            .file_name()
+            .expect("invariant: an executable path ends in a file name")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn process_image_name_resolves_the_current_process() {
+        let name = process_image_name(std::process::id())
+            .unwrap_or_else(|e| panic!("process_image_name(own pid) failed: {e}"));
+        assert!(
+            name.eq_ignore_ascii_case(&test_exe_file_name()),
+            "{name:?} is not the test binary's file name"
+        );
+        assert!(!name.contains('\\'), "{name:?} is a path, not a file name");
+        assert!(
+            name.to_ascii_lowercase().ends_with(".exe"),
+            "{name:?} does not end in .exe"
+        );
+    }
+
+    #[test]
+    fn app_equals_matches_the_current_process() {
+        struct OwnProcess(Option<String>);
+
+        impl ForegroundInfo for OwnProcess {
+            fn app(&self) -> Option<&str> {
+                self.0.as_deref()
+            }
+
+            fn title(&self) -> Option<&str> {
+                None
+            }
+        }
+
+        let own = OwnProcess(process_image_name(std::process::id()).ok());
+        let exe = test_exe_file_name();
+        assert!(
+            Condition::AppEquals(exe.to_ascii_uppercase()).evaluate(&own),
+            "AppEquals matches the test's own process (KS-03)"
+        );
+        assert!(
+            Condition::And(vec![Condition::AppEquals(exe.clone()), Condition::Always])
+                .evaluate(&own)
+        );
+        assert!(!Condition::Not(Box::new(Condition::AppEquals(exe))).evaluate(&own));
+        assert!(!Condition::AppEquals("notepad.exe".into()).evaluate(&own));
+    }
+
+    /// A message-only window of the test thread: never shown or activated,
+    /// and it gets no broadcasts. It gives `ForegroundContext` a real window
+    /// of this process without touching the foreground.
+    struct MessageOnlyWindow(HWND);
+
+    impl MessageOnlyWindow {
+        const TITLE: &str = "key-switch-rs condition test";
+
+        fn create() -> Self {
+            let title: Vec<u16> = Self::TITLE
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            // SAFETY: STATIC is a system class that user32 registers in every
+            // process; `title` is a NUL-terminated UTF-16 buffer that lives
+            // until the call returns; HWND_MESSAGE as the parent makes the
+            // window message-only, so it is never shown or activated.
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("STATIC"),
+                    PCWSTR(title.as_ptr()),
+                    WINDOW_STYLE::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(HWND_MESSAGE),
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap_or_else(|e| panic!("CreateWindowExW(HWND_MESSAGE) failed: {e}"));
+            Self(hwnd)
+        }
+    }
+
+    impl Drop for MessageOnlyWindow {
+        fn drop(&mut self) {
+            // SAFETY: self.0 was created in `create` and nothing else destroys
+            // it. HWND wraps a raw pointer, so this type is not Send and the
+            // drop runs on the creating thread, as DestroyWindow requires.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    /// The type the hook adapter uses resolves a real window, so a
+    /// `fetch_app` that loses the process name fails here, not only in a
+    /// manual check.
+    #[test]
+    fn foreground_context_reads_a_window_of_this_process() {
+        let window = MessageOnlyWindow::create();
+        let ctx = ForegroundContext {
+            hwnd: window.0,
+            app: std::cell::OnceCell::new(),
+            title: std::cell::OnceCell::new(),
+        };
+        let exe = test_exe_file_name();
+        assert!(
+            ctx.app().is_some_and(|app| app.eq_ignore_ascii_case(&exe)),
+            "ForegroundContext::app() of a window of this process is {:?}, not {exe:?} (KS-03)",
+            ctx.app()
+        );
+        assert!(Condition::AppEquals(exe).evaluate(&ctx));
+        assert_eq!(ctx.title(), Some(MessageOnlyWindow::TITLE));
     }
 }
