@@ -959,6 +959,117 @@ fn win_in_the_last_sequence_step_does_not_swallow_its_key_up() {
     .expect_passed();
 }
 
+// ---- Trigger key (KS-04) ----
+
+#[test]
+fn key_pressed_while_an_immediate_binding_key_is_held_passes() {
+    // Rollover: `a` goes down before CapsLock is released.
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(30)
+        .down("A")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("A")
+        .expect_passed()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn key_pressed_while_a_tap_hold_key_is_held_passes_and_arms_nothing() {
+    // The README's CapsLock pair.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(50)
+        .down("A")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("A")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(500)
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn modifier_pressed_while_capslock_is_held_does_not_fire_shift_capslock() {
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage),
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .down("LShift")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_passed()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn modifier_pressed_last_does_not_fire_a_combo() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: SwitchLanguage) ] )"#)
+        .down("J")
+        .expect_passed()
+        .down("LCtrl")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("LCtrl")
+        .expect_passed()
+        .up("J")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn deferred_combo_arms_only_on_its_trigger_key() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Shift+CapsLock", action: ToggleCapsLock, trigger: Tap(200)) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(50)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("LShift")
+    .expect_passed()
+    .advance_ms(300)
+    .down("CapsLock")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_nothing_fired()
+    .advance_ms(50)
+    .up("LShift")
+    .expect_passed()
+    .expect_nothing_fired()
+    .up("CapsLock")
+    .expect_passed()
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
 // ---- The harness itself ----
 
 #[test]
