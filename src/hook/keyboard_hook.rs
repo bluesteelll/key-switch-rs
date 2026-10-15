@@ -89,9 +89,9 @@ impl KeyboardHook {
     /// lock does that today (see the adapter's module docs).
     ///
     /// `f` must only decide or reset: no action, `SendInput` or thread spawn
-    /// under the lock. A lock poisoned by an earlier panic is taken over as it is: the
-    /// engine's state is plain data, and a panic in the hook callback cannot
-    /// be unwound into a usable state anyway.
+    /// under the lock. A lock poisoned by an earlier panic is taken over as
+    /// it is: the engine's state is plain data, and a panic in the hook
+    /// callback cannot be unwound into a usable state anyway.
     pub(crate) fn with_engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
         if DECIDING.with(Cell::get) {
             return None;
