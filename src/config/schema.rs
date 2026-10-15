@@ -53,6 +53,13 @@ pub(crate) struct RawBinding {
     /// gesture state machine. See [`RawTrigger`].
     #[serde(default)]
     pub trigger: RawTrigger,
+
+    /// Lets a `keys` binding fire while modifiers it does not name are held
+    /// too. Missing or `false`: the modifiers held (Shift, Ctrl, Alt, Win;
+    /// either key of a pair) must be exactly the binding's own. The loader
+    /// rejects `true` on `sequence` and `chord` bindings.
+    #[serde(default)]
+    pub allow_extra_modifiers: bool,
 }
 
 /// On-disk mirror of [`crate::data::trigger::Trigger`]. The tuple argument

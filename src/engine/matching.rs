@@ -9,17 +9,28 @@
 //!
 //! A `keys` binding is decided on the key-down of one of its own keys only,
 //! its trigger keys (KS-04): a key held from before, such as CapsLock while
-//! the user types, never makes a later key-down fire or arm it.
+//! the user types, never makes a later key-down fire or arm it. Its
+//! modifiers match exactly by family (owner decision): the families held
+//! must be the ones it names, unless it sets `allow_extra_modifiers`.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use crate::data::key_combination::KeyCombination;
-use crate::data::key_spec::KeySpec;
+use crate::data::key_spec::{KeySpec, Modifier, ModifierSet};
 
 /// The keys the engine believes are held, asked one [`KeySpec`] at a time.
 pub(super) trait HeldKeys {
     /// Whether a key that `key` accepts is held.
     fn is_down(&self, key: KeySpec) -> bool;
+
+    /// The modifier families held: a family counts if either of its keys is
+    /// held.
+    fn modifiers(&self) -> ModifierSet {
+        Modifier::ALL
+            .into_iter()
+            .filter(|&m| self.is_down(KeySpec::AnySide(m)))
+            .fold(ModifierSet::EMPTY, ModifierSet::with)
+    }
 }
 
 /// Whether every key of `combo` is held, each on its side.
@@ -40,13 +51,19 @@ pub(super) fn is_trigger_key(combo: &KeyCombination, pressed: VIRTUAL_KEY) -> bo
 }
 
 /// Whether the key-down of `pressed`, with `held` the keys held after it,
-/// fires or arms `combo`.
+/// fires or arms `combo`: `pressed` is a trigger key, every key of the
+/// combo is held on its side, and the modifier families held are exactly
+/// the combo's, or include them with `allow_extra_modifiers`. Other
+/// non-modifier keys held at the same time never block a match.
 pub(super) fn combo_matches<H: HeldKeys + ?Sized>(
     combo: &KeyCombination,
     pressed: VIRTUAL_KEY,
     held: &H,
+    allow_extra_modifiers: bool,
 ) -> bool {
-    is_trigger_key(combo, pressed) && keys_down(combo, held)
+    is_trigger_key(combo, pressed)
+        && keys_down(combo, held)
+        && (allow_extra_modifiers || held.modifiers() == combo.modifiers())
 }
 
 #[cfg(test)]
@@ -99,9 +116,9 @@ mod tests {
 
         // Held keys alone do not match: the key just pressed must trigger.
         let all_held = held(&[VK_LCONTROL, VK_J]);
-        assert!(combo_matches(&ctrl_j, VK_J, &all_held));
-        assert!(!combo_matches(&ctrl_j, VK_LCONTROL, &all_held));
-        assert!(!combo_matches(&ctrl_j, VK_J, &held(&[VK_J])));
+        assert!(combo_matches(&ctrl_j, VK_J, &all_held, false));
+        assert!(!combo_matches(&ctrl_j, VK_LCONTROL, &all_held, false));
+        assert!(!combo_matches(&ctrl_j, VK_J, &held(&[VK_J]), false));
     }
 
     #[test]
@@ -123,5 +140,66 @@ mod tests {
         let rwin_e = KeyCombination::new(VK_RWIN).with(VK_E);
         assert!(is_trigger_key(&rwin_e, VK_E));
         assert!(!is_trigger_key(&rwin_e, VK_RWIN));
+    }
+
+    #[test]
+    fn exact_modifiers_reject_an_extra_family() {
+        let ctrl_j = KeyCombination::new(KeySpec::AnySide(Modifier::Ctrl)).with(VK_J);
+        let extra_shift = held(&[VK_LCONTROL, VK_LSHIFT, VK_J]);
+        assert!(!combo_matches(&ctrl_j, VK_J, &extra_shift, false));
+        let extra_win = held(&[VK_RCONTROL, VK_RWIN, VK_J]);
+        assert!(!combo_matches(&ctrl_j, VK_J, &extra_win, false));
+
+        let capslock = KeyCombination::new(VK_CAPITAL);
+        assert!(combo_matches(
+            &capslock,
+            VK_CAPITAL,
+            &held(&[VK_CAPITAL]),
+            false
+        ));
+        let with_shift = held(&[VK_RSHIFT, VK_CAPITAL]);
+        assert!(!combo_matches(&capslock, VK_CAPITAL, &with_shift, false));
+        // A non-modifier key held as well is not an extra modifier.
+        let with_a = held(&[VK_A, VK_CAPITAL]);
+        assert!(combo_matches(&capslock, VK_CAPITAL, &with_a, false));
+    }
+
+    #[test]
+    fn either_side_of_a_family_counts_once() {
+        let left_shift_f13 = KeyCombination::new(VK_LSHIFT).with(VK_F13);
+        let both_shifts = held(&[VK_LSHIFT, VK_RSHIFT, VK_F13]);
+        assert!(combo_matches(&left_shift_f13, VK_F13, &both_shifts, false));
+
+        let shift_f13 = KeyCombination::new(KeySpec::AnySide(Modifier::Shift)).with(VK_F13);
+        let right_shift = held(&[VK_RSHIFT, VK_F13]);
+        assert!(combo_matches(&shift_f13, VK_F13, &right_shift, false));
+
+        // The generic slot the resync writes counts for its family too.
+        let generic_shift = held(&[VK_SHIFT, VK_F13]);
+        let f13 = KeyCombination::new(VK_F13);
+        assert!(!combo_matches(&f13, VK_F13, &generic_shift, false));
+    }
+
+    #[test]
+    fn allow_extra_modifiers_accepts_a_superset() {
+        let ctrl_j = KeyCombination::new(KeySpec::AnySide(Modifier::Ctrl)).with(VK_J);
+        let extras = held(&[VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_J]);
+        assert!(combo_matches(&ctrl_j, VK_J, &extras, true));
+        // Its own keys must still be held, on their side.
+        let no_ctrl = held(&[VK_LSHIFT, VK_J]);
+        assert!(!combo_matches(&ctrl_j, VK_J, &no_ctrl, true));
+        let left_shift_f13 = KeyCombination::new(VK_LSHIFT).with(VK_F13);
+        let right_shift = held(&[VK_RSHIFT, VK_F13]);
+        assert!(!combo_matches(&left_shift_f13, VK_F13, &right_shift, true));
+    }
+
+    #[test]
+    fn modifier_only_combo_is_exact_too() {
+        let alt_shift = KeyCombination::new(KeySpec::AnySide(Modifier::Alt))
+            .with(KeySpec::AnySide(Modifier::Shift));
+        let alt_shift_held = held(&[VK_LMENU, VK_LSHIFT]);
+        assert!(combo_matches(&alt_shift, VK_LSHIFT, &alt_shift_held, false));
+        let with_ctrl = held(&[VK_LCONTROL, VK_LMENU, VK_LSHIFT]);
+        assert!(!combo_matches(&alt_shift, VK_LSHIFT, &with_ctrl, false));
     }
 }

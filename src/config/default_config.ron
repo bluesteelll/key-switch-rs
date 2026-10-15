@@ -52,6 +52,12 @@
 // Shift, then CapsLock fires "Shift+CapsLock"; CapsLock, then Shift does
 // not. Keys typed while CapsLock is held reach the application.
 //
+// Modifiers match exactly: the modifiers held (Shift, Ctrl, Alt, Win;
+// either key of a pair counts) must be the ones the binding names.
+// "CapsLock" does not fire while Shift, Ctrl, Alt or Win is held, and
+// "Ctrl+J" does not fire on Ctrl+Shift+J. Set allow_extra_modifiers: true
+// on a binding to let it fire while other modifiers are held too.
+//
 // ---- action variants ----
 //
 // SwitchLanguage          — next keyboard layout
@@ -117,6 +123,10 @@
 //                         keys: "CapsLock" but Windows still ships
 //                         Alt+Shift / Ctrl+Shift as the language hotkey,
 //                         and this flag silences it.
+// allow_extra_modifiers: true (default false)
+//                       - keys bindings only: also fire while modifiers
+//                         the binding does not name are held. A load
+//                         error on sequence and chord bindings.
 //
 // ---- conditions (`when:` field) ----
 //

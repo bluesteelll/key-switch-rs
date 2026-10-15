@@ -81,6 +81,30 @@ impl Modifier {
             Modifier::Win => "Win",
         }
     }
+
+    /// This family's bit in a [`ModifierSet`].
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// A set of modifier families: which of Shift, Ctrl, Alt and Win a binding
+/// names, or which are held. Sides do not count here; exact modifier
+/// matching compares families.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModifierSet(u8);
+
+impl ModifierSet {
+    pub const EMPTY: ModifierSet = ModifierSet(0);
+
+    /// This set with `modifier` added.
+    pub fn with(self, modifier: Modifier) -> Self {
+        ModifierSet(self.0 | modifier.bit())
+    }
+
+    pub fn contains(self, modifier: Modifier) -> bool {
+        self.0 & modifier.bit() != 0
+    }
 }
 
 impl fmt::Display for Modifier {
@@ -284,6 +308,22 @@ mod tests {
         assert!(!any_shift.overlaps(KeySpec::AnySide(Modifier::Ctrl)));
         assert!(!any_win.overlaps(KeySpec::Key(VK_LMENU)));
         assert!(!KeySpec::Key(VK_A).overlaps(KeySpec::Key(VK_B)));
+    }
+
+    #[test]
+    fn modifier_set_holds_families() {
+        let set = ModifierSet::EMPTY.with(Modifier::Ctrl).with(Modifier::Win);
+        assert!(set.contains(Modifier::Ctrl));
+        assert!(set.contains(Modifier::Win));
+        assert!(!set.contains(Modifier::Shift));
+        assert!(!set.contains(Modifier::Alt));
+        assert_eq!(set, set.with(Modifier::Ctrl));
+        assert_eq!(
+            set,
+            ModifierSet::EMPTY.with(Modifier::Win).with(Modifier::Ctrl)
+        );
+        assert_ne!(set, ModifierSet::EMPTY.with(Modifier::Ctrl));
+        assert_eq!(ModifierSet::default(), ModifierSet::EMPTY);
     }
 
     #[test]

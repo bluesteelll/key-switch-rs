@@ -37,6 +37,9 @@ minor version; such entries sit under **Changed** and start with
   homepage, readme, keywords and categories, and `rust-version = "1.88"` as
   the minimum supported Rust version.
 - This changelog.
+- Per-binding `allow_extra_modifiers: true` for `keys` bindings: the binding
+  also fires while modifiers it does not name are held. It is a load error
+  on `sequence` and `chord` bindings.
 
 ### Changed
 
@@ -60,6 +63,17 @@ minor version; such entries sit under **Changed** and start with
   sends the left Win key.
 - The auto-blocker line printed at load names its keys
   (`SwitchLanguage: registry combination Alt+Shift`) instead of key codes.
+- **Breaking:** modifiers match exactly (owner decision; roadmap open
+  question 2). A `keys` binding fires only when the held modifiers (Shift,
+  Ctrl, Alt, Win; either key of a pair counts as that modifier) are exactly
+  the ones it names: `"CapsLock"` no longer fires while Shift is held, and
+  `"Ctrl+J"` no longer fires on Ctrl+Shift+J. With the default config,
+  CapsLock pressed with Ctrl, Alt or Win held now reaches Windows instead of
+  switching the language. Auto-blockers match exactly too: the `Alt+Shift`
+  blocker ignores Ctrl+Alt+Shift, and the `` ` `` blocker lets Shift+` through.
+  Add `allow_extra_modifiers: true` to a binding for the old behaviour. On
+  layouts with AltGr, right Alt arrives together with a left Ctrl, so a
+  binding on `RAlt` needs `Ctrl+RAlt` or `allow_extra_modifiers: true`.
 
 ### Fixed
 

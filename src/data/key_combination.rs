@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::key_spec::KeySpec;
+use super::key_spec::{KeySpec, ModifierSet};
 
 /// The keys of a `keys` binding or of one sequence step, as the config
 /// names them: each a [`KeySpec`], without duplicates, in config order. Two
@@ -57,6 +57,15 @@ impl KeyCombination {
         }
         Self { keys: deduped }
     }
+
+    /// The modifier families this combination names, each once whichever
+    /// side it names.
+    pub fn modifiers(&self) -> ModifierSet {
+        self.keys
+            .iter()
+            .filter_map(|key| key.modifier())
+            .fold(ModifierSet::EMPTY, ModifierSet::with)
+    }
 }
 
 impl fmt::Display for KeyCombination {
@@ -112,6 +121,23 @@ mod tests {
                 KeySpec::AnySide(Modifier::Alt),
                 KeySpec::AnySide(Modifier::Shift)
             ]
+        );
+    }
+
+    #[test]
+    fn modifiers_collects_families() {
+        let combo = KeyCombination::from_keys([VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_J]);
+        assert_eq!(
+            combo.modifiers(),
+            ModifierSet::EMPTY
+                .with(Modifier::Shift)
+                .with(Modifier::Ctrl)
+        );
+        let win_e = KeyCombination::new(KeySpec::AnySide(Modifier::Win)).with(VK_E);
+        assert_eq!(win_e.modifiers(), ModifierSet::EMPTY.with(Modifier::Win));
+        assert_eq!(
+            KeyCombination::new(VK_CAPITAL).modifiers(),
+            ModifierSet::EMPTY
         );
     }
 

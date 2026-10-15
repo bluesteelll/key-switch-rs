@@ -102,8 +102,11 @@
 //!    checked first, then its kind:
 //!    - `Combo`: the key just pressed must be one of its trigger keys, a
 //!      non-modifier key of the combo or, for a combo made only of
-//!      modifiers, any of its keys (KS-04); and all of its keys must be
-//!      held. `Immediate` fires only for the first matching Immediate
+//!      modifiers, any of its keys (KS-04); all of its keys must be held;
+//!      and the modifier families held (Shift, Ctrl, Alt, Win, either key
+//!      of a pair counting as its family) must be exactly the combo's own,
+//!      unless the binding sets `allow_extra_modifiers` (owner decision).
+//!      `Immediate` fires only for the first matching Immediate
 //!      binding, on every key-down including repeats, and suppresses if
 //!      `block_default` is set. `Tap`, `Hold` and `DoubleTap` ignore
 //!      repeats, arm under the key just pressed (so under a key of the
@@ -310,7 +313,12 @@ impl Engine {
 
             match &binding.kind {
                 BindingKind::Combo(combo) => {
-                    if !matching::combo_matches(combo, vk, &self.keys) {
+                    if !matching::combo_matches(
+                        combo,
+                        vk,
+                        &self.keys,
+                        binding.allow_extra_modifiers,
+                    ) {
                         continue;
                     }
                     match binding.trigger {

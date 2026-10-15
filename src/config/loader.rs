@@ -226,11 +226,22 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         ));
     }
 
+    // Sequence steps and chords have no exact-modifier rule to relax yet
+    // (roadmap 3.2); an accepted but ignored flag would change meaning
+    // silently once they get one.
+    if !matches!(kind, BindingKind::Combo(_)) && raw.allow_extra_modifiers {
+        return Err(format!(
+            "{}: `allow_extra_modifiers` applies only to `keys` bindings",
+            err_prefix
+        ));
+    }
+
     let binding = Binding::with_kind(kind, action)
         .with_block_default(raw.block_default)
         .with_block_original_combo(raw.block_original_combo)
         .with_condition(raw_condition_to_condition(&raw.when))
-        .with_trigger(trigger);
+        .with_trigger(trigger)
+        .with_allow_extra_modifiers(raw.allow_extra_modifiers);
 
     Ok(binding)
 }
@@ -1272,6 +1283,56 @@ mod tests {
                 other => panic!("expected Bindings error for {keys}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn allow_extra_modifiers_defaults_to_false() {
+        let bindings =
+            from_ron_str(r#"( bindings: [ ( keys: "CapsLock", action: SwitchLanguage ) ] )"#)
+                .unwrap();
+        assert!(!bindings[0].allow_extra_modifiers);
+    }
+
+    #[test]
+    fn allow_extra_modifiers_true_is_parsed() {
+        let ron = r#"( bindings: [
+            ( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true ),
+            ( keys: "F13", action: DoNothing, allow_extra_modifiers: false ),
+        ] )"#;
+        let bindings = from_ron_str(ron).unwrap();
+        assert!(bindings[0].allow_extra_modifiers);
+        assert!(!bindings[1].allow_extra_modifiers);
+    }
+
+    /// The README's combo-syntax section, read at compile time so that the
+    /// published examples are the ones under test.
+    const README: &str = include_str!("../../README.md");
+
+    #[test]
+    fn readme_matching_examples_load() {
+        let start = README
+            .find("### Combo syntax")
+            .expect("README has a combo syntax section");
+        let section = &README[start..];
+        let end = section.find("\n### ").unwrap_or(section.len());
+        let section = &section[..end];
+
+        let mut blocks = 0;
+        for block in section.split("```ron").skip(1) {
+            let body = block
+                .split("```")
+                .next()
+                .expect("invariant: split yields at least one piece");
+            let ron = format!("( bindings: [ {body} ] )");
+            let bindings = from_ron_str(&ron)
+                .unwrap_or_else(|e| panic!("README example does not load: {e}\n{body}"));
+            assert!(!bindings.is_empty(), "empty README example:\n{body}");
+            blocks += 1;
+        }
+        assert!(
+            blocks > 0,
+            "no RON example in the README's combo syntax section"
+        );
     }
 
     #[test]

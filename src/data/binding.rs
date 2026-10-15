@@ -63,6 +63,11 @@ pub struct Binding {
     /// triggers paired with `Sequence`/`Chord` (which have their own
     /// temporal semantics).
     pub trigger: Trigger,
+    /// Lets a `Combo` binding fire while modifiers it does not name are held
+    /// too. `false` (the default) requires the held modifier families to be
+    /// exactly the combo's own. The loader rejects `true` on `Sequence` and
+    /// `Chord`; auto-blockers are always exact.
+    pub allow_extra_modifiers: bool,
     pub(crate) is_auto_blocker: bool,
 }
 
@@ -81,6 +86,7 @@ impl Binding {
             block_original_combo: false,
             condition: Condition::Always,
             trigger: Trigger::Immediate,
+            allow_extra_modifiers: false,
             is_auto_blocker: false,
         }
     }
@@ -93,6 +99,7 @@ impl Binding {
             block_original_combo: false,
             condition: Condition::Always,
             trigger: Trigger::Immediate,
+            allow_extra_modifiers: false,
             is_auto_blocker: true,
         }
     }
@@ -130,6 +137,11 @@ impl Binding {
         self
     }
 
+    pub fn with_allow_extra_modifiers(mut self, allow: bool) -> Self {
+        self.allow_extra_modifiers = allow;
+        self
+    }
+
     pub fn execute(&self) {
         self.action.execute();
     }
@@ -149,18 +161,23 @@ impl std::fmt::Display for Binding {
         } else {
             format!("  @{}", self.trigger)
         };
+        let extra_suffix = if self.allow_extra_modifiers {
+            "  [allow_extra_modifiers]"
+        } else {
+            ""
+        };
 
         if self.is_auto_blocker {
             write!(
                 f,
-                "[AUTO-BLOCK] {:<24} -> (blocked){}{}",
-                keys_str, cond_suffix, trigger_suffix
+                "[AUTO-BLOCK] {:<24} -> (blocked){}{}{}",
+                keys_str, cond_suffix, trigger_suffix, extra_suffix
             )
         } else {
             write!(
                 f,
-                "{:<34} -> {}{}{}",
-                keys_str, self.action, cond_suffix, trigger_suffix
+                "{:<34} -> {}{}{}{}",
+                keys_str, self.action, cond_suffix, trigger_suffix, extra_suffix
             )
         }
     }
@@ -182,5 +199,29 @@ fn format_kind(kind: &BindingKind) -> String {
             let rendered: Vec<String> = keys.iter().map(KeySpec::to_string).collect();
             format!("[Chord <{}ms>] {}", window.as_millis(), rendered.join("+"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    #[test]
+    fn display_marks_allow_extra_modifiers() {
+        let exact = Binding::new(KeyCombination::new(VK_CAPITAL), BindAction::SwitchLanguage);
+        let relaxed = exact.clone().with_allow_extra_modifiers(true);
+
+        let exact_line = exact.to_string();
+        assert!(exact_line.starts_with("CapsLock"), "{exact_line}");
+        assert!(
+            !exact_line.contains("allow_extra_modifiers"),
+            "{exact_line}"
+        );
+        let relaxed_line = relaxed.to_string();
+        assert!(
+            relaxed_line.ends_with("  [allow_extra_modifiers]"),
+            "{relaxed_line}"
+        );
     }
 }

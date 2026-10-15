@@ -206,6 +206,29 @@ not fire `"Ctrl+J"`. A key pressed while a binding's key is held is not that
 binding's key, so with CapsLock held, typing `abc` delivers `abc`. The order of
 the names in the string does not matter.
 
+**Exact modifiers.** A `keys` binding fires only when the modifiers held
+(Shift, Ctrl, Alt and Win; either key of a pair counts as that modifier) are
+exactly the ones it names. `"CapsLock"` does not fire while Shift is held, and
+`"Ctrl+J"` does not fire on Ctrl+Shift+J, so that shortcut reaches the
+application. The binding's other keys must be held too; other non-modifier
+keys held at the same time do not matter. `allow_extra_modifiers: true` lets a
+binding fire while modifiers it does not name are held as well. It is valid
+on `keys` bindings only and a load error on `sequence` and `chord`, whose
+steps and keys match whatever modifiers are held.
+
+```ron
+// Either Shift with CapsLock, and no other modifier: not Ctrl+Shift+CapsLock.
+( keys: "Shift+CapsLock", action: ToggleCapsLock ),
+// The left Shift with F13; holding the right Shift as well still counts as Shift.
+( keys: "LShift+F13", action: SwitchLanguage ),
+// CapsLock alone, or with any modifiers held.
+( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true ),
+```
+
+On keyboard layouts with an AltGr key (German, Polish and others), the right
+Alt key arrives together with a left Ctrl. A binding on `RAlt` or `Alt` then
+does not fire on AltGr: write `Ctrl+RAlt` or set `allow_extra_modifiers: true`.
+
 ### Action variants
 
 | Variant                              | Purpose                                                                  |
@@ -389,6 +412,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `block_default`        | `true`   | Suppress the original OS key event so the foreground app does not also see it. Set to `false` to let the keystroke pass through after the binding fires.                             |
 | `block_original_combo` | `false`  | Auto-install a no-op binding for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. |
+| `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `when`                 | `Always` | Foreground-window guard. The binding fires only when the predicate matches. See [`Conditions`](#conditions-when-field) below.                                                        |
 
 ### Conditions (`when:` field)
@@ -546,7 +570,7 @@ elevated without a prompt; `swch` then talks to it normally.
 
 - **Not macros**: application calls native Windows API functions, not emulating action sequences
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
-- **Sided modifiers**: `Shift` matches either Shift key and `LShift` only the left one; the same for Ctrl, Alt and Win
+- **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). Parse errors keep the previous config live — never bricks the daemon.
