@@ -4,25 +4,29 @@
 //! For every `WH_KEYBOARD_LL` event, `keyboard_hook_callback`:
 //!
 //! 1. passes `code < 0` on untouched, as the hook contract requires;
-//! 2. passes the daemon's own injected events (the sentinel in
+//! 2. passes every event untouched, without reading it, while remapping is
+//!    off (`swch off`, `KeyboardHook::is_enabled`); the hooks stay
+//!    installed, and the check is repeated under the engine lock in step 5;
+//! 3. passes the daemon's own injected events (the sentinel in
 //!    `dwExtraInfo`, see `crate::core::constants`) before any state is
 //!    touched, so a synthesized key never feeds back into the engine;
-//! 3. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
+//! 4. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
-//! 4. asks [`Engine::on_key`](crate::engine::Engine::on_key) under the
-//!    engine lock, with one snapshot of the binding list and a `HookEnv`
-//!    that answers the engine's questions with live Win32 calls;
-//! 5. carries out the [`Decision`] after the lock and the snapshot are
+//! 5. asks [`Engine::on_key`](crate::engine::Engine::on_key) under the
+//!    engine lock, if remapping is still on there, with one snapshot of the
+//!    binding list and a `HookEnv` that answers the engine's questions with
+//!    live Win32 calls;
+//! 6. carries out the [`Decision`] after the lock and the snapshot are
 //!    released: first the timers it asks for, then its actions in order, on
 //!    this thread, as before the engine existed (`Decision::mask` is
 //!    reserved for roadmap item 1.2 and never set yet);
-//! 6. returns `LRESULT(1)` if the decision suppresses the event, and
+//! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
 //! `foreground_changed` hands foreground switches to
 //! [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed)
-//! the same way.
+//! the same way, and does nothing while remapping is off.
 //!
 //! # Threads and locking
 //!
@@ -37,8 +41,13 @@
 //! their deadlines. Roadmap item 2.2 moves the Hold timers onto the main
 //! thread and removes the lock.
 //!
+//! `swch on` and `swch off` take the lock too, on the IPC connection worker
+//! that handles them (`KeyboardHook::set_enabled`): the switch flips and the
+//! engine is reset under it, and the reset only reads the OS key state.
+//! They never install or remove a hook; only the main thread does.
+//!
 //! The lock (`KeyboardHook::with_engine`) is held only while the engine
-//! decides. No action, `SendInput`, thread spawn or binding snapshot is held
+//! decides or resets. No action, `SendInput`, thread spawn or binding snapshot is held
 //! across it into the carry-out. The engine reads the clock once per event,
 //! under the lock, and a timer takes the lock only once its due time has
 //! passed, so a key-up and its Hold timer are ordered on one clock: with
@@ -89,15 +98,16 @@ pub fn get_hook() -> &'static KeyboardHook {
 }
 
 /// The engine's [`Env`], backed by live Win32 calls. One is created on the
-/// stack per event. The foreground window is captured at most once, on the
-/// first question about it, so bindings without a `when:` condition never
-/// cause a foreground lookup.
-struct HookEnv {
+/// stack per event, and one per reset in `KeyboardHook::set_enabled`. The
+/// foreground window is captured at most once, on the first question about
+/// it, so bindings without a `when:` condition never cause a foreground
+/// lookup.
+pub(super) struct HookEnv {
     foreground: OnceCell<ForegroundContext>,
 }
 
 impl HookEnv {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             foreground: OnceCell::new(),
         }
@@ -144,9 +154,9 @@ fn key_event(wparam: WPARAM, vk_code: u32) -> Option<KeyEvent> {
 
 /// Asks the engine about one hook event. `None` means "pass it, the engine
 /// has not seen it": an event the daemon injected itself (checked before any
-/// state is touched), a message other than the four key messages, or an
-/// event refused because this thread is already deciding (see Re-entry in
-/// the module docs).
+/// state is touched), a message other than the four key messages, an event
+/// refused because this thread is already deciding (see Re-entry in the
+/// module docs), or an event that finds remapping off under the lock.
 fn decide_event(
     hook: &KeyboardHook,
     wparam: WPARAM,
@@ -161,7 +171,15 @@ fn decide_event(
     // meanwhile. It is dropped on return, before any action runs.
     let bindings = hook.bindings();
     let env = HookEnv::new();
-    hook.with_engine(|engine| engine.on_key(event, &bindings, &env))
+    // The switch is checked again under the lock, where `set_enabled` flips
+    // it and resets the engine. Without this, an event that passed the
+    // callback's own check just before `swch off` would be decided after
+    // the reset, and a Hold it arms would fire while remapping is off.
+    hook.with_engine(|engine| {
+        hook.is_enabled()
+            .then(|| engine.on_key(event, &bindings, &env))
+    })
+    .flatten()
 }
 
 /// Carries out a decision on the calling thread, outside the engine lock:
@@ -224,11 +242,19 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
+    let hook = get_hook();
+    if !hook.is_enabled() {
+        // SAFETY: passes the event on with the exact arguments the system
+        // gave this hook procedure. Remapping is off (`swch off`): the event
+        // is not even read, so injected and physical events pass alike.
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
     // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
     // this call; two fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-    if let Some(decision) = decide_event(get_hook(), wparam, event.vkCode, event.dwExtraInfo) {
+    if let Some(decision) = decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
         let suppress = decision.suppress;
         carry_out(decision);
         if suppress {
@@ -246,7 +272,9 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 /// swallowed, repairing what the keyboard hook may have missed while a
 /// higher-integrity window had focus. A modifier whose key-down the engine
 /// swallowed is not resynced (Windows never saw it go down, KS-14), so a
-/// lost key-up of such a modifier is not repaired here.
+/// lost key-up of such a modifier is not repaired here. While remapping is
+/// off it does nothing: the reset at `swch on` takes every held key from the
+/// OS anyway.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
@@ -256,9 +284,18 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     _thread: u32,
     _time: u32,
 ) {
+    let hook = get_hook();
+    if !hook.is_enabled() {
+        return;
+    }
     let env = HookEnv::new();
     // `None` only on re-entry, which nothing triggers today (module docs).
-    get_hook().with_engine(|engine| engine.on_foreground_changed(&env));
+    // The switch is checked again under the lock, as in `decide_event`.
+    hook.with_engine(|engine| {
+        if hook.is_enabled() {
+            engine.on_foreground_changed(&env);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -340,11 +377,34 @@ mod tests {
     }
 
     #[test]
-    fn extern_callback_returns_one_for_a_suppressed_key_and_passes_an_unbound_one() {
+    fn disabled_hook_passes_every_event_without_asking_the_engine() {
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        assert_eq!(hook.set_enabled(false), Some(true));
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), f13, 0),
+            None,
+            "remapping off: a bound key-down passes without reaching the engine"
+        );
+        assert_eq!(decide_event(&hook, message(WM_KEYUP), f13, 0), None);
+
+        assert_eq!(hook.set_enabled(true), Some(true));
+        let pressed = decide_event(&hook, message(WM_KEYDOWN), f13, 0)
+            .expect("remapping on: the key-down reaches the engine again");
+        assert!(pressed.suppress);
+    }
+
+    #[test]
+    fn extern_callback_swallows_a_bound_key_only_while_remapping_is_on() {
         // The only test of `LRESULT(1)` iff `Decision::suppress` at the
-        // extern level. The callback reads the process-wide hook, so this is
-        // the only test that may touch `get_hook()`. `carry_out` runs here,
-        // and the binding is `DoNothing` so that it starts and sends nothing.
+        // extern level, and of the gate before the engine lock. The callback
+        // reads the process-wide hook, so this is the only test that may
+        // touch `get_hook()`. `carry_out` runs here, and the binding is
+        // `DoNothing` so that it starts and sends nothing.
         let f13 = u32::from(VK_F13.0);
         get_hook().update_bindings(vec![
             Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
@@ -382,5 +442,21 @@ mod tests {
             "an unbound key is passed on"
         );
         assert_ne!(call(u32::from(VK_A.0), WM_KEYUP), LRESULT(1));
+
+        assert_eq!(get_hook().set_enabled(false), Some(true));
+        assert_ne!(
+            call(f13, WM_KEYDOWN),
+            LRESULT(1),
+            "remapping off: the bound key is passed on"
+        );
+        assert_ne!(call(f13, WM_KEYUP), LRESULT(1));
+
+        assert_eq!(get_hook().set_enabled(true), Some(true));
+        assert_eq!(
+            call(f13, WM_KEYDOWN),
+            LRESULT(1),
+            "remapping on again: the bound key is swallowed"
+        );
+        assert_eq!(call(f13, WM_KEYUP), LRESULT(1));
     }
 }

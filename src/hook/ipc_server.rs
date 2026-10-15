@@ -112,20 +112,16 @@ where
 
 fn dispatch(cmd: Command, hook: &'static KeyboardHook) -> String {
     match cmd {
-        Command::On => match hook.enable() {
-            Ok(()) => format_ok(if hook.is_installed() {
-                "enabled"
-            } else {
-                "enabled (but reports not installed — investigate)"
-            }),
-            Err(e) => format_err(&format!("enable failed: {}", e)),
+        Command::On => match hook.set_enabled(true) {
+            Some(_) => format_ok("enabled"),
+            None => format_err("the engine is busy on this thread"),
         },
-        Command::Off => match hook.disable() {
-            Ok(()) => format_ok("disabled"),
-            Err(e) => format_err(&format!("disable failed: {}", e)),
+        Command::Off => match hook.set_enabled(false) {
+            Some(_) => format_ok("disabled"),
+            None => format_err("the engine is busy on this thread"),
         },
         Command::Status => {
-            let state = if hook.is_installed() {
+            let state = if hook.is_enabled() {
                 "running"
             } else {
                 "disabled"

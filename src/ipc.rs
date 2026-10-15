@@ -18,10 +18,11 @@ pub const PIPE_NAME: &str = "key-switch-rs.sock";
 /// Command sent by the CLI to the daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Enable the keyboard hook. Idempotent — already-on is OK.
+    /// Turn remapping on. The hooks stay as they are. Idempotent: already
+    /// on is OK.
     On,
-    /// Disable the keyboard hook (uninstalls `WH_KEYBOARD_LL` but keeps
-    /// the daemon process alive). Idempotent.
+    /// Turn remapping off: the hooks stay as they are and pass every key on
+    /// untouched, and the daemon keeps running. Idempotent.
     Off,
     /// Shut the daemon down cleanly (`PostThreadMessageW(WM_QUIT)`).
     Exit,

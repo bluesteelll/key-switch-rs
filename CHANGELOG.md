@@ -86,6 +86,20 @@ minor version; such entries sit under **Changed** and start with
 
 ### Fixed
 
+- KS-01: `swch off` followed by `swch on` no longer leaves remapping dead.
+  The keyboard and foreground hooks are installed once, on the daemon's
+  main thread, and stay installed until it exits; they used to be removed
+  and reinstalled on a short-lived IPC thread, whose exit took the new hooks
+  with it, and `swch exit` then stopped at a `[FATAL]` prompt. `swch off`
+  now makes the hook pass every key on untouched and `swch on` turns
+  remapping back on; `swch status` answers `disabled` while remapping is
+  off (it used to say `running` whenever a hook handle was stored). Each
+  switch drops pending `Tap`, `Hold`, `DoubleTap`, `chord` and `sequence`
+  state, so a `Hold` armed just before `swch off` no longer fires (KS-31,
+  an unverified report), and a key still held at `swch on` counts as
+  already pressed. A key swallowed by a binding and released while
+  remapping is off reaches Windows as a lone key-up. A running macro keeps
+  running after `swch off` (roadmap item 2.1).
 - KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
   on the key-down of one of its own keys: a non-modifier key, or any of its
   keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).

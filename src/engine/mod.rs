@@ -82,7 +82,9 @@
 //! Hold action then runs on that timer thread, as before. The adapter holds
 //! the lock only while the engine decides and runs every action after
 //! releasing it. `with_engine` refuses a nested call on the same thread
-//! (the event then passes) instead of deadlocking on the lock.
+//! (the event then passes) instead of deadlocking on the lock. `swch on` and
+//! `swch off` take the lock on an IPC connection worker to call
+//! [`Engine::reset`].
 //!
 //! The adapter's [`Env::now`] reads the clock inside the lock, and a timer
 //! thread waits until `Instant::now()` has reached its [`TimerRequest::due`]
