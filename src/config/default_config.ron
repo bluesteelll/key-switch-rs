@@ -46,6 +46,12 @@
 // Examples: "CapsLock", "Shift+CapsLock", "Ctrl+Alt+Delete", "Win+L",
 //           "Ctrl+Shift+Esc", "F13".
 //
+// A binding fires (or arms its Tap/Hold/DoubleTap) only on the key-down of
+// one of its own keys: a non-modifier key, or any key of a binding made
+// only of modifiers ("Alt+Shift", "LShift"). Press the modifiers first:
+// Shift, then CapsLock fires "Shift+CapsLock"; CapsLock, then Shift does
+// not. Keys typed while CapsLock is held reach the application.
+//
 // ---- action variants ----
 //
 // SwitchLanguage          — next keyboard layout

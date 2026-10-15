@@ -100,11 +100,14 @@
 //!    key is pressed if it accepts the event's code (KS-07).
 //! 4. Every binding is visited in specificity order. Its `when:` condition is
 //!    checked first, then its kind:
-//!    - `Combo`: all of its keys must be held. `Immediate` fires only for the
-//!      first matching Immediate binding, on every key-down including
-//!      repeats, and suppresses if `block_default` is set. `Tap`, `Hold` and
-//!      `DoubleTap` ignore repeats, arm under the key just pressed and always
-//!      suppress.
+//!    - `Combo`: the key just pressed must be one of its trigger keys, a
+//!      non-modifier key of the combo or, for a combo made only of
+//!      modifiers, any of its keys (KS-04); and all of its keys must be
+//!      held. `Immediate` fires only for the first matching Immediate
+//!      binding, on every key-down including repeats, and suppresses if
+//!      `block_default` is set. `Tap`, `Hold` and `DoubleTap` ignore
+//!      repeats, arm under the key just pressed (so under a key of the
+//!      combo, whose key-up resolves them) and always suppress.
 //!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
 //!      advances or completes one is suppressed.
 //! 5. If anything asked for suppression, the key is marked blocked.
@@ -117,10 +120,10 @@
 //! marked blocked.
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
-//! later roadmap items, each with a scenario test: superset matching (KS-04),
-//! leaking repeats (KS-06), repeat-firing Immediate actions (KS-10),
-//! specificity across trigger kinds (KS-13), the modifier resync (KS-14) and
-//! the sequence matching rules (KS-15, KS-16).
+//! later roadmap items, each with a scenario test: leaking repeats (KS-06),
+//! repeat-firing Immediate actions (KS-10), specificity across trigger kinds
+//! (KS-13), the modifier resync (KS-14) and the sequence matching rules
+//! (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -307,7 +310,7 @@ impl Engine {
 
             match &binding.kind {
                 BindingKind::Combo(combo) => {
-                    if !matching::keys_down(combo, &self.keys) {
+                    if !matching::combo_matches(combo, vk, &self.keys) {
                         continue;
                     }
                     match binding.trigger {

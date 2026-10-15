@@ -196,6 +196,16 @@ Shift held and not with the right one; `"Win+E"` fires with either Win key,
 `Key` and `Combo` in a macro) are not affected: `Win` there sends the left Win
 key.
 
+**Which key fires a binding.** A `keys` binding fires, or arms its `Tap`,
+`Hold` or `DoubleTap`, only on the key-down of one of its own keys: a
+non-modifier key (`CapsLock` in `"Shift+CapsLock"`, `J` in `"Ctrl+J"`), or any
+of its keys when the binding is made only of modifiers (`"Alt+Shift"`,
+`"LShift"`). The modifiers go down first: Shift, then CapsLock fires
+`"Shift+CapsLock"`, while CapsLock, then Shift does not, and J, then Ctrl does
+not fire `"Ctrl+J"`. A key pressed while a binding's key is held is not that
+binding's key, so with CapsLock held, typing `abc` delivers `abc`. The order of
+the names in the string does not matter.
+
 ### Action variants
 
 | Variant                              | Purpose                                                                  |
@@ -222,7 +232,7 @@ Each binding specifies **exactly one** of three trigger shapes:
 
 | Field          | Shape                                                                                                  | Fires when                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `keys: "..."`  | Plain combo string (e.g. `"Ctrl+Alt+L"`).                                                              | All keys of the combo are held simultaneously (existing behaviour).     |
+| `keys: "..."`  | Plain combo string (e.g. `"Ctrl+Alt+L"`).                                                              | All keys of the combo are held, on the key-down of one of its own keys (see "Which key fires a binding" above). |
 | `sequence: (steps: [...], max_gap_ms: 500)` | Vim/Emacs-style ordered sequence. Each step is a combo string. `max_gap_ms` (default 500) is the maximum time between consecutive steps. | Steps pressed in order, each within `max_gap_ms` of the previous.       |
 | `chord: (keys: [...], window_ms: 50)`       | Simultaneous chord. `window_ms` (default 50, typical QMK COMBO_TERM) is how close together the presses must be. | All listed keys go down within `window_ms` of each other, in any order. |
 
@@ -293,9 +303,12 @@ Shift is unaffected.
 
 **How resolution works (under the hood):**
 
-- Key-down: every matching binding arms its gesture (`Tap`, `Hold`,
-  `DoubleTap`) in the decision core (`src/engine/gestures.rs`) — multiple
-  gestures on the same key are independent.
+- Key-down of one of the binding's own keys (see "Which key fires a
+  binding"): every matching binding arms its gesture (`Tap`, `Hold`,
+  `DoubleTap`) in the decision core (`src/engine/gestures.rs`) under that
+  key, and that key's key-up resolves it — multiple gestures on the same key
+  are independent. A key pressed while the gesture is pending passes and
+  arms nothing.
 - For `Tap`: the entry stores a deadline `<ms>` after the key-down; the
   key-up fires the action only before the deadline. No thread is involved.
 - For `Hold`: arming starts a timer thread that fires the action after

@@ -63,6 +63,13 @@ minor version; such entries sit under **Changed** and start with
 
 ### Fixed
 
+- KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
+  on the key-down of one of its own keys: a non-modifier key, or any of its
+  keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).
+  Typing while CapsLock is held no longer re-fires the CapsLock binding or
+  swallows the typed keys, Shift pressed while CapsLock is held no longer
+  fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
+  (J, then Ctrl) no longer fires `Ctrl+J`.
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
