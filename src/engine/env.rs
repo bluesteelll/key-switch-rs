@@ -35,8 +35,9 @@ pub trait Env {
     ///
     /// The OS state only changes for events the hook lets through, and the
     /// state of the key being delivered lags until the hook returns. The
-    /// engine therefore asks only about modifiers, and never about the key
-    /// of the current event.
+    /// engine therefore asks only about modifiers, never about the key of
+    /// the current event, and never about a modifier whose key-down it
+    /// swallowed.
     fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool;
 
     /// Base name of the foreground window's executable (`"code.exe"`), or

@@ -128,7 +128,8 @@ impl KeyboardHook {
 
         // Foreground-change hook re-syncs modifier state after focus returns from
         // a higher-integrity window (Task Manager, UAC, lock screen, etc.) that
-        // ate our key-up events. See keyboard_hook_callback::foreground_changed.
+        // ate our key-up events, except for modifiers whose key-down the engine
+        // swallowed. See keyboard_hook_callback::foreground_changed.
         //
         // SAFETY: WINEVENT_OUTOFCONTEXT delivers events to this thread's message
         // queue, which the App message loop pumps. The callback is a 'static

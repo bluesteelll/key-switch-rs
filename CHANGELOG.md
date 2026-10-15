@@ -95,13 +95,17 @@ minor version; such entries sit under **Changed** and start with
   Ctrl, which no longer matches `"CapsLock"`) keeps its repeats and its
   release when the binding starts matching after Ctrl is released; such a
   repeat still fires an `Immediate` action (KS-10, roadmap item 1.1).
-  A foreground change while a key is held still forgets that its key-down
-  was swallowed (roadmap item 2.3): its repeats are then swallowed only
-  while an `Immediate` binding matches them, as before, and its release
-  reaches Windows; a key whose key-down reached Windows keeps its repeats
-  and its release across the change. A modifier whose `Tap` or `Hold` is
-  still pending can still be left held when the combo stops matching
-  mid-hold (`"Ctrl+Shift"` with `Hold(1000)`, Ctrl released first; KS-14).
+  A foreground change while a key is held forgets only that its release is
+  due to be swallowed (roadmap item 2.3): the release reaches Windows unless
+  a `Tap` or `Hold` of the press is still pending, and its repeats stay
+  swallowed for every binding kind. They used to be swallowed only while an
+  `Immediate` binding matched them, so a key held while the window its
+  binding opened took the foreground (a `chord` key, CapsLock with a
+  `Hold`, the key of a combo whose modifiers were released) typed into
+  that window. A key whose key-down reached Windows keeps its repeats and
+  its release across the change. So does a modifier pressed while
+  remapping was off: once one of its auto-repeats reaches Windows, the rest
+  of the press does too, even when a binding starts matching it.
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
@@ -116,9 +120,28 @@ minor version; such entries sit under **Changed** and start with
   before its timer thread wakes now fires when the timer wakes, still on
   that thread, instead of being cancelled. Different terms behave as before
   until roadmap item 2.2.
-- KS-32 (partly; an unverified report): when a `sequence` completes, the
-  key-up of a modifier held in its last step (for example `Win` in
-  `"Win+F14"`) is no longer swallowed.
+- KS-14: the resync of modifiers from the Windows key state leaves alone a
+  modifier whose key-down was swallowed, also after a foreground change.
+  Windows never saw that key go down, so the next event of any other key
+  used to read it as released. It now stays held for matching and its
+  auto-repeats stay auto-repeats: with the `Alt+Shift` auto-blocker,
+  `Alt+Shift+X` bindings fire in either key order; Shift held by a
+  `DoubleTap` binding still counts for `Shift+CapsLock`; one long Shift
+  press no longer fires its `DoubleTap(600)`; and `"Ctrl+Shift"` with
+  `Hold(1000)`, Ctrl released first, no longer leaves Shift held in Windows.
+  Shift pressed after Alt with the default config's auto-blocker now stays
+  swallowed for its whole press, auto-repeats and release included, even
+  after Alt is released; its repeats used to reach Windows from the first
+  one on (roadmap item 1.2 stops the blocker swallowing it).
+- KS-30 (an unverified report): a completed `chord` no longer marks keys
+  already released for a swallowed key-up, and no longer swallows the
+  key-up of a chord key whose key-down reached Windows (J pressed again
+  while the chord's `when:` did not hold, before K completed it); that key
+  was left held in Windows.
+- KS-32 (an unverified report): a completed `sequence` no longer swallows
+  the key-up of a key whose key-down reached Windows: a modifier held in
+  its last step (for example `Win` in `"Win+F14"`), or F14 pressed first
+  for `["F14+F15", "F14+F16"]`, which was left held in Windows.
 - KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
   thread per press, and a Hold timer thread that cannot be started is
   logged instead of aborting the daemon; that Hold then does not fire.

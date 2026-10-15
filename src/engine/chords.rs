@@ -9,7 +9,9 @@
 //!
 //! **Suppression**: every key-down of a key that belongs to a chord binding
 //! is suppressed, whether or not the chord completes. When it completes, the
-//! key-ups of all chord keys are suppressed too. Keys of a chord that does
+//! key-ups of the chord keys still held are suppressed too, except a key
+//! whose key-down reached the OS (pressed again while the binding's `when:`
+//! did not hold); the engine checks (KS-30). Keys of a chord that does
 //! not complete are lost; there is no replay. Pick chord keys that are not
 //! part of normal typing.
 //!
@@ -48,8 +50,8 @@ pub(super) enum ChordOutcome {
     /// The key is part of a chord that is still incomplete: suppress it.
     Pending,
     /// The chord just completed: suppress the key, fire `action` and
-    /// suppress the key-ups of every key in `keys`, the codes pressed for
-    /// it.
+    /// suppress the key-ups of the keys in `keys`, the codes pressed for it,
+    /// that are still held and whose key-down did not pass.
     Completed { action: BindAction, keys: Vec<u16> },
 }
 

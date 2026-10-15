@@ -18,6 +18,27 @@ fn launch(exe: &str) -> BindAction {
     }
 }
 
+/// The default config's two bindings, without `block_original_combo`.
+pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+] )"#;
+
+/// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
+/// Windows language hotkey, followed by the bindings of `ron`, in the
+/// loader's order. The blocker is built directly: loading it from RON would
+/// read the registry.
+pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
+    let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
+        VK_MENU, VK_SHIFT,
+    ]))];
+    bindings.extend(
+        crate::config::from_ron_str(ron)
+            .unwrap_or_else(|e| panic!("scenario: config does not load: {e}")),
+    );
+    bindings
+}
+
 // ---- Immediate combos ----
 
 #[test]
@@ -729,8 +750,8 @@ fn key_outside_the_chord_passes() {
 
 #[test]
 fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
-    // The focus change forgets that J's key-down was swallowed; the chord
-    // completing on K marks every chord key again, so J's key-up is
+    // The focus change forgets that J's key-up is due to be swallowed; the
+    // chord completing on K marks every chord key again, so J's key-up is
     // swallowed as well and the app never sees an unmatched J key-up.
     Scenario::from_ron(
         r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 500), action: SwitchLanguage) ] )"#,
@@ -1379,37 +1400,11 @@ fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() 
 }
 
 #[test]
-fn shift_held_after_the_auto_blocker_and_alt_released_is_not_left_stuck() {
-    // The audit's KS-06 auto-blocker case. The blocker swallowed Shift's
-    // key-down; Alt's key-up then resyncs Shift from the OS, which never saw
-    // it, so Shift's next repeat looks like a fresh press (KS-14). That
-    // press reaches the OS, so its repeats and its key-up must too.
-    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
-        vec![VK_MENU, VK_SHIFT],
-    ))])
-    .down("LAlt")
-    .expect_passed()
-    .down("LShift")
-    .expect_suppressed()
-    .expect_fired(&[BindAction::DoNothing])
-    .up("LAlt")
-    .expect_passed()
-    .advance_ms(500)
-    .repeat("LShift")
-    .expect_passed()
-    .advance_ms(33)
-    .repeat("LShift")
-    .expect_passed()
-    .up("LShift")
-    .expect_passed();
-}
-
-#[test]
 fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
-    // The focus change forgets that F13's key-down was swallowed. Its
-    // repeats then follow the binding, which still swallows them, so the
-    // new window gets the Left presses and no raw F13. The key-up passes,
-    // like every key-up whose swallowed key-down a focus change forgot
+    // The focus change forgets that F13's key-up is due to be swallowed,
+    // but not that its key-down was: its repeats stay swallowed, so the new
+    // window gets the Left presses and no raw F13. The key-up passes, like
+    // every key-up whose swallowed key-down a focus change forgot
     // (foreground_change_forgets_pending_key_up_suppression).
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
         .down("F13")
@@ -1478,9 +1473,9 @@ fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
 #[test]
 fn press_after_a_lost_key_up_and_a_focus_change_follows_its_binding() {
     // F13's key-up went to another desktop, so the engine still holds F13
-    // and reads the next press as a repeat (KS-29). The focus change forgot
-    // the swallowed key-down, so the binding decides: it fires and the
-    // press is swallowed, never fired and passed in one decision.
+    // and reads the next press as a repeat (KS-29). Its key-down was
+    // swallowed, so the repeat is swallowed too; the binding fires on it
+    // (KS-10), so the press is never fired and passed in one decision.
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
         .down("F13")
         .expect_suppressed()
@@ -1516,6 +1511,404 @@ fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
         .expect_passed();
 }
 
+// ---- Suppression symmetry (KS-06, KS-14) ----
+
+#[test]
+fn alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier() {
+    // KS-14 case 1. The blocker swallows the second modifier's key-down, so
+    // Windows never sees it go down. The resync on X's key-down must not
+    // read that modifier as released, or `Alt+Shift+X` never matches.
+    let bindings = || {
+        with_alt_shift_blocker(r#"( bindings: [ (keys: "Alt+Shift+X", action: ToggleCapsLock) ] )"#)
+    };
+    Scenario::with_bindings(bindings())
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .down("X")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("X")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed();
+
+    Scenario::with_bindings(bindings())
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .down("X")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("X")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn shift_held_by_a_double_tap_still_counts_for_shift_capslock() {
+    // KS-14 case 2. The DoubleTap swallows Shift's key-down; the resync on
+    // CapsLock's key-down must not drop Shift, or "CapsLock" matches
+    // instead of "Shift+CapsLock".
+    let config = r#"( bindings: [
+        (keys: "Shift", action: SwitchLanguageBackward, trigger: DoubleTap(300)),
+        (keys: "CapsLock", action: SwitchLanguage),
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn one_long_press_of_shift_does_not_fire_its_double_tap() {
+    // KS-14 case 3. A's key-up during rollover used to resync the swallowed
+    // Shift as released, so Shift's first auto-repeat read as a second press
+    // inside the 600 ms term.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Shift", action: ToggleCapsLock, trigger: DoubleTap(600)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("A")
+    .expect_passed()
+    .advance_ms(10)
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(10)
+    .up("A")
+    .expect_passed()
+    .advance_ms(480)
+    .repeat("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift() {
+    // Ctrl is released while the Hold on Shift is pending. Shift's key-down
+    // was swallowed, so its repeats and its key-up are too; its repeats
+    // used to read as a fresh press that reached Windows, and the pending
+    // Hold then swallowed the key-up, leaving Shift held there.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .expect_passed()
+    .advance_ms(20)
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(100)
+    .up("LCtrl")
+    .expect_passed()
+    .advance_ms(380)
+    .repeat("LShift")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_suppressed()
+    .advance_ms(67)
+    .up("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(1000)
+    .expect_nothing_fired()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press() {
+    // The audit's KS-06 auto-blocker route, with the default config. The
+    // blocker swallowed Shift's key-down, so its repeats are swallowed even
+    // after Alt is released, and its key-up exactly once; the next Shift
+    // press reaches Windows on both edges.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("LAlt")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_suppressed()
+        .advance_ms(100)
+        .down("LShift")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::DoNothing]);
+}
+
+#[test]
+fn key_up_of_a_suppressed_press_is_suppressed_only_once() {
+    // "Its key-up is suppressed exactly once": the swallowed key-up spends
+    // the record. A later key-up of the same key, here for a press the hook
+    // never saw (remapping was off), is a different press that Windows has
+    // down, so it must reach Windows or Shift stays held there.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .advance_ms(1000)
+        .down_unseen("LShift")
+        .up("LShift")
+        .expect_passed()
+        .expect_nothing_stuck();
+}
+
+#[test]
+fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
+    // The focus change forgets that Shift's key-down was swallowed, but
+    // Windows still never saw it go down, so the resync leaves Shift held
+    // and its repeat is not a second press for the DoubleTap. Whether that
+    // repeat and the key-up reach Windows is roadmap item 2.3's policy.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Shift", action: ToggleCapsLock, trigger: DoubleTap(600)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("A")
+    .down("LShift")
+    .expect_suppressed()
+    .foreground_changed()
+    .up("A")
+    .expect_passed()
+    .advance_ms(500)
+    .repeat("LShift")
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
+    // The chord opens a window that takes the foreground while J and K are
+    // still held. K, pressed last, auto-repeats. Its key-down was swallowed,
+    // so Windows must not see its repeats either (no "kkk" in the new
+    // window). The key-ups pass, like every key-up whose swallowed key-down
+    // a focus change forgot.
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: Launch(exe: "wt.exe")) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("J")
+    .expect_suppressed()
+    .advance_ms(20)
+    .down("K")
+    .expect_suppressed()
+    .expect_fired(&[launch("wt.exe")])
+    .foreground_changed()
+    .advance_ms(480)
+    .repeat("K")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("K")
+    .expect_suppressed()
+    .up("J")
+    .expect_passed()
+    .up("K")
+    .expect_passed()
+    .expect_total_fired(&[launch("wt.exe")]);
+}
+
+#[test]
+fn deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
+    // Roadmap item 2.3's example: the Hold opens a terminal, which takes the
+    // foreground while CapsLock is still held. A CapsLock repeat that reached
+    // Windows would be the first CapsLock key-down it sees and would turn
+    // CapsLock on in the terminal.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: Launch(exe: "wt.exe"), trigger: Hold(300)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(300)
+    .expect_fired(&[launch("wt.exe")])
+    .foreground_changed()
+    .advance_ms(200)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .up("CapsLock")
+    .expect_passed()
+    .expect_total_fired(&[launch("wt.exe")]);
+
+    // A Tap still pending at the key-up: the key-up stays swallowed with it.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(2000)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("CapsLock")
+    .expect_suppressed()
+    .foreground_changed()
+    .advance_ms(500)
+    .repeat("CapsLock")
+    .expect_suppressed()
+    .advance_ms(100)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed() {
+    // Ctrl+F13 opens a window and Ctrl is released while F13 is still
+    // held. "Ctrl+F13" no longer matches F13's repeats, but its key-down was
+    // swallowed, so they stay swallowed.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+F13", action: Launch(exe: "wt.exe")) ] )"#)
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[launch("wt.exe")])
+        .foreground_changed()
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(33)
+        .repeat("F13")
+        .expect_suppressed()
+        .up("F13")
+        .expect_passed()
+        .expect_total_fired(&[launch("wt.exe")]);
+}
+
+#[test]
+fn sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed() {
+    // KS-32's example. F14 alone matches nothing, so its key-down reaches
+    // Windows; the completing step must not swallow its key-up.
+    Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["F14+F15", "F14+F16"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("F14")
+    .expect_passed()
+    .down("F15")
+    .expect_suppressed()
+    .up("F15")
+    .expect_suppressed()
+    .down("F16")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("F16")
+    .expect_suppressed()
+    .up("F14")
+    .expect_passed();
+}
+
+#[test]
+fn chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed() {
+    // J's first press starts the chord in the Docs tab. The title changes
+    // without a foreground event, so J's second press reaches Windows (the
+    // chord's `when:` no longer holds); the title changes back and K
+    // completes the chord inside its window. J's second key-down reached
+    // Windows, so its key-up must too.
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 2000), action: SwitchLanguage, when: TitleContains("Docs")) ] )"#,
+    )
+    .foreground("browser.exe", "Docs - Browser")
+    .check_nothing_stuck()
+    .down("J")
+    .expect_suppressed()
+    .up("J")
+    .expect_suppressed()
+    .foreground("browser.exe", "Mail - Browser")
+    .down("J")
+    .expect_passed()
+    .foreground("browser.exe", "Docs - Browser")
+    .down("K")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("K")
+    .expect_suppressed()
+    .up("J")
+    .expect_passed();
+}
+
+#[test]
+fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
+    // Ctrl, Alt, A and then Shift went down while remapping was off, so
+    // Windows has all four down and Shift, pressed last, auto-repeats. A's
+    // key-up makes the engine resync the modifiers, which finds Shift held
+    // with no record of its key-down. Shift's next repeat matches nothing
+    // (Ctrl is held too) and reaches Windows; from then on the press is one
+    // Windows saw, so once Ctrl is released, a repeat that the Alt+Shift
+    // blocker now matches still passes. Whether that repeat fires the
+    // blocker's no-op is KS-10 (roadmap item 1.1).
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down_unseen("LCtrl")
+        .down_unseen("LAlt")
+        .down_unseen("A")
+        .down_unseen("LShift")
+        .up("A")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]
@@ -1530,4 +1923,52 @@ fn a_failed_expectation_panics() {
 #[should_panic(expected = "the key is not held")]
 fn releasing_a_key_that_is_up_is_a_script_error() {
     Scenario::from_ron(r#"( bindings: [] )"#).up("A");
+}
+
+#[test]
+#[should_panic(expected = "press of F13: key-down suppressed, up passed")]
+fn press_symmetry_check_reports_a_key_up_that_differs_from_its_key_down() {
+    // A foreground change forgets that F13's key-down was swallowed, so its
+    // key-up passes (roadmap item 2.3).
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
+        .check_press_symmetry()
+        .down("F13")
+        .foreground_changed()
+        .up("F13");
+}
+
+#[test]
+#[should_panic(expected = "press of LShift: key-down passed, repeat suppressed")]
+fn press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down() {
+    // A and then LShift went down while the hook was not looking, so Windows
+    // has both down and LShift auto-repeats. A's key-up makes the engine
+    // resync the modifiers, which finds LShift held with no record of its
+    // key-down. A repeat without a record is swallowed when a binding asks
+    // for it.
+    Scenario::from_ron(r#"( bindings: [ (keys: "LShift", action: SwitchLanguage) ] )"#)
+        .check_press_symmetry()
+        .down_unseen("A")
+        .down_unseen("LShift")
+        .up("A")
+        .repeat("LShift");
+}
+
+#[test]
+fn nothing_stuck_holds_for_a_plain_press_and_an_unseen_release() {
+    Scenario::from_ron(r#"( bindings: [] )"#)
+        .check_nothing_stuck()
+        .down("A")
+        .up("A")
+        .down("Shift")
+        .up_unseen("Shift")
+        .expect_nothing_stuck();
+}
+
+#[test]
+#[should_panic(expected = "context: seed 7")]
+fn context_is_printed_with_a_failure() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .with_context("seed 7")
+        .down("CapsLock")
+        .expect_passed();
 }

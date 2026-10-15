@@ -38,7 +38,8 @@
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
 //!   (also the auto-repeat detector), and whether each key's latest
 //!   key-down was suppressed or passed, so that its auto-repeats and key-up
-//!   are treated the same way.
+//!   are treated the same way. A foreground change marks the suppressed
+//!   ones as forgotten: their key-ups are no longer due to be suppressed.
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
@@ -92,7 +93,10 @@
 //! except where a rule names the audit issue that changed it. On a key-down:
 //!
 //! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
-//!    the key being delivered.
+//!    the key being delivered and every modifier whose key-down was
+//!    suppressed, even one a foreground change forgot: Windows never saw
+//!    that key go down, so it stays held for matching and its auto-repeats
+//!    stay auto-repeats (KS-14).
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
 //! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
 //!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
@@ -117,23 +121,29 @@
 //! 5. A first key-down is suppressed if anything asked for it, and the key
 //!    is then marked blocked; a first key-down that passes is marked
 //!    passed. An auto-repeat continues its key-down (KS-06): it is
-//!    suppressed if its key is marked blocked and passed if it is marked
-//!    passed, whatever the bindings asked. A foreground change forgets the
-//!    blocked marks; a repeat without a mark is suppressed if a binding
-//!    asked for it and leaves no mark, so its key-up passes. Actions still
-//!    fire on repeats as rule 4 says.
+//!    suppressed if its key is marked blocked, also after a foreground
+//!    change, and passed if it is marked passed, whatever the bindings
+//!    asked. A repeat without a mark (a modifier the resync found held,
+//!    whose key-down the engine never saw) is suppressed if a binding asked
+//!    for it; once one passes, the key is marked passed. Actions still fire
+//!    on repeats as rule 4 says. A completed chord or sequence marks the
+//!    keys whose key-ups it swallows as blocked, but only keys still held
+//!    whose key-down did not pass (KS-30, KS-32).
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
 //! passed. A Hold whose deadline has passed is left armed for its timer,
 //! which fires it even if the timer runs after the key-up (KS-25). The
-//! key-up is suppressed if a Tap or Hold was pending or if the key was
-//! marked blocked.
+//! key-up of a key marked passed always passes. Otherwise it is suppressed
+//! if the key was marked blocked or if a Tap or Hold was pending. A
+//! foreground change forgets which key-ups were due to be suppressed: such
+//! a key-up passes unless a Tap or Hold of its press is pending (roadmap
+//! item 2.3).
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: repeat-firing Immediate
-//! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
-//! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
+//! actions (KS-10), specificity across trigger kinds (KS-13) and the
+//! sequence matching rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -149,6 +159,9 @@ pub(crate) mod testing;
 
 #[cfg(test)]
 mod scenarios;
+
+#[cfg(test)]
+mod properties;
 
 use std::cmp::Reverse;
 use std::time::{Duration, Instant};
@@ -269,7 +282,8 @@ impl Engine {
     pub fn on_key(&mut self, event: KeyEvent, bindings: &[Binding], env: &dyn Env) -> Decision {
         // Repair phantom-held modifiers from any earlier focus transition
         // before matching. The key being delivered is skipped: its OS state
-        // lags until the hook returns.
+        // lags until the hook returns. So is every modifier whose key-down
+        // was swallowed: the OS never saw it go down (KS-14).
         self.keys.sync_modifiers(env, Some(event.vk));
 
         match event.direction {
@@ -296,12 +310,20 @@ impl Engine {
     }
 
     /// The foreground window changed. Key-ups may have been lost while a
-    /// higher-integrity window had focus: resync every modifier from the OS
+    /// higher-integrity window had focus: resync the modifiers from the OS
     /// and forget which key-downs were swallowed, so that no key-up stays
     /// due to be swallowed. Keys whose key-down passed keep that record.
+    /// A swallowed key-down stays on record as not seen by Windows, so the
+    /// key's auto-repeats stay swallowed.
+    ///
+    /// The resync skips a modifier whose key-down was swallowed: Windows
+    /// never saw it go down, so its key state says nothing (KS-14). Such a
+    /// key whose key-up was lost stays held for the engine until its next
+    /// press, which reads as an auto-repeat and is swallowed, and its
+    /// release (roadmap item 2.3 owns that repair).
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
-        self.keys.clear_all_blocked();
+        self.keys.forget_blocked();
     }
 
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
@@ -401,7 +423,7 @@ impl Engine {
                             decision.suppress = true;
                             decision.fire.push(action);
                             for key in last_step_keys {
-                                self.keys.mark_blocked(key);
+                                self.keys.mark_completed(key);
                             }
                         }
                     }
@@ -420,7 +442,7 @@ impl Engine {
                             decision.suppress = true;
                             decision.fire.push(action);
                             for key in keys {
-                                self.keys.mark_blocked(key);
+                                self.keys.mark_completed(key);
                             }
                         }
                     }
@@ -436,27 +458,29 @@ impl Engine {
             // modifier released under exact matching) swallows the repeats
             // and the key-up of a key-down the OS saw (KS-06).
             //
-            // A foreground change forgets swallowed key-downs, and the resync
-            // can find a modifier held whose key-down the hook never saw. A
-            // repeat without a record keeps what the bindings asked, so a
-            // held Immediate key stays swallowed, and records nothing:
-            // whether the OS has the key down is unknown, and a key-up that
-            // passes at worst ends a press the OS never saw, while one
-            // swallowed wrongly leaves the key held there.
+            // A key-down that a foreground change forgot still counts as
+            // swallowed here: Windows never saw it, so a repeat that reached
+            // Windows would be the first key-down it sees, in whatever
+            // window took the foreground.
+            //
+            // The resync can find a modifier held whose key-down the hook
+            // never saw, so Windows has it down. A repeat without a record
+            // keeps what the bindings asked. If it passes, the press is one
+            // Windows saw: record that, so its later repeats and its key-up
+            // pass too, and no completed chord swallows that key-up.
             if self.keys.is_blocked(vk.0) {
                 decision.suppress = true;
             } else if self.keys.is_passed(vk.0) {
                 decision.suppress = false;
+            } else if !decision.suppress {
+                self.keys.mark_passed(vk.0);
             }
         } else if decision.suppress {
             self.keys.mark_blocked(vk.0);
         } else {
             // This key-down reaches the OS, so its repeats and key-up must
-            // too. Replace a block left by an earlier press whose key-up was
-            // never seen, or whose swallowed key-down the resync erased
-            // (KS-14), so this key reads as one the OS saw go down. A Tap or
-            // Hold that such an earlier press left pending still swallows
-            // the key-up (KS-14).
+            // too. Replace whatever an earlier press left on record, so this
+            // key reads as one the OS saw go down.
             self.keys.mark_passed(vk.0);
         }
         decision
@@ -478,14 +502,15 @@ impl Engine {
         let mut decision = Decision::default();
         decision.fire.extend(tap);
 
-        if tap_fired || hold != HoldRelease::NotPending {
-            // Gesture-bound key: suppress the key-up too, and clear the
-            // blocked flag its key-down set so it does not leak.
-            self.keys.take_blocked(vk.0);
-            decision.suppress = true;
-        } else {
-            decision.suppress = self.keys.take_blocked(vk.0);
-        }
+        // A key-up whose key-down reached Windows always reaches it too, or
+        // the key stays held there. Otherwise it is suppressed if the
+        // key-down is on record as suppressed, or if a Tap or Hold of the
+        // press was pending: a focus change may have forgotten the record,
+        // and the gesture is still evidence of a swallowed press.
+        let was_passed = self.keys.is_passed(vk.0);
+        let was_blocked = self.keys.take_blocked(vk.0);
+        let gesture_bound = tap_fired || hold != HoldRelease::NotPending;
+        decision.suppress = was_blocked || (gesture_bound && !was_passed);
         decision
     }
 }
@@ -534,6 +559,42 @@ mod tests {
             engine.on_timer(token),
             Decision::default(),
             "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
+        );
+    }
+
+    #[test]
+    fn key_up_of_a_key_whose_down_passed_passes_even_with_a_tap_pending() {
+        // No event sequence reaches this state today: a Tap is armed only
+        // under a key-down that is swallowed, and its press stays on record
+        // as swallowed until its key-up. Roadmap item 1.3 (block_default on
+        // deferred triggers) arms one under a key-down that passes. Windows
+        // then has the key down, so the key-up must reach it whatever the
+        // gesture does; the state is set directly here.
+        let t0 = Instant::now();
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [ (keys: "F13", action: SwitchLanguage, trigger: Tap(200)) ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        assert!(down.suppress, "the Tap swallows its key-down");
+        engine.keys.mark_passed(VK_F13.0);
+
+        let up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(50)),
+        );
+        assert_eq!(
+            up.fire,
+            vec![BindAction::SwitchLanguage],
+            "the Tap resolves"
+        );
+        assert!(
+            !up.suppress,
+            "a key-up whose key-down reached Windows must reach it too"
         );
     }
 }
