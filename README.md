@@ -353,10 +353,18 @@ Shift is unaffected.
 - Auto-repeat key-down events from a stuck/held key do not stack new
   pending entries; the first gesture wins until resolved.
 - An auto-repeat is swallowed exactly when its key's first key-down was,
-  for every binding kind. A key held past the repeat delay therefore never
-  leaks repeats after a swallowed press (which would leave it held in
+  for every binding kind. A key held past the repeat delay therefore does
+  not leak repeats after a swallowed press (which would leave it held in
   Windows once its release is swallowed), and a key whose press reached
-  Windows keeps its repeats and its release.
+  Windows keeps its repeats and its release. Two gaps remain:
+  - A foreground change while the key is held forgets that its press was
+    swallowed (its release might go to another window). Its repeats are
+    then swallowed only while an `Immediate` binding matches them, and its
+    release reaches Windows (roadmap item 2.3).
+  - A modifier whose `Tap` or `Hold` is still pending can be left held in
+    Windows when the combo stops matching mid-hold, for example
+    `"Ctrl+Shift"` with `Hold(1000)` when Ctrl is released first and Shift
+    stays down past the repeat delay (KS-14).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized

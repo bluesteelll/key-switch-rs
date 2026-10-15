@@ -95,6 +95,13 @@ minor version; such entries sit under **Changed** and start with
   Ctrl, which no longer matches `"CapsLock"`) keeps its repeats and its
   release when the binding starts matching after Ctrl is released; such a
   repeat still fires an `Immediate` action (KS-10, roadmap item 1.1).
+  A foreground change while a key is held still forgets that its key-down
+  was swallowed (roadmap item 2.3): its repeats are then swallowed only
+  while an `Immediate` binding matches them, as before, and its release
+  reaches Windows; a key whose key-down reached Windows keeps its repeats
+  and its release across the change. A modifier whose `Tap` or `Hold` is
+  still pending can still be left held when the combo stops matching
+  mid-hold (`"Ctrl+Shift"` with `Hold(1000)`, Ctrl released first; KS-14).
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
