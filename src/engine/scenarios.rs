@@ -279,6 +279,22 @@ fn tap_held_past_its_term_fires_nothing_and_swallows_the_release() {
 }
 
 #[test]
+fn tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release() {
+    // An auto-repeat must not re-arm the overdue Tap for the release to
+    // fire. Whether the repeat itself passes is KS-06 and not pinned here.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Tap(200)) ] )"#,
+    )
+    .down("CapsLock")
+    .advance_ms(300)
+    .repeat("CapsLock")
+    .advance_ms(10)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired();
+}
+
+#[test]
 fn two_quick_taps_fire_twice() {
     // KS-11: the first press's expiry must not delete the second press's
     // tap. Release at +80, press again at +150, release at +230: the
@@ -706,6 +722,26 @@ fn key_outside_the_chord_passes() {
     .expect_passed()
     .up("A")
     .expect_passed();
+}
+
+#[test]
+fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
+    // The focus change forgets that J's key-down was swallowed; the chord
+    // completing on K marks every chord key again, so J's key-up is
+    // swallowed as well and the app never sees an unmatched J key-up.
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 500), action: SwitchLanguage) ] )"#,
+    )
+    .down("J")
+    .expect_suppressed()
+    .foreground_changed()
+    .down("K")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("J")
+    .expect_suppressed()
+    .up("K")
+    .expect_suppressed();
 }
 
 // ---- The harness itself ----

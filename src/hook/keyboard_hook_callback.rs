@@ -268,10 +268,12 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::data::trigger::Trigger;
 
-    // These tests drive `decide_event` on a local `KeyboardHook`: no hook is
-    // installed, no action runs and no timer starts (`carry_out` is never
-    // called). `HookEnv` only reads `GetAsyncKeyState`, and a single-key
-    // binding on F13 matches whatever modifiers the machine has held.
+    // No test installs a hook. The `decide_event` tests use a local
+    // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
+    // never called); the extern-callback test drives the process-wide hook
+    // and says why that is safe. `HookEnv` only reads `GetAsyncKeyState`,
+    // and a single-key binding on F13 matches whatever modifiers the machine
+    // has held.
 
     fn hook_with(binding: Binding) -> KeyboardHook {
         let hook = KeyboardHook::new();
@@ -331,5 +333,50 @@ mod tests {
         assert!(pressed.suppress);
 
         assert_eq!(decide_event(&hook, message(WM_CHAR), f13, 0), None);
+    }
+
+    #[test]
+    fn extern_callback_returns_one_for_a_suppressed_key_and_passes_an_unbound_one() {
+        // The only test of `LRESULT(1)` iff `Decision::suppress` at the
+        // extern level. The callback reads the process-wide hook, so this is
+        // the only test that may touch `get_hook()`. `carry_out` runs here,
+        // and the binding is `DoNothing` so that it starts and sends nothing.
+        let f13 = u32::from(VK_F13.0);
+        get_hook().update_bindings(vec![Binding::new(
+            KeyCombination::new(VK_F13),
+            BindAction::DoNothing,
+        )]);
+        let call = |vk: u32, msg: u32| {
+            let info = KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                ..Default::default()
+            };
+            // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
+            // KBDLLHOOKSTRUCT on this stack frame that outlives the call:
+            // all the callback dereferences. No hook is installed and this
+            // thread is not inside a hook dispatch, so the pass path's
+            // CallNextHookEx has no next hook procedure to call; its hhk
+            // argument is ignored (Microsoft Learn, CallNextHookEx), and it
+            // neither injects input nor delivers the event to any window.
+            unsafe {
+                keyboard_hook_callback(
+                    0,
+                    WPARAM(msg as usize),
+                    LPARAM(&info as *const KBDLLHOOKSTRUCT as isize),
+                )
+            }
+        };
+        assert_eq!(
+            call(f13, WM_KEYDOWN),
+            LRESULT(1),
+            "bound F13 down is swallowed"
+        );
+        assert_eq!(call(f13, WM_KEYUP), LRESULT(1), "its key-up is swallowed");
+        assert_ne!(
+            call(u32::from(VK_A.0), WM_KEYDOWN),
+            LRESULT(1),
+            "an unbound key is passed on"
+        );
+        assert_ne!(call(u32::from(VK_A.0), WM_KEYUP), LRESULT(1));
     }
 }

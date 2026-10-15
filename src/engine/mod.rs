@@ -439,3 +439,51 @@ impl Engine {
         decision
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
+
+    /// An [`Env`] stopped at one instant with nothing held and no
+    /// foreground window: enough to arm a Hold and read its timer token.
+    struct FixedEnv(Instant);
+
+    impl Env for FixedEnv {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn forget_timer_makes_a_late_timer_fire_nothing() {
+        // KS-33: the adapter calls `forget_timer` when it cannot spawn a
+        // Hold's timer thread.
+        let t0 = Instant::now();
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [ (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let token = decision.timers[0].token;
+        engine.forget_timer(token);
+
+        assert_eq!(
+            engine.on_timer(token),
+            Decision::default(),
+            "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
+        );
+    }
+}
