@@ -1,9 +1,17 @@
 //! Per-key state: which keys the engine believes are held, and which keys'
 //! key-ups must be swallowed because their key-down was.
+//!
+//! Held keys are kept by the code the hook reported, which is sided for
+//! modifiers (`VK_LSHIFT`), and the resync also writes the generic modifier
+//! codes (`VK_SHIFT`). [`HeldKeys`] answers for a trigger key: `Shift` is
+//! held if either Shift slot or the generic one is set, `LShift` only if
+//! the left one is.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::env::Env;
+use super::matching::HeldKeys;
+use crate::data::key_spec::KeySpec;
 
 /// Modifier virtual keys kept in sync with the OS key state. These are the
 /// keys most prone to getting stuck after a focus transition into a
@@ -22,55 +30,6 @@ const MODIFIERS: [VIRTUAL_KEY; 11] = [
     VK_LWIN,
     VK_RWIN,
 ];
-
-/// Bounded buffer of normalized active keys, used per keystroke to evaluate
-/// bindings without allocating. 16 simultaneous distinct keys covers any
-/// realistic combination; extras past the cap are silently dropped, which is
-/// acceptable because bindings are sorted by specificity (longer combos
-/// match first) and no real binding uses more than a handful of keys.
-pub(super) const ACTIVE_KEYS_CAP: usize = 16;
-
-pub(super) struct ActiveKeys {
-    keys: [VIRTUAL_KEY; ACTIVE_KEYS_CAP],
-    len: usize,
-}
-
-impl ActiveKeys {
-    pub(super) fn new() -> Self {
-        Self {
-            keys: [VIRTUAL_KEY(0); ACTIVE_KEYS_CAP],
-            len: 0,
-        }
-    }
-
-    pub(super) fn push_unique(&mut self, vk: VIRTUAL_KEY) {
-        if self.len >= ACTIVE_KEYS_CAP {
-            return;
-        }
-        if self.as_slice().contains(&vk) {
-            return;
-        }
-        self.keys[self.len] = vk;
-        self.len += 1;
-    }
-
-    pub(super) fn as_slice(&self) -> &[VIRTUAL_KEY] {
-        &self.keys[..self.len]
-    }
-}
-
-/// Folds the sided modifier codes the hook reports into the unsided codes
-/// that combos are written with: LShift/RShift to Shift, LCtrl/RCtrl to
-/// Ctrl, LAlt/RAlt to Alt, and RWin to LWin (the code `Win` parses to).
-fn normalize(vk: VIRTUAL_KEY) -> VIRTUAL_KEY {
-    match vk {
-        VK_LSHIFT | VK_RSHIFT => VK_SHIFT,
-        VK_LCONTROL | VK_RCONTROL => VK_CONTROL,
-        VK_LMENU | VK_RMENU => VK_MENU,
-        VK_LWIN | VK_RWIN => VK_LWIN,
-        other => other,
-    }
-}
 
 /// Index into the 256-entry tables, or `None` for a code outside them.
 fn slot(vk: u16) -> Option<usize> {
@@ -126,19 +85,6 @@ impl KeyState {
         }
     }
 
-    /// The held keys with sided modifiers folded (see [`normalize`]),
-    /// deduplicated and capped at [`ACTIVE_KEYS_CAP`], in ascending code
-    /// order.
-    pub(super) fn active_keys(&self) -> ActiveKeys {
-        let mut keys = ActiveKeys::new();
-        for (code, &held) in self.active.iter().enumerate() {
-            if held {
-                keys.push_unique(normalize(VIRTUAL_KEY(code as u16)));
-            }
-        }
-        keys
-    }
-
     pub(super) fn mark_blocked(&mut self, vk: u16) {
         if let Some(index) = slot(vk) {
             self.blocked[index] = true;
@@ -157,9 +103,22 @@ impl KeyState {
         self.blocked = [false; 256];
     }
 
-    #[cfg(test)]
+    /// Whether the engine believes the key with this exact code is held.
     pub(super) fn is_active(&self, vk: VIRTUAL_KEY) -> bool {
         slot(vk.0).is_some_and(|index| self.active[index])
+    }
+}
+
+impl HeldKeys for KeyState {
+    fn is_down(&self, key: KeySpec) -> bool {
+        match key {
+            KeySpec::Key(vk) => self.is_active(vk),
+            KeySpec::AnySide(m) => {
+                self.is_active(m.left())
+                    || self.is_active(m.right())
+                    || m.generic().is_some_and(|generic| self.is_active(generic))
+            }
+        }
     }
 }
 
@@ -168,37 +127,44 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::data::key_spec::Modifier;
 
     #[test]
-    fn active_keys_dedup() {
-        let mut buf = ActiveKeys::new();
-        buf.push_unique(VK_SHIFT);
-        buf.push_unique(VK_CONTROL);
-        buf.push_unique(VK_SHIFT);
-        assert_eq!(buf.as_slice(), &[VK_SHIFT, VK_CONTROL]);
-    }
+    fn any_side_is_down_for_either_side_or_the_generic_slot() {
+        let shift = KeySpec::AnySide(Modifier::Shift);
+        let win = KeySpec::AnySide(Modifier::Win);
 
-    #[test]
-    fn active_keys_capacity_bound() {
-        let mut buf = ActiveKeys::new();
-        for i in 0..(ACTIVE_KEYS_CAP as u16 + 4) {
-            buf.push_unique(VIRTUAL_KEY(i));
-        }
-        assert_eq!(buf.as_slice().len(), ACTIVE_KEYS_CAP);
-    }
-
-    #[test]
-    fn active_keys_fold_sided_modifiers() {
         let mut state = KeyState::new();
-        for vk in [VK_LSHIFT, VK_RSHIFT, VK_RCONTROL, VK_LMENU, VK_RWIN, VK_A] {
-            state.press(vk);
-        }
-        // Ascending raw code: A (0x41), RWin (0x5C), then the sided
-        // modifiers from 0xA0.
-        assert_eq!(
-            state.active_keys().as_slice(),
-            &[VK_A, VK_LWIN, VK_SHIFT, VK_CONTROL, VK_MENU]
-        );
+        assert!(!state.is_down(shift));
+        state.press(VK_RSHIFT);
+        assert!(state.is_down(shift));
+        state.release(VK_RSHIFT);
+        state.press(VK_LSHIFT);
+        assert!(state.is_down(shift));
+        state.release(VK_LSHIFT);
+        assert!(!state.is_down(shift));
+
+        // The resync writes the generic code from the OS key state.
+        state.sync_modifiers(&ShiftDown, None);
+        state.release(VK_LSHIFT);
+        assert!(state.is_active(VK_SHIFT));
+        assert!(state.is_down(shift));
+
+        state.press(VK_RWIN);
+        assert!(state.is_down(win));
+        assert!(!state.is_down(KeySpec::AnySide(Modifier::Ctrl)));
+    }
+
+    #[test]
+    fn sided_key_is_down_only_on_its_side() {
+        let mut state = KeyState::new();
+        state.press(VK_RSHIFT);
+        state.press(VK_RWIN);
+        assert!(!state.is_down(KeySpec::Key(VK_LSHIFT)));
+        assert!(state.is_down(KeySpec::Key(VK_RSHIFT)));
+        assert!(!state.is_down(KeySpec::Key(VK_LWIN)));
+        assert!(state.is_down(KeySpec::Key(VK_RWIN)));
+        assert!(!state.is_down(KeySpec::Key(VK_A)));
     }
 
     #[test]
@@ -218,7 +184,8 @@ mod tests {
         state.release(VIRTUAL_KEY(300));
         state.mark_blocked(300);
         assert!(!state.take_blocked(300));
-        assert!(state.active_keys().as_slice().is_empty());
+        assert!(!state.is_active(VIRTUAL_KEY(300)));
+        assert!(!state.is_down(KeySpec::Key(VIRTUAL_KEY(300))));
     }
 
     #[test]

@@ -13,11 +13,12 @@ use std::time::Duration;
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BindingKind};
 use crate::data::condition::Condition;
+use crate::data::key_spec::KeySpec;
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 
-use super::parsing::{parse_combo, parse_wm_name};
+use super::parsing::{parse_combo, parse_key_list, parse_wm_name};
 use super::schema::{
     ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawCondition, RawConfig, RawStep,
     RawTrigger, RawWindowKind, SequenceSpec,
@@ -288,17 +289,22 @@ fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
     if chord.keys.len() < 2 {
         return Err("Chord must have at least 2 keys; a single key is not a chord".into());
     }
-    let mut vks = Vec::with_capacity(chord.keys.len());
+    let mut specs: Vec<KeySpec> = Vec::with_capacity(chord.keys.len());
     for (i, k) in chord.keys.iter().enumerate() {
-        let vk =
-            parse_vk(k).ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
-        if vks.contains(&vk) {
-            return Err(format!("Chord key #{}: duplicate {:?}", i, k));
+        let spec = KeySpec::parse(k)
+            .ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
+        // Overlapping keys (`Shift` and `LShift`) would both count one
+        // physical key, so a single press could complete the chord.
+        if let Some(j) = specs.iter().position(|s| s.overlaps(spec)) {
+            return Err(format!(
+                "Chord key #{}: duplicate {:?} (overlaps key #{})",
+                i, k, j
+            ));
         }
-        vks.push(vk);
+        specs.push(spec);
     }
     Ok(BindingKind::Chord {
-        keys: vks,
+        keys: specs,
         window: Duration::from_millis(chord.window_ms),
     })
 }
@@ -425,11 +431,11 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         }
 
         RawStep::Combo(combo) => {
-            let kc = parse_combo(combo).map_err(|e| format!("Combo {:?}: {}", combo, e))?;
-            if kc.keys.is_empty() {
+            let keys = parse_key_list(combo).map_err(|e| format!("Combo {:?}: {}", combo, e))?;
+            if keys.is_empty() {
                 return Err(format!("Combo {:?}: empty", combo));
             }
-            SequenceStep::PressCombo(kc.keys)
+            SequenceStep::PressCombo(keys)
         }
 
         RawStep::Window(kind) => SequenceStep::Window(match kind {
@@ -453,6 +459,7 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
@@ -484,7 +491,10 @@ mod tests {
         assert_eq!(bindings.len(), 2);
 
         let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();
-        assert_eq!(user.combination().unwrap().keys, vec![VK_CAPITAL]);
+        assert_eq!(
+            user.combination().unwrap().keys,
+            vec![KeySpec::Key(VK_CAPITAL)]
+        );
         assert_eq!(user.action, BindAction::SwitchLanguage);
         assert!(user.block_original_combo);
         assert!(user.block_default); // default
@@ -1078,8 +1088,8 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Sequence { steps, max_gap } => {
                 assert_eq!(steps.len(), 2);
-                assert_eq!(steps[0].keys, vec![VK_G]);
-                assert_eq!(steps[1].keys, vec![VK_G]);
+                assert_eq!(steps[0].keys, vec![KeySpec::Key(VK_G)]);
+                assert_eq!(steps[1].keys, vec![KeySpec::Key(VK_G)]);
                 assert_eq!(max_gap.as_millis(), 500);
             }
             other => panic!("expected Sequence, got {:?}", other),
@@ -1100,10 +1110,11 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Sequence { steps, max_gap } => {
                 assert_eq!(steps.len(), 2);
-                assert!(steps[0].keys.contains(&VK_CONTROL));
-                assert!(steps[0].keys.contains(&VK_X));
-                assert!(steps[1].keys.contains(&VK_CONTROL));
-                assert!(steps[1].keys.contains(&VK_S));
+                let ctrl = KeySpec::AnySide(Modifier::Ctrl);
+                assert!(steps[0].keys.contains(&ctrl));
+                assert!(steps[0].keys.contains(&KeySpec::Key(VK_X)));
+                assert!(steps[1].keys.contains(&ctrl));
+                assert!(steps[1].keys.contains(&KeySpec::Key(VK_S)));
                 assert_eq!(max_gap.as_millis(), 500); // default
             }
             other => panic!("expected Sequence, got {:?}", other),
@@ -1124,8 +1135,8 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Chord { keys, window } => {
                 assert_eq!(keys.len(), 2);
-                assert!(keys.contains(&VK_J));
-                assert!(keys.contains(&VK_K));
+                assert!(keys.contains(&KeySpec::Key(VK_J)));
+                assert!(keys.contains(&KeySpec::Key(VK_K)));
                 assert_eq!(window.as_millis(), 50);
             }
             other => panic!("expected Chord, got {:?}", other),
@@ -1225,6 +1236,19 @@ mod tests {
                 assert!(errs[0].contains("duplicate"));
             }
             _ => panic!("expected Bindings error"),
+        }
+    }
+
+    #[test]
+    fn chord_with_an_unsided_modifier_parses_to_either_side() {
+        let ron = r#"( bindings: [ ( chord: (keys: ["Shift", "Space"]), action: DoNothing ) ] )"#;
+        let bindings = from_ron_str(ron).unwrap();
+        match &bindings[0].kind {
+            BindingKind::Chord { keys, .. } => assert_eq!(
+                keys,
+                &vec![KeySpec::AnySide(Modifier::Shift), KeySpec::Key(VK_SPACE)]
+            ),
+            other => panic!("expected Chord, got {:?}", other),
         }
     }
 

@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
-
 use super::condition::Condition;
 use super::key_combination::KeyCombination;
+use super::key_spec::KeySpec;
 use super::trigger::Trigger;
-use super::vk_name::vk_name;
 use crate::core::windows_actions::BindAction;
 
 /// What kind of input pattern triggers this binding.
@@ -28,7 +26,7 @@ pub enum BindingKind {
         max_gap: Duration,
     },
     Chord {
-        keys: Vec<VIRTUAL_KEY>,
+        keys: Vec<KeySpec>,
         window: Duration,
     },
 }
@@ -173,24 +171,15 @@ fn format_kind(kind: &BindingKind) -> String {
         BindingKind::Combo(c) => c
             .keys
             .iter()
-            .map(|k| vk_name(*k))
+            .map(KeySpec::to_string)
             .collect::<Vec<_>>()
             .join(" + "),
         BindingKind::Sequence { steps, max_gap } => {
-            let rendered: Vec<String> = steps
-                .iter()
-                .map(|s| {
-                    s.keys
-                        .iter()
-                        .map(|k| vk_name(*k))
-                        .collect::<Vec<_>>()
-                        .join("+")
-                })
-                .collect();
+            let rendered: Vec<String> = steps.iter().map(KeyCombination::to_string).collect();
             format!("[Seq <{}ms>] {}", max_gap.as_millis(), rendered.join(" → "))
         }
         BindingKind::Chord { keys, window } => {
-            let rendered: Vec<String> = keys.iter().map(|k| vk_name(*k)).collect();
+            let rendered: Vec<String> = keys.iter().map(KeySpec::to_string).collect();
             format!("[Chord <{}ms>] {}", window.as_millis(), rendered.join("+"))
         }
     }

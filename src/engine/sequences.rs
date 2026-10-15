@@ -3,23 +3,24 @@
 //! `max_gap` may pass between consecutive steps.
 //!
 //! The engine feeds every non-repeat key-down to [`Sequences::on_key_down`]
-//! once per Sequence binding, together with the normalised set of held
-//! keys. A pending sequence is identified by its steps, so bindings with the
-//! same steps but different actions share one slot (the action of the
-//! binding that started it fires).
+//! once per Sequence binding, together with the held keys. A step matches
+//! when all of its keys are held, each on its side (`"Shift"` either Shift
+//! key, `"LShift"` the left one). A pending sequence is identified by its
+//! steps, so bindings with the same steps but different actions share one
+//! slot (the action of the binding that started it fires).
 //!
 //! **Suppression** mirrors chords: every key-down that starts or advances a
 //! sequence is suppressed, and on completion the key-ups of the last step's
-//! keys are suppressed too. If a sequence times out or breaks, the
-//! suppressed key-downs are lost; there is no replay. Don't bind sequences
-//! to keys used in normal typing.
+//! non-modifier keys are suppressed too. If a sequence times out or breaks,
+//! the suppressed key-downs are lost; there is no replay. Don't bind
+//! sequences to keys used in normal typing.
 
 use std::time::{Duration, Instant};
 
-use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
-
+use super::matching::{HeldKeys, keys_down};
 use crate::core::windows_actions::BindAction;
 use crate::data::key_combination::KeyCombination;
+use crate::data::key_spec::KeySpec;
 
 struct PendingSequence {
     steps: Vec<KeyCombination>,
@@ -52,11 +53,11 @@ impl Sequences {
         Self::default()
     }
 
-    /// Feeds one key-down to one Sequence binding. `active_keys` is the
-    /// normalised set of held keys after the key-down.
-    pub(super) fn on_key_down(
+    /// Feeds one key-down to one Sequence binding. `held` are the keys held
+    /// after the key-down.
+    pub(super) fn on_key_down<H: HeldKeys + ?Sized>(
         &mut self,
-        active_keys: &[VIRTUAL_KEY],
+        held: &H,
         action: &BindAction,
         steps: &[KeyCombination],
         max_gap: Duration,
@@ -73,7 +74,7 @@ impl Sequences {
         // Look for an existing pending entry for this sequence shape.
         if let Some(index) = self.pending.iter().position(|p| p.steps == steps) {
             let next_step = self.pending[index].next_step;
-            if next_step < steps.len() && steps[next_step].matches(active_keys) {
+            if next_step < steps.len() && keys_down(&steps[next_step], held) {
                 let entry = &mut self.pending[index];
                 entry.next_step += 1;
                 entry.expires_at = now + max_gap;
@@ -93,7 +94,7 @@ impl Sequences {
         }
 
         // Fresh start: does this key-down match step 0?
-        if steps[0].matches(active_keys) {
+        if keys_down(&steps[0], held) {
             // Length-1 sequence (degenerate; the loader requires at least 2
             // steps): fire immediately rather than leave a useless entry.
             if steps.len() == 1 {
@@ -116,22 +117,46 @@ impl Sequences {
     }
 }
 
+/// The keys whose key-ups a completed sequence swallows: the codes of the
+/// last step's non-modifier keys. A modifier in that step reached the OS on
+/// its key-down, unless it was the completing key, which the engine marks
+/// with the event itself; marking it here would swallow a key-up whose
+/// key-down the OS saw.
 fn last_step_keys(steps: &[KeyCombination]) -> Vec<u16> {
     steps
         .last()
-        .map(|step| step.keys.iter().map(|k| k.0).collect())
+        .map(|step| {
+            step.keys
+                .iter()
+                .filter(|key| key.modifier().is_none())
+                .filter_map(|key| match key {
+                    KeySpec::Key(vk) => Some(vk.0),
+                    KeySpec::AnySide(_) => None,
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::keys::KeyState;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     const GAP: Duration = Duration::from_millis(500);
 
     fn combo(keys: &[VIRTUAL_KEY]) -> KeyCombination {
         KeyCombination::from_keys(keys.to_vec())
+    }
+
+    /// A `KeyState` with `keys` pressed: the engine's own held-key table.
+    fn held(keys: &[VIRTUAL_KEY]) -> KeyState {
+        let mut state = KeyState::new();
+        for &key in keys {
+            state.press(key);
+        }
+        state
     }
 
     fn ms(n: u64) -> Duration {
@@ -142,8 +167,13 @@ mod tests {
     fn first_step_match_advances() {
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_G]), combo(&[VK_G])];
-        let outcome =
-            state.on_key_down(&[VK_G], &BindAction::DoNothing, &steps, GAP, Instant::now());
+        let outcome = state.on_key_down(
+            &held(&[VK_G]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            Instant::now(),
+        );
         assert_eq!(outcome, SequenceOutcome::Advanced);
     }
 
@@ -152,10 +182,16 @@ mod tests {
         let t0 = Instant::now();
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_G]), combo(&[VK_G])];
-        state.on_key_down(&[VK_G], &BindAction::SwitchLanguage, &steps, GAP, t0);
+        state.on_key_down(&held(&[VK_G]), &BindAction::SwitchLanguage, &steps, GAP, t0);
         // The key was released between presses; the second key-down holds
         // [G] again.
-        let outcome = state.on_key_down(&[VK_G], &BindAction::DoNothing, &steps, GAP, t0 + ms(100));
+        let outcome = state.on_key_down(
+            &held(&[VK_G]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0 + ms(100),
+        );
         assert_eq!(
             outcome,
             SequenceOutcome::Completed {
@@ -170,8 +206,14 @@ mod tests {
         let t0 = Instant::now();
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_F13]), combo(&[VK_F14])];
-        state.on_key_down(&[VK_F13], &BindAction::DoNothing, &steps, GAP, t0);
-        let outcome = state.on_key_down(&[VK_F14], &BindAction::DoNothing, &steps, GAP, t0 + GAP);
+        state.on_key_down(&held(&[VK_F13]), &BindAction::DoNothing, &steps, GAP, t0);
+        let outcome = state.on_key_down(
+            &held(&[VK_F14]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0 + GAP,
+        );
         assert_eq!(outcome, SequenceOutcome::NotMatching);
     }
 
@@ -180,10 +222,21 @@ mod tests {
         let t0 = Instant::now();
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_F13]), combo(&[VK_F14]), combo(&[VK_F15])];
-        state.on_key_down(&[VK_F13], &BindAction::DoNothing, &steps, GAP, t0);
-        state.on_key_down(&[VK_F14], &BindAction::DoNothing, &steps, GAP, t0 + ms(400));
-        let outcome =
-            state.on_key_down(&[VK_F15], &BindAction::DoNothing, &steps, GAP, t0 + ms(800));
+        state.on_key_down(&held(&[VK_F13]), &BindAction::DoNothing, &steps, GAP, t0);
+        state.on_key_down(
+            &held(&[VK_F14]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0 + ms(400),
+        );
+        let outcome = state.on_key_down(
+            &held(&[VK_F15]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0 + ms(800),
+        );
         assert!(matches!(outcome, SequenceOutcome::Completed { .. }));
     }
 
@@ -192,12 +245,12 @@ mod tests {
         let t0 = Instant::now();
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_G]), combo(&[VK_H])];
-        state.on_key_down(&[VK_G], &BindAction::DoNothing, &steps, GAP, t0);
+        state.on_key_down(&held(&[VK_G]), &BindAction::DoNothing, &steps, GAP, t0);
         // Wrong key: expecting H, got A.
-        let outcome = state.on_key_down(&[VK_A], &BindAction::DoNothing, &steps, GAP, t0);
+        let outcome = state.on_key_down(&held(&[VK_A]), &BindAction::DoNothing, &steps, GAP, t0);
         // No match against this sequence; pending dropped.
         assert_eq!(outcome, SequenceOutcome::NotMatching);
-        let outcome = state.on_key_down(&[VK_H], &BindAction::DoNothing, &steps, GAP, t0);
+        let outcome = state.on_key_down(&held(&[VK_H]), &BindAction::DoNothing, &steps, GAP, t0);
         assert_eq!(outcome, SequenceOutcome::NotMatching);
     }
 
@@ -209,11 +262,17 @@ mod tests {
         let mut state = Sequences::new();
         let steps = vec![combo(&[VK_CONTROL, VK_X]), combo(&[VK_CONTROL, VK_S])];
 
-        let first = state.on_key_down(&[VK_CONTROL, VK_X], &BindAction::DoNothing, &steps, GAP, t0);
+        let first = state.on_key_down(
+            &held(&[VK_LCONTROL, VK_X]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0,
+        );
         assert_eq!(first, SequenceOutcome::Advanced);
 
         let second = state.on_key_down(
-            &[VK_CONTROL, VK_S],
+            &held(&[VK_LCONTROL, VK_S]),
             &BindAction::DoNothing,
             &steps,
             GAP,
@@ -221,10 +280,45 @@ mod tests {
         );
         match second {
             SequenceOutcome::Completed { last_step_keys, .. } => {
-                assert!(last_step_keys.contains(&VK_CONTROL.0));
-                assert!(last_step_keys.contains(&VK_S.0));
+                // Ctrl's key-down reached the OS, so its key-up must too:
+                // only S is swallowed.
+                assert_eq!(last_step_keys, vec![VK_S.0]);
             }
             other => panic!("expected completion, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn sided_step_needs_its_side() {
+        let t0 = Instant::now();
+        let steps = vec![combo(&[VK_F13]), combo(&[VK_LSHIFT, VK_F14])];
+
+        let mut state = Sequences::new();
+        state.on_key_down(&held(&[VK_F13]), &BindAction::DoNothing, &steps, GAP, t0);
+        let outcome = state.on_key_down(
+            &held(&[VK_RSHIFT, VK_F14]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0,
+        );
+        assert_eq!(outcome, SequenceOutcome::NotMatching);
+
+        let mut state = Sequences::new();
+        state.on_key_down(&held(&[VK_F13]), &BindAction::DoNothing, &steps, GAP, t0);
+        let outcome = state.on_key_down(
+            &held(&[VK_LSHIFT, VK_F14]),
+            &BindAction::DoNothing,
+            &steps,
+            GAP,
+            t0,
+        );
+        assert_eq!(
+            outcome,
+            SequenceOutcome::Completed {
+                action: BindAction::DoNothing,
+                last_step_keys: vec![VK_F14.0],
+            }
+        );
     }
 }

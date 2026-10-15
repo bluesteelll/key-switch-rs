@@ -38,12 +38,14 @@ key-switch-rs/
     ├── data/
     │   ├── binding.rs          - Binding struct (key combo -> action)
     │   ├── key_combination.rs  - key combinations (key + modifiers)
+    │   ├── key_spec.rs         - trigger keys: one key on its side, or a modifier on either side
     │   ├── sequence.rs         - macro engine: SequenceStep, type_text, press_combo, window ops
     │   └── vk_name.rs          - VIRTUAL_KEY <-> human-readable name (both directions)
     ├── engine/
     │   ├── mod.rs              - pure decision core: Engine::on_key / on_timer -> Decision
     │   ├── env.rs              - Env trait: clock, OS key state, foreground app and title
-    │   ├── keys.rs             - held and blocked keys, modifier resync, side folding
+    │   ├── keys.rs             - held and blocked keys, modifier resync
+    │   ├── matching.rs         - compares a binding's keys with the keys held
     │   ├── gestures.rs         - pending Tap / Hold / DoubleTap: deadlines and timer tokens
     │   ├── chords.rs           - pending simultaneous chords
     │   ├── sequences.rs        - pending leader-key sequences
@@ -66,8 +68,9 @@ key-switch-rs/
 
 `KeyCombination` struct - represents key combination:
 
-- Key list (`Vec<VIRTUAL_KEY>`) with dedup
-- `matches()` method checks if pressed keys match combination
+- Key list (`Vec<KeySpec>`) with dedup: each key is one key on its side
+  (`LShift`) or a modifier on either side (`Shift`), see `data/key_spec.rs`
+- Matching against the keys held is the engine's job (`engine/matching.rs`)
 
 #### `windows_actions.rs`
 
@@ -176,7 +179,7 @@ is case-insensitive (`"Ctrl + shift + esc"` parses identically to `"Ctrl+Shift+E
 
 | Group       | Recognised names                                                                                       |
 | ----------- | ------------------------------------------------------------------------------------------------------ |
-| Modifiers   | `Ctrl`/`Control`, `Shift`, `Alt`/`Menu`, `Win`/`Super`/`LWin`, `RWin`                                    |
+| Modifiers   | Either side: `Shift`, `Ctrl`/`Control`, `Alt`/`Menu`, `Win`/`Super`. One side: `LShift`/`LeftShift`, `RShift`/`RightShift`, `LCtrl`/`LeftCtrl`/`LeftControl`, `RCtrl`/`RightCtrl`/`RightControl`, `LAlt`/`LeftAlt`, `RAlt`/`RightAlt`, `LWin`/`LeftWin`, `RWin`/`RightWin` |
 | Letters     | `A`–`Z`                                                                                                |
 | Digits      | `0`–`9`                                                                                                |
 | Function    | `F1`–`F24`                                                                                             |
@@ -184,9 +187,14 @@ is case-insensitive (`"Ctrl + shift + esc"` parses identically to `"Ctrl+Shift+E
 | Named       | `CapsLock`, `Tab`, `Esc`/`Escape`, `Enter`/`Return`, `Space`, `Backspace`, `Delete`/`Del`, `Insert`/`Ins`, `Home`, `End`, `PageUp`/`PgUp`, `PageDown`/`PgDn`, `Up`, `Down`, `Left`, `Right`, `NumLock`, `ScrollLock`, `Pause`, `PrintScreen` |
 | OEM punct   | `` ` ``, `-`, `=`, `,`, `.`, `;`, `/`, `[`, `]`, `\`, `'`                                                |
 
-Sided variants (`LShift`/`RShift`, `LCtrl`/`RCtrl`, `LAlt`/`RAlt`) are parsed,
-but the hook normalises left/right to the unsided form for matching — a binding
-on `Shift` matches either physical Shift key.
+**Sided modifiers.** `Shift`, `Ctrl`, `Alt` and `Win` (`Super`) match either
+key of the pair; `LShift`, `RShift`, `LCtrl`, `RCtrl`, `LAlt`, `RAlt`, `LWin`
+and `RWin` match only that key. This holds wherever a key triggers a binding:
+`keys`, `sequence` steps and `chord` keys. `"LShift+F13"` fires with the left
+Shift held and not with the right one; `"Win+E"` fires with either Win key,
+`"LWin+E"` only with the left one. Keys the daemon sends (`PressKey`, and
+`Key` and `Combo` in a macro) are not affected: `Win` there sends the left Win
+key.
 
 ### Action variants
 
@@ -245,7 +253,10 @@ Sequence and Chord bindings **suppress** their trigger keys from the foreground 
 
 - Sequence requires at least 2 steps. For a single combo use plain `keys: "..."` instead.
 - Chord requires at least 2 keys. A single key is not a chord.
-- Chord keys cannot repeat (`chord: (keys: ["j", "j"])` is rejected).
+- Chord keys cannot repeat or overlap: `chord: (keys: ["j", "j"])` and
+  `chord: (keys: ["Shift", "LShift"])` are rejected, because one press would
+  count for both keys. A modifier in a chord is swallowed on every press,
+  like every other chord key.
 - Sequence and Chord **cannot** be paired with deferred `trigger: Tap/Hold/DoubleTap` — they have their own temporal semantics. Only `trigger: Immediate` (the default) is valid.
 
 ### Triggers (`trigger:` field)
@@ -267,6 +278,11 @@ and resolve independently.
 // LShift — double tap toggles CapsLock; single tap unbound
 ( keys: "LShift",   action: ToggleCapsLock,   trigger: DoubleTap(250) ),
 ```
+
+A deferred trigger swallows every press of its key (see the behaviour rules
+below), so until roadmap item 1.3 the `LShift` example also stops the left
+Shift from reaching applications: it no longer types capitals. The right
+Shift is unaffected.
 
 | Variant            | When the action fires                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------- |
@@ -517,7 +533,7 @@ elevated without a prompt; `swch` then talks to it normally.
 
 - **Not macros**: application calls native Windows API functions, not emulating action sequences
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
-- **Modifier normalization**: left/right Shift treated as single modifier
+- **Sided modifiers**: `Shift` matches either Shift key and `LShift` only the left one; the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). Parse errors keep the previous config live — never bricks the daemon.
@@ -525,7 +541,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-blocking**: automatically blocks original system combinations when needed
 - **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition
 - **Per-process sentinel**: injected-event marker is mixed with the process ID so this daemon does not collide with other input-synthesizing apps (AHK, PowerToys)
-- **Hot-path allocations: none**: the hook callback uses a stack-allocated active-keys buffer
+- **Table-driven matching**: a binding's keys are looked up in the engine's per-key table of held keys; no list of held keys is built per key press
 - **Independently blocked keys**: multiple keys can be blocked simultaneously; each key's release is tracked independently
 
 ## Known Limitations

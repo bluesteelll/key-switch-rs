@@ -89,15 +89,12 @@ pub fn vk_name(vk: VIRTUAL_KEY) -> String {
 ///
 /// Returns `None` for anything not in the table above. Callers should surface
 /// the failing name to the user — never silently drop unparseable bindings.
+///
+/// `"Win"` and `"LWin"` both give `VK_LWIN`, the key the daemon sends. For
+/// trigger keys, where `"Win"` means either Win key, use
+/// [`KeySpec::parse`](super::key_spec::KeySpec::parse).
 pub fn parse_vk(name: &str) -> Option<VIRTUAL_KEY> {
-    // Normalize: strip ASCII whitespace, fold to lowercase. Length grows by at
-    // most the input length, so a String is fine — config parsing is not on a
-    // hot path.
-    let normalized: String = name
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(|c| c.to_lowercase())
-        .collect();
+    let normalized = normalize_key_name(name);
 
     if normalized.is_empty() {
         return None;
@@ -173,6 +170,16 @@ pub fn parse_vk(name: &str) -> Option<VIRTUAL_KEY> {
         "volumemute" | "volmute" | "mute" => Some(VK_VOLUME_MUTE),
         _ => None,
     }
+}
+
+/// The form key names are matched in: whitespace stripped, lowercase. Length
+/// grows by at most the input length, so a String is fine: config parsing is
+/// not on a hot path.
+pub(crate) fn normalize_key_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn single_char_vk(ch: char) -> Option<VIRTUAL_KEY> {

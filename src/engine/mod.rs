@@ -87,14 +87,17 @@
 //!
 //! ## Decision rules
 //!
-//! The rules are those of the hook callback before the engine existed; only
-//! where they now live has changed. On a key-down:
+//! The rules are those of the hook callback before the engine existed,
+//! except where a rule names the audit issue that changed it. On a key-down:
 //!
 //! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
 //!    the key being delivered.
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
-//! 3. The held keys are normalised (sided modifiers fold to `Shift`, `Ctrl`,
-//!    `Alt`; `RWin` to `Win`).
+//! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
+//!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
+//!    `LShift`, `RWin` and the other sided names only that key. A key of a
+//!    combo or sequence step is held if a key it accepts is held; a chord
+//!    key is pressed if it accepts the event's code (KS-07).
 //! 4. Every binding is visited in specificity order. Its `when:` condition is
 //!    checked first, then its kind:
 //!    - `Combo`: all of its keys must be held. `Immediate` fires only for the
@@ -115,9 +118,9 @@
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: superset matching (KS-04),
-//! leaking repeats (KS-06), side folding (KS-07), repeat-firing Immediate
-//! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
-//! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
+//! leaking repeats (KS-06), repeat-firing Immediate actions (KS-10),
+//! specificity across trigger kinds (KS-13), the modifier resync (KS-14) and
+//! the sequence matching rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -125,6 +128,7 @@ mod chords;
 mod env;
 mod gestures;
 mod keys;
+mod matching;
 mod sequences;
 
 #[cfg(test)]
@@ -289,7 +293,6 @@ impl Engine {
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
         let now = env.now();
         let was_repeat = self.keys.press(vk);
-        let active = self.keys.active_keys();
         let foreground = EnvForeground(env);
 
         let mut decision = Decision::default();
@@ -304,7 +307,7 @@ impl Engine {
 
             match &binding.kind {
                 BindingKind::Combo(combo) => {
-                    if !combo.matches(active.as_slice()) {
+                    if !matching::keys_down(combo, &self.keys) {
                         continue;
                     }
                     match binding.trigger {
@@ -364,7 +367,7 @@ impl Engine {
                         continue;
                     }
                     match self.sequences.on_key_down(
-                        active.as_slice(),
+                        &self.keys,
                         &binding.action,
                         steps,
                         *max_gap,
