@@ -39,7 +39,9 @@ pub trait Env {
     /// resync asks about modifiers, leaving out every modifier whose
     /// key-down it swallowed. An auto-blocker asks, without overwriting
     /// anything, about the held keys outside its hotkey, to learn whether
-    /// Windows would see more than the hotkey.
+    /// Windows would see more than the hotkey. A reset (`swch off`, `swch
+    /// on`), which has no event, asks about every keyboard code to learn
+    /// which keys Windows has down.
     fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool;
 
     /// Base name of the foreground window's executable (`"code.exe"`), or
