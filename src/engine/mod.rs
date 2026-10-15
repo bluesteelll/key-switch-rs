@@ -160,6 +160,9 @@ pub(crate) mod testing;
 #[cfg(test)]
 mod scenarios;
 
+#[cfg(test)]
+mod properties;
+
 use std::cmp::Reverse;
 use std::time::{Duration, Instant};
 
