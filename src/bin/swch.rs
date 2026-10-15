@@ -4,24 +4,22 @@
 //!
 //! | Command       | What it does                                                |
 //! | ------------- | ----------------------------------------------------------- |
-//! | `swch open`   | Launch the daemon (`key-switch-rs.exe`) elevated via UAC.   |
-//! | `swch on`     | Tell the running daemon to enable its keyboard hook.        |
-//! | `swch off`    | Tell the running daemon to disable its keyboard hook.       |
+//! | `swch open`   | Launch the daemon (`key-switch-rs.exe`) elevated via UAC,   |
+//! |               | unless a daemon already runs.                               |
+//! | `swch on`     | Turn remapping on.                                          |
+//! | `swch off`    | Turn remapping off (keys pass through).                     |
 //! | `swch exit`   | Tell the running daemon to shut down.                       |
 //! | `swch status` | Ask the daemon for its current state (running/disabled +    |
 //! |               | binding count). Useful for scripts.                         |
 //!
-//! All commands except `open` talk to the daemon over a named pipe.
-//! If the daemon isn't running, they print a one-liner and exit 1.
+//! Every command, `open` included, sends one request over the daemon's
+//! named pipe (`ipc::request`) and waits at most `ipc::REPLY_TIMEOUT` (5 s)
+//! for the connection and the reply. If the daemon isn't running, they
+//! print a one-liner and exit 1; `open` then starts it.
 
-use std::io::{BufRead, BufReader, Write};
 use std::process::ExitCode;
-use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as StreamTrait;
-use interprocess::local_socket::{GenericNamespaced, Stream, prelude::*};
-
-use key_switch_rs::ipc::{Command, PIPE_NAME, parse_response};
+use key_switch_rs::ipc::{Command, PIPE_NAME, REPLY_TIMEOUT, RequestError, request};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -61,8 +59,8 @@ fn print_usage(prog: &str) {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  open    Launch the daemon (UAC prompt)");
-    eprintln!("  on      Enable the keyboard hook (daemon must be running)");
-    eprintln!("  off     Disable the keyboard hook");
+    eprintln!("  on      Turn remapping on (daemon must be running)");
+    eprintln!("  off     Turn remapping off (keys pass through)");
     eprintln!("  status  Show daemon state and binding count");
     eprintln!("  exit    Shut the daemon down");
 }
@@ -70,14 +68,31 @@ fn print_usage(prog: &str) {
 // ---- `open` ----
 
 fn cmd_open() -> Result<(), String> {
-    // If we can already talk to the daemon, it's already running — bail
-    // before triggering an unnecessary UAC prompt.
-    if connect().is_ok() {
-        println!("swch: daemon is already running");
-        return Ok(());
+    // Only a missing pipe proves that no daemon runs. A pipe that refuses
+    // this console, stays busy or does not answer belongs to a running
+    // daemon, and a second one would only bring another UAC prompt and a
+    // daemon without a pipe (KS-20). A `status` request, not a bare
+    // connect, so the daemon logs no read error for the probe (KS-39).
+    match request(PIPE_NAME, &Command::Status, REPLY_TIMEOUT) {
+        Ok(_) => {
+            println!("swch: daemon is already running");
+            return Ok(());
+        }
+        Err(error) => match error.daemon_running() {
+            Some(true) => {
+                println!("swch: daemon is already running ({error})");
+                return Ok(());
+            }
+            Some(false) => {}
+            None => {
+                return Err(format!(
+                    "cannot tell whether a daemon is running ({error}); not starting another"
+                ));
+            }
+        },
     }
 
-    // Daemon lives next to us in the install directory.
+    // The daemon binary sits next to swch.exe.
     let mut exe_path =
         std::env::current_exe().map_err(|e| format!("could not locate current_exe: {}", e))?;
     exe_path.pop();
@@ -128,58 +143,22 @@ fn cmd_open() -> Result<(), String> {
 // ---- pipe-talking subcommands ----
 
 fn send(cmd: Command) -> ExitCode {
-    let stream = match connect() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "swch: cannot reach daemon ({}). Use `swch open` to start it.",
-                e
-            );
-            return ExitCode::FAILURE;
+    match request(PIPE_NAME, &cmd, REPLY_TIMEOUT) {
+        Ok((true, msg)) => {
+            println!("{msg}");
+            ExitCode::SUCCESS
         }
-    };
-
-    let (ok, msg) = match round_trip(stream, &cmd) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("swch: IPC error: {}", e);
-            return ExitCode::FAILURE;
+        Ok((false, msg)) => {
+            eprintln!("swch: {msg}");
+            ExitCode::FAILURE
         }
-    };
-
-    if ok {
-        println!("{}", msg);
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("swch: {}", msg);
-        ExitCode::FAILURE
+        Err(RequestError::NotRunning) => {
+            eprintln!("swch: the daemon is not running. Use `swch open` to start it.");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("swch: cannot reach daemon ({error}).");
+            ExitCode::FAILURE
+        }
     }
-}
-
-fn connect() -> Result<Stream, String> {
-    let name = PIPE_NAME
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(|e| format!("could not build pipe name: {}", e))?;
-    Stream::connect(name).map_err(|e| format!("{}", e))
-}
-
-fn round_trip(mut stream: Stream, cmd: &Command) -> Result<(bool, String), String> {
-    stream
-        .write_all(cmd.as_wire().as_bytes())
-        .map_err(|e| format!("write: {}", e))?;
-    stream.flush().ok();
-
-    // Set a coarse read timeout via shutdown? `interprocess` Stream
-    // doesn't expose set_read_timeout cross-platform. We rely on the
-    // daemon responding promptly; if it hangs, the user can Ctrl+C the
-    // CLI.
-    let _ = Duration::from_secs(5);
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read: {}", e))?;
-
-    Ok(parse_response(&response))
 }

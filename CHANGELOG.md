@@ -40,6 +40,9 @@ minor version; such entries sit under **Changed** and start with
 - Per-binding `allow_extra_modifiers: true` for `keys` bindings: the binding
   also fires while modifiers it does not name are held. It is a load error
   on `sequence` and `chord` bindings.
+- `tests/ipc_roundtrip.rs`: the `swch` client against test pipes with
+  unique names: a server that never answers, a missing pipe, a pipe that
+  refuses the client, a busy pipe and a server that answers.
 
 ### Changed
 
@@ -111,6 +114,17 @@ minor version; such entries sit under **Changed** and start with
   Remote Desktop another signed-in user can switch remapping on or off,
   stop the daemon, or create a pipe instance that answers `swch` in the
   daemon's place, until roadmap item 4.1 gives each session its own pipe.
+- `swch` no longer waits forever for a daemon that accepts the connection
+  but does not answer, or whose pipe stays busy: after 5 s it prints
+  `swch: cannot reach daemon (the daemon did not answer within 5s).` and
+  exits with 1. Without a daemon it prints
+  ``swch: the daemon is not running. Use `swch open` to start it.``.
+  `swch open` treats a pipe that refuses this console, a busy pipe and a
+  daemon that does not answer as a running daemon and starts no second one
+  (KS-20, partly; roadmap item 1.5 adds the single-instance guard). Its
+  check is now a `status` request, so it no longer leaves an
+  `IPC read error` or `IPC write error` warning in the daemon console
+  (KS-39, an unverified report).
 - KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
   on the key-down of one of its own keys: a non-modifier key, or any of its
   keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).

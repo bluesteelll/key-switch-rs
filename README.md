@@ -21,7 +21,7 @@ key-switch-rs/
 ├── build.rs                - emits /MANIFESTUAC linker arg for the daemon binary only
 └── src/
     ├── lib.rs              - public crate surface (so swch binary can import shared modules)
-    ├── ipc.rs              - IPC protocol shared between daemon and swch
+    ├── ipc.rs              - IPC protocol and the swch client (bounded connect, 5 s reply deadline)
     ├── bin/
     │   └── swch.rs         - swch CLI driver binary
     └──
@@ -537,7 +537,7 @@ Release builds ship two binaries:
 
 | Command       | What it does                                                |
 | ------------- | ----------------------------------------------------------- |
-| `swch open`   | Launch the daemon. Triggers UAC the first time. Detects if already running. |
+| `swch open`   | Launch the daemon (a UAC prompt on every launch of a release build). Does nothing if a daemon already answers, refuses this console, is busy, or does not answer within 5 s. |
 | `swch on`     | Turn remapping back on (idempotent). |
 | `swch off`    | Turn remapping off (idempotent): the hook stays installed and passes every key through; pending Tap/Hold/DoubleTap, chords and sequences are dropped, a running macro finishes. Useful for games or temporarily passing the OS's defaults through. |
 | `swch status` | Print "running" or "disabled" (remapping on or off) and the live binding count. |
@@ -546,7 +546,9 @@ Release builds ship two binaries:
 
 All commands except `open` connect to the daemon's named pipe
 (`\\.\pipe\key-switch-rs.sock`). If the daemon isn't running, they print a
-hint and exit 1. The pipe admits interactive users at medium integrity or
+hint and exit 1. If it does not answer within 5 s, they print
+`swch: cannot reach daemon (the daemon did not answer within 5s).` and exit 1.
+The pipe admits interactive users at medium integrity or
 above, so a normal console can control an elevated daemon. That includes
 every user signed in to the machine: under fast user switching or Remote
 Desktop another user can switch your remapping on or off, stop your daemon,
