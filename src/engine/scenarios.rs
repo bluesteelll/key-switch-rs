@@ -271,6 +271,43 @@ fn first_binding_whose_condition_holds_wins_on_a_shared_key() {
         .expect_fired(&[BindAction::SwitchLanguage]);
 }
 
+#[test]
+fn when_title_equals_and_app_equals_ignore_case_beyond_ascii() {
+    // "Kalkulyator" and "Privet.exe", written in Cyrillic; the config names
+    // them in upper case.
+    let title = "\u{41a}\u{430}\u{43b}\u{44c}\u{43a}\u{443}\u{43b}\u{44f}\u{442}\u{43e}\u{440}";
+    let app = "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442}.exe";
+    let config = format!(
+        r#"( bindings: [
+        (keys: "F13", action: SwitchLanguage, when: TitleEquals("{}")),
+        (keys: "F14", action: ToggleCapsLock, when: AppEquals("{}")),
+    ] )"#,
+        title.to_uppercase(),
+        app.to_uppercase()
+    );
+
+    Scenario::from_ron(&config)
+        .foreground(app, title)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed()
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("F14")
+        .expect_suppressed();
+
+    Scenario::from_ron(&config)
+        .foreground(app, "\u{41a}\u{430}\u{43b}")
+        .down("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_passed();
+}
+
 // ---- Tap ----
 
 #[test]
