@@ -1704,9 +1704,10 @@ fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
 #[test]
 fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
     // The chord opens a window that takes the foreground while J and K are
-    // still held. Their key-downs were swallowed, so Windows must not see
-    // their repeats either (no "jjj" in the new window). Their key-ups pass,
-    // like every key-up whose swallowed key-down a focus change forgot.
+    // still held. K, pressed last, auto-repeats. Its key-down was swallowed,
+    // so Windows must not see its repeats either (no "kkk" in the new
+    // window). The key-ups pass, like every key-up whose swallowed key-down
+    // a focus change forgot.
     Scenario::from_ron(
         r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: Launch(exe: "wt.exe")) ] )"#,
     )
@@ -1719,12 +1720,10 @@ fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
     .expect_fired(&[launch("wt.exe")])
     .foreground_changed()
     .advance_ms(480)
-    .repeat("J")
-    .expect_suppressed()
     .repeat("K")
     .expect_suppressed()
     .advance_ms(33)
-    .repeat("J")
+    .repeat("K")
     .expect_suppressed()
     .up("J")
     .expect_passed()
@@ -1856,31 +1855,34 @@ fn chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed() {
 
 #[test]
 fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
-    // Shift went down while remapping was off, so Windows has it down and
-    // the engine first learns of it from the modifier resync, with no
-    // record of its key-down. Its first repeat matches nothing and reaches
-    // Windows; from then on the press is one Windows saw, so a repeat that
-    // the Alt+Shift blocker matches once Alt is down still passes. Whether
-    // that repeat fires the blocker's no-op is KS-10 (roadmap item 1.1).
+    // Ctrl, Alt, A and then Shift went down while remapping was off, so
+    // Windows has all four down and Shift, pressed last, auto-repeats. A's
+    // key-up makes the engine resync the modifiers, which finds Shift held
+    // with no record of its key-down. Shift's next repeat matches nothing
+    // (Ctrl is held too) and reaches Windows; from then on the press is one
+    // Windows saw, so once Ctrl is released, a repeat that the Alt+Shift
+    // blocker now matches still passes. Whether that repeat fires the
+    // blocker's no-op is KS-10 (roadmap item 1.1).
     Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
         .check_nothing_stuck()
+        .down_unseen("LCtrl")
+        .down_unseen("LAlt")
+        .down_unseen("A")
         .down_unseen("LShift")
-        .down("A")
-        .expect_passed()
         .up("A")
         .expect_passed()
         .advance_ms(500)
         .repeat("LShift")
         .expect_passed()
-        .down("LAlt")
-        .expect_suppressed()
-        .expect_fired(&[BindAction::DoNothing])
+        .expect_nothing_fired()
+        .up("LCtrl")
+        .expect_passed()
         .advance_ms(33)
         .repeat("LShift")
         .expect_passed()
-        .up("LAlt")
-        .expect_suppressed()
         .up("LShift")
+        .expect_passed()
+        .up("LAlt")
         .expect_passed();
 }
 
@@ -1915,14 +1917,15 @@ fn press_symmetry_check_reports_a_key_up_that_differs_from_its_key_down() {
 #[test]
 #[should_panic(expected = "press of LShift: key-down passed, repeat suppressed")]
 fn press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down() {
-    // LShift went down while the hook was not looking, so Windows has it
-    // down and the engine first learns of it from the modifier resync, with
-    // no record of its key-down. A repeat without a record is swallowed
-    // when a binding asks for it.
+    // A and then LShift went down while the hook was not looking, so Windows
+    // has both down and LShift auto-repeats. A's key-up makes the engine
+    // resync the modifiers, which finds LShift held with no record of its
+    // key-down. A repeat without a record is swallowed when a binding asks
+    // for it.
     Scenario::from_ron(r#"( bindings: [ (keys: "LShift", action: SwitchLanguage) ] )"#)
         .check_press_symmetry()
+        .down_unseen("A")
         .down_unseen("LShift")
-        .down("A")
         .up("A")
         .repeat("LShift");
 }
