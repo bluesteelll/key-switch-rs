@@ -2367,6 +2367,54 @@ fn remapping_off_drops_a_pending_sequence() {
     .expect_total_fired(&[]);
 }
 
+#[test]
+fn stale_hold_timer_from_before_remapping_off_does_not_fire_a_newer_press() {
+    // KS-11 across a reset: the first press's timer falls due at +200 while
+    // the second press, armed at +100, is due at +300. A reset that restarts
+    // the Hold generations lets the old timer fire the new Hold early.
+    Scenario::from_ron(HOLD_F13)
+        .down("F13")
+        .advance_ms(50)
+        .remapping_off()
+        .up("F13")
+        .remapping_on()
+        .advance_ms(50)
+        .down("F13")
+        .expect_suppressed()
+        .advance_ms(150)
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn key_held_through_remapping_on_keeps_its_repeats_and_its_release() {
+    // Windows saw the key-down while remapping was off, so the key's
+    // repeats and its key-up must reach it too, or the key stays held there.
+    Scenario::from_ron(TAP_F13)
+        .check_nothing_stuck()
+        .remapping_off()
+        .down("F13")
+        .expect_passed()
+        .remapping_on()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .down("F13")
+        .expect_suppressed()
+        .advance_ms(50)
+        .up("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
 // ---- The harness itself ----
 
 #[test]
