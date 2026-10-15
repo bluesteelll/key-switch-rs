@@ -273,6 +273,20 @@ mod tests {
     }
 
     #[test]
+    fn all_held_visits_the_highest_code_the_table_holds() {
+        let mut state = KeyState::new();
+        state.press(VIRTUAL_KEY(255));
+        assert!(
+            !state.all_held(|vk| vk != VIRTUAL_KEY(255)),
+            "the last slot (code 255) is visited by all_held"
+        );
+        assert!(
+            state.all_held(|vk| vk == VIRTUAL_KEY(255)),
+            "code 255 is the only key held"
+        );
+    }
+
+    #[test]
     fn second_press_is_a_repeat_until_release() {
         let mut state = KeyState::new();
         assert!(!state.press(VK_F13));
