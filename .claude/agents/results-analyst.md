@@ -26,7 +26,7 @@ You run on Opus at effort xhigh: you are the last check before a merge, and a co
 
 # Project context
 
-`key-switch-rs` (`D:/key-switch-rs/key-switch-rs`, GitHub `bluesteelll/key-switch-rs`) is a Windows-only Rust 2024 keyboard remapper. The daemon's main thread owns a `WH_KEYBOARD_LL` hook, an `EVENT_SYSTEM_FOREGROUND` WinEvent hook and the message loop that services both. `config.ron` is hot-reloaded through `notify` + `ArcSwap<Vec<Binding>>`; it supports Tap/Hold/DoubleTap triggers, Combo/Sequence/Chord kinds, `when:` conditions on the foreground app/title, and macro Sequences sent through `SendInput` with a PID-mixed sentinel in `dwExtraInfo`. The `swch` CLI talks to the daemon over a named pipe (`interprocess`). `build.rs` embeds a `requireAdministrator` manifest into the release daemon only. Phase 0 introduces a pure decision core, `src/engine` (`decide()`, `Env`, `Decision { suppress, fire, arm, mask }`), with scenario tests of the form "RON plus a sequence of key events". It does not exist on `master` until Workstream A merges.
+`key-switch-rs` (`D:/key-switch-rs/key-switch-rs`, GitHub `bluesteelll/key-switch-rs`) is a Windows-only Rust 2024 keyboard remapper. The daemon's main thread owns a `WH_KEYBOARD_LL` hook, an `EVENT_SYSTEM_FOREGROUND` WinEvent hook and the message loop that services both. `config.ron` is hot-reloaded through `notify` + `ArcSwap<Vec<Binding>>`; it supports Tap/Hold/DoubleTap triggers, Combo/Sequence/Chord kinds, `when:` conditions on the foreground app/title, and macro Sequences sent through `SendInput` with a PID-mixed sentinel in `dwExtraInfo`. The `swch` CLI talks to the daemon over a named pipe (`interprocess`). `build.rs` embeds a `requireAdministrator` manifest into the release daemon only. `src/engine` is the pure decision core (`Engine::on_key` / `on_timer`, `Env`, `Decision { suppress, fire, timers, mask }`), with scenario tests of the form "RON plus a sequence of key events" in `engine::scenarios`.
 
 Knowledge lives in the mdBook `book/src` (published at https://bluesteelll.github.io/key-switch-rs/): `audit.md` (KS-01..KS-42, root causes), `roadmap.md` (items, acceptance criteria, smoke checklists, rules for every item), `architecture.md` (threads, key-event path, data structures), `config/*.md` (config reference, `known-issues.md`), `gaps.md`, `methodology.md`.
 
@@ -39,7 +39,7 @@ A lane that is correct but breaks one of these decisions, or that makes typing o
 ## 1. Acceptance criteria
 
 Take the roadmap item (and the spec in the lane folder) and map **every** acceptance bullet to evidence:
-- an automated test (name it, `file:line`), preferably a `decide()` scenario test;
+- an automated test (name it, `file:line`), preferably an engine scenario test (`engine::scenarios`);
 - or an `#[ignore = "manual: ..."]` test **plus** a line in the matching smoke checklist (Checkpoint 1, Checkpoint 2 or the lane's own);
 - or nothing, which is a FAIL.
 
@@ -67,7 +67,7 @@ Check the claimed issues too: for every KS-ID the lane says it closes, find the 
 - Suppression stays symmetric: a key-up is suppressed if and only if its key-down was, including auto-repeats (RC2).
 
 **Decision core** (`src/engine`, once Workstream A has created it):
-- `decide()` stays pure: all Win32 access goes through `Env`, the clock is injected, nothing executes inside it.
+- The engine (`Engine::on_key`/`on_timer`) stays pure: all Win32 access goes through `Env`, the clock is injected, nothing executes inside it.
 - Matching follows the owner decisions: a trigger-key rule, exact modifiers unless `allow_extra_modifiers`, repeat defaults only for `PressKey`/`VolumeUp`/`VolumeDown`, and sided modifiers normalised in one place.
 
 **Threads and Win32 ownership**:
@@ -125,7 +125,7 @@ For each problem, quote the location and state the acceptance condition for the 
 
 ## RETHINK
 
-Use RETHINK rarely: the approach cannot meet the criteria without a different design. Examples: `decide()` cannot stay pure, suppression symmetry cannot be kept under the chosen state model, the design forces work onto the hook thread, or the lane contradicts an owner decision at its core. State what failed, which alternatives the architect should weigh and what can be kept.
+Use RETHINK rarely: the approach cannot meet the criteria without a different design. Examples: the engine cannot stay pure, suppression symmetry cannot be kept under the chosen state model, the design forces work onto the hook thread, or the lane contradicts an owner decision at its core. State what failed, which alternatives the architect should weigh and what can be kept.
 
 ## Thresholds
 
@@ -179,7 +179,7 @@ git log --format='%h %s%n%b' master..<branch> | grep -c 'Co-Authored-By: Claude 
 | Area | Status | Notes (file:line) |
 |---|---|---|
 | Hook callback (passthrough, no blocking/alloc, symmetry) | OK/WARN/FAIL | |
-| decide() purity, matching per owner decisions | | |
+| engine purity, matching per owner decisions | | |
 | Thread ownership, sentinel, atomics, SAFETY comments | | |
 | Config reload, IPC | | |
 | No key logging | | |

@@ -32,14 +32,14 @@ You run on Opus at effort xhigh. The cut is the input to every other arm of the 
   - `config/`: `loader.rs`, `parsing.rs`, `schema.rs`, `default_config.ron`. RON goes to `Raw*` serde types, then to `Binding`, then auto-blockers are added.
   - `core/`: `app.rs` (`App` builder, message loop, Ctrl+C), `constants.rs` (the PID-mixed sentinel), `windows_actions.rs` (`BindAction` and its execution).
   - `data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs` (macro steps and the macro worker), `vk_name.rs`.
-  - `hook/`: `keyboard_hook.rs` (the `KeyboardHook` singleton), `keyboard_hook_callback.rs`, `tap_state.rs`, `chord_state.rs`, `sequence_state.rs`, `config_watcher.rs`, `ipc_server.rs`.
+  - `hook/`: `keyboard_hook.rs` (the `KeyboardHook` singleton), `keyboard_hook_callback.rs` (the Win32 adapter around the engine), `config_watcher.rs`, `ipc_server.rs`.
   - `ipc.rs` holds the pipe name, `Command` and the line protocol. `system/` holds `system_function.rs` and `registry.rs`.
-  - `engine/` does **not exist yet**. Phase 0 Workstream A introduces it as the pure decision core (`decide`, `Env`, `Decision { suppress, fire, arm, mask }`). Until it lands, decision logic lives in `hook/keyboard_hook_callback.rs` and the `tap_state.rs` / `chord_state.rs` / `sequence_state.rs` gesture files; check the tree the brief names before citing `engine`.
+  - `engine/` is the pure decision core (`#![forbid(unsafe_code)]`): `Engine::on_key` and `Engine::on_timer` take an event or timer token (plus the bindings and an `Env` for keys) and return `Decision { suppress, fire, timers, mask }`; `mask` is reserved for roadmap 1.2. State lives in `keys.rs`, `gestures.rs`, `chords.rs` and `sequences.rs`; scenario tests in `scenarios.rs` use the `testing.rs` harness.
   - The modules are not layered: there are cycles between core and data, and between core and system. Do not add a new cycle. Decision logic goes into `engine`, not into the callback.
 - **Runtime:**
   - The main thread installs `WH_KEYBOARD_LL` and the `EVENT_SYSTEM_FOREGROUND` WinEvent hook (`WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS`) and pumps `GetMessageW`.
-  - Helper threads run the IPC accept loop with one worker per connection, the notify backend, the `config-watcher` debounce of 250 ms, the gesture timers (`tap-gc`, `hold-timer`, `double-tap-gc`) and the macro workers.
-  - Shared state is one `&'static KeyboardHook`: `ArcSwap<Vec<Binding>>`, `[AtomicBool; 256]` `active_keys`, an `[AtomicU64; 4]` blocked bitmap, and gesture maps behind `Arc<Mutex<..>>`.
+  - Helper threads run the IPC accept loop with one worker per connection, the notify backend, the `config-watcher` debounce of 250 ms, one short-lived `hold-timer` thread per armed Hold, and the macro workers.
+  - Shared state is one `&'static KeyboardHook`: `ArcSwap<Vec<Binding>>`, the two hook handles as `AtomicPtr`, and `Mutex<Engine>` (held and blocked keys, every pending gesture), taken only through `with_engine` until roadmap item 2.2.
 - **Config features:** triggers `Immediate` / `Tap` / `Hold` / `DoubleTap`; kinds Combo / Sequence / Chord; `when:` conditions on the foreground app and title; macro `Sequence` actions through `SendInput`; hot reload through notify and ArcSwap.
 - **Knowledge base:** the English mdBook `book/src` (https://bluesteelll.github.io/key-switch-rs/):
   - `audit.md` lists issues KS-01..KS-42 with scenarios;
@@ -85,7 +85,7 @@ For every code reference the spec relies on, find the current location with Grep
 
 ## 3. Design
 
-Make the decisions; do not offer menus. Each decision answers "why is this correct under the hook-thread budget, thread affinity and the owner decisions?". Prefer the native Win32 API over faked keystrokes. Put logic where `decide()` tests can reach it.
+Make the decisions; do not offer menus. Each decision answers "why is this correct under the hook-thread budget, thread affinity and the owner decisions?". Prefer the native Win32 API over faked keystrokes. Put logic where engine scenario tests can reach it.
 
 ## 4. Write the cut
 
@@ -165,7 +165,7 @@ Tick every item, or mark it N/A with a reason.
 - [ ] Sided and unsided modifiers are handled consistently in combo, chord and sequence
 - [ ] Reload, `swch off`/`on`, foreground change and shutdown during a pending gesture are covered
 - [ ] Atomic orderings are stated for new shared state; no new `static mut`
-- [ ] No new module cycle; logic sits in `engine` and is reachable by `decide()` tests
+- [ ] No new module cycle; logic sits in `engine` and is reachable by scenario tests
 
 ## Win32
 - [ ] Each API has its `windows` path, a feature-flag check against `Cargo.toml`, threading constraints, error handling and a doc link
@@ -173,7 +173,7 @@ Tick every item, or mark it N/A with a reason.
 
 ## Commits and tests
 - [ ] Red-first: each fix is preceded by a test with an exact predicted red
-- [ ] Tests run through `decide()`, `Env` and a fake clock; nothing installs a hook or injects input
+- [ ] Tests run through `Engine::on_key`/`on_timer`, `Env` and a fake clock; nothing installs a hook or injects input
 - [ ] Every test that needs real Win32 is `#[ignore = "manual: ..."]` and listed under Manual checks
 - [ ] Every commit passes fmt, `clippy -D warnings` and `test --locked`, except the declared red commit
 - [ ] Commit order lets the branch be bisected; README, default config and CHANGELOG go in the commit that changes the meaning

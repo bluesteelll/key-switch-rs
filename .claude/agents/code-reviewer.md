@@ -83,9 +83,9 @@ For **every** `unsafe` block touched or newly reachable (there are ~38 across `c
 
 The callback blocks all desktop keyboard input until it returns; past `LowLevelHooksTimeout` Windows skips it and may silently unhook it (KS-08).
 
-- [ ] No allocation per key-down (`Vec::new`, `vec!`, `collect`, `format!`, `String`, `to_string`, `clone` of a `Vec`/`String`, `Box::new`, `Arc::new`); `chord_state` already allocates per key-down, so do not add more
-- [ ] No blocking: no file or registry I/O, no `Command::spawn`, no `ShellExecuteW`, no sleeps, no action executed while a gesture mutex is held (KS-08)
-- [ ] Mutex critical sections in the callback short and never contended by a thread that runs actions under the lock
+- [ ] No allocation per key-down (`Vec::new`, `vec!`, `collect`, `format!`, `String`, `to_string`, `clone` of a `Vec`/`String`, `Box::new`, `Arc::new`); `engine/chords.rs` already allocates when a chord key goes down, so do not add more
+- [ ] No blocking: no file or registry I/O, no `Command::spawn`, no `ShellExecuteW`, no sleeps, no action executed while the engine lock is held (KS-08)
+- [ ] The engine lock (`KeyboardHook::with_engine`) held only while the engine decides: no action, `SendInput`, thread spawn or message pump under it
 - [ ] Foreground-context lookups stay lazy and are skipped when no binding has `when:`
 - [ ] `log` calls on the hot path are level-gated and do not format eagerly
 
@@ -109,13 +109,13 @@ The callback blocks all desktop keyboard input until it returns; past `LowLevelH
 
 # Project risk areas R1-R10 (walk all ten on every review, even for unrelated-looking diffs)
 
-**R1. Hook callback (`src/hook/keyboard_hook_callback.rs`, later `src/engine`).** `code < 0` short-circuits to `CallNextHookEx`. The sentinel check runs before any state mutation. Every path ends in exactly one of `LRESULT(1)` (drop) or `CallNextHookEx` (pass); forgetting `CallNextHookEx` breaks other hooks system-wide. Any `active_keys` index is bounded by `< 256`. Sections 5 and 2 apply in full.
+**R1. Hook callback (`src/hook/keyboard_hook_callback.rs`, the adapter) and `src/engine` (the decisions).** `code < 0` short-circuits to `CallNextHookEx`. The sentinel check runs before any state mutation. Every path ends in exactly one of `LRESULT(1)` (drop) or `CallNextHookEx` (pass); forgetting `CallNextHookEx` breaks other hooks system-wide. Any index into the engine's per-key tables (`engine/keys.rs`) is bounded by `< 256`. Sections 5 and 2 apply in full.
 
 **R2. Injection sentinel.** `injected_sentinel()` (`OnceLock<usize>`, `(pid << 32) | 0xDEADBEEF` on 64-bit, `src/core/constants.rs`) is the only sentinel; `is_injected_event` compares exactly. Every `SendInput` builder (`press_vk` in `core/windows_actions.rs`, `type_text`/`press_key`/`press_combo` in `data/sequence.rs`, `SystemFunction::press_key`) sets `dwExtraInfo` to it. A new builder without it is 🔴: the daemon reacts to its own output in a feedback loop. A new hard-coded constant is 🔴.
 
-**R3. Shared state.** `KEYBOARD_HOOK: LazyLock<KeyboardHook>`, `get_hook() -> &'static KeyboardHook`, interior mutability only (atomics, `ArcSwap`, mutexes), because the callback can be re-entered. Reject any `static mut`, `&'static mut`, `RefCell`/`Cell` in shared state, or a `Mutex` around the whole hook (it would block the callback, R1). Reject `install`/`uninstall` reachable from a non-message-loop thread (KS-01).
+**R3. Shared state.** `KEYBOARD_HOOK: LazyLock<KeyboardHook>`, `get_hook() -> &'static KeyboardHook`, interior mutability only (atomics, `ArcSwap`), because the callback can be re-entered. Reject any `static mut`, `&'static mut`, `RefCell`/`Cell` in shared state, or a new `Mutex` around hook state (it would block the callback, R1). The one exception is `Mutex<Engine>` until roadmap item 2.2: only `with_engine` takes it, only while the engine decides, and its same-thread nested-call refusal (the event passes) stays. Reject anything that runs an action or pumps messages under it. Reject `install`/`uninstall` reachable from a non-message-loop thread (KS-01).
 
-**R4. Atomic orderings.** House pattern: `Release` stores, `Acquire` loads, `AcqRel` RMW (`swap`, `fetch_or`, `fetch_and`, `compare_exchange` on `active_keys`, `blocked_keys`, `hook_handle`, `foreground_hook`, `MAIN_THREAD_ID`). `Relaxed` needs a comment proving no data is published; `SeqCst` is not used anywhere, so its introduction needs a stated global-order requirement. The two `MAIN_THREAD_ID` copies (`core/app.rs`, `hook/ipc_server.rs`) must stay consistent or be unified.
+**R4. Atomic orderings.** House pattern: `Release` stores, `Acquire` loads, `AcqRel` RMW (`swap` on `hook_handle` and `foreground_hook`; `MAIN_THREAD_ID` takes only stores and loads; held and blocked keys are plain data inside `Mutex<Engine>`). `Relaxed` needs a comment proving no data is published; `SeqCst` is not used anywhere, so its introduction needs a stated global-order requirement. The two `MAIN_THREAD_ID` copies (`core/app.rs`, `hook/ipc_server.rs`) must stay consistent or be unified.
 
 **R5. Builder consistency.** `Binding` and `KeyCombination` use consume-self builders (`with_block_default`, `with_condition`, `with_trigger`, `KeyCombination::with`). New options go through `.with_*`; no `set_*(&mut self)` setters; constructors take at most two positional arguments (`Binding::new`, `Binding::with_kind`).
 
@@ -123,7 +123,7 @@ The callback blocks all desktop keyboard input until it returns; past `LowLevelH
 
 **R7. Specificity order.** `update_bindings` stable-sorts by `kind.key_count()` descending before the single `ArcSwap` store; auto-blockers rely on load order among equal counts (KS-18). Reject a collection change, a second publish path that bypasses `update_bindings`, or a matching loop that stops honouring the order, unless the plan replaces specificity with exact matching explicitly.
 
-**R8. Key identity.** `collect_active_keys` folds L/R Shift, Ctrl, Alt to the generic code and `VK_RWIN` to `VK_LWIN`; chords see the raw sided `vk`. New code must match on the same canonical form on every path, or move normalisation to parse time consistently (KS-07). "Any Windows key" is `VK_LWIN`.
+**R8. Key identity.** `KeyState::active_keys` (`engine/keys.rs`) folds L/R Shift, Ctrl, Alt to the generic code and `VK_RWIN` to `VK_LWIN`; chords see the raw sided `vk`. New code must match on the same canonical form on every path, or move normalisation to parse time consistently (KS-07). "Any Windows key" is `VK_LWIN`.
 
 **R9. Registry and process reads (`src/system/registry.rs`, `src/data/condition.rs`).** Keys open through the `Drop` guard; `RegQueryValueExW` length is in bytes; only `REG_SZ`/`REG_EXPAND_SZ` are parsed; the `[u16; 128]` buffer truncation is known. `Toggle` value `"3"` means "hotkey disabled" (KS-17). Process queries use rights that actually suffice (`GetModuleBaseNameW` fails under `PROCESS_QUERY_LIMITED_INFORMATION`, KS-03). Reads only: any registry write is a 🔴 safety violation.
 
@@ -157,7 +157,7 @@ APPROVED | CHANGES_REQUESTED (Critical c, Important i, Minor m)
 ## Remarks
 ### 🔴 Critical (UB, data race, lost/stuck keys, hook loss, safety-rule breach, injection loop)
 #### C1. <title> (R?, KS-??)
-**Where**: `src/hook/tap_state.rs:61-67`  **Confidence**: CONFIRMED | PLAUSIBLE
+**Where**: `src/hook/keyboard_hook_callback.rs:179-200`  **Confidence**: CONFIRMED | PLAUSIBLE
 **Problem**: ...  **Failure**: <input / key sequence / interleaving: MANDATORY>
 **What to do**: <direction, not implementation>  (quote the code)
 ### 🟡 Important (wrong under realistic conditions, roadmap criterion unmet, missing pinning test)
