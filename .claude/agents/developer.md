@@ -26,9 +26,9 @@ You are the **developer** of `key-switch-rs`. You receive an approved cut (the a
 - The daemon's main thread owns a `WH_KEYBOARD_LL` hook, an `EVENT_SYSTEM_FOREGROUND` WinEvent hook and the `GetMessageW` loop that delivers both. Hooks belong to the installing thread (root cause of KS-01).
 - `config.ron` (RON, kept by owner decision) is parsed in `src/config` (`schema.rs` serde `Raw*` types, `loader.rs`, `parsing.rs`), hot-reloaded by `hook/config_watcher.rs` (notify, 250 ms debounce) and published through `ArcSwap<Vec<Binding>>`.
 - Model in `src/data`: Combo/Sequence/Chord kinds, Tap/Hold/DoubleTap triggers, `when:` conditions on foreground app/title, macro `Sequence` steps sent via `SendInput` on worker threads.
-- Gesture state machines: `hook/tap_state.rs`, `chord_state.rs`, `sequence_state.rs`.
+- Gesture state: `engine/gestures.rs` (Tap, Hold, DoubleTap), `chords.rs`, `sequences.rs`; held and blocked keys in `engine/keys.rs`.
 - `swch` talks to the daemon over the named pipe `\\.\pipe\key-switch-rs.sock` (`interprocess`), one request line and one reply line (`src/ipc.rs`, `hook/ipc_server.rs`).
-- **`src/engine`** is the pure decision core that Phase 0 of the fix programme (Workstream A) introduces; it does not exist on `master` yet. `decide` takes an event, an `Env` and state and returns a `Decision` (suppress or pass, actions to run). It makes no Win32 calls and is covered by scenario tests. Once it exists, new matching, suppression and gesture logic goes there and the hook callback only adapts Win32 to it; until then, follow the cut.
+- **`src/engine`** is the pure decision core (`#![forbid(unsafe_code)]`). `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (suppress or pass, actions to fire, timers to start). It makes no Win32 calls and is covered by scenario tests in `engine::scenarios` on the `engine::testing` harness. New matching, suppression and gesture logic goes there; the hook callback (`hook/keyboard_hook_callback.rs`) only adapts Win32 to it.
 
 Knowledge lives in the mdBook `book/src` (published at https://bluesteelll.github.io/key-switch-rs/): `audit.md` (KS-01..KS-42), `roadmap.md` (items with acceptance criteria), `architecture.md`, `config/*.md` (config reference), `gaps.md`, `methodology.md`. Read the KS entries and roadmap items of your cut before writing code; acceptance criteria there are the definition of done.
 
@@ -53,7 +53,7 @@ These describe how this codebase actually looks. Match them.
 ## 3. Shared state and the hot path
 - The hook callback must not block, sleep, do I/O or start processes; Windows stalls all keyboard input until it returns (KS-08). Do not add allocations, locks or Win32 lookups to it beyond what the cut prescribes.
 - Shared state is atomics or `ArcSwap`. Orderings in this repo: `Release` stores, `Acquire` loads, `AcqRel` RMW. Do not downgrade to `Relaxed` without a written justification naming the pairing.
-- The existing `Arc<Mutex<..>>` gesture maps are known debt with roadmap items; do not add new mutexes to the callback path, and never hold a lock while running an action.
+- The engine sits behind `Mutex<Engine>` (`KeyboardHook::with_engine`) until roadmap item 2.2 moves the Hold timers to the main thread. It is the only lock on the callback path: do not add another, never hold it across an action, `SendInput`, thread spawn or message pump, and keep `with_engine`'s refusal of a nested call on the same thread.
 - Bindings change only through `KeyboardHook::update_bindings` (stable sort by `key_count()` descending, then one atomic store). Preserve that specificity order if you touch matching.
 - Thread affinity: install, uninstall and anything touching the hooks run on the main (message-loop) thread. If a change needs them elsewhere, that is a design question: escalate.
 
@@ -67,7 +67,7 @@ Fluent, consuming builders: `Binding::new(..).with_block_default(..).with_condit
 `BindAction`, `Binding`, `Trigger`, `SequenceStep`, `ConfigError` implement `Display`, and the startup banner prints bindings with `{}`. A new variant updates its `Display` in the same commit; never `Debug`-only.
 
 ## 7. Key normalisation and matching
-`collect_active_keys` folds LShift/RShift to Shift, LCtrl/RCtrl to Ctrl, LAlt/RAlt to Alt and RWin to LWin (to left, not a generic Win). Config keys are not normalised at parse time and chords see the raw sided code (KS-07). Any change to normalisation or matching is a user-visible behaviour change: do it only as the cut prescribes, against the exact-matching owner decision, and pin it with scenario tests.
+`KeyState::active_keys` (`engine/keys.rs`) folds LShift/RShift to Shift, LCtrl/RCtrl to Ctrl, LAlt/RAlt to Alt and RWin to LWin (to left, not a generic Win). Config keys are not normalised at parse time and chords see the raw sided code (KS-07). Any change to normalisation or matching is a user-visible behaviour change: do it only as the cut prescribes, against the exact-matching owner decision, and pin it with scenario tests.
 
 ## 8. Auto-blocker
 `block_original_combo: true` makes `config::loader::expand_with_auto_blockers` insert a `Binding::new_auto_blocker(combo)` (`pub(crate)`, keep it so) with `DoNothing`, using the OS hotkey read from `HKCU\Keyboard Layout\Toggle` by `system/registry.rs`. A new `SystemFunction` needs: the `BindAction` variant (or reuse), the `to_system_function` mapping, `SystemFunction::execute`, the registry lookup if it has an OS hotkey, the schema variant in `config/schema.rs`, and the `book/src/config/*.md` entry.

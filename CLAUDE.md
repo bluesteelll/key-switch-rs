@@ -18,12 +18,15 @@ One package with a library, two binaries, a build script and the book:
 - `src/config/`: `schema.rs` (serde `Raw*`), `loader.rs`, `parsing.rs`, `default_config.ron`.
 - `src/core/`: `app.rs` (builder + `GetMessageW` loop), `constants.rs` (the sentinel), `windows_actions.rs`.
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
-- `src/hook/`: `keyboard_hook.rs`, `keyboard_hook_callback.rs`, `tap_state.rs`, `chord_state.rs`,
-  `sequence_state.rs`, `config_watcher.rs`, `ipc_server.rs`.
+- `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
+  `config_watcher.rs`, `ipc_server.rs`.
 - `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`, `registry.rs`).
-- **`src/engine/`** does not exist yet: Phase 0 of the fix programme (Workstream A) introduces it as the pure
-  decision core. `decide(event, &Env, state) -> Decision` makes no Win32 calls and is covered by scenario tests.
-  Once it lands, new matching, suppression and gesture logic goes there, and the hook callback only adapts Win32 to it.
+- `src/engine/`: the pure decision core (`#![forbid(unsafe_code)]`; no Win32 calls, threads, locks or clock).
+  `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
+  `fire`, `timers`; `mask` is reserved for roadmap 1.2). `Env` supplies the clock, the OS key state and the
+  foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`. Scenario tests live in
+  `engine::scenarios` on the `engine::testing` harness (`Scenario`, fake `Env`). New matching, suppression and
+  gesture logic goes here; the hook callback only adapts Win32 to it and carries out the `Decision`.
 - `build.rs` + `app.manifest`: the release daemon embeds a `requireAdministrator` manifest. Only
   the daemon gets it, and the switches go only to the MSVC linker.
 - `book/`: the English mdBook (`book.toml`, `src/SUMMARY.md`, mermaid assets).
@@ -62,7 +65,11 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    `// SAFETY: <concrete invariant>`. A comment like "caller's responsibility" or an empty SAFETY line is a defect.
 5. **Shared state:** the hook singleton is `static KEYBOARD_HOOK: LazyLock<KeyboardHook>`, reached
    through `get_hook() -> &'static KeyboardHook` (shared, because the callback is re-entrant). Never use
-   `static mut`, `&'static mut`, `RefCell` or a hook-wide `Mutex`. Shared state is atomics or
+   `static mut`, `&'static mut`, `RefCell` or a hook-wide `Mutex` for hook state. The one exception is
+   `Mutex<Engine>` in `KeyboardHook`, until roadmap item 2.2 moves the Hold timers to the main thread. Only
+   `KeyboardHook::with_engine` takes it, and only while the engine decides: no action, `SendInput`, thread
+   spawn or message pump under it. `with_engine` refuses a nested call on the same thread (the event passes)
+   instead of deadlocking. Other shared state is atomics or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
@@ -78,7 +85,7 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    arm in the same commit. Write `expect("invariant: ...")` instead of `unwrap()`. Keep source ASCII. Comments say why.
    Add no new dependencies unless the cut names them, and use no async runtime and no `tracing`.
 9. **Tests:** unit tests go in `#[cfg(test)] mod tests` at the bottom of the file, with real `VK_*` constants and no
-   mocks. From Phase 0 on, decision logic is pinned by `src/engine` scenario tests. Work is red-first: a regression test fails for the
+   mocks. Decision logic is pinned by scenario tests in `engine::scenarios`. Work is red-first: a regression test fails for the
    right reason before the fix lands.
 
 ## Safety rules for agents (non-negotiable)

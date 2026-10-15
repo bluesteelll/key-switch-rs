@@ -42,19 +42,19 @@ Rust 2024 keyboard remapper. One package builds the library `key_switch_rs`, the
 
 - The daemon's main thread installs a `WH_KEYBOARD_LL` hook and an `EVENT_SYSTEM_FOREGROUND` WinEvent
   hook and pumps `GetMessageW`; both callbacks run there. Helper threads: `ipc-server` and a worker per
-  connection, notify, `config-watcher`, a sleeper per armed gesture, a worker per macro run.
+  connection, notify, `config-watcher`, a `hold-timer` thread per armed Hold, a worker per macro run.
 - All hot state is one `KeyboardHook` in a `LazyLock` static, reached as `&'static KeyboardHook`:
-  `ArcSwap<Vec<Binding>>`, `active_keys: [AtomicBool; 256]`, `blocked_keys: [AtomicU64; 4]`, gesture maps
-  behind `Arc<Mutex<..>>`, and the PID-mixed sentinel `injected_sentinel()` in `core/constants.rs`.
+  `ArcSwap<Vec<Binding>>`, the hook handles, and `Mutex<Engine>` (held and blocked keys, pending gestures)
+  until roadmap item 2.2. The PID-mixed sentinel is `injected_sentinel()` in `core/constants.rs`.
 - `config.ron` is hot-reloaded through notify + ArcSwap. It has Tap/Hold/DoubleTap triggers,
   Combo/Sequence/Chord kinds, `when:` conditions on the foreground app and title, and macro Sequences
   through `SendInput`.
 - `swch` talks to the daemon over the named pipe `\\.\pipe\key-switch-rs.sock` (`interprocess`), one
   request line and one reply line per connection.
 - `build.rs` embeds a `requireAdministrator` manifest in the release daemon only.
-- Phase 0 of the fix programme introduces a pure decision core, `src/engine`: `decide` takes an event,
-  the state and an `Env`, and returns a `Decision`. It is covered by scenario tests. It does not exist on
-  `master` yet; until Workstream A merges, a plan that relies on it must create it or say where it lands.
+- `src/engine` is the pure decision core: `Engine::on_key` (event, bindings, `Env`) and `Engine::on_timer`
+  return a `Decision`; the hook callback only adapts Win32 to it. It is covered by scenario tests
+  (`engine::scenarios`, `engine::testing`). Decision logic in a plan belongs there, not in the callback.
 
 **Knowledge base.** Read these before judging: the English mdBook in `book/src` (published at
 https://bluesteelll.github.io/key-switch-rs/). It has `architecture.md` (structure and root causes),
@@ -151,7 +151,9 @@ KS-codes and root causes are in `book/src/audit.md` and `book/src/architecture.m
 ## 8. Shared state and atomics (R3, R4)
 
 - No `static mut` and no `&'static mut`. Shared state is `&'static KeyboardHook` with interior
-  mutability, which keeps callback re-entry sound.
+  mutability, which keeps callback re-entry sound. The one lock is `Mutex<Engine>`, until roadmap 2.2:
+  taken only through `with_engine`, only while the engine decides, never across an action or a message
+  pump; a nested call on the same thread is refused and the event passes.
 - Orderings: `Release` stores, `Acquire` loads, `AcqRel` RMW; `Relaxed` needs a comment and `SeqCst`
   a reason. A new `Mutex` on the key-down path needs a bound on how long it is held.
 - `unsafe` blocks carry `// SAFETY:` comments whose invariants the calling code actually upholds
