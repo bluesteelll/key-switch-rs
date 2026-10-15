@@ -333,4 +333,41 @@ mod tests {
         state.sync_modifiers(&ShiftDown, None);
         assert!(!state.is_active(VK_RMENU));
     }
+
+    /// Reports every key as up.
+    struct NothingDown;
+
+    impl Env for NothingDown {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn resync_leaves_a_modifier_whose_key_down_was_suppressed() {
+        // KS-14: Windows never saw the key-down, so its key state says up.
+        let mut state = KeyState::new();
+        state.press(VK_LSHIFT);
+        state.mark_blocked(VK_LSHIFT.0);
+
+        state.sync_modifiers(&NothingDown, Some(VK_A));
+
+        assert!(
+            state.is_active(VK_LSHIFT),
+            "a modifier whose key-down was swallowed stays held through the resync"
+        );
+        assert!(
+            state.press(VK_LSHIFT),
+            "its next key-down is still an auto-repeat"
+        );
+    }
 }

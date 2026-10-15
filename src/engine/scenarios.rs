@@ -18,6 +18,27 @@ fn launch(exe: &str) -> BindAction {
     }
 }
 
+/// The default config's two bindings, without `block_original_combo`.
+pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+] )"#;
+
+/// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
+/// Windows language hotkey, followed by the bindings of `ron`, in the
+/// loader's order. The blocker is built directly: loading it from RON would
+/// read the registry.
+pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
+    let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
+        VK_MENU, VK_SHIFT,
+    ]))];
+    bindings.extend(
+        crate::config::from_ron_str(ron)
+            .unwrap_or_else(|e| panic!("scenario: config does not load: {e}")),
+    );
+    bindings
+}
+
 // ---- Immediate combos ----
 
 #[test]
@@ -1379,32 +1400,6 @@ fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() 
 }
 
 #[test]
-fn shift_held_after_the_auto_blocker_and_alt_released_is_not_left_stuck() {
-    // The audit's KS-06 auto-blocker case. The blocker swallowed Shift's
-    // key-down; Alt's key-up then resyncs Shift from the OS, which never saw
-    // it, so Shift's next repeat looks like a fresh press (KS-14). That
-    // press reaches the OS, so its repeats and its key-up must too.
-    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
-        vec![VK_MENU, VK_SHIFT],
-    ))])
-    .down("LAlt")
-    .expect_passed()
-    .down("LShift")
-    .expect_suppressed()
-    .expect_fired(&[BindAction::DoNothing])
-    .up("LAlt")
-    .expect_passed()
-    .advance_ms(500)
-    .repeat("LShift")
-    .expect_passed()
-    .advance_ms(33)
-    .repeat("LShift")
-    .expect_passed()
-    .up("LShift")
-    .expect_passed();
-}
-
-#[test]
 fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
     // The focus change forgets that F13's key-down was swallowed. Its
     // repeats then follow the binding, which still swallows them, so the
@@ -1514,6 +1509,196 @@ fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
         .expect_passed()
         .up("CapsLock")
         .expect_passed();
+}
+
+// ---- Suppression symmetry (KS-06, KS-14) ----
+
+#[test]
+fn alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier() {
+    // KS-14 case 1. The blocker swallows the second modifier's key-down, so
+    // Windows never sees it go down. The resync on X's key-down must not
+    // read that modifier as released, or `Alt+Shift+X` never matches.
+    let bindings = || {
+        with_alt_shift_blocker(r#"( bindings: [ (keys: "Alt+Shift+X", action: ToggleCapsLock) ] )"#)
+    };
+    Scenario::with_bindings(bindings())
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .down("X")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("X")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed();
+
+    Scenario::with_bindings(bindings())
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .down("X")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("X")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn shift_held_by_a_double_tap_still_counts_for_shift_capslock() {
+    // KS-14 case 2. The DoubleTap swallows Shift's key-down; the resync on
+    // CapsLock's key-down must not drop Shift, or "CapsLock" matches
+    // instead of "Shift+CapsLock".
+    let config = r#"( bindings: [
+        (keys: "Shift", action: SwitchLanguageBackward, trigger: DoubleTap(300)),
+        (keys: "CapsLock", action: SwitchLanguage),
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn one_long_press_of_shift_does_not_fire_its_double_tap() {
+    // KS-14 case 3. A's key-up during rollover used to resync the swallowed
+    // Shift as released, so Shift's first auto-repeat read as a second press
+    // inside the 600 ms term.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Shift", action: ToggleCapsLock, trigger: DoubleTap(600)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("A")
+    .expect_passed()
+    .advance_ms(10)
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(10)
+    .up("A")
+    .expect_passed()
+    .advance_ms(480)
+    .repeat("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift() {
+    // Ctrl is released while the Hold on Shift is pending. Shift's key-down
+    // was swallowed, so its repeats and its key-up are too; its repeats
+    // used to read as a fresh press that reached Windows, and the pending
+    // Hold then swallowed the key-up, leaving Shift held there.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .expect_passed()
+    .advance_ms(20)
+    .down("LShift")
+    .expect_suppressed()
+    .advance_ms(100)
+    .up("LCtrl")
+    .expect_passed()
+    .advance_ms(380)
+    .repeat("LShift")
+    .expect_suppressed()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_suppressed()
+    .advance_ms(67)
+    .up("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(1000)
+    .expect_nothing_fired()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press() {
+    // The audit's KS-06 auto-blocker route, with the default config. The
+    // blocker swallowed Shift's key-down, so its repeats are swallowed even
+    // after Alt is released, and its key-up exactly once; the next Shift
+    // press reaches Windows on both edges.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("LAlt")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_suppressed()
+        .advance_ms(100)
+        .down("LShift")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::DoNothing]);
+}
+
+#[test]
+fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
+    // The focus change forgets that Shift's key-down was swallowed, but
+    // Windows still never saw it go down, so the resync leaves Shift held
+    // and its repeat is not a second press for the DoubleTap. Whether that
+    // repeat and the key-up reach Windows is roadmap item 2.3's policy.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Shift", action: ToggleCapsLock, trigger: DoubleTap(600)) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("A")
+    .down("LShift")
+    .expect_suppressed()
+    .foreground_changed()
+    .up("A")
+    .expect_passed()
+    .advance_ms(500)
+    .repeat("LShift")
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_total_fired(&[]);
 }
 
 // ---- The harness itself ----
