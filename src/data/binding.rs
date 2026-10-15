@@ -66,8 +66,12 @@ pub struct Binding {
     /// Lets a `Combo` binding fire while modifiers it does not name are held
     /// too. `false` (the default) requires the held modifier families to be
     /// exactly the combo's own. The loader rejects `true` on `Sequence` and
-    /// `Chord`; auto-blockers are always exact.
+    /// `Chord`. Auto-blockers ignore it: they match only their hotkey on its
+    /// own.
     pub allow_extra_modifiers: bool,
+    /// Set only by [`Binding::new_auto_blocker`]. The engine matches such a
+    /// binding by what Windows sees held and lets it only suppress: it fires
+    /// nothing.
     pub(crate) is_auto_blocker: bool,
 }
 

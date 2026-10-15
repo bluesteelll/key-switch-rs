@@ -79,7 +79,10 @@ minor version; such entries sit under **Changed** and start with
   (KS-18). With a `when:` on that binding, such as
   `( keys: "Alt+Shift", action: SwitchLanguageBackward, when: AppEquals("code.exe") )`,
   the Windows hotkey now reaches Windows in every other window; it used to
-  be blocked everywhere.
+  be blocked everywhere. The auto-blocker also lets the hotkey through
+  while another key is down in Windows (KS-05): with the `` ` `` hotkey
+  (registry value 4), a `` ` `` typed while another key is held now reaches
+  Windows and may switch the layout.
 
 ### Fixed
 
@@ -90,6 +93,17 @@ minor version; such entries sit under **Changed** and start with
   swallows the typed keys, Shift pressed while CapsLock is held no longer
   fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
   (J, then Ctrl) no longer fires `Ctrl+J`.
+- KS-05 (partly; roadmap item 1.2 fixes the rest): an auto-blocker swallows
+  a key only when Windows would see the hotkey's keys and no other key
+  held. Shift pressed while Alt and Tab are both held, Shift pressed while
+  Ctrl and T are held, and Alt+Shift pressed while a letter is still held in
+  fast typing now reach Windows. A key Windows does not have down (one a
+  binding swallowed, or one whose release went to the lock screen) does not
+  count. Pressed in the order Alt, Shift, Tab, the hotkey's Shift is still
+  swallowed and the application gets Alt+Tab (Ctrl+T for Ctrl, Shift, T
+  with the `Ctrl+Shift` hotkey) until item 1.2. That includes the usual way
+  back in the Alt+Tab switcher, Alt held, Tab released, then Shift+Tab,
+  which still moves forward.
 - KS-06: an auto-repeat is suppressed exactly when its key's first key-down
   was, and a key-down that reaches Windows clears any suppression left for
   its key-up. Holding a key past the repeat delay no longer lets its
@@ -149,7 +163,10 @@ minor version; such entries sit under **Changed** and start with
   (`[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys`);
   with a `when:` on that binding the Windows hotkey is not blocked where the
   condition does not hold. Auto-blockers are listed after the file's
-  bindings at startup.
+  bindings at startup. An auto-blocker also no longer runs in place of a
+  binding of yours that matches the same press: with `LAlt+LShift` bound,
+  that binding fires, and the `Alt+Shift` blocker still swallows Shift
+  pressed with the right Alt.
 - KS-30 (an unverified report): a completed `chord` no longer marks keys
   already released for a swallowed key-up, and no longer swallows the
   key-up of a chord key whose key-down reached Windows (J pressed again

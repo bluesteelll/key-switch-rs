@@ -1885,8 +1885,7 @@ fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
     // with no record of its key-down. Shift's next repeat matches nothing
     // (Ctrl is held too) and reaches Windows; from then on the press is one
     // Windows saw, so once Ctrl is released, a repeat that the Alt+Shift
-    // blocker now matches still passes. Whether that repeat fires the
-    // blocker's no-op is KS-10 (roadmap item 1.1).
+    // blocker now matches still passes.
     Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
         .check_nothing_stuck()
         .down_unseen("LCtrl")
