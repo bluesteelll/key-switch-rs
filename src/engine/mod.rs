@@ -37,7 +37,8 @@
 //!
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
 //!   (also the auto-repeat detector), and the keys whose key-down was
-//!   suppressed, so that their key-up is suppressed as well.
+//!   suppressed, so that their auto-repeats and key-up are suppressed as
+//!   well.
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
@@ -113,7 +114,11 @@
 //!      combo, whose key-up resolves them) and always suppress.
 //!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
 //!      advances or completes one is suppressed.
-//! 5. If anything asked for suppression, the key is marked blocked.
+//! 5. A first key-down is suppressed if anything asked for it, and the key
+//!    is then marked blocked; a first key-down that passes clears the mark.
+//!    An auto-repeat is suppressed exactly when its key is marked blocked,
+//!    whatever the bindings asked: it continues its key-down (KS-06).
+//!    Actions still fire on repeats as rule 4 says.
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
@@ -123,10 +128,9 @@
 //! marked blocked.
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
-//! later roadmap items, each with a scenario test: leaking repeats (KS-06),
-//! repeat-firing Immediate actions (KS-10), specificity across trigger kinds
-//! (KS-13), the modifier resync (KS-14) and the sequence matching rules
-//! (KS-15, KS-16).
+//! later roadmap items, each with a scenario test: repeat-firing Immediate
+//! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
+//! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -420,8 +424,22 @@ impl Engine {
             }
         }
 
-        if decision.suppress {
+        if was_repeat {
+            // An auto-repeat continues its key-down: it is suppressed exactly
+            // when the key-down was, whatever the bindings asked this time.
+            // Otherwise a binding that stops matching mid-hold leaks repeats
+            // after a swallowed key-down, and one that starts matching (a
+            // modifier released under exact matching) swallows the repeats
+            // and the key-up of a key-down the OS saw (KS-06).
+            decision.suppress = self.keys.is_blocked(vk.0);
+        } else if decision.suppress {
             self.keys.mark_blocked(vk.0);
+        } else {
+            // This key-down reaches the OS, so its repeats and key-up must
+            // too. Clear a block left by an earlier press whose key-up was
+            // never seen, or whose swallowed key-down the resync erased
+            // (KS-14), so this key reads as one the OS saw go down.
+            self.keys.take_blocked(vk.0);
         }
         decision
     }

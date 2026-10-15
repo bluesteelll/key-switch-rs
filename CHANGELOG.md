@@ -84,6 +84,17 @@ minor version; such entries sit under **Changed** and start with
   swallows the typed keys, Shift pressed while CapsLock is held no longer
   fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
   (J, then Ctrl) no longer fires `Ctrl+J`.
+- KS-06: an auto-repeat is suppressed exactly when its key's first key-down
+  was, and a key-down that reaches Windows clears any suppression left for
+  its key-up. Holding a key past the repeat delay no longer lets its
+  repeats through and then swallows its release, which left the key held
+  in Windows: CapsLock with the README `Tap`/`Hold` pair, a `chord` key, a
+  `keys: "LShift"` `DoubleTap` key, the key of a combo whose modifiers are
+  released first, or Shift after the `Alt+Shift` auto-blocker once Alt is
+  released. A key whose key-down reached Windows (CapsLock pressed with
+  Ctrl, which no longer matches `"CapsLock"`) keeps its repeats and its
+  release when the binding starts matching after Ctrl is released; such a
+  repeat still fires an `Immediate` action (KS-10, roadmap item 1.1).
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every

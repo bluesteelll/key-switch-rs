@@ -283,7 +283,8 @@ fn tap_held_past_its_term_fires_nothing_and_swallows_the_release() {
 #[test]
 fn tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release() {
     // An auto-repeat must not re-arm the overdue Tap for the release to
-    // fire. Whether the repeat itself passes is KS-06 and not pinned here.
+    // fire. The repeat itself is swallowed like its key-down (KS-06, see
+    // "Auto-repeat follows its key-down").
     Scenario::from_ron(
         r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Tap(200)) ] )"#,
     )

@@ -43,9 +43,9 @@ pub(super) struct KeyState {
     /// key-up, and overwritten from the OS for the modifier codes. Its
     /// previous value is also the auto-repeat detector.
     active: [bool; 256],
-    /// Keys whose key-down was suppressed: their key-up must be suppressed
-    /// too, so an application never sees a release without a press. Each
-    /// key is tracked independently.
+    /// Keys whose key-down was suppressed: their auto-repeats and their
+    /// key-up must be suppressed too, so an application never sees a repeat
+    /// or a release without a press. Each key is tracked independently.
     blocked: [bool; 256],
 }
 
@@ -89,6 +89,11 @@ impl KeyState {
         if let Some(index) = slot(vk) {
             self.blocked[index] = true;
         }
+    }
+
+    /// Whether the `vk` flag is set, leaving it set.
+    pub(super) fn is_blocked(&self, vk: u16) -> bool {
+        slot(vk).is_some_and(|index| self.blocked[index])
     }
 
     /// Clears the `vk` flag and reports whether it was set.
@@ -200,6 +205,18 @@ mod tests {
         assert!(!state.take_blocked(20)); // second take is a no-op
         assert!(state.take_blocked(16));
         assert!(state.take_blocked(200));
+    }
+
+    #[test]
+    fn is_blocked_reads_without_clearing() {
+        let mut state = KeyState::new();
+        assert!(!state.is_blocked(20));
+        state.mark_blocked(20);
+        assert!(state.is_blocked(20));
+        assert!(state.is_blocked(20));
+        assert!(state.take_blocked(20));
+        assert!(!state.is_blocked(20));
+        assert!(!state.is_blocked(300));
     }
 
     #[test]
