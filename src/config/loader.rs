@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BindingKind};
 use crate::data::condition::Condition;
+use crate::data::key_combination::KeyCombination;
 use crate::data::key_spec::KeySpec;
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
@@ -119,13 +120,28 @@ pub fn load(path: &Path) -> Result<Vec<Binding>, ConfigError> {
     })
 }
 
+/// The Windows hotkey of an action's system function, if it has one. The
+/// loader asks it for every binding that sets `block_original_combo`.
+pub(crate) type SystemCombination = dyn Fn(&BindAction) -> Option<KeyCombination>;
+
 /// Pure (no-I/O) conversion from RON text to `Vec<Binding>`. Kept available
 /// to the crate so tests can exercise the schema without touching the disk.
 ///
 /// The returned list is already expanded with auto-blocker bindings for any
-/// entries that set `block_original_combo: true`. Callers can hand the list
-/// straight to `KeyboardHook::update_bindings`.
+/// entries that set `block_original_combo: true`, with the hotkeys read from
+/// the registry. Callers can hand the list straight to
+/// `KeyboardHook::update_bindings`.
 pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
+    from_ron_str_with_hotkeys(text, &BindAction::get_system_combination)
+}
+
+/// [`from_ron_str`] with the system hotkeys taken from `system_combination`
+/// instead of the registry, so a test knows which auto-blockers to expect
+/// whatever hotkey the machine has set.
+pub(crate) fn from_ron_str_with_hotkeys(
+    text: &str,
+    system_combination: &SystemCombination,
+) -> Result<Vec<Binding>, ConfigError> {
     // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
@@ -156,7 +172,7 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
         eprintln!("[WARN] config contains no bindings");
     }
 
-    Ok(expand_with_auto_blockers(user_bindings))
+    Ok(expand_with_auto_blockers(user_bindings, system_combination))
 }
 
 /// Inserts a no-op binding for the OS-default hotkey of any binding that
@@ -167,12 +183,15 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
 /// Idempotent: if two user bindings demand the same auto-blocker (or if a
 /// user binding already covers the system combo), the auto-blocker is added
 /// only once.
-fn expand_with_auto_blockers(user_bindings: Vec<Binding>) -> Vec<Binding> {
+fn expand_with_auto_blockers(
+    user_bindings: Vec<Binding>,
+    system_combination: &SystemCombination,
+) -> Vec<Binding> {
     let mut result: Vec<Binding> = Vec::with_capacity(user_bindings.len());
 
     for binding in user_bindings {
         if binding.block_original_combo
-            && let Some(system_combo) = binding.action.get_system_combination()
+            && let Some(system_combo) = system_combination(&binding.action)
         {
             // Only `Combo`-kind bindings can collide with an auto-blocker
             // (sequence/chord don't represent a single hold-this-set combo).
@@ -572,6 +591,33 @@ mod tests {
         // 2 user + 1 auto-blocker = 3, not 4.
         assert_eq!(bindings.len(), 3);
         assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker).count(), 1);
+    }
+
+    #[test]
+    fn auto_blocker_keys_come_from_the_hotkey_lookup() {
+        let ron_text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            (keys: "F13", action: ToggleCapsLock, block_original_combo: true),
+        ] )"#;
+        let ctrl_shift = |action: &BindAction| match action {
+            BindAction::SwitchLanguage | BindAction::SwitchLanguageBackward => {
+                Some(KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]))
+            }
+            _ => None,
+        };
+        let bindings = from_ron_str_with_hotkeys(ron_text, &ctrl_shift).expect("config loads");
+
+        assert_eq!(bindings.len(), 3);
+        let mut blockers = bindings.iter().filter(|b| b.is_auto_blocker);
+        let blocker = blockers.next().expect("SwitchLanguage gets a blocker");
+        assert_eq!(
+            blocker.combination(),
+            Some(&KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]))
+        );
+        assert!(
+            blockers.next().is_none(),
+            "ToggleCapsLock has no hotkey, so no blocker"
+        );
     }
 
     #[test]
