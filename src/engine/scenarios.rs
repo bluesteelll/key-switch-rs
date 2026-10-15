@@ -1333,6 +1333,32 @@ fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() 
     .expect_total_fired(&[launch("notepad.exe")]);
 }
 
+#[test]
+fn shift_held_after_the_auto_blocker_and_alt_released_is_not_left_stuck() {
+    // The audit's KS-06 auto-blocker case. The blocker swallowed Shift's
+    // key-down; Alt's key-up then resyncs Shift from the OS, which never saw
+    // it, so Shift's next repeat looks like a fresh press (KS-14). That
+    // press reaches the OS, so its repeats and its key-up must too.
+    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
+        vec![VK_MENU, VK_SHIFT],
+    ))])
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .up("LAlt")
+    .expect_passed()
+    .advance_ms(500)
+    .repeat("LShift")
+    .expect_passed()
+    .advance_ms(33)
+    .repeat("LShift")
+    .expect_passed()
+    .up("LShift")
+    .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]
