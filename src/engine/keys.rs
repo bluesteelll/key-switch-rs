@@ -7,6 +7,9 @@
 //! codes (`VK_SHIFT`). [`HeldKeys`] answers for a trigger key: `Shift` is
 //! held if either Shift slot or the generic one is set, `LShift` only if
 //! the left one is. For an auto-blocker it also visits every code held.
+//!
+//! A reset (`swch off`, `swch on`) rebuilds the table from the OS key state:
+//! [`KeyState::reset_from_os`].
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -32,6 +35,12 @@ const MODIFIERS: [VIRTUAL_KEY; 11] = [
     VK_LWIN,
     VK_RWIN,
 ];
+
+/// Mouse buttons. They have virtual-key codes, and the OS key state reports
+/// them, but the keyboard hook never sees them, so
+/// [`KeyState::reset_from_os`] leaves them out.
+const MOUSE_BUTTONS: [VIRTUAL_KEY; 5] =
+    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2];
 
 /// Index into the 256-entry tables, or `None` for a code outside them.
 fn slot(vk: u16) -> Option<usize> {
@@ -92,6 +101,31 @@ impl KeyState {
                 continue;
             }
             self.active[index] = env.os_key_down(modifier);
+        }
+    }
+
+    /// Starts over from the OS key state, after remapping was switched off
+    /// or on. Every keyboard code the OS reports held is held and on record
+    /// as passed: the engine saw no event while remapping was off, Windows
+    /// saw every key-down, so the key's auto-repeats and its key-up must
+    /// reach Windows too. Every other key is up with nothing on record.
+    ///
+    /// Mouse buttons are left out: a seeded button would stay held for
+    /// good, and an auto-blocker would then never see its hotkey alone. A
+    /// key pressed just before the reset may not show in the OS state yet;
+    /// its first auto-repeat then reads as a fresh press.
+    pub(super) fn reset_from_os(&mut self, env: &dyn Env) {
+        *self = Self::new();
+        // 1..=254 is the documented virtual-key range, and every code is
+        // below 256, so its slot is its index.
+        for code in 1..=254u16 {
+            let vk = VIRTUAL_KEY(code);
+            if MOUSE_BUTTONS.contains(&vk) || !env.os_key_down(vk) {
+                continue;
+            }
+            let index = usize::from(code);
+            self.active[index] = true;
+            self.last_down[index] = LastDown::Passed;
         }
     }
 
@@ -490,6 +524,61 @@ mod tests {
         state.sync_modifiers(&NothingDown, Some(VK_A));
 
         assert!(!state.is_active(VK_LCONTROL));
+    }
+
+    /// Reports A, LShift with the generic Shift, and two mouse buttons as
+    /// down.
+    struct KeysAndButtonsDown;
+
+    impl Env for KeysAndButtonsDown {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            [VK_A, VK_LSHIFT, VK_SHIFT, VK_LBUTTON, VK_XBUTTON2].contains(&vk)
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn reset_from_os_takes_held_keyboard_keys_as_passed_and_skips_mouse_buttons() {
+        let mut state = KeyState::new();
+        state.press(VK_J);
+        state.mark_blocked(VK_J.0);
+        state.press(VK_F13);
+        state.mark_passed(VK_F13.0);
+
+        state.reset_from_os(&KeysAndButtonsDown);
+
+        for key in [VK_A, VK_LSHIFT, VK_SHIFT] {
+            assert!(state.is_active(key), "{key:?} is held in Windows");
+            assert!(
+                state.is_passed(key.0),
+                "{key:?}: Windows saw its key-down, so its repeats and key-up pass"
+            );
+        }
+        for button in [VK_LBUTTON, VK_XBUTTON2] {
+            assert!(
+                !state.is_active(button),
+                "{button:?}: the keyboard hook never reports a mouse button's release"
+            );
+        }
+        assert!(!state.is_active(VK_J));
+        assert!(
+            !state.is_blocked(VK_J.0),
+            "a record from before the reset is gone"
+        );
+        assert!(!state.is_active(VK_F13));
+        assert!(!state.is_passed(VK_F13.0));
+        assert!(
+            state.press(VK_A),
+            "the next key-down of a key held through the reset is an auto-repeat"
+        );
     }
 
     #[test]

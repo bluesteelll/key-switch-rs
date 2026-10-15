@@ -32,13 +32,21 @@
 //! press are suppressed or passed like its key-down) and
 //! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
 //! while the script has it up).
+//!
+//! [`Scenario::remapping_off`] and [`Scenario::remapping_on`] model `swch
+//! off` and `swch on`: each resets the engine, as `KeyboardHook::set_enabled`
+//! does. While remapping is off every key event passes without reaching the
+//! engine, so the modelled OS sees it, and a foreground change is a script
+//! error, because the adapter does not report one then. Timers already
+//! started still fire during `advance_ms`, as the real `hold-timer` threads
+//! do.
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-use super::{Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
+use super::{Decision, Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
 use crate::config::{from_ron_str, from_ron_str_with_hotkeys};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
@@ -134,6 +142,8 @@ pub(crate) struct Scenario {
     press_suppressed: [Option<bool>; 256],
     /// Whether [`check_nothing_stuck`](Self::check_nothing_stuck) is on.
     check_stuck: bool,
+    /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
+    enabled: bool,
 }
 
 impl Scenario {
@@ -178,6 +188,7 @@ impl Scenario {
             check_symmetry: false,
             press_suppressed: [None; 256],
             check_stuck: false,
+            enabled: true,
         }
     }
 
@@ -275,8 +286,54 @@ impl Scenario {
     /// Reports a foreground window change to the engine.
     #[track_caller]
     pub(crate) fn foreground_changed(mut self) -> Self {
+        if !self.enabled {
+            self.fail(&format!(
+                "foreground change at {}: the adapter reports none while remapping is off",
+                self.clock()
+            ));
+        }
         self.engine.on_foreground_changed(&self.env);
         let label = format!("foreground change at {}", self.clock());
+        self.push_step(label, None, Vec::new());
+        self
+    }
+
+    /// Turns remapping off, as `swch off` does: the engine is reset, and
+    /// until [`remapping_on`](Self::remapping_on) every key event passes
+    /// without reaching it. The symmetry check forgets every press: a key
+    /// swallowed before this step and released while remapping is off gives
+    /// Windows a lone key-up, on purpose.
+    #[track_caller]
+    pub(crate) fn remapping_off(mut self) -> Self {
+        if !self.enabled {
+            self.fail(&format!(
+                "remapping off at {}: remapping is already off",
+                self.clock()
+            ));
+        }
+        self.engine.reset(&self.env);
+        self.enabled = false;
+        self.press_suppressed = [None; 256];
+        let label = format!("remapping off at {}", self.clock());
+        self.push_step(label, None, Vec::new());
+        self
+    }
+
+    /// Turns remapping back on, as `swch on` does: the engine is reset and
+    /// decides every later key event again. A press the symmetry check
+    /// recorded while remapping was off stays on record: Windows saw that
+    /// key-down, so its repeats and its key-up must still pass.
+    #[track_caller]
+    pub(crate) fn remapping_on(mut self) -> Self {
+        if self.enabled {
+            self.fail(&format!(
+                "remapping on at {}: remapping is already on",
+                self.clock()
+            ));
+        }
+        self.engine.reset(&self.env);
+        self.enabled = true;
+        let label = format!("remapping on at {}", self.clock());
         self.push_step(label, None, Vec::new());
         self
     }
@@ -387,9 +444,14 @@ impl Scenario {
     #[track_caller]
     fn key_event(mut self, key: &str, direction: KeyDirection, what: &str) -> Self {
         let vk = physical_key(key);
-        let decision = self
-            .engine
-            .on_key(KeyEvent { vk, direction }, &self.bindings, &self.env);
+        let decision = if self.enabled {
+            self.engine
+                .on_key(KeyEvent { vk, direction }, &self.bindings, &self.env)
+        } else {
+            // While remapping is off the adapter passes every event without
+            // asking the engine.
+            Decision::default()
+        };
         let suppressed = decision.suppress;
         let down = direction == KeyDirection::Down;
         // The OS only learns about events the hook passes on.

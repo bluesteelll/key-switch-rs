@@ -40,6 +40,11 @@ minor version; such entries sit under **Changed** and start with
 - Per-binding `allow_extra_modifiers: true` for `keys` bindings: the binding
   also fires while modifiers it does not name are held. It is a load error
   on `sequence` and `chord` bindings.
+- `tests/ipc_roundtrip.rs`: the `swch` client against test pipes with
+  unique names: a server that never answers, a missing pipe, a pipe that
+  refuses the client, a busy pipe and a server that answers, and the
+  daemon's pipe server answering `status`, `off`, `on`, `status` through a
+  stand-in for the daemon, with no keyboard hook installed.
 
 ### Changed
 
@@ -86,6 +91,42 @@ minor version; such entries sit under **Changed** and start with
 
 ### Fixed
 
+- KS-01: `swch off` followed by `swch on` no longer leaves remapping dead.
+  The keyboard and foreground hooks are installed once, on the daemon's
+  main thread, and stay installed until it exits; they used to be removed
+  and reinstalled on a short-lived IPC thread, whose exit took the new hooks
+  with it, and `swch exit` then stopped at a `[FATAL]` prompt. `swch off`
+  now makes the hook pass every key on untouched and `swch on` turns
+  remapping back on; `swch status` answers `disabled` while remapping is
+  off (it used to say `running` whenever a hook handle was stored). Each
+  switch drops pending `Tap`, `Hold`, `DoubleTap`, `chord` and `sequence`
+  state, so a `Hold` armed just before `swch off` no longer fires (KS-31,
+  an unverified report), and a key still held at `swch on` counts as
+  already pressed. A key swallowed by a binding and released while
+  remapping is off reaches Windows as a lone key-up. A running macro keeps
+  running after `swch off` (roadmap item 2.1).
+- KS-02: the daemon's pipe has an explicit security descriptor: full
+  control for SYSTEM and Administrators, read and write for interactive
+  users, and a medium integrity label. `swch` in a normal console now
+  reaches a daemon started elevated by `swch open`, a double-click or a
+  Scheduled Task; it used to fail with "Access is denied. (os error 5)".
+  Everyone and anonymous logons no longer get read access, and processes
+  below medium integrity cannot open the pipe. Read and write go to every
+  interactive user of the machine, though: under fast user switching or
+  Remote Desktop another signed-in user can switch remapping on or off,
+  stop the daemon, or create a pipe instance that answers `swch` in the
+  daemon's place, until roadmap item 4.1 gives each session its own pipe.
+- `swch` no longer waits forever for a daemon that accepts the connection
+  but does not answer, or whose pipe stays busy: after 5 s it prints
+  `swch: cannot reach daemon (the daemon did not answer within 5s).` and
+  exits with 1. Without a daemon it prints
+  ``swch: the daemon is not running. Use `swch open` to start it.``.
+  `swch open` treats a pipe that refuses this console, a busy pipe and a
+  daemon that does not answer as a running daemon and starts no second one
+  (KS-20, partly; roadmap item 1.5 adds the single-instance guard). Its
+  check is now a `status` request, so it no longer leaves an
+  `IPC read error` or `IPC write error` warning in the daemon console
+  (KS-39, an unverified report).
 - KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
   on the key-down of one of its own keys: a non-modifier key, or any of its
   keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).

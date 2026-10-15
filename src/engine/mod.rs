@@ -44,6 +44,10 @@
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
 //!
+//! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry,
+//! keeps only the Hold generation counter, and takes the held keys from the
+//! OS key state.
+//!
 //! The binding list is not engine state. The caller passes a snapshot on
 //! every call, already sorted with [`sort_by_specificity`], so a hot reload
 //! never has to touch the engine. Pending gestures keep clones of the
@@ -78,7 +82,9 @@
 //! Hold action then runs on that timer thread, as before. The adapter holds
 //! the lock only while the engine decides and runs every action after
 //! releasing it. `with_engine` refuses a nested call on the same thread
-//! (the event then passes) instead of deadlocking on the lock.
+//! (the event then passes) instead of deadlocking on the lock. `swch on` and
+//! `swch off` take the lock on an IPC connection worker to call
+//! [`Engine::reset`].
 //!
 //! The adapter's [`Env::now`] reads the clock inside the lock, and a timer
 //! thread waits until `Instant::now()` has reached its [`TimerRequest::due`]
@@ -331,6 +337,29 @@ impl Engine {
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
         self.keys.forget_blocked();
+    }
+
+    /// Remapping was switched off or on (`swch off`, `swch on`; KS-31).
+    ///
+    /// Every pending Tap, Hold, DoubleTap, chord and sequence is dropped, so
+    /// none completes across the switch, and a Hold timer still running
+    /// finds nothing to fire. The Hold generation keeps counting, so such a
+    /// timer cannot match a Hold armed after the reset either (KS-11).
+    ///
+    /// The held keys are taken from [`Env::os_key_down`], each on record as
+    /// passed: while remapping was off the engine saw no event and Windows
+    /// saw every key-down, so a key still held keeps its auto-repeats and
+    /// its key-up. A key whose key-down the engine swallowed before `off`
+    /// reads as up, since Windows never saw it go down.
+    ///
+    /// Call it only when the switch really changes: a repeated `swch on`
+    /// would wipe the records of keys held and swallowed right now, and
+    /// their key-ups would reach Windows.
+    pub fn reset(&mut self, env: &dyn Env) {
+        self.gestures.clear();
+        self.chords = Chords::new();
+        self.sequences = Sequences::new();
+        self.keys.reset_from_os(env);
     }
 
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {

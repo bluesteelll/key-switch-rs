@@ -218,6 +218,17 @@ impl Gestures {
         None
     }
 
+    // ---- All ----
+
+    /// Drops every pending entry. The Hold generation keeps counting: if it
+    /// restarted, a timer started before the clear could match a Hold armed
+    /// after it, because a token is a key and a generation (KS-11).
+    pub(super) fn clear(&mut self) {
+        self.taps.clear();
+        self.holds.clear();
+        self.double_taps.clear();
+    }
+
     #[cfg(test)]
     fn tap_pending(&self, vk: VIRTUAL_KEY) -> bool {
         self.taps.iter().any(|p| p.vk == vk.0)
@@ -512,6 +523,39 @@ mod tests {
         // Then cancel the hold.
         state.release_hold(VK_CAPITAL, t0 + ms(10));
         assert!(!state.hold_pending(VK_CAPITAL));
+    }
+
+    #[test]
+    fn clear_drops_every_entry_and_keeps_the_generation() {
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        state.arm_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
+        state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
+        let first = state
+            .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0)
+            .expect("nothing pending yet");
+
+        state.clear();
+
+        assert!(!state.tap_pending(VK_F13));
+        assert!(!state.double_tap_pending(VK_F13));
+        assert!(!state.hold_pending(VK_F13));
+        let second = state
+            .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10))
+            .expect("the cleared Hold no longer blocks a new arm");
+        assert_ne!(
+            first.token, second.token,
+            "a Hold armed after a clear gets a new generation"
+        );
+        assert_eq!(
+            state.fire_hold(first.token),
+            None,
+            "a timer from before the clear fires nothing"
+        );
+        assert_eq!(
+            state.fire_hold(second.token),
+            Some(BindAction::SwitchLanguage)
+        );
     }
 
     #[test]
