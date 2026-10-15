@@ -1802,6 +1802,88 @@ fn immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppre
         .expect_total_fired(&[launch("wt.exe")]);
 }
 
+#[test]
+fn sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed() {
+    // KS-32's example. F14 alone matches nothing, so its key-down reaches
+    // Windows; the completing step must not swallow its key-up.
+    Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["F14+F15", "F14+F16"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .down("F14")
+    .expect_passed()
+    .down("F15")
+    .expect_suppressed()
+    .up("F15")
+    .expect_suppressed()
+    .down("F16")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("F16")
+    .expect_suppressed()
+    .up("F14")
+    .expect_passed();
+}
+
+#[test]
+fn chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed() {
+    // J's first press starts the chord in the Docs tab. The title changes
+    // without a foreground event, so J's second press reaches Windows (the
+    // chord's `when:` no longer holds); the title changes back and K
+    // completes the chord inside its window. J's second key-down reached
+    // Windows, so its key-up must too.
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 2000), action: SwitchLanguage, when: TitleContains("Docs")) ] )"#,
+    )
+    .foreground("browser.exe", "Docs - Browser")
+    .check_nothing_stuck()
+    .down("J")
+    .expect_suppressed()
+    .up("J")
+    .expect_suppressed()
+    .foreground("browser.exe", "Mail - Browser")
+    .down("J")
+    .expect_passed()
+    .foreground("browser.exe", "Docs - Browser")
+    .down("K")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("K")
+    .expect_suppressed()
+    .up("J")
+    .expect_passed();
+}
+
+#[test]
+fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
+    // Shift went down while remapping was off, so Windows has it down and
+    // the engine first learns of it from the modifier resync, with no
+    // record of its key-down. Its first repeat matches nothing and reaches
+    // Windows; from then on the press is one Windows saw, so a repeat that
+    // the Alt+Shift blocker matches once Alt is down still passes. Whether
+    // that repeat fires the blocker's no-op is KS-10 (roadmap item 1.1).
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .down_unseen("LShift")
+        .down("A")
+        .expect_passed()
+        .up("A")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]

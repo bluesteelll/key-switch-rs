@@ -550,4 +550,40 @@ mod tests {
             "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
         );
     }
+
+    #[test]
+    fn key_up_of_a_key_whose_down_passed_passes_even_with_a_tap_pending() {
+        // No event sequence reaches this state today: a Tap is armed only
+        // under a key-down that is swallowed, and its press stays on record
+        // as swallowed until its key-up. Roadmap item 1.3 (block_default on
+        // deferred triggers) arms one under a key-down that passes. Windows
+        // then has the key down, so the key-up must reach it whatever the
+        // gesture does; the state is set directly here.
+        let t0 = Instant::now();
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [ (keys: "F13", action: SwitchLanguage, trigger: Tap(200)) ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        assert!(down.suppress, "the Tap swallows its key-down");
+        engine.keys.mark_passed(VK_F13.0);
+
+        let up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(50)),
+        );
+        assert_eq!(
+            up.fire,
+            vec![BindAction::SwitchLanguage],
+            "the Tap resolves"
+        );
+        assert!(
+            !up.suppress,
+            "a key-up whose key-down reached Windows must reach it too"
+        );
+    }
 }
