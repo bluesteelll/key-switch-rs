@@ -123,6 +123,11 @@
 //                         keys: "CapsLock" but Windows still ships
 //                         Alt+Shift / Ctrl+Shift as the language hotkey,
 //                         and this flag silences it.
+//                         It is not added when a binding in this file
+//                         uses the hotkey's keys itself.
+//                         It acts only on the hotkey pressed on its own:
+//                         Shift pressed while Alt and Tab are held still
+//                         reaches Windows.
 // allow_extra_modifiers: true (default false)
 //                       - keys bindings only: also fire while modifiers
 //                         the binding does not name are held. A load

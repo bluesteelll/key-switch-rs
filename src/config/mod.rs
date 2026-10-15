@@ -15,6 +15,6 @@ mod schema;
 pub use loader::{default_config_path, load};
 
 /// RON text to bindings without touching the disk, for the engine's
-/// scenario tests.
+/// scenario tests; `from_ron_str_with_hotkeys` without the registry either.
 #[cfg(test)]
-pub(crate) use loader::from_ron_str;
+pub(crate) use loader::{from_ron_str, from_ron_str_with_hotkeys};

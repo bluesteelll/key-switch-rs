@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BindingKind};
 use crate::data::condition::Condition;
+use crate::data::key_combination::KeyCombination;
 use crate::data::key_spec::KeySpec;
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
@@ -119,13 +120,28 @@ pub fn load(path: &Path) -> Result<Vec<Binding>, ConfigError> {
     })
 }
 
+/// The Windows hotkey of an action's system function, if it has one. The
+/// loader asks it for every binding that sets `block_original_combo`.
+pub(crate) type SystemCombination = dyn Fn(&BindAction) -> Option<KeyCombination>;
+
 /// Pure (no-I/O) conversion from RON text to `Vec<Binding>`. Kept available
 /// to the crate so tests can exercise the schema without touching the disk.
 ///
-/// The returned list is already expanded with auto-blocker bindings for any
-/// entries that set `block_original_combo: true`. Callers can hand the list
+/// The returned list holds the file's bindings in file order, followed by
+/// the auto-blockers for the entries that set `block_original_combo: true`,
+/// with the hotkeys read from the registry. Callers can hand the list
 /// straight to `KeyboardHook::update_bindings`.
 pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
+    from_ron_str_with_hotkeys(text, &BindAction::get_system_combination)
+}
+
+/// [`from_ron_str`] with the system hotkeys taken from `system_combination`
+/// instead of the registry, so a test knows which auto-blockers to expect
+/// whatever hotkey the machine has set.
+pub(crate) fn from_ron_str_with_hotkeys(
+    text: &str,
+    system_combination: &SystemCombination,
+) -> Result<Vec<Binding>, ConfigError> {
     // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
@@ -156,36 +172,49 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
         eprintln!("[WARN] config contains no bindings");
     }
 
-    Ok(expand_with_auto_blockers(user_bindings))
+    Ok(expand_with_auto_blockers(user_bindings, system_combination))
 }
 
-/// Inserts a no-op binding for the OS-default hotkey of any binding that
-/// declared `block_original_combo: true`. The auto-blocker silences Windows'
-/// own behaviour for that combo so the user's remap is the only thing the
-/// foreground app sees.
+/// Appends an auto-blocker for the Windows hotkey of every binding that
+/// declared `block_original_combo: true`, so that Windows' own behaviour for
+/// that hotkey does not run next to the user's remap.
 ///
-/// Idempotent: if two user bindings demand the same auto-blocker (or if a
-/// user binding already covers the system combo), the auto-blocker is added
-/// only once.
-fn expand_with_auto_blockers(user_bindings: Vec<Binding>) -> Vec<Binding> {
-    let mut result: Vec<Binding> = Vec::with_capacity(user_bindings.len());
-
-    for binding in user_bindings {
+/// One blocker per distinct hotkey, after all of the file's bindings. None
+/// for a hotkey whose exact keys a `keys` binding of the file uses, the
+/// flagged one included, whatever its trigger or `when:`: that binding takes
+/// the hotkey over, and its own `block_default` and `when:` decide whether
+/// Windows sees the hotkey (KS-18).
+fn expand_with_auto_blockers(
+    user_bindings: Vec<Binding>,
+    system_combination: &SystemCombination,
+) -> Vec<Binding> {
+    let mut hotkeys: Vec<KeyCombination> = Vec::new();
+    for binding in &user_bindings {
         if binding.block_original_combo
-            && let Some(system_combo) = binding.action.get_system_combination()
+            && let Some(hotkey) = system_combination(&binding.action)
+            && !hotkeys.contains(&hotkey)
         {
-            // Only `Combo`-kind bindings can collide with an auto-blocker
-            // (sequence/chord don't represent a single hold-this-set combo).
-            let already_present = result
-                .iter()
-                .any(|b| matches!(b.combination(), Some(c) if *c == system_combo));
-            if !already_present {
-                result.push(Binding::new_auto_blocker(system_combo));
-            }
+            hotkeys.push(hotkey);
         }
-        result.push(binding);
     }
 
+    let mut blockers = Vec::with_capacity(hotkeys.len());
+    for hotkey in hotkeys {
+        // Only `keys` bindings hold a set of keys the way a hotkey does;
+        // sequences and chords have no `combination()`.
+        match user_bindings
+            .iter()
+            .position(|b| b.combination() == Some(&hotkey))
+        {
+            Some(index) => {
+                println!("[INFO] no auto-blocker for {hotkey}: binding #{index} uses the same keys")
+            }
+            None => blockers.push(Binding::new_auto_blocker(hotkey)),
+        }
+    }
+
+    let mut result = user_bindings;
+    result.extend(blockers);
     result
 }
 
@@ -497,8 +526,9 @@ mod tests {
             )
         "#;
         let bindings = from_ron_str(ron_text).unwrap();
-        // 2 entries: the user binding + the auto-blocker inserted because of
-        // block_original_combo. Order: auto-blocker first, then user.
+        // 2 entries: the user binding + the auto-blocker added because of
+        // block_original_combo. Order: user binding first, then the
+        // auto-blocker.
         assert_eq!(bindings.len(), 2);
 
         let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();
@@ -572,6 +602,143 @@ mod tests {
         // 2 user + 1 auto-blocker = 3, not 4.
         assert_eq!(bindings.len(), 3);
         assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker).count(), 1);
+    }
+
+    #[test]
+    fn auto_blocker_keys_come_from_the_hotkey_lookup() {
+        let ron_text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            (keys: "F13", action: ToggleCapsLock, block_original_combo: true),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(&[VK_CONTROL, VK_SHIFT]))
+                .expect("config loads");
+
+        assert_eq!(bindings.len(), 3);
+        let mut blockers = bindings.iter().filter(|b| b.is_auto_blocker);
+        let blocker = blockers.next().expect("SwitchLanguage gets a blocker");
+        assert_eq!(
+            blocker.combination(),
+            Some(&KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]))
+        );
+        assert!(
+            blockers.next().is_none(),
+            "ToggleCapsLock has no hotkey, so no blocker"
+        );
+    }
+
+    /// Stands in for the registry: `keys` is the Windows language hotkey,
+    /// and no other action has a hotkey.
+    fn language_hotkey(
+        keys: &'static [VIRTUAL_KEY],
+    ) -> impl Fn(&BindAction) -> Option<KeyCombination> {
+        let hotkey = KeyCombination::from_keys(keys.iter().copied());
+        move |action: &BindAction| match action {
+            BindAction::SwitchLanguage | BindAction::SwitchLanguageBackward => Some(hotkey.clone()),
+            _ => None,
+        }
+    }
+
+    /// How many auto-blockers the loader added.
+    fn blockers(bindings: &[Binding]) -> usize {
+        bindings.iter().filter(|b| b.is_auto_blocker).count()
+    }
+
+    const ALT_SHIFT: &[VIRTUAL_KEY] = &[VK_MENU, VK_SHIFT];
+
+    #[test]
+    fn auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order() {
+        // KS-18: the dedup looked only at the bindings above the flagged one.
+        let configs = [
+            (
+                "flagged binding above",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                    (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                ] )"#,
+            ),
+            (
+                "flagged binding below",
+                r#"( bindings: [
+                    (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                ] )"#,
+            ),
+            (
+                "conditional deferred binding below",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                    (
+                        keys: "Shift+Alt",
+                        action: SwitchLanguageBackward,
+                        trigger: Tap(200),
+                        when: AppEquals("code.exe"),
+                    ),
+                ] )"#,
+            ),
+        ];
+        for (name, ron_text) in configs {
+            let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(blockers(&bindings), 0, "{name}");
+            assert_eq!(bindings.len(), 2, "{name}");
+        }
+    }
+
+    #[test]
+    fn auto_blocker_is_skipped_when_the_flagged_binding_uses_the_hotkey_keys() {
+        let ron_text = r#"( bindings: [
+            (keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(blockers(&bindings), 0);
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn auto_blockers_follow_the_bindings_of_the_file() {
+        let ron_text = r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, block_original_combo: true),
+            (keys: "F14", action: DoNothing),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(bindings.len(), 3);
+        assert!(
+            !bindings[0].is_auto_blocker,
+            "the file's bindings come first"
+        );
+        assert_eq!(
+            bindings[0].combination().expect("a keys binding").keys,
+            vec![KeySpec::Key(VK_F13)]
+        );
+        assert_eq!(
+            bindings[1].combination().expect("a keys binding").keys,
+            vec![KeySpec::Key(VK_F14)]
+        );
+        assert!(bindings[2].is_auto_blocker, "the blocker comes last");
+        assert_eq!(
+            bindings[2].combination(),
+            Some(&KeyCombination::from_keys(ALT_SHIFT.iter().copied()))
+        );
+    }
+
+    #[test]
+    fn auto_blocker_stays_when_a_binding_only_overlaps_the_hotkey() {
+        // Only the same keys take the hotkey over: a sided or larger combo,
+        // a chord or a sequence leaves the other presses of the hotkey to
+        // the blocker.
+        let ron_text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            (keys: "LAlt+LShift", action: SwitchLanguageBackward),
+            (keys: "Ctrl+Alt+Shift", action: SwitchLanguageBackward),
+            (chord: (keys: ["Alt", "Shift"]), action: SwitchLanguageBackward),
+            (sequence: (steps: ["Alt+Shift", "F13"]), action: SwitchLanguageBackward),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
+        assert_eq!(blockers(&bindings), 1);
     }
 
     #[test]

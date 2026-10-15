@@ -12,6 +12,13 @@
 //! the user types, never makes a later key-down fire or arm it. Its
 //! modifiers match exactly by family (owner decision): the families held
 //! must be the ones it names, unless it sets `allow_extra_modifiers`.
+//!
+//! An auto-blocker (`block_original_combo`) exists to keep a Windows hotkey
+//! from Windows, so it matches by what Windows would see (KS-05): the key
+//! just pressed is one of the hotkey's, all of them are held, and every
+//! other key held is one Windows does not have down, because a binding
+//! swallowed its key-down or the hook missed its key-up. Only for those
+//! other keys does [`blocker_matches`] ask about Windows' key state.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
@@ -22,6 +29,11 @@ use crate::data::key_spec::{KeySpec, Modifier, ModifierSet};
 pub(super) trait HeldKeys {
     /// Whether a key that `key` accepts is held.
     fn is_down(&self, key: KeySpec) -> bool;
+
+    /// Whether `accept` holds for the code of every key held, the generic
+    /// modifier codes the resync writes included; true when nothing is
+    /// held.
+    fn all_held(&self, accept: impl FnMut(VIRTUAL_KEY) -> bool) -> bool;
 
     /// The modifier families held: a family counts if either of its keys is
     /// held.
@@ -64,6 +76,28 @@ pub(super) fn combo_matches<H: HeldKeys + ?Sized>(
     is_trigger_key(combo, pressed)
         && keys_down(combo, held)
         && (allow_extra_modifiers || held.modifiers() == combo.modifiers())
+}
+
+/// Whether the key-down of `pressed`, with `held` the keys held after it,
+/// shows Windows its hotkey `combo` and nothing else, so that the
+/// auto-blocker for it swallows the key: `pressed` is a trigger key, every
+/// key of the hotkey is held, and every other key held is one that
+/// `windows_has_down` reports up.
+///
+/// `windows_has_down` is asked only about held keys that no key of `combo`
+/// accepts, so never about `pressed`, whose state Windows updates only
+/// after the hook returns. A generic modifier code the resync writes counts
+/// as one of the hotkey's keys only through an `AnySide` key, so a hotkey
+/// names its modifiers `AnySide`, as the registry lookup does.
+pub(super) fn blocker_matches<H: HeldKeys + ?Sized>(
+    combo: &KeyCombination,
+    pressed: VIRTUAL_KEY,
+    held: &H,
+    windows_has_down: impl Fn(VIRTUAL_KEY) -> bool,
+) -> bool {
+    is_trigger_key(combo, pressed)
+        && keys_down(combo, held)
+        && held.all_held(|vk| combo.keys.iter().any(|key| key.accepts(vk)) || !windows_has_down(vk))
 }
 
 #[cfg(test)]
@@ -201,5 +235,76 @@ mod tests {
         assert!(combo_matches(&alt_shift, VK_LSHIFT, &alt_shift_held, false));
         let with_ctrl = held(&[VK_LCONTROL, VK_LMENU, VK_LSHIFT]);
         assert!(!combo_matches(&alt_shift, VK_LSHIFT, &with_ctrl, false));
+    }
+
+    #[test]
+    fn blocker_matches_only_what_windows_sees_as_its_hotkey() {
+        let alt_shift = KeyCombination::new(KeySpec::AnySide(Modifier::Alt))
+            .with(KeySpec::AnySide(Modifier::Shift));
+        let all_down = |_: VIRTUAL_KEY| true;
+        let up = |key: VIRTUAL_KEY| move |vk: VIRTUAL_KEY| vk != key;
+
+        let lone = held(&[VK_LMENU, VK_LSHIFT]);
+        assert!(blocker_matches(&alt_shift, VK_LSHIFT, &lone, all_down));
+        let right = held(&[VK_RMENU, VK_RSHIFT]);
+        assert!(blocker_matches(&alt_shift, VK_RMENU, &right, all_down));
+
+        // A key held besides the hotkey counts only if Windows has it down.
+        let with_tab = held(&[VK_LMENU, VK_LSHIFT, VK_TAB]);
+        assert!(blocker_matches(
+            &alt_shift,
+            VK_LSHIFT,
+            &with_tab,
+            up(VK_TAB)
+        ));
+        assert!(!blocker_matches(&alt_shift, VK_LSHIFT, &with_tab, all_down));
+        let with_ctrl = held(&[VK_LCONTROL, VK_LMENU, VK_LSHIFT]);
+        assert!(
+            blocker_matches(&alt_shift, VK_LSHIFT, &with_ctrl, up(VK_LCONTROL)),
+            "a modifier a binding swallowed is not down in Windows"
+        );
+        assert!(!blocker_matches(
+            &alt_shift, VK_LSHIFT, &with_ctrl, all_down
+        ));
+
+        // The key pressed must be the hotkey's, and all of it held.
+        let with_a = held(&[VK_LMENU, VK_LSHIFT, VK_A]);
+        assert!(!blocker_matches(&alt_shift, VK_A, &with_a, up(VK_A)));
+        let alt_only = held(&[VK_LMENU]);
+        assert!(!blocker_matches(&alt_shift, VK_LMENU, &alt_only, all_down));
+
+        let grave = KeyCombination::new(VK_OEM_3);
+        assert!(blocker_matches(
+            &grave,
+            VK_OEM_3,
+            &held(&[VK_OEM_3]),
+            all_down
+        ));
+        assert!(!blocker_matches(
+            &grave,
+            VK_OEM_3,
+            &held(&[VK_A, VK_OEM_3]),
+            all_down
+        ));
+        assert!(!blocker_matches(
+            &grave,
+            VK_OEM_3,
+            &held(&[VK_LSHIFT, VK_OEM_3]),
+            all_down
+        ));
+    }
+
+    #[test]
+    fn blocker_never_asks_windows_about_its_own_keys() {
+        let alt_shift = KeyCombination::new(KeySpec::AnySide(Modifier::Alt))
+            .with(KeySpec::AnySide(Modifier::Shift));
+        // `VK_MENU` is the generic slot the resync writes.
+        let hotkey_held = held(&[VK_LMENU, VK_MENU, VK_LSHIFT]);
+        assert!(blocker_matches(
+            &alt_shift,
+            VK_LSHIFT,
+            &hotkey_held,
+            |vk: VIRTUAL_KEY| -> bool { panic!("asked Windows about {vk:?}") }
+        ));
     }
 }

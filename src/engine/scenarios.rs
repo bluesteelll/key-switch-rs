@@ -25,8 +25,9 @@ pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
 ] )"#;
 
 /// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
-/// Windows language hotkey, followed by the bindings of `ron`, in the
-/// loader's order. The blocker is built directly: loading it from RON would
+/// Windows language hotkey, followed by the bindings of `ron`. The blocker
+/// comes first, where it used to shadow a binding on the same keys; the
+/// loader now appends it. It is built directly: loading it from RON would
 /// read the registry.
 pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
     let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
@@ -1176,7 +1177,7 @@ fn auto_blocker_matches_its_modifiers_exactly() {
     .expect_passed()
     .down("LShift")
     .expect_suppressed()
-    .expect_fired(&[BindAction::DoNothing])
+    .expect_nothing_fired()
     .up("LShift")
     .expect_suppressed()
     .up("LAlt")
@@ -1527,7 +1528,7 @@ fn alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier() {
         .expect_passed()
         .down("LShift")
         .expect_suppressed()
-        .expect_fired(&[BindAction::DoNothing])
+        .expect_nothing_fired()
         .down("X")
         .expect_suppressed()
         .expect_fired(&[BindAction::ToggleCapsLock])
@@ -1544,7 +1545,7 @@ fn alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier() {
         .expect_passed()
         .down("LAlt")
         .expect_suppressed()
-        .expect_fired(&[BindAction::DoNothing])
+        .expect_nothing_fired()
         .down("X")
         .expect_suppressed()
         .expect_fired(&[BindAction::ToggleCapsLock])
@@ -1657,7 +1658,7 @@ fn shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_wh
         .expect_passed()
         .down("LShift")
         .expect_suppressed()
-        .expect_fired(&[BindAction::DoNothing])
+        .expect_nothing_fired()
         .up("LAlt")
         .expect_passed()
         .advance_ms(500)
@@ -1675,7 +1676,7 @@ fn shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_wh
         .expect_passed()
         .up("LShift")
         .expect_passed()
-        .expect_total_fired(&[BindAction::DoNothing]);
+        .expect_total_fired(&[]);
 }
 
 #[test]
@@ -1884,8 +1885,7 @@ fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
     // with no record of its key-down. Shift's next repeat matches nothing
     // (Ctrl is held too) and reaches Windows; from then on the press is one
     // Windows saw, so once Ctrl is released, a repeat that the Alt+Shift
-    // blocker now matches still passes. Whether that repeat fires the
-    // blocker's no-op is KS-10 (roadmap item 1.1).
+    // blocker now matches still passes.
     Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
         .check_nothing_stuck()
         .down_unseen("LCtrl")
@@ -1907,6 +1907,367 @@ fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
         .expect_passed()
         .up("LAlt")
         .expect_passed();
+}
+
+// ---- Auto-blockers (KS-05, KS-18) ----
+
+#[test]
+fn user_binding_on_the_language_hotkey_fires_in_either_file_order() {
+    // The audit's KS-18 repro: a binding on the hotkey's own keys, above or
+    // below the flagged one or the flagged one itself, lost its fire to the
+    // auto-blocker.
+    let configs = [
+        (
+            "flagged binding above",
+            r#"( bindings: [
+                (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+                (keys: "Alt+Shift", action: SwitchLanguageBackward),
+            ] )"#,
+        ),
+        (
+            "flagged binding below",
+            r#"( bindings: [
+                (keys: "Alt+Shift", action: SwitchLanguageBackward),
+                (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            ] )"#,
+        ),
+        (
+            "flagged binding on the hotkey",
+            r#"( bindings: [
+                (keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true),
+            ] )"#,
+        ),
+    ];
+    for (name, config) in configs {
+        Scenario::from_ron_with_language_hotkey(config, &[VK_MENU, VK_SHIFT])
+            .with_context(name)
+            .check_nothing_stuck()
+            .down("LAlt")
+            .expect_passed()
+            .expect_nothing_fired()
+            .down("LShift")
+            .expect_suppressed()
+            .expect_fired(&[BindAction::SwitchLanguageBackward])
+            .up("LShift")
+            .expect_suppressed()
+            .up("LAlt")
+            .expect_passed();
+    }
+}
+
+/// The default config's two bindings, with `block_original_combo`.
+const DEFAULT_CONFIG: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+] )"#;
+
+#[test]
+fn shift_pressed_while_alt_and_tab_are_held_reaches_windows() {
+    // KS-05: Windows sees Alt, Tab and Shift, not its language hotkey, so
+    // Shift reaches it and the Alt+Tab switcher steps back.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("Tab")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_passed()
+        .up("Tab")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .up("Tab")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn shift_pressed_while_ctrl_and_t_are_held_reaches_windows() {
+    // KS-05 with the Ctrl+Shift hotkey, on both sides.
+    Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LCtrl")
+        .expect_passed()
+        .down("T")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .up("T")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LCtrl")
+        .expect_passed()
+        .down("RCtrl")
+        .expect_passed()
+        .down("T")
+        .expect_passed()
+        .down("RShift")
+        .expect_passed()
+        .up("T")
+        .expect_passed()
+        .up("RShift")
+        .expect_passed()
+        .up("RCtrl")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn alt_shift_pressed_while_a_letter_is_held_reaches_windows() {
+    // Typing rollover: A is still down in Windows when Alt+Shift completes.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("A")
+        .expect_passed()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .up("A")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn grave_blocker_acts_only_on_a_lone_grave() {
+    // The "`" hotkey (registry value "4"): a grave typed with another key or
+    // with Shift held reaches Windows, a grave on its own does not.
+    Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_OEM_3])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("A")
+        .expect_passed()
+        .down("`")
+        .expect_passed()
+        .up("`")
+        .expect_passed()
+        .up("A")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .down("`")
+        .expect_passed()
+        .up("`")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .down("`")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("`")
+        .expect_suppressed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
+    // Pressed in the order Ctrl, Shift, T, Windows would see a bare
+    // Ctrl+Shift when Shift goes down: the blocker swallows Shift, and T
+    // reaches Windows as Ctrl+T until roadmap item 1.2.
+    Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LCtrl")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .down("T")
+        .expect_passed()
+        .up("T")
+        .expect_passed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LCtrl")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn shift_pressed_after_tab_was_released_is_still_swallowed() {
+    // The usual way back in the Alt+Tab switcher: Alt held, Tab tapped,
+    // then Shift and Tab. Windows would see a bare Alt+Shift when Shift goes
+    // down, so the blocker swallows it and Tab reaches Windows as Alt+Tab
+    // until roadmap item 1.2.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .up("Tab")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .down("Tab")
+        .expect_passed()
+        .up("Tab")
+        .expect_passed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn user_binding_on_alt_shift_fires_with_the_blocker_in_either_order() {
+    // A blocker next to a binding on its own keys, wherever it sits in the
+    // list, never takes that binding's fire.
+    const USER: &str = r#"( bindings: [ (keys: "Alt+Shift", action: SwitchLanguageBackward) ] )"#;
+    let mut blocker_last = crate::config::from_ron_str(USER).expect("config loads");
+    blocker_last.push(Binding::new_auto_blocker(KeyCombination::from_keys(vec![
+        VK_MENU, VK_SHIFT,
+    ])));
+    for (name, bindings) in [
+        ("blocker first", with_alt_shift_blocker(USER)),
+        ("blocker last", blocker_last),
+    ] {
+        Scenario::with_bindings(bindings)
+            .with_context(name)
+            .check_nothing_stuck()
+            .check_press_symmetry()
+            .down("LAlt")
+            .expect_passed()
+            .expect_nothing_fired()
+            .down("LShift")
+            .expect_suppressed()
+            .expect_fired(&[BindAction::SwitchLanguageBackward])
+            .up("LShift")
+            .expect_suppressed()
+            .up("LAlt")
+            .expect_passed();
+    }
+}
+
+#[test]
+fn sided_user_binding_fires_and_the_blocker_keeps_the_other_sides() {
+    // `LAlt+LShift` is not the hotkey's keys, so the loader keeps the
+    // blocker; it swallows right Alt+Shift and leaves the left to the
+    // binding.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+        (keys: "LAlt+LShift", action: SwitchLanguageBackward),
+    ] )"#;
+    Scenario::from_ron_with_language_hotkey(config, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguageBackward])
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .down("RAlt")
+        .expect_passed()
+        .down("RShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("RShift")
+        .expect_suppressed()
+        .up("RAlt")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::SwitchLanguageBackward]);
+}
+
+#[test]
+fn key_whose_release_the_hook_missed_does_not_disable_the_blocker() {
+    // Win+L: the key-ups go to the secure desktop, so the engine still
+    // holds L. Windows does not, and would see a bare Alt+Shift.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LWin")
+        .expect_passed()
+        .down("L")
+        .expect_passed()
+        .up_unseen("L")
+        .up_unseen("LWin")
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn key_swallowed_by_a_binding_does_not_disable_the_blocker() {
+    // CapsLock's key-down was swallowed, so Windows does not have it down
+    // and would see a bare Alt+Shift.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .down("LAlt")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn modifier_swallowed_by_a_binding_does_not_disable_the_blocker() {
+    // The Tap swallowed Win's key-down, so Windows has only Alt and Shift
+    // down: its language hotkey. A Win that reached Windows would keep the
+    // blocker off, like the Ctrl in auto_blocker_matches_its_modifiers_exactly.
+    Scenario::with_bindings(with_alt_shift_blocker(
+        r#"( bindings: [ (keys: "Win", action: ToggleCapsLock, trigger: Tap(200)) ] )"#,
+    ))
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed()
+    .up("LAlt")
+    .expect_passed()
+    .up("LWin")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock]);
 }
 
 // ---- The harness itself ----

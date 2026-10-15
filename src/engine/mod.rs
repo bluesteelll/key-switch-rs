@@ -19,7 +19,7 @@
 //! The engine is plain Rust with no Win32 calls, no threads, no locks and
 //! no clock of its own. Everything from outside comes in through the
 //! [`Env`] trait: the time of the event, the operating system's view of the
-//! modifier keys and the foreground window for `when:` conditions. Because
+//! keys held and the foreground window for `when:` conditions. Because
 //! of that, the whole decision path runs under test with a fake `Env`
 //! (`testing::Scenario`), from a RON config and a script of key events.
 //!
@@ -111,11 +111,18 @@
 //!      and the modifier families held (Shift, Ctrl, Alt, Win, either key
 //!      of a pair counting as its family) must be exactly the combo's own,
 //!      unless the binding sets `allow_extra_modifiers` (owner decision).
-//!      `Immediate` fires only for the first matching Immediate
+//!      `Immediate` fires only for the first matching Immediate user
 //!      binding, on every key-down including repeats, and suppresses if
 //!      `block_default` is set. `Tap`, `Hold` and `DoubleTap` ignore
 //!      repeats, arm under the key just pressed (so under a key of the
 //!      combo, whose key-up resolves them) and always suppress.
+//!    - An auto-blocker (`block_original_combo`) is a `Combo` of the
+//!      Windows hotkey that only suppresses: it fires nothing, so its place
+//!      in the list never keeps a user binding from firing (KS-18). It
+//!      matches when the key just pressed is one of the hotkey's, all of
+//!      them are held, and every other key held is one that
+//!      [`Env::os_key_down`] reports up: Windows would see the hotkey and
+//!      nothing else (KS-05).
 //!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
 //!      advances or completes one is suppressed.
 //! 5. A first key-down is suppressed if anything asked for it, and the key
@@ -343,6 +350,19 @@ impl Engine {
 
             match &binding.kind {
                 BindingKind::Combo(combo) => {
+                    if binding.is_auto_blocker {
+                        // A blocker only keeps a Windows hotkey from
+                        // Windows. It fires nothing and leaves the
+                        // Immediate slot alone, so a user binding matching
+                        // the same key-down fires wherever the blocker sits
+                        // in the list (KS-18).
+                        if matching::blocker_matches(combo, vk, &self.keys, |key| {
+                            env.os_key_down(key)
+                        }) {
+                            decision.suppress = true;
+                        }
+                        continue;
+                    }
                     if !matching::combo_matches(
                         combo,
                         vk,

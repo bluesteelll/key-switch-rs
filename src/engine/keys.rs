@@ -6,7 +6,7 @@
 //! modifiers (`VK_LSHIFT`), and the resync also writes the generic modifier
 //! codes (`VK_SHIFT`). [`HeldKeys`] answers for a trigger key: `Shift` is
 //! held if either Shift slot or the generic one is set, `LShift` only if
-//! the left one is.
+//! the left one is. For an auto-blocker it also visits every code held.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -200,6 +200,14 @@ impl HeldKeys for KeyState {
             }
         }
     }
+
+    fn all_held(&self, mut accept: impl FnMut(VIRTUAL_KEY) -> bool) -> bool {
+        // A slot's index is the 8-bit code of its key (`slot`), so every
+        // code built here is one the hook or the resync stored, below 256.
+        (0..256u16)
+            .filter(|&code| self.active[usize::from(code)])
+            .all(|code| accept(VIRTUAL_KEY(code)))
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +253,37 @@ mod tests {
         assert!(!state.is_down(KeySpec::Key(VK_LWIN)));
         assert!(state.is_down(KeySpec::Key(VK_RWIN)));
         assert!(!state.is_down(KeySpec::Key(VK_A)));
+    }
+
+    #[test]
+    fn all_held_visits_every_held_code() {
+        let mut state = KeyState::new();
+        assert!(state.all_held(|_| false), "nothing is held");
+
+        state.press(VK_LSHIFT);
+        state.press(VK_A);
+        // The resync writes the generic code from the OS key state.
+        state.sync_modifiers(&ShiftDown, None);
+        assert!(state.all_held(|vk| [VK_LSHIFT, VK_SHIFT, VK_A].contains(&vk)));
+        assert!(!state.all_held(|vk| vk != VK_A));
+        assert!(
+            !state.all_held(|vk| vk != VK_SHIFT),
+            "the generic slot is visited too"
+        );
+    }
+
+    #[test]
+    fn all_held_visits_the_highest_code_the_table_holds() {
+        let mut state = KeyState::new();
+        state.press(VIRTUAL_KEY(255));
+        assert!(
+            !state.all_held(|vk| vk != VIRTUAL_KEY(255)),
+            "the last slot (code 255) is visited by all_held"
+        );
+        assert!(
+            state.all_held(|vk| vk == VIRTUAL_KEY(255)),
+            "code 255 is the only key held"
+        );
     }
 
     #[test]
