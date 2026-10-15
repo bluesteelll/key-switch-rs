@@ -13,11 +13,12 @@ use std::time::Duration;
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BindingKind};
 use crate::data::condition::Condition;
+use crate::data::key_spec::KeySpec;
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 
-use super::parsing::{parse_combo, parse_wm_name};
+use super::parsing::{parse_combo, parse_key_list, parse_wm_name};
 use super::schema::{
     ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawCondition, RawConfig, RawStep,
     RawTrigger, RawWindowKind, SequenceSpec,
@@ -225,11 +226,22 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         ));
     }
 
+    // Sequence steps and chords have no exact-modifier rule to relax yet
+    // (roadmap 3.2); an accepted but ignored flag would change meaning
+    // silently once they get one.
+    if !matches!(kind, BindingKind::Combo(_)) && raw.allow_extra_modifiers {
+        return Err(format!(
+            "{}: `allow_extra_modifiers` applies only to `keys` bindings",
+            err_prefix
+        ));
+    }
+
     let binding = Binding::with_kind(kind, action)
         .with_block_default(raw.block_default)
         .with_block_original_combo(raw.block_original_combo)
         .with_condition(raw_condition_to_condition(&raw.when))
-        .with_trigger(trigger);
+        .with_trigger(trigger)
+        .with_allow_extra_modifiers(raw.allow_extra_modifiers);
 
     Ok(binding)
 }
@@ -288,17 +300,22 @@ fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
     if chord.keys.len() < 2 {
         return Err("Chord must have at least 2 keys; a single key is not a chord".into());
     }
-    let mut vks = Vec::with_capacity(chord.keys.len());
+    let mut specs: Vec<KeySpec> = Vec::with_capacity(chord.keys.len());
     for (i, k) in chord.keys.iter().enumerate() {
-        let vk =
-            parse_vk(k).ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
-        if vks.contains(&vk) {
-            return Err(format!("Chord key #{}: duplicate {:?}", i, k));
+        let spec = KeySpec::parse(k)
+            .ok_or_else(|| format!("Chord key #{}: unknown key name {:?}", i, k))?;
+        // Overlapping keys (`Shift` and `LShift`) would both count one
+        // physical key, so a single press could complete the chord.
+        if let Some(j) = specs.iter().position(|s| s.overlaps(spec)) {
+            return Err(format!(
+                "Chord key #{}: duplicate {:?} (overlaps key #{})",
+                i, k, j
+            ));
         }
-        vks.push(vk);
+        specs.push(spec);
     }
     Ok(BindingKind::Chord {
-        keys: vks,
+        keys: specs,
         window: Duration::from_millis(chord.window_ms),
     })
 }
@@ -425,11 +442,11 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         }
 
         RawStep::Combo(combo) => {
-            let kc = parse_combo(combo).map_err(|e| format!("Combo {:?}: {}", combo, e))?;
-            if kc.keys.is_empty() {
+            let keys = parse_key_list(combo).map_err(|e| format!("Combo {:?}: {}", combo, e))?;
+            if keys.is_empty() {
                 return Err(format!("Combo {:?}: empty", combo));
             }
-            SequenceStep::PressCombo(kc.keys)
+            SequenceStep::PressCombo(keys)
         }
 
         RawStep::Window(kind) => SequenceStep::Window(match kind {
@@ -453,6 +470,7 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
@@ -484,7 +502,10 @@ mod tests {
         assert_eq!(bindings.len(), 2);
 
         let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();
-        assert_eq!(user.combination().unwrap().keys, vec![VK_CAPITAL]);
+        assert_eq!(
+            user.combination().unwrap().keys,
+            vec![KeySpec::Key(VK_CAPITAL)]
+        );
         assert_eq!(user.action, BindAction::SwitchLanguage);
         assert!(user.block_original_combo);
         assert!(user.block_default); // default
@@ -1078,8 +1099,8 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Sequence { steps, max_gap } => {
                 assert_eq!(steps.len(), 2);
-                assert_eq!(steps[0].keys, vec![VK_G]);
-                assert_eq!(steps[1].keys, vec![VK_G]);
+                assert_eq!(steps[0].keys, vec![KeySpec::Key(VK_G)]);
+                assert_eq!(steps[1].keys, vec![KeySpec::Key(VK_G)]);
                 assert_eq!(max_gap.as_millis(), 500);
             }
             other => panic!("expected Sequence, got {:?}", other),
@@ -1100,10 +1121,11 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Sequence { steps, max_gap } => {
                 assert_eq!(steps.len(), 2);
-                assert!(steps[0].keys.contains(&VK_CONTROL));
-                assert!(steps[0].keys.contains(&VK_X));
-                assert!(steps[1].keys.contains(&VK_CONTROL));
-                assert!(steps[1].keys.contains(&VK_S));
+                let ctrl = KeySpec::AnySide(Modifier::Ctrl);
+                assert!(steps[0].keys.contains(&ctrl));
+                assert!(steps[0].keys.contains(&KeySpec::Key(VK_X)));
+                assert!(steps[1].keys.contains(&ctrl));
+                assert!(steps[1].keys.contains(&KeySpec::Key(VK_S)));
                 assert_eq!(max_gap.as_millis(), 500); // default
             }
             other => panic!("expected Sequence, got {:?}", other),
@@ -1124,8 +1146,8 @@ mod tests {
         match &bindings[0].kind {
             BindingKind::Chord { keys, window } => {
                 assert_eq!(keys.len(), 2);
-                assert!(keys.contains(&VK_J));
-                assert!(keys.contains(&VK_K));
+                assert!(keys.contains(&KeySpec::Key(VK_J)));
+                assert!(keys.contains(&KeySpec::Key(VK_K)));
                 assert_eq!(window.as_millis(), 50);
             }
             other => panic!("expected Chord, got {:?}", other),
@@ -1225,6 +1247,112 @@ mod tests {
                 assert!(errs[0].contains("duplicate"));
             }
             _ => panic!("expected Bindings error"),
+        }
+    }
+
+    #[test]
+    fn chord_with_an_unsided_modifier_parses_to_either_side() {
+        let ron = r#"( bindings: [ ( chord: (keys: ["Shift", "Space"]), action: DoNothing ) ] )"#;
+        let bindings = from_ron_str(ron).unwrap();
+        match &bindings[0].kind {
+            BindingKind::Chord { keys, .. } => assert_eq!(
+                keys,
+                &vec![KeySpec::AnySide(Modifier::Shift), KeySpec::Key(VK_SPACE)]
+            ),
+            other => panic!("expected Chord, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chord_keys_that_overlap_are_rejected() {
+        // One physical key would count for both chord keys (KS-07).
+        for keys in [
+            r#"["Shift", "LShift"]"#,
+            r#"["Win", "RWin"]"#,
+            r#"["Ctrl", "RCtrl"]"#,
+        ] {
+            let ron = format!(r#"( bindings: [ ( chord: (keys: {keys}), action: DoNothing ) ] )"#);
+            let err = from_ron_str(&ron).expect_err("overlapping chord keys must be rejected");
+            match err {
+                ConfigError::Bindings(errs) => {
+                    assert!(
+                        errs[0].contains("duplicate"),
+                        "error for {keys} should say duplicate: {errs:?}"
+                    );
+                }
+                other => panic!("expected Bindings error for {keys}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn allow_extra_modifiers_defaults_to_false() {
+        let bindings =
+            from_ron_str(r#"( bindings: [ ( keys: "CapsLock", action: SwitchLanguage ) ] )"#)
+                .unwrap();
+        assert!(!bindings[0].allow_extra_modifiers);
+    }
+
+    #[test]
+    fn allow_extra_modifiers_true_is_parsed() {
+        let ron = r#"( bindings: [
+            ( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true ),
+            ( keys: "F13", action: DoNothing, allow_extra_modifiers: false ),
+        ] )"#;
+        let bindings = from_ron_str(ron).unwrap();
+        assert!(bindings[0].allow_extra_modifiers);
+        assert!(!bindings[1].allow_extra_modifiers);
+    }
+
+    /// The README's combo-syntax section, read at compile time so that the
+    /// published examples are the ones under test.
+    const README: &str = include_str!("../../README.md");
+
+    #[test]
+    fn readme_matching_examples_load() {
+        let start = README
+            .find("### Combo syntax")
+            .expect("README has a combo syntax section");
+        let section = &README[start..];
+        let end = section.find("\n### ").unwrap_or(section.len());
+        let section = &section[..end];
+
+        let mut blocks = 0;
+        for block in section.split("```ron").skip(1) {
+            let body = block
+                .split("```")
+                .next()
+                .expect("invariant: split yields at least one piece");
+            let ron = format!("( bindings: [ {body} ] )");
+            let bindings = from_ron_str(&ron)
+                .unwrap_or_else(|e| panic!("README example does not load: {e}\n{body}"));
+            assert!(!bindings.is_empty(), "empty README example:\n{body}");
+            blocks += 1;
+        }
+        assert!(
+            blocks > 0,
+            "no RON example in the README's combo syntax section"
+        );
+    }
+
+    #[test]
+    fn allow_extra_modifiers_is_only_for_keys_bindings() {
+        for kind in [
+            r#"sequence: (steps: ["F13", "F14"])"#,
+            r#"chord: (keys: ["F13", "F14"])"#,
+        ] {
+            let ron = format!(
+                r#"( bindings: [ ( {kind}, action: DoNothing, allow_extra_modifiers: true ) ] )"#
+            );
+            let err = from_ron_str(&ron)
+                .expect_err("allow_extra_modifiers on a sequence/chord must be rejected");
+            match err {
+                ConfigError::Bindings(errs) => assert!(
+                    errs[0].contains("allow_extra_modifiers"),
+                    "error for {kind} should name the field: {errs:?}"
+                ),
+                other => panic!("expected Bindings error for {kind}, got {other:?}"),
+            }
         }
     }
 

@@ -38,12 +38,14 @@ key-switch-rs/
     ├── data/
     │   ├── binding.rs          - Binding struct (key combo -> action)
     │   ├── key_combination.rs  - key combinations (key + modifiers)
+    │   ├── key_spec.rs         - trigger keys: one key on its side, or a modifier on either side
     │   ├── sequence.rs         - macro engine: SequenceStep, type_text, press_combo, window ops
     │   └── vk_name.rs          - VIRTUAL_KEY <-> human-readable name (both directions)
     ├── engine/
     │   ├── mod.rs              - pure decision core: Engine::on_key / on_timer -> Decision
     │   ├── env.rs              - Env trait: clock, OS key state, foreground app and title
-    │   ├── keys.rs             - held and blocked keys, modifier resync, side folding
+    │   ├── keys.rs             - held and blocked keys, modifier resync
+    │   ├── matching.rs         - compares a binding's keys with the keys held
     │   ├── gestures.rs         - pending Tap / Hold / DoubleTap: deadlines and timer tokens
     │   ├── chords.rs           - pending simultaneous chords
     │   ├── sequences.rs        - pending leader-key sequences
@@ -66,8 +68,9 @@ key-switch-rs/
 
 `KeyCombination` struct - represents key combination:
 
-- Key list (`Vec<VIRTUAL_KEY>`) with dedup
-- `matches()` method checks if pressed keys match combination
+- Key list (`Vec<KeySpec>`) with dedup: each key is one key on its side
+  (`LShift`) or a modifier on either side (`Shift`), see `data/key_spec.rs`
+- Matching against the keys held is the engine's job (`engine/matching.rs`)
 
 #### `windows_actions.rs`
 
@@ -176,7 +179,7 @@ is case-insensitive (`"Ctrl + shift + esc"` parses identically to `"Ctrl+Shift+E
 
 | Group       | Recognised names                                                                                       |
 | ----------- | ------------------------------------------------------------------------------------------------------ |
-| Modifiers   | `Ctrl`/`Control`, `Shift`, `Alt`/`Menu`, `Win`/`Super`/`LWin`, `RWin`                                    |
+| Modifiers   | Either side: `Shift`, `Ctrl`/`Control`, `Alt`/`Menu`, `Win`/`Super`. One side: `LShift`/`LeftShift`, `RShift`/`RightShift`, `LCtrl`/`LeftCtrl`/`LeftControl`, `RCtrl`/`RightCtrl`/`RightControl`, `LAlt`/`LeftAlt`, `RAlt`/`RightAlt`, `LWin`/`LeftWin`, `RWin`/`RightWin` |
 | Letters     | `A`–`Z`                                                                                                |
 | Digits      | `0`–`9`                                                                                                |
 | Function    | `F1`–`F24`                                                                                             |
@@ -184,9 +187,47 @@ is case-insensitive (`"Ctrl + shift + esc"` parses identically to `"Ctrl+Shift+E
 | Named       | `CapsLock`, `Tab`, `Esc`/`Escape`, `Enter`/`Return`, `Space`, `Backspace`, `Delete`/`Del`, `Insert`/`Ins`, `Home`, `End`, `PageUp`/`PgUp`, `PageDown`/`PgDn`, `Up`, `Down`, `Left`, `Right`, `NumLock`, `ScrollLock`, `Pause`, `PrintScreen` |
 | OEM punct   | `` ` ``, `-`, `=`, `,`, `.`, `;`, `/`, `[`, `]`, `\`, `'`                                                |
 
-Sided variants (`LShift`/`RShift`, `LCtrl`/`RCtrl`, `LAlt`/`RAlt`) are parsed,
-but the hook normalises left/right to the unsided form for matching — a binding
-on `Shift` matches either physical Shift key.
+**Sided modifiers.** `Shift`, `Ctrl`, `Alt` and `Win` (`Super`) match either
+key of the pair; `LShift`, `RShift`, `LCtrl`, `RCtrl`, `LAlt`, `RAlt`, `LWin`
+and `RWin` match only that key. This holds wherever a key triggers a binding:
+`keys`, `sequence` steps and `chord` keys. `"LShift+F13"` fires with the left
+Shift held and not with the right one; `"Win+E"` fires with either Win key,
+`"LWin+E"` only with the left one. Keys the daemon sends (`PressKey`, and
+`Key` and `Combo` in a macro) are not affected: `Win` there sends the left Win
+key.
+
+**Which key fires a binding.** A `keys` binding fires, or arms its `Tap`,
+`Hold` or `DoubleTap`, only on the key-down of one of its own keys: a
+non-modifier key (`CapsLock` in `"Shift+CapsLock"`, `J` in `"Ctrl+J"`), or any
+of its keys when the binding is made only of modifiers (`"Alt+Shift"`,
+`"LShift"`). The modifiers go down first: Shift, then CapsLock fires
+`"Shift+CapsLock"`, while CapsLock, then Shift does not, and J, then Ctrl does
+not fire `"Ctrl+J"`. A key pressed while a binding's key is held is not that
+binding's key, so with CapsLock held, typing `abc` delivers `abc`. The order of
+the names in the string does not matter.
+
+**Exact modifiers.** A `keys` binding fires only when the modifiers held
+(Shift, Ctrl, Alt and Win; either key of a pair counts as that modifier) are
+exactly the ones it names. `"CapsLock"` does not fire while Shift is held, and
+`"Ctrl+J"` does not fire on Ctrl+Shift+J, so that shortcut reaches the
+application. The binding's other keys must be held too; other non-modifier
+keys held at the same time do not matter. `allow_extra_modifiers: true` lets a
+binding fire while modifiers it does not name are held as well. It is valid
+on `keys` bindings only and a load error on `sequence` and `chord`, whose
+steps and keys match whatever modifiers are held.
+
+```ron
+// Either Shift with CapsLock, and no other modifier: not Ctrl+Shift+CapsLock.
+( keys: "Shift+CapsLock", action: ToggleCapsLock ),
+// The left Shift with F13; holding the right Shift as well still counts as Shift.
+( keys: "LShift+F13", action: SwitchLanguage ),
+// CapsLock alone, or with any modifiers held.
+( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true ),
+```
+
+On keyboard layouts with an AltGr key (German, Polish and others), the right
+Alt key arrives together with a left Ctrl. A binding on `RAlt` or `Alt` then
+does not fire on AltGr: write `Ctrl+RAlt` or set `allow_extra_modifiers: true`.
 
 ### Action variants
 
@@ -214,7 +255,7 @@ Each binding specifies **exactly one** of three trigger shapes:
 
 | Field          | Shape                                                                                                  | Fires when                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `keys: "..."`  | Plain combo string (e.g. `"Ctrl+Alt+L"`).                                                              | All keys of the combo are held simultaneously (existing behaviour).     |
+| `keys: "..."`  | Plain combo string (e.g. `"Ctrl+Alt+L"`).                                                              | All keys of the combo are held, on the key-down of one of its own keys (see "Which key fires a binding" above). |
 | `sequence: (steps: [...], max_gap_ms: 500)` | Vim/Emacs-style ordered sequence. Each step is a combo string. `max_gap_ms` (default 500) is the maximum time between consecutive steps. | Steps pressed in order, each within `max_gap_ms` of the previous.       |
 | `chord: (keys: [...], window_ms: 50)`       | Simultaneous chord. `window_ms` (default 50, typical QMK COMBO_TERM) is how close together the presses must be. | All listed keys go down within `window_ms` of each other, in any order. |
 
@@ -245,7 +286,10 @@ Sequence and Chord bindings **suppress** their trigger keys from the foreground 
 
 - Sequence requires at least 2 steps. For a single combo use plain `keys: "..."` instead.
 - Chord requires at least 2 keys. A single key is not a chord.
-- Chord keys cannot repeat (`chord: (keys: ["j", "j"])` is rejected).
+- Chord keys cannot repeat or overlap: `chord: (keys: ["j", "j"])` and
+  `chord: (keys: ["Shift", "LShift"])` are rejected, because one press would
+  count for both keys. A modifier in a chord is swallowed on every press,
+  like every other chord key.
 - Sequence and Chord **cannot** be paired with deferred `trigger: Tap/Hold/DoubleTap` — they have their own temporal semantics. Only `trigger: Immediate` (the default) is valid.
 
 ### Triggers (`trigger:` field)
@@ -268,6 +312,11 @@ and resolve independently.
 ( keys: "LShift",   action: ToggleCapsLock,   trigger: DoubleTap(250) ),
 ```
 
+A deferred trigger swallows every press of its key (see the behaviour rules
+below), so until roadmap item 1.3 the `LShift` example also stops the left
+Shift from reaching applications: it no longer types capitals. The right
+Shift is unaffected.
+
 | Variant            | When the action fires                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------- |
 | `Immediate`        | Synchronously on key-down (default — same as no `trigger:` field).                     |
@@ -277,9 +326,12 @@ and resolve independently.
 
 **How resolution works (under the hood):**
 
-- Key-down: every matching binding arms its gesture (`Tap`, `Hold`,
-  `DoubleTap`) in the decision core (`src/engine/gestures.rs`) — multiple
-  gestures on the same key are independent.
+- Key-down of one of the binding's own keys (see "Which key fires a
+  binding"): every matching binding arms its gesture (`Tap`, `Hold`,
+  `DoubleTap`) in the decision core (`src/engine/gestures.rs`) under that
+  key, and that key's key-up resolves it — multiple gestures on the same key
+  are independent. A key pressed while the gesture is pending passes and
+  arms nothing.
 - For `Tap`: the entry stores a deadline `<ms>` after the key-down; the
   key-up fires the action only before the deadline. No thread is involved.
 - For `Hold`: arming starts a timer thread that fires the action after
@@ -300,6 +352,19 @@ and resolve independently.
   `Tap`/`Hold`/`DoubleTap` regardless of config.
 - Auto-repeat key-down events from a stuck/held key do not stack new
   pending entries; the first gesture wins until resolved.
+- An auto-repeat is swallowed exactly when its key's first key-down was,
+  for every binding kind. A key held past the repeat delay therefore does
+  not leak repeats after a swallowed press (which would leave it held in
+  Windows once its release is swallowed), and a key whose press reached
+  Windows keeps its repeats and its release. Two gaps remain:
+  - A foreground change while the key is held forgets that its press was
+    swallowed (its release might go to another window). Its repeats are
+    then swallowed only while an `Immediate` binding matches them, and its
+    release reaches Windows (roadmap item 2.3).
+  - A modifier whose `Tap` or `Hold` is still pending can be left held in
+    Windows when the combo stops matching mid-hold, for example
+    `"Ctrl+Shift"` with `Hold(1000)` when Ctrl is released first and Shift
+    stays down past the repeat delay (KS-14).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized
@@ -360,6 +425,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `block_default`        | `true`   | Suppress the original OS key event so the foreground app does not also see it. Set to `false` to let the keystroke pass through after the binding fires.                             |
 | `block_original_combo` | `false`  | Auto-install a no-op binding for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. |
+| `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `when`                 | `Always` | Foreground-window guard. The binding fires only when the predicate matches. See [`Conditions`](#conditions-when-field) below.                                                        |
 
 ### Conditions (`when:` field)
@@ -517,7 +583,7 @@ elevated without a prompt; `swch` then talks to it normally.
 
 - **Not macros**: application calls native Windows API functions, not emulating action sequences
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
-- **Modifier normalization**: left/right Shift treated as single modifier
+- **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). Parse errors keep the previous config live — never bricks the daemon.
@@ -525,7 +591,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-blocking**: automatically blocks original system combinations when needed
 - **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition
 - **Per-process sentinel**: injected-event marker is mixed with the process ID so this daemon does not collide with other input-synthesizing apps (AHK, PowerToys)
-- **Hot-path allocations: none**: the hook callback uses a stack-allocated active-keys buffer
+- **Table-driven matching**: a binding's keys are looked up in the engine's per-key table of held keys; no list of held keys is built per key press
 - **Independently blocked keys**: multiple keys can be blocked simultaneously; each key's release is tracked independently
 
 ## Known Limitations

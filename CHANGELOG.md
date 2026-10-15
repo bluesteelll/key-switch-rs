@@ -37,6 +37,9 @@ minor version; such entries sit under **Changed** and start with
   homepage, readme, keywords and categories, and `rust-version = "1.88"` as
   the minimum supported Rust version.
 - This changelog.
+- Per-binding `allow_extra_modifiers: true` for `keys` bindings: the binding
+  also fires while modifiers it does not name are held. It is a load error
+  on `sequence` and `chord` bindings.
 
 ### Changed
 
@@ -49,9 +52,60 @@ minor version; such entries sit under **Changed** and start with
   per press, so only Hold still starts a timer thread. Scenario tests
   (`engine::testing::Scenario`: a RON config, a script of key events and a
   fake clock) cover every binding kind and trigger.
+- **Breaking:** key names keep their side in every trigger: `keys`,
+  `sequence` steps and `chord` keys (KS-07). `Shift`, `Ctrl`, `Alt` and
+  `Win` (`Super`) match either key; `LShift`, `RShift`, `LCtrl`, `RCtrl`,
+  `LAlt`, `RAlt`, `LWin` and `RWin` (and the long forms such as `LeftShift`
+  and `RightWin`) match only that key. `LWin` used to match both Win keys in
+  `keys` and `sequence`, and `Win` meant the left Win key only in `chord`. A
+  `chord` whose keys overlap, such as `["Shift", "LShift"]` or
+  `["Win", "RWin"]`, is now a load error. Output keys (`PressKey`, `Key`,
+  `Combo`) are unchanged: `Win` still sends the left Win key.
+- The auto-blocker line printed at load names its keys
+  (`SwitchLanguage: registry combination Alt+Shift`) instead of key codes.
+- **Breaking:** modifiers match exactly (owner decision; roadmap open
+  question 2). A `keys` binding fires only when the held modifiers (Shift,
+  Ctrl, Alt, Win; either key of a pair counts as that modifier) are exactly
+  the ones it names: `"CapsLock"` no longer fires while Shift is held, and
+  `"Ctrl+J"` no longer fires on Ctrl+Shift+J. With the default config,
+  CapsLock pressed with Ctrl, Alt or Win held now reaches Windows instead of
+  switching the language. Auto-blockers match exactly too: the `Alt+Shift`
+  blocker ignores Ctrl+Alt+Shift, and the `` ` `` blocker lets Shift+` through.
+  Add `allow_extra_modifiers: true` to a binding for the old behaviour. On
+  layouts with AltGr, right Alt arrives together with a left Ctrl, so a
+  binding on `RAlt` needs `Ctrl+RAlt` or `allow_extra_modifiers: true`.
 
 ### Fixed
 
+- KS-04: a `keys` binding fires, or arms its `Tap`/`Hold`/`DoubleTap`, only
+  on the key-down of one of its own keys: a non-modifier key, or any of its
+  keys for a binding made only of modifiers (`"Alt+Shift"`, `"LShift"`).
+  Typing while CapsLock is held no longer re-fires the CapsLock binding or
+  swallows the typed keys, Shift pressed while CapsLock is held no longer
+  fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
+  (J, then Ctrl) no longer fires `Ctrl+J`.
+- KS-06: an auto-repeat is suppressed exactly when its key's first key-down
+  was, and a key-down that reaches Windows clears any suppression left for
+  its key-up. Holding a key past the repeat delay no longer lets its
+  repeats through and then swallows its release, which left the key held
+  in Windows: CapsLock with the README `Tap`/`Hold` pair, a `chord` key, a
+  `keys: "LShift"` `DoubleTap` key, the key of a combo whose modifiers are
+  released first, or Shift after the `Alt+Shift` auto-blocker once Alt is
+  released. A key whose key-down reached Windows (CapsLock pressed with
+  Ctrl, which no longer matches `"CapsLock"`) keeps its repeats and its
+  release when the binding starts matching after Ctrl is released; such a
+  repeat still fires an `Immediate` action (KS-10, roadmap item 1.1).
+  A foreground change while a key is held still forgets that its key-down
+  was swallowed (roadmap item 2.3): its repeats are then swallowed only
+  while an `Immediate` binding matches them, as before, and its release
+  reaches Windows; a key whose key-down reached Windows keeps its repeats
+  and its release across the change. A modifier whose `Tap` or `Hold` is
+  still pending can still be left held when the combo stops matching
+  mid-hold (`"Ctrl+Shift"` with `Hold(1000)`, Ctrl released first; KS-14).
+- KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
+  `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
+  `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
+  left-Shift press.
 - KS-11: a timer left over from an earlier press no longer acts on a newer
   press of the same key. Two quick taps fire twice, a Hold no longer fires
   early on the next press, and a quick series of DoubleTaps no longer loses
@@ -62,6 +116,9 @@ minor version; such entries sit under **Changed** and start with
   before its timer thread wakes now fires when the timer wakes, still on
   that thread, instead of being cancelled. Different terms behave as before
   until roadmap item 2.2.
+- KS-32 (partly; an unverified report): when a `sequence` completes, the
+  key-up of a modifier held in its last step (for example `Win` in
+  `"Win+F14"`) is no longer swallowed.
 - KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
   thread per press, and a Hold timer thread that cannot be started is
   logged instead of aborting the daemon; that Hold then does not fire.

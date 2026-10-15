@@ -271,9 +271,10 @@ mod tests {
     // No test installs a hook. The `decide_event` tests use a local
     // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
     // never called); the extern-callback test drives the process-wide hook
-    // and says why that is safe. `HookEnv` only reads `GetAsyncKeyState`,
-    // and a single-key binding on F13 matches whatever modifiers the machine
-    // has held.
+    // and says why that is safe. `HookEnv` only reads `GetAsyncKeyState`, the
+    // live state of the machine's keyboard, so every F13 binding sets
+    // `allow_extra_modifiers`: under exact matching a modifier the user
+    // happens to hold while the tests run would otherwise stop it matching.
 
     fn hook_with(binding: Binding) -> KeyboardHook {
         let hook = KeyboardHook::new();
@@ -287,10 +288,10 @@ mod tests {
 
     #[test]
     fn physical_key_events_reach_the_engine() {
-        let hook = hook_with(Binding::new(
-            KeyCombination::new(VK_F13),
-            BindAction::DoNothing,
-        ));
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        );
         let f13 = u32::from(VK_F13.0);
 
         // All four key messages, and each key-up follows a suppressed
@@ -317,7 +318,8 @@ mod tests {
     fn injected_and_unknown_events_bypass_the_engine() {
         let hook = hook_with(
             Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
-                .with_trigger(Trigger::Tap(10_000)),
+                .with_trigger(Trigger::Tap(10_000))
+                .with_allow_extra_modifiers(true),
         );
         let f13 = u32::from(VK_F13.0);
 
@@ -342,10 +344,10 @@ mod tests {
         // the only test that may touch `get_hook()`. `carry_out` runs here,
         // and the binding is `DoNothing` so that it starts and sends nothing.
         let f13 = u32::from(VK_F13.0);
-        get_hook().update_bindings(vec![Binding::new(
-            KeyCombination::new(VK_F13),
-            BindAction::DoNothing,
-        )]);
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
         let call = |vk: u32, msg: u32| {
             let info = KBDLLHOOKSTRUCT {
                 vkCode: vk,

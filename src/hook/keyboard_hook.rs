@@ -225,6 +225,7 @@ mod tests {
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
+    use crate::data::key_spec::KeySpec;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     fn three_bindings() -> Vec<Binding> {
@@ -292,7 +293,7 @@ mod tests {
             .iter()
             .map(|b| b.combination().unwrap().keys[0])
             .collect();
-        assert_eq!(single_keys, SINGLE_KEYS);
+        assert_eq!(single_keys, SINGLE_KEYS.map(KeySpec::from));
     }
 
     #[test]
@@ -310,7 +311,10 @@ mod tests {
         )]);
         let snapshot = hook.bindings();
         assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].combination().unwrap().keys, vec![VK_F13]);
+        assert_eq!(
+            snapshot[0].combination().unwrap().keys,
+            vec![KeySpec::from(VK_F13)]
+        );
     }
 
     #[test]

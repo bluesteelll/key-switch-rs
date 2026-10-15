@@ -4,6 +4,7 @@ use windows::{
 };
 
 use crate::data::key_combination::KeyCombination;
+use crate::data::key_spec::{KeySpec, Modifier};
 use crate::system::system_function::SystemFunction;
 
 struct RegistryLocation {
@@ -52,10 +53,7 @@ pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
     if let Some(location) = get_registry_location(function)
         && let Some(combo) = read_from_registry(&location)
     {
-        println!(
-            "[INFO] {:?}: registry combination {:?}",
-            function, combo.keys
-        );
+        println!("[INFO] {:?}: registry combination {}", function, combo);
         return Some(combo);
     }
 
@@ -71,8 +69,8 @@ fn get_default_combination(function: SystemFunction) -> Option<KeyCombination> {
         SystemFunction::SwitchLanguage | SystemFunction::SwitchLanguageBackward => {
             Some(KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]))
         }
-        SystemFunction::LockWorkstation => Some(KeyCombination::from_keys(vec![VK_LWIN, VK_L])),
-        SystemFunction::ShowDesktop => Some(KeyCombination::from_keys(vec![VK_LWIN, VK_D])),
+        SystemFunction::LockWorkstation => Some(win_with(VK_L)),
+        SystemFunction::ShowDesktop => Some(win_with(VK_D)),
         SystemFunction::TaskManager => Some(KeyCombination::from_keys(vec![
             VK_CONTROL, VK_SHIFT, VK_ESCAPE,
         ])),
@@ -196,10 +194,15 @@ fn parse_win_key_combo(value: &str) -> Option<KeyCombination> {
     if value.len() == 1 {
         let ch = value.chars().next()?;
         let vk = char_to_vk(ch)?;
-        return Some(KeyCombination::from_keys(vec![VK_LWIN, vk]));
+        return Some(win_with(vk));
     }
 
     None
+}
+
+/// Either Win key with `key`: Windows' Win hotkeys work with both.
+fn win_with(key: VIRTUAL_KEY) -> KeyCombination {
+    KeyCombination::new(KeySpec::AnySide(Modifier::Win)).with(key)
 }
 
 fn char_to_vk(ch: char) -> Option<VIRTUAL_KEY> {
@@ -259,12 +262,33 @@ mod tests {
     #[test]
     fn test_default_combinations() {
         let lang_default = get_default_combination(SystemFunction::SwitchLanguage).unwrap();
-        assert!(lang_default.keys.contains(&VK_MENU));
-        assert!(lang_default.keys.contains(&VK_SHIFT));
+        assert!(lang_default.keys.contains(&KeySpec::AnySide(Modifier::Alt)));
+        assert!(
+            lang_default
+                .keys
+                .contains(&KeySpec::AnySide(Modifier::Shift))
+        );
 
         let lock_default = get_default_combination(SystemFunction::LockWorkstation).unwrap();
-        assert!(lock_default.keys.contains(&VK_LWIN));
-        assert!(lock_default.keys.contains(&VK_L));
+        assert!(lock_default.keys.contains(&KeySpec::AnySide(Modifier::Win)));
+        assert!(lock_default.keys.contains(&KeySpec::Key(VK_L)));
+    }
+
+    #[test]
+    fn language_hotkeys_are_either_side_modifiers() {
+        let ctrl_shift = parse_language_hotkey("2").unwrap();
+        assert_eq!(
+            ctrl_shift.keys,
+            vec![
+                KeySpec::AnySide(Modifier::Ctrl),
+                KeySpec::AnySide(Modifier::Shift)
+            ]
+        );
+        assert_eq!(ctrl_shift.to_string(), "Ctrl+Shift");
+        assert_eq!(
+            parse_language_hotkey("4").unwrap().keys,
+            vec![KeySpec::Key(VK_OEM_3)]
+        );
     }
 
     #[test]
@@ -278,11 +302,12 @@ mod tests {
     #[test]
     fn test_parse_win_key_combo() {
         let combo = parse_win_key_combo("L").unwrap();
-        assert!(combo.keys.contains(&VK_LWIN));
-        assert!(combo.keys.contains(&VK_L));
+        assert!(combo.keys.contains(&KeySpec::AnySide(Modifier::Win)));
+        assert!(combo.keys.contains(&KeySpec::Key(VK_L)));
 
         let combo2 = parse_win_key_combo("D").unwrap();
-        assert!(combo2.keys.contains(&VK_LWIN));
-        assert!(combo2.keys.contains(&VK_D));
+        assert!(combo2.keys.contains(&KeySpec::AnySide(Modifier::Win)));
+        assert!(combo2.keys.contains(&KeySpec::Key(VK_D)));
+        assert_eq!(combo2.to_string(), "Win+D");
     }
 }

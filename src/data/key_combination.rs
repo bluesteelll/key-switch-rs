@@ -1,8 +1,16 @@
-use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
+use std::fmt;
 
+use super::key_spec::{KeySpec, ModifierSet};
+
+/// The keys of a `keys` binding or of one sequence step, as the config
+/// names them: each a [`KeySpec`], without duplicates, in config order. Two
+/// combinations are equal when they hold the same keys in any order.
+///
+/// Matching against the keys held is the engine's job
+/// (`engine::matching`).
 #[derive(Debug, Clone)]
 pub struct KeyCombination {
-    pub keys: Vec<VIRTUAL_KEY>,
+    pub keys: Vec<KeySpec>,
 }
 
 impl PartialEq for KeyCombination {
@@ -24,58 +32,121 @@ impl PartialEq for KeyCombination {
 impl Eq for KeyCombination {}
 
 impl KeyCombination {
-    pub fn new(key: VIRTUAL_KEY) -> Self {
-        Self { keys: vec![key] }
+    pub fn new(key: impl Into<KeySpec>) -> Self {
+        Self {
+            keys: vec![key.into()],
+        }
     }
 
     #[allow(dead_code)] // Part of the public builder API; also used by tests.
-    pub fn with(mut self, key: VIRTUAL_KEY) -> Self {
+    pub fn with(mut self, key: impl Into<KeySpec>) -> Self {
+        let key = key.into();
         if !self.keys.contains(&key) {
             self.keys.push(key);
         }
         self
     }
 
-    pub fn from_keys(keys: Vec<VIRTUAL_KEY>) -> Self {
-        let mut deduped: Vec<VIRTUAL_KEY> = Vec::with_capacity(keys.len());
-        for k in keys {
-            if !deduped.contains(&k) {
-                deduped.push(k);
+    pub fn from_keys<K: Into<KeySpec>>(keys: impl IntoIterator<Item = K>) -> Self {
+        let mut deduped: Vec<KeySpec> = Vec::new();
+        for key in keys {
+            let key = key.into();
+            if !deduped.contains(&key) {
+                deduped.push(key);
             }
         }
         Self { keys: deduped }
     }
 
-    pub fn matches(&self, pressed_keys: &[VIRTUAL_KEY]) -> bool {
-        self.keys.iter().all(|key| pressed_keys.contains(key))
+    /// The modifier families this combination names, each once whichever
+    /// side it names.
+    pub fn modifiers(&self) -> ModifierSet {
+        self.keys
+            .iter()
+            .filter_map(|key| key.modifier())
+            .fold(ModifierSet::EMPTY, ModifierSet::with)
+    }
+}
+
+impl fmt::Display for KeyCombination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, key) in self.keys.iter().enumerate() {
+            if index > 0 {
+                f.write_str("+")?;
+            }
+            write!(f, "{key}")?;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     #[test]
-    fn test_single_key() {
-        let combo = KeyCombination::new(VK_CAPITAL);
-        assert!(combo.matches(&[VK_CAPITAL]));
-        assert!(!combo.matches(&[VK_A]));
-        assert!(!combo.matches(&[]));
+    fn from_keys_dedups_and_keeps_order() {
+        let combo = KeyCombination::from_keys([VK_CONTROL, VK_A, VK_CONTROL, VK_LSHIFT]);
+        assert_eq!(
+            combo.keys,
+            vec![
+                KeySpec::AnySide(Modifier::Ctrl),
+                KeySpec::Key(VK_A),
+                KeySpec::Key(VK_LSHIFT),
+            ]
+        );
+        // "Win" and "LWin" are different keys, so both stay.
+        let win = KeySpec::AnySide(Modifier::Win);
+        let combo = KeyCombination::new(win).with(VK_LWIN).with(win);
+        assert_eq!(combo.keys, vec![win, KeySpec::Key(VK_LWIN)]);
     }
 
     #[test]
-    fn test_key_combination() {
-        let combo = KeyCombination::new(VK_CAPITAL).with(VK_SHIFT);
-        assert!(combo.matches(&[VK_CAPITAL, VK_SHIFT]));
-        assert!(combo.matches(&[VK_SHIFT, VK_CAPITAL]));
-        assert!(!combo.matches(&[VK_CAPITAL]));
-        assert!(!combo.matches(&[VK_SHIFT]));
+    fn equality_ignores_order() {
+        let a = KeyCombination::new(VK_CAPITAL).with(VK_SHIFT);
+        let b = KeyCombination::new(VK_SHIFT).with(VK_CAPITAL);
+        assert_eq!(a, b);
+        assert_ne!(a, KeyCombination::new(VK_CAPITAL).with(VK_LSHIFT));
+        assert_ne!(a, KeyCombination::new(VK_CAPITAL));
     }
 
     #[test]
-    fn test_extra_keys() {
-        let combo = KeyCombination::new(VK_CAPITAL);
-        assert!(combo.matches(&[VK_CAPITAL, VK_SHIFT]));
+    fn generic_modifier_codes_become_either_side() {
+        let combo = KeyCombination::from_keys([VK_MENU, VK_SHIFT]);
+        assert_eq!(
+            combo.keys,
+            vec![
+                KeySpec::AnySide(Modifier::Alt),
+                KeySpec::AnySide(Modifier::Shift)
+            ]
+        );
+    }
+
+    #[test]
+    fn modifiers_collects_families() {
+        let combo = KeyCombination::from_keys([VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_J]);
+        assert_eq!(
+            combo.modifiers(),
+            ModifierSet::EMPTY
+                .with(Modifier::Shift)
+                .with(Modifier::Ctrl)
+        );
+        let win_e = KeyCombination::new(KeySpec::AnySide(Modifier::Win)).with(VK_E);
+        assert_eq!(win_e.modifiers(), ModifierSet::EMPTY.with(Modifier::Win));
+        assert_eq!(
+            KeyCombination::new(VK_CAPITAL).modifiers(),
+            ModifierSet::EMPTY
+        );
+    }
+
+    #[test]
+    fn display_joins_with_plus() {
+        let combo = KeyCombination::new(KeySpec::AnySide(Modifier::Win))
+            .with(VK_LSHIFT)
+            .with(VK_E);
+        assert_eq!(combo.to_string(), "Win+LShift+E");
+        assert_eq!(KeyCombination::new(VK_CAPITAL).to_string(), "CapsLock");
     }
 }

@@ -36,8 +36,9 @@
 //! [`Engine`] owns all mutable state of the keyboard path, as plain data:
 //!
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
-//!   (also the auto-repeat detector), and the keys whose key-down was
-//!   suppressed, so that their key-up is suppressed as well.
+//!   (also the auto-repeat detector), and whether each key's latest
+//!   key-down was suppressed or passed, so that its auto-repeats and key-up
+//!   are treated the same way.
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
@@ -87,24 +88,40 @@
 //!
 //! ## Decision rules
 //!
-//! The rules are those of the hook callback before the engine existed; only
-//! where they now live has changed. On a key-down:
+//! The rules are those of the hook callback before the engine existed,
+//! except where a rule names the audit issue that changed it. On a key-down:
 //!
 //! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
 //!    the key being delivered.
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
-//! 3. The held keys are normalised (sided modifiers fold to `Shift`, `Ctrl`,
-//!    `Alt`; `RWin` to `Win`).
+//! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
+//!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
+//!    `LShift`, `RWin` and the other sided names only that key. A key of a
+//!    combo or sequence step is held if a key it accepts is held; a chord
+//!    key is pressed if it accepts the event's code (KS-07).
 //! 4. Every binding is visited in specificity order. Its `when:` condition is
 //!    checked first, then its kind:
-//!    - `Combo`: all of its keys must be held. `Immediate` fires only for the
-//!      first matching Immediate binding, on every key-down including
-//!      repeats, and suppresses if `block_default` is set. `Tap`, `Hold` and
-//!      `DoubleTap` ignore repeats, arm under the key just pressed and always
-//!      suppress.
+//!    - `Combo`: the key just pressed must be one of its trigger keys, a
+//!      non-modifier key of the combo or, for a combo made only of
+//!      modifiers, any of its keys (KS-04); all of its keys must be held;
+//!      and the modifier families held (Shift, Ctrl, Alt, Win, either key
+//!      of a pair counting as its family) must be exactly the combo's own,
+//!      unless the binding sets `allow_extra_modifiers` (owner decision).
+//!      `Immediate` fires only for the first matching Immediate
+//!      binding, on every key-down including repeats, and suppresses if
+//!      `block_default` is set. `Tap`, `Hold` and `DoubleTap` ignore
+//!      repeats, arm under the key just pressed (so under a key of the
+//!      combo, whose key-up resolves them) and always suppress.
 //!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
 //!      advances or completes one is suppressed.
-//! 5. If anything asked for suppression, the key is marked blocked.
+//! 5. A first key-down is suppressed if anything asked for it, and the key
+//!    is then marked blocked; a first key-down that passes is marked
+//!    passed. An auto-repeat continues its key-down (KS-06): it is
+//!    suppressed if its key is marked blocked and passed if it is marked
+//!    passed, whatever the bindings asked. A foreground change forgets the
+//!    blocked marks; a repeat without a mark is suppressed if a binding
+//!    asked for it and leaves no mark, so its key-up passes. Actions still
+//!    fire on repeats as rule 4 says.
 //!
 //! On a key-up the key is released, a pending Tap fires if its deadline has
 //! not passed, and a pending Hold is cancelled if its deadline has not
@@ -114,8 +131,7 @@
 //! marked blocked.
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
-//! later roadmap items, each with a scenario test: superset matching (KS-04),
-//! leaking repeats (KS-06), side folding (KS-07), repeat-firing Immediate
+//! later roadmap items, each with a scenario test: repeat-firing Immediate
 //! actions (KS-10), specificity across trigger kinds (KS-13), the modifier
 //! resync (KS-14) and the sequence matching rules (KS-15, KS-16).
 
@@ -125,6 +141,7 @@ mod chords;
 mod env;
 mod gestures;
 mod keys;
+mod matching;
 mod sequences;
 
 #[cfg(test)]
@@ -280,7 +297,8 @@ impl Engine {
 
     /// The foreground window changed. Key-ups may have been lost while a
     /// higher-integrity window had focus: resync every modifier from the OS
-    /// and forget which key-ups were due to be swallowed.
+    /// and forget which key-downs were swallowed, so that no key-up stays
+    /// due to be swallowed. Keys whose key-down passed keep that record.
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
         self.keys.clear_all_blocked();
@@ -289,7 +307,6 @@ impl Engine {
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
         let now = env.now();
         let was_repeat = self.keys.press(vk);
-        let active = self.keys.active_keys();
         let foreground = EnvForeground(env);
 
         let mut decision = Decision::default();
@@ -304,7 +321,12 @@ impl Engine {
 
             match &binding.kind {
                 BindingKind::Combo(combo) => {
-                    if !combo.matches(active.as_slice()) {
+                    if !matching::combo_matches(
+                        combo,
+                        vk,
+                        &self.keys,
+                        binding.allow_extra_modifiers,
+                    ) {
                         continue;
                     }
                     match binding.trigger {
@@ -364,7 +386,7 @@ impl Engine {
                         continue;
                     }
                     match self.sequences.on_key_down(
-                        active.as_slice(),
+                        &self.keys,
                         &binding.action,
                         steps,
                         *max_gap,
@@ -406,8 +428,36 @@ impl Engine {
             }
         }
 
-        if decision.suppress {
+        if was_repeat {
+            // An auto-repeat continues its key-down: it is suppressed exactly
+            // when the key-down was, whatever the bindings asked this time.
+            // Otherwise a binding that stops matching mid-hold leaks repeats
+            // after a swallowed key-down, and one that starts matching (a
+            // modifier released under exact matching) swallows the repeats
+            // and the key-up of a key-down the OS saw (KS-06).
+            //
+            // A foreground change forgets swallowed key-downs, and the resync
+            // can find a modifier held whose key-down the hook never saw. A
+            // repeat without a record keeps what the bindings asked, so a
+            // held Immediate key stays swallowed, and records nothing:
+            // whether the OS has the key down is unknown, and a key-up that
+            // passes at worst ends a press the OS never saw, while one
+            // swallowed wrongly leaves the key held there.
+            if self.keys.is_blocked(vk.0) {
+                decision.suppress = true;
+            } else if self.keys.is_passed(vk.0) {
+                decision.suppress = false;
+            }
+        } else if decision.suppress {
             self.keys.mark_blocked(vk.0);
+        } else {
+            // This key-down reaches the OS, so its repeats and key-up must
+            // too. Replace a block left by an earlier press whose key-up was
+            // never seen, or whose swallowed key-down the resync erased
+            // (KS-14), so this key reads as one the OS saw go down. A Tap or
+            // Hold that such an earlier press left pending still swallows
+            // the key-up (KS-14).
+            self.keys.mark_passed(vk.0);
         }
         decision
     }

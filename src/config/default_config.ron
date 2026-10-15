@@ -29,7 +29,10 @@
 // "+"-joined list. Whitespace around segments is ignored and matching is
 // case-insensitive.
 //
-//   Modifiers : Ctrl/Control, Shift, Alt/Menu, Win/Super
+//   Modifiers : Shift, Ctrl/Control, Alt/Menu, Win/Super match either key
+//               of the pair; LShift, RShift, LCtrl, RCtrl, LAlt, RAlt,
+//               LWin, RWin (also LeftShift, RightWin, ...) match only that
+//               key. The same holds for sequence steps and chord keys.
 //   Letters   : A-Z
 //   Digits    : 0-9
 //   Function  : F1..F24
@@ -42,6 +45,18 @@
 //
 // Examples: "CapsLock", "Shift+CapsLock", "Ctrl+Alt+Delete", "Win+L",
 //           "Ctrl+Shift+Esc", "F13".
+//
+// A binding fires (or arms its Tap/Hold/DoubleTap) only on the key-down of
+// one of its own keys: a non-modifier key, or any key of a binding made
+// only of modifiers ("Alt+Shift", "LShift"). Press the modifiers first:
+// Shift, then CapsLock fires "Shift+CapsLock"; CapsLock, then Shift does
+// not. Keys typed while CapsLock is held reach the application.
+//
+// Modifiers match exactly: the modifiers held (Shift, Ctrl, Alt, Win;
+// either key of a pair counts) must be the ones the binding names.
+// "CapsLock" does not fire while Shift, Ctrl, Alt or Win is held, and
+// "Ctrl+J" does not fire on Ctrl+Shift+J. Set allow_extra_modifiers: true
+// on a binding to let it fire while other modifiers are held too.
 //
 // ---- action variants ----
 //
@@ -108,6 +123,10 @@
 //                         keys: "CapsLock" but Windows still ships
 //                         Alt+Shift / Ctrl+Shift as the language hotkey,
 //                         and this flag silences it.
+// allow_extra_modifiers: true (default false)
+//                       - keys bindings only: also fire while modifiers
+//                         the binding does not name are held. A load
+//                         error on sequence and chord bindings.
 //
 // ---- conditions (`when:` field) ----
 //
@@ -197,7 +216,9 @@
         //     trigger: Hold(200),
         // ),
         //
-        // // Double-tap LShift to toggle CapsLock state.
+        // // Double-tap LShift to toggle CapsLock state. A deferred trigger
+        // // swallows every press of its key, so until roadmap item 1.3 the
+        // // left Shift no longer types capitals while this is enabled.
         // (
         //     keys: "LShift",
         //     action: ToggleCapsLock,
