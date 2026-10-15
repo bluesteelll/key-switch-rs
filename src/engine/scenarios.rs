@@ -1198,6 +1198,50 @@ fn shift_capslock_fires_toggle_capslock_with_either_shift() {
         .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::ToggleCapsLock]);
 }
 
+#[test]
+fn deferred_binding_does_not_arm_while_shift_is_held() {
+    // The exact rule covers Tap/Hold/DoubleTap too, not only `Immediate`.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(20)
+    .down("CapsLock")
+    .expect_passed()
+    .expect_nothing_fired()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_passed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_passed()
+    .advance_ms(400)
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn deferred_binding_arms_while_shift_is_held_with_allow_extra_modifiers() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(20)
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
 // ---- Auto-repeat follows its key-down (KS-06) ----
 
 #[test]
