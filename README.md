@@ -64,7 +64,7 @@ key-switch-rs/
     │   ├── registry.rs         - Windows registry hotkey reader
     │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
     │   └── system_function.rs  - Windows system functions
-    └── main.rs                 - entry point: loads config, builds App
+    └── main.rs                 - entry point: single-instance guard, loads config, builds App
 ```
 
 ### Modules
@@ -725,6 +725,12 @@ own pipe.
 You can also launch the daemon directly — right-click → "Run as administrator"
 or just double-click and accept the UAC prompt. `Ctrl+C` in the console exits
 cleanly. `swch` commands continue to work against the directly-launched daemon.
+
+Only one daemon runs per Windows session. A second start, by double-click,
+from a console or from a Scheduled Task, prints
+``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+and exits with code 2 before it reads the config, without waiting for Enter.
+The check covers the Windows session the daemon starts in.
 
 ### Avoiding the UAC prompt at every boot
 

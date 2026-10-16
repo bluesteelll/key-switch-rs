@@ -270,7 +270,8 @@ minor version; such entries sit under **Changed** and start with
   ``swch: the daemon is not running. Use `swch open` to start it.``.
   `swch open` treats a pipe that refuses this console, a busy pipe and a
   daemon that does not answer as a running daemon and starts no second one
-  (KS-20, partly; roadmap item 1.5 adds the single-instance guard). Its
+  (KS-20; the single-instance guard below covers the other ways to start
+  a second daemon in a session). Its
   check is now a `status` request, so it no longer leaves an
   `IPC read error` or `IPC write error` warning in the daemon console
   (KS-39, an unverified report).
@@ -434,6 +435,19 @@ minor version; such entries sit under **Changed** and start with
   binding of yours that matches the same press: with `LAlt+LShift` bound,
   that binding fires, and the `Alt+Shift` blocker still swallows Shift
   pressed with the right Alt.
+- KS-20 (roadmap item 1.5): a second daemon no longer starts in the same
+  Windows session. Before it reads or writes the config and before it
+  installs any hook, the daemon creates the mutex `Local\key-switch-rs`;
+  when another daemon of the session holds it, the new one prints
+  ``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+  and exits with code 2, without the "Press Enter to exit" prompt. A
+  double-click on `key-switch-rs.exe` while the Scheduled Task's daemon
+  ran used to start a second elevated daemon: its hook ran first, keys
+  were remapped twice, a double `SwitchLanguage` left the layout
+  unchanged, and `swch off` reached only the other daemon. The check
+  covers the Windows session the daemon starts in. Manual check: with a
+  daemon running, a second `key-switch-rs.exe` in an elevated console
+  prints that line and leaves `$LASTEXITCODE` at 2.
 - KS-21: hot reload works when the config path given on the command line
   is relative (`key-switch-rs.exe my.ron`, or a Scheduled Task with a
   relative argument and a "Start in" folder) or differs in letter case
