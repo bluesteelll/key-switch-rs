@@ -1929,6 +1929,54 @@ fn deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat() {
         .expect_total_fired(std::slice::from_ref(&back));
 }
 
+#[test]
+fn a_repeat_of_a_sequence_step_does_not_count_as_the_next_step() {
+    // Both steps are the same key, so a repeat that reached the sequence
+    // would complete it from a single physical press (KS-10, KS-06).
+    let back = BindAction::PressKey(VK_BACK);
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["F13", "F13"], max_gap_ms: 2000), action: PressKey("Backspace")) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(500);
+    repeats(scenario, "F13", 3, &[])
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[])
+        .advance_ms(100)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(std::slice::from_ref(&back));
+}
+
+#[test]
+fn repeats_of_both_chord_keys_do_not_complete_the_chord_again() {
+    // After the chord fired, a repeat of each key inside the window would
+    // complete a fresh pending entry if repeats reached the chord table.
+    let back = BindAction::PressKey(VK_BACK);
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["F13", "F14"], window_ms: 50), action: PressKey("Backspace")) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(10)
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(std::slice::from_ref(&back))
+    .advance_ms(5)
+    .repeat("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .repeat("F14")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .expect_total_fired(std::slice::from_ref(&back));
+}
+
 // ---- Suppression symmetry (KS-06, KS-14) ----
 
 #[test]
