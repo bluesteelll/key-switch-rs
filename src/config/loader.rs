@@ -763,6 +763,7 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
+    use crate::system::registry::hotkey_from_values;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
@@ -1012,6 +1013,42 @@ mod tests {
     }
 
     const ALT_SHIFT: &[VIRTUAL_KEY] = &[VK_MENU, VK_SHIFT];
+
+    /// Stands in for the registry with the `Hotkey` and `Language Hotkey`
+    /// strings of `HKCU\Keyboard Layout\Toggle`, `None` for a missing value,
+    /// resolved as the daemon resolves them.
+    fn toggle_values(
+        values: [Option<&'static str>; 2],
+    ) -> impl Fn(&BindAction) -> Option<KeyCombination> {
+        move |action: &BindAction| {
+            action
+                .to_system_function()
+                .and_then(|function| hotkey_from_values(function, values))
+        }
+    }
+
+    #[test]
+    fn the_registry_values_choose_the_auto_blocker_keys() {
+        let alt_shift = KeyCombination::from_keys(ALT_SHIFT.iter().copied());
+        let cases = [
+            (
+                [Some("2"), None],
+                KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]),
+            ),
+            ([None, None], alt_shift.clone()),
+            ([Some("1"), Some("3")], alt_shift),
+        ];
+        for (values, hotkey) in cases {
+            let bindings = from_ron_str_with_hotkeys(DEFAULT_CONFIG, &toggle_values(values))
+                .unwrap_or_else(|e| panic!("the template loads with {values:?}: {e}"));
+            let blocker_keys: Vec<Option<&KeyCombination>> = bindings
+                .iter()
+                .filter(|b| b.is_auto_blocker())
+                .map(Binding::combination)
+                .collect();
+            assert_eq!(blocker_keys, [Some(&hotkey)], "{values:?}");
+        }
+    }
 
     #[test]
     fn auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order() {
