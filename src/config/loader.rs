@@ -1843,6 +1843,102 @@ mod tests {
         }
     }
 
+    // ---- repeat (roadmap item 1.1, KS-10) ----
+
+    /// The bindings that never fire on an auto-repeat, as (name, keys in
+    /// the error prefix, the fields that come before the action).
+    const NEVER_REPEATING: [(&str, &str, &str); 5] = [
+        ("Tap(200)", "F13", r#"keys: "F13", trigger: Tap(200)"#),
+        ("Hold(200)", "F13", r#"keys: "F13", trigger: Hold(200)"#),
+        (
+            "DoubleTap(250)",
+            "F13",
+            r#"keys: "F13", trigger: DoubleTap(250)"#,
+        ),
+        (
+            "sequence",
+            "Sequence[F13 \u{2192} F14]",
+            r#"sequence: (steps: ["F13", "F14"])"#,
+        ),
+        (
+            "chord",
+            "Chord[F13+F14]",
+            r#"chord: (keys: ["F13", "F14"])"#,
+        ),
+    ];
+
+    #[test]
+    fn repeat_true_is_an_error_on_deferred_sequence_and_chord_bindings() {
+        for (name, keys, fields) in NEVER_REPEATING {
+            let ron =
+                format!(r#"( bindings: [ ( {fields}, action: PressKey("A"), repeat: true ) ] )"#);
+            let err =
+                from_ron_str(&ron).expect_err(&format!("{name}: repeat: true must be an error"));
+            match err {
+                ConfigError::Bindings(errs) => assert_eq!(
+                    errs,
+                    [format!(
+                        "binding #0 [{keys}]: `repeat: true` applies only to `keys` bindings with the `Immediate` trigger"
+                    )],
+                    "{name}"
+                ),
+                other => panic!("expected Bindings error for {name}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn repeat_false_loads_on_every_kind_and_trigger() {
+        // `false` is what deferred triggers, sequences and chords do anyway.
+        for (name, _, fields) in [("Immediate", "F13", r#"keys: "F13""#)]
+            .into_iter()
+            .chain(NEVER_REPEATING)
+        {
+            let ron =
+                format!(r#"( bindings: [ ( {fields}, action: PressKey("A"), repeat: false ) ] )"#);
+            let bindings = from_ron_str(&ron)
+                .unwrap_or_else(|e| panic!("{name}: repeat: false must load: {e}"));
+            assert_eq!(bindings.len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_binding_field_lists_repeat_among_the_valid_names() {
+        // The README and the book quote this message.
+        let err = from_ron_str(
+            r#"( bindings: [ ( keys: "CapsLock", action: SwitchLanguage, tigger: Tap(200) ) ] )"#,
+        )
+        .expect_err("an unknown field must be an error");
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
+        assert!(
+            err.to_string()
+                .contains("`trigger`, `allow_extra_modifiers`, or `repeat` instead"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn display_of_a_loaded_binding_marks_a_repeat_flag_that_differs_from_its_action_default() {
+        let ron = r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, repeat: true),
+            (keys: "F14", action: PressKey("Left"), repeat: false),
+            (keys: "F15", action: PressKey("Left")),
+            (keys: "F16", action: SwitchLanguage, repeat: false),
+            (keys: "F17", action: PressKey("Left"), trigger: Tap(200), repeat: false),
+        ] )"#;
+        let bindings = from_ron_str_with_hotkeys(ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("config loads: {e:?}"));
+        let lines: Vec<String> = bindings.iter().map(Binding::to_string).collect();
+        assert!(lines[0].ends_with("  [repeat]"), "{}", lines[0]);
+        assert!(lines[1].ends_with("  [no repeat]"), "{}", lines[1]);
+        for line in &lines[2..] {
+            assert!(
+                !line.contains("repeat]"),
+                "only an override is marked: {line}"
+            );
+        }
+    }
+
     // ---- the config path and the file ----
 
     #[test]

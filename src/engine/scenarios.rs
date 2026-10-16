@@ -1549,6 +1549,53 @@ fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
         .expect_passed();
 }
 
+// ---- Auto-repeat fires only bindings that repeat (KS-10) ----
+
+/// Sends `count` auto-repeats of the held `key`, each one 33 ms after the
+/// step before it. Every repeat is expected suppressed and to fire exactly
+/// `on_repeat`.
+#[track_caller]
+fn repeats(mut scenario: Scenario, key: &str, count: usize, on_repeat: &[BindAction]) -> Scenario {
+    for _ in 0..count {
+        scenario = scenario
+            .repeat(key)
+            .expect_suppressed()
+            .expect_fired(on_repeat)
+            .advance_ms(33);
+    }
+    scenario
+}
+
+/// Presses `key`, holds it past the 500 ms repeat delay for `count`
+/// auto-repeats 33 ms apart, and releases it. Every event is expected
+/// suppressed, every repeat to fire exactly `on_repeat`, the release nothing.
+/// The key-down's fire is left to the caller: `Sequence` actions compare by
+/// `Arc` pointer.
+#[track_caller]
+fn hold_with_repeats(
+    scenario: Scenario,
+    key: &str,
+    count: usize,
+    on_repeat: &[BindAction],
+) -> Scenario {
+    let scenario = scenario.down(key).expect_suppressed().advance_ms(500);
+    repeats(scenario, key, count, on_repeat)
+        .up(key)
+        .expect_suppressed()
+        .expect_nothing_fired()
+}
+
+#[test]
+fn repeat_true_on_switch_language_fires_on_every_repeat() {
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, repeat: true) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck();
+    hold_with_repeats(scenario, "CapsLock", 10, &[BindAction::SwitchLanguage])
+        .expect_total_fired(&vec![BindAction::SwitchLanguage; 11]);
+}
+
 // ---- Suppression symmetry (KS-06, KS-14) ----
 
 #[test]
