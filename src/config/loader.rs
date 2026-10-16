@@ -287,10 +287,37 @@ fn parse_ron_str(
         eprintln!("[WARN] config contains no bindings");
     }
 
+    // Every entry converted (an error returned above), so `raw.bindings[k]`
+    // and `user_bindings[k]` are the same entry of the file.
+    let warnings = duplicate_warnings(&raw.bindings, &user_bindings);
     Ok(ParsedConfig {
         bindings: expand_with_auto_blockers(user_bindings, system_combination),
-        warnings: Vec::new(),
+        warnings,
     })
+}
+
+/// One warning for every binding that duplicates an earlier one
+/// ([`Binding::duplicates`]), naming the first such earlier binding, with
+/// both numbered from 0 and their keys as the file writes them. `raw` and
+/// `bindings` hold the file's entries in file order, one binding per entry.
+/// The message says which binding repeats which, not which one acts: for
+/// `keys` bindings the earlier one does, while two sequences or chords
+/// share one pending entry.
+fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (later, binding) in bindings.iter().enumerate() {
+        if let Some(earlier) = bindings[..later]
+            .iter()
+            .position(|other| binding.duplicates(other))
+        {
+            warnings.push(format!(
+                "binding #{later} [{}] duplicates binding #{earlier} [{}]; remove one of them",
+                format_raw_binding_keys(&raw[later]),
+                format_raw_binding_keys(&raw[earlier]),
+            ));
+        }
+    }
+    warnings
 }
 
 /// Appends an auto-blocker for the Windows hotkey of every binding that

@@ -53,6 +53,15 @@ minor version; such entries sit under **Changed** and start with
   `sequence` or `chord` binding is a load error, because those never fire
   on an auto-repeat. The startup list marks a value that differs from the
   default with `[repeat]` or `[no repeat]`.
+- The loader warns about a binding that duplicates one above it: the same
+  kind (`keys`, `sequence` or `chord`) and keys (in any order for `keys`
+  and `chord`, in order for `sequence` steps), the same trigger whatever its
+  term, the same `when:` written the same way and, for `keys`, the same
+  `allow_extra_modifiers` (roadmap item 1.6). For example
+  `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`.
+  The file still loads. The warning is printed at startup and on every
+  reload. If the copy you remove sets `block_original_combo: true`, move
+  the flag to the one you keep.
 
 ### Changed
 

@@ -272,7 +272,8 @@ keys and `when:` never act on the same press: the one higher in the file wins
 every press. The election runs again on every auto-repeat. Auto-blockers,
 `sequence` and `chord` bindings keep their own rules next to the winner: a key
 that is also a sequence step or a chord key still drives the sequence or the
-chord, which swallows the key when it advances.
+chord, which swallows the key when it advances. The loader warns about a
+binding that duplicates one above it (see [Errors](#errors)).
 
 ```ron
 // Shift+CapsLock has more keys: it wins, and the Tap does not arm with it.
@@ -600,6 +601,22 @@ every problem in one pass. Common cases:
 
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
+
+A warning does not stop the file from loading; it is printed at startup and
+on every reload:
+
+- `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`
+  — the later binding repeats an earlier one: the same kind (`keys`,
+  `sequence` or `chord`) and keys (in any order for `keys` and `chord`, in
+  order for `sequence` steps), the same trigger whatever its term, the same
+  `when:` written the same way and, for `keys`, the same
+  `allow_extra_modifiers`. The action does not count. Of two such `keys`
+  bindings only the first ever acts (see
+  [Which binding wins](#combo-syntax-the-keys-field)). If the one you remove
+  sets `block_original_combo: true`, move that flag to the one you keep:
+  the auto-blocker comes from it. An `Immediate` binding next to a `Tap`,
+  `Hold` or `DoubleTap` binding on the same keys is not warned about,
+  although only one of them acts on a press.
 
 ## Build
 

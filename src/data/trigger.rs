@@ -39,6 +39,20 @@ impl Trigger {
     pub fn is_immediate(self) -> bool {
         matches!(self, Trigger::Immediate)
     }
+
+    /// Whether both triggers are of the same kind, whatever their terms:
+    /// `Tap(200)` and `Tap(300)` are, `Tap(200)` and `Hold(200)` are not.
+    /// The loader uses it to find duplicate bindings: of two `Tap` bindings
+    /// on the same keys and `when:` only the first ever acts.
+    pub fn same_kind(self, other: Trigger) -> bool {
+        matches!(
+            (self, other),
+            (Trigger::Immediate, Trigger::Immediate)
+                | (Trigger::Tap(_), Trigger::Tap(_))
+                | (Trigger::Hold(_), Trigger::Hold(_))
+                | (Trigger::DoubleTap(_), Trigger::DoubleTap(_))
+        )
+    }
 }
 
 impl std::fmt::Display for Trigger {
@@ -63,5 +77,19 @@ mod tests {
         assert!(!Trigger::Tap(200).is_immediate());
         assert!(!Trigger::Hold(200).is_immediate());
         assert!(!Trigger::DoubleTap(200).is_immediate());
+    }
+
+    #[test]
+    fn same_kind_ignores_the_term() {
+        assert!(Trigger::Immediate.same_kind(Trigger::Immediate));
+        assert!(Trigger::Tap(200).same_kind(Trigger::Tap(300)));
+        assert!(Trigger::Hold(200).same_kind(Trigger::Hold(500)));
+        assert!(Trigger::DoubleTap(250).same_kind(Trigger::DoubleTap(400)));
+
+        assert!(!Trigger::Tap(200).same_kind(Trigger::Hold(200)));
+        assert!(!Trigger::Hold(200).same_kind(Trigger::DoubleTap(200)));
+        assert!(!Trigger::DoubleTap(200).same_kind(Trigger::Tap(200)));
+        assert!(!Trigger::Immediate.same_kind(Trigger::Tap(200)));
+        assert!(!Trigger::Hold(200).same_kind(Trigger::Immediate));
     }
 }

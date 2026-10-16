@@ -45,6 +45,25 @@ impl BindingKind {
             BindingKind::Chord { keys, .. } => keys.len(),
         }
     }
+
+    /// Whether both kinds bind the same keys: `keys` combinations and
+    /// `chord` keys in any order, `sequence` steps in order (each step's
+    /// keys in any order). `max_gap` and `window` do not count, and two
+    /// different kinds never bind the same keys.
+    pub fn same_keys(&self, other: &BindingKind) -> bool {
+        match (self, other) {
+            (BindingKind::Combo(a), BindingKind::Combo(b)) => a == b,
+            (BindingKind::Sequence { steps: a, .. }, BindingKind::Sequence { steps: b, .. }) => {
+                a == b
+            }
+            // The loader rejects a chord whose keys overlap, so equal
+            // lengths and containment make the same set.
+            (BindingKind::Chord { keys: a, .. }, BindingKind::Chord { keys: b, .. }) => {
+                a.len() == b.len() && a.iter().all(|key| b.contains(key))
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +162,22 @@ impl Binding {
             BindingKind::Combo(c) => Some(c),
             _ => None,
         }
+    }
+
+    /// Whether this binding repeats `earlier` (roadmap item 1.6): neither is
+    /// an auto-blocker, and both have the same kind and keys
+    /// ([`BindingKind::same_keys`]), the same trigger kind whatever its term
+    /// ([`Trigger::same_kind`]), the same `when:` as written and the same
+    /// `allow_extra_modifiers`. The action and the other flags do not count.
+    /// Of two `keys` bindings like that only the first ever acts; two
+    /// sequences or chords like that share one pending entry.
+    pub fn duplicates(&self, earlier: &Binding) -> bool {
+        !self.is_auto_blocker
+            && !earlier.is_auto_blocker
+            && self.kind.same_keys(&earlier.kind)
+            && self.trigger.same_kind(earlier.trigger)
+            && self.condition == earlier.condition
+            && self.allow_extra_modifiers == earlier.allow_extra_modifiers
     }
 
     pub fn with_block_default(mut self, block: bool) -> Self {
@@ -330,5 +365,89 @@ mod tests {
             window: Duration::from_millis(50),
         };
         assert!(Binding::blocks_by_default(&chord, Trigger::Immediate));
+    }
+
+    fn sequence(steps: &[&[VIRTUAL_KEY]], max_gap_ms: u64) -> BindingKind {
+        BindingKind::Sequence {
+            steps: steps
+                .iter()
+                .map(|keys| KeyCombination::from_keys(keys.to_vec()))
+                .collect(),
+            max_gap: Duration::from_millis(max_gap_ms),
+        }
+    }
+
+    fn chord(keys: &[VIRTUAL_KEY], window_ms: u64) -> BindingKind {
+        BindingKind::Chord {
+            keys: keys.iter().map(|&vk| KeySpec::from(vk)).collect(),
+            window: Duration::from_millis(window_ms),
+        }
+    }
+
+    #[test]
+    fn same_keys_compares_combos_and_chords_as_sets_and_steps_in_order() {
+        let ctrl_alt_l = BindingKind::Combo(KeyCombination::from_keys([VK_CONTROL, VK_MENU, VK_L]));
+        let alt_ctrl_l = BindingKind::Combo(KeyCombination::from_keys([VK_MENU, VK_CONTROL, VK_L]));
+        let lctrl_alt_l =
+            BindingKind::Combo(KeyCombination::from_keys([VK_LCONTROL, VK_MENU, VK_L]));
+        assert!(ctrl_alt_l.same_keys(&alt_ctrl_l));
+        assert!(!ctrl_alt_l.same_keys(&lctrl_alt_l));
+
+        let f13_then_ctrl_f14 = sequence(&[&[VK_F13], &[VK_CONTROL, VK_F14]], 500);
+        assert!(f13_then_ctrl_f14.same_keys(&sequence(&[&[VK_F13], &[VK_F14, VK_CONTROL]], 900)));
+        assert!(!f13_then_ctrl_f14.same_keys(&sequence(&[&[VK_CONTROL, VK_F14], &[VK_F13]], 500)));
+        assert!(!f13_then_ctrl_f14.same_keys(&sequence(&[&[VK_F13]], 500)));
+
+        let f13_f14 = chord(&[VK_F13, VK_F14], 50);
+        assert!(f13_f14.same_keys(&chord(&[VK_F14, VK_F13], 80)));
+        assert!(!f13_f14.same_keys(&chord(&[VK_F13, VK_F15], 50)));
+        assert!(!f13_f14.same_keys(&chord(&[VK_F13, VK_F14, VK_F15], 50)));
+
+        let combo_f13_f14 = BindingKind::Combo(KeyCombination::from_keys([VK_F13, VK_F14]));
+        assert!(!f13_f14.same_keys(&combo_f13_f14));
+        assert!(!combo_f13_f14.same_keys(&f13_f14));
+        assert!(!sequence(&[&[VK_F13], &[VK_F14]], 500).same_keys(&f13_f14));
+    }
+
+    #[test]
+    fn duplicates_needs_the_same_kind_keys_trigger_kind_when_and_flag() {
+        let capslock_tap =
+            Binding::new(KeyCombination::new(VK_CAPITAL), BindAction::SwitchLanguage)
+                .with_trigger(Trigger::Tap(200));
+
+        // The action, the term and block_default do not count.
+        let copy = Binding::new(KeyCombination::new(VK_CAPITAL), BindAction::ToggleCapsLock)
+            .with_trigger(Trigger::Tap(300))
+            .with_block_default(false);
+        assert!(copy.duplicates(&capslock_tap));
+
+        let hold = capslock_tap.clone().with_trigger(Trigger::Hold(200));
+        assert!(!hold.duplicates(&capslock_tap));
+        let conditional = capslock_tap
+            .clone()
+            .with_condition(Condition::AppEquals("code.exe".to_owned()));
+        assert!(!conditional.duplicates(&capslock_tap));
+        let relaxed = capslock_tap.clone().with_allow_extra_modifiers(true);
+        assert!(!relaxed.duplicates(&capslock_tap));
+        let shift_capslock = Binding::new(
+            KeyCombination::from_keys([VK_SHIFT, VK_CAPITAL]),
+            BindAction::SwitchLanguage,
+        )
+        .with_trigger(Trigger::Tap(200));
+        assert!(!shift_capslock.duplicates(&capslock_tap));
+
+        let f13_f14 = Binding::with_kind(chord(&[VK_F13, VK_F14], 50), BindAction::DoNothing);
+        let f14_f13 = Binding::with_kind(chord(&[VK_F14, VK_F13], 80), BindAction::SwitchLanguage);
+        assert!(f14_f13.duplicates(&f13_f14));
+    }
+
+    #[test]
+    fn an_auto_blocker_duplicates_nothing() {
+        let alt_shift = KeyCombination::from_keys([VK_MENU, VK_SHIFT]);
+        let blocker = Binding::new_auto_blocker(alt_shift.clone());
+        let user = Binding::new(alt_shift, BindAction::DoNothing);
+        assert!(!blocker.duplicates(&user));
+        assert!(!user.duplicates(&blocker));
+        assert!(!blocker.duplicates(&blocker.clone()));
     }
 }
