@@ -1930,6 +1930,28 @@ fn deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat() {
 }
 
 #[test]
+fn held_hold_binding_with_repeating_action_fires_once_across_many_repeats() {
+    // Backspace repeats by default. If the flag leaked into the Hold arm, the
+    // first repeat (+500 ms) would re-arm a 200 ms term that fires at +700 ms,
+    // so the key has to stay down past that instant for the leak to show.
+    let back = BindAction::PressKey(VK_BACK);
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: PressKey("Backspace"), trigger: Hold(200)) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(500)
+    .expect_fired(std::slice::from_ref(&back));
+    // Ten repeats 33 ms apart: the last one lands at +797 ms, the release after
+    // +830 ms, well past the first repeat plus the 200 ms term.
+    repeats(scenario, "F13", 10, &[])
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(std::slice::from_ref(&back));
+}
+
+#[test]
 fn a_repeat_of_a_sequence_step_does_not_count_as_the_next_step() {
     // Both steps are the same key, so a repeat that reached the sequence
     // would complete it from a single physical press (KS-10, KS-06).
