@@ -117,9 +117,13 @@
 //!      and the modifier families held (Shift, Ctrl, Alt, Win, either key
 //!      of a pair counting as its family) must be exactly the combo's own,
 //!      unless the binding sets `allow_extra_modifiers` (owner decision).
-//!      `Immediate` fires only for the first matching Immediate user
-//!      binding, on every key-down including repeats, and suppresses if
-//!      `block_default` is set. `Tap`, `Hold` and `DoubleTap` ignore
+//!      `Immediate`: the first matching Immediate user binding takes the
+//!      event. It fires on a first key-down and, on an auto-repeat, only if
+//!      it sets `repeat` (by default `PressKey`, `Media(VolumeUp)` and
+//!      `Media(VolumeDown)`; owner decision, KS-10). A binding that does not
+//!      repeat still takes the auto-repeat, so a later binding never fires
+//!      in its place. Every matching Immediate binding with `block_default`
+//!      asks for suppression. `Tap`, `Hold` and `DoubleTap` ignore
 //!      repeats, arm under the key just pressed (so under a key of the
 //!      combo, whose key-up resolves them) and always suppress.
 //!    - An auto-blocker (`block_original_combo`) is a `Combo` of the
@@ -154,9 +158,8 @@
 //! item 2.3).
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
-//! later roadmap items, each with a scenario test: repeat-firing Immediate
-//! actions (KS-10), specificity across trigger kinds (KS-13) and the
-//! sequence matching rules (KS-15, KS-16).
+//! later roadmap items, each with a scenario test: specificity across
+//! trigger kinds (KS-13) and the sequence matching rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -402,9 +405,14 @@ impl Engine {
                     }
                     match binding.trigger {
                         Trigger::Immediate => {
+                            // The first match takes the slot on a repeat
+                            // too, even when it does not fire then: a later
+                            // binding must not start firing in its place.
                             if !immediate_fired {
-                                decision.fire.push(binding.action.clone());
                                 immediate_fired = true;
+                                if !was_repeat || binding.repeat {
+                                    decision.fire.push(binding.action.clone());
+                                }
                             }
                             if binding.block_default {
                                 decision.suppress = true;

@@ -27,11 +27,16 @@
 //! the context set by [`Scenario::with_context`], such as the seed of a
 //! generated script.
 //!
-//! Two checks can also run on every later step:
+//! Three checks can also run on every later step:
 //! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
-//! press are suppressed or passed like its key-down) and
+//! press are suppressed or passed like its key-down),
 //! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
-//! while the script has it up).
+//! while the script has it up) and [`Scenario::check_repeats_fire_only`]
+//! (an auto-repeat fires only actions from a given list).
+//!
+//! [`Scenario::reload`] models a hot reload: the bindings are replaced, and
+//! the engine keeps its state, pending gestures and held keys included, as
+//! `KeyboardHook::update_bindings` leaves it.
 //!
 //! [`Scenario::remapping_off`] and [`Scenario::remapping_on`] model `swch
 //! off` and `swch on`: each resets the engine, as `KeyboardHook::set_enabled`
@@ -142,6 +147,9 @@ pub(crate) struct Scenario {
     press_suppressed: [Option<bool>; 256],
     /// Whether [`check_nothing_stuck`](Self::check_nothing_stuck) is on.
     check_stuck: bool,
+    /// With [`check_repeats_fire_only`](Self::check_repeats_fire_only) on:
+    /// the actions an auto-repeat may fire.
+    repeat_fire_allowed: Option<Vec<BindAction>>,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
 }
@@ -188,6 +196,7 @@ impl Scenario {
             check_symmetry: false,
             press_suppressed: [None; 256],
             check_stuck: false,
+            repeat_fire_allowed: None,
             enabled: true,
         }
     }
@@ -210,6 +219,27 @@ impl Scenario {
     /// [`expect_nothing_stuck`](Self::expect_nothing_stuck).
     pub(crate) fn check_nothing_stuck(mut self) -> Self {
         self.check_stuck = true;
+        self
+    }
+
+    /// From now on, every [`repeat`](Self::repeat) step may fire only
+    /// actions contained in `allowed`.
+    pub(crate) fn check_repeats_fire_only(mut self, allowed: &[BindAction]) -> Self {
+        self.repeat_fire_allowed = Some(allowed.to_vec());
+        self
+    }
+
+    /// Replaces the bindings with those of `text`, loaded like
+    /// [`from_ron`](Self::from_ron) and sorted, as a hot reload does through
+    /// `KeyboardHook::update_bindings`. The engine is not reset.
+    #[track_caller]
+    pub(crate) fn reload(mut self, text: &str) -> Self {
+        let mut bindings =
+            from_ron_str(text).unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
+        sort_by_specificity(&mut bindings);
+        self.bindings = bindings;
+        let label = format!("reload at {}", self.clock());
+        self.push_step(label, None, Vec::new());
         self
     }
 
@@ -465,7 +495,28 @@ impl Scenario {
         if self.check_symmetry {
             self.check_press(vk, key, what, suppressed);
         }
+        if what == "repeat" {
+            self.check_repeat_fire();
+        }
         self
+    }
+
+    /// The auto-repeat check for the repeat just recorded, if it is on.
+    #[track_caller]
+    fn check_repeat_fire(&self) {
+        let Some(allowed) = &self.repeat_fire_allowed else {
+            return;
+        };
+        let step = self
+            .steps
+            .last()
+            .expect("invariant: the event was just recorded");
+        if step.fired.iter().any(|action| !allowed.contains(action)) {
+            self.fail(&format!(
+                "{}: fired {:?} on an auto-repeat; only {allowed:?} may fire on one",
+                step.label, step.fired
+            ));
+        }
     }
 
     /// The symmetry check for one key event of `vk`: a key-down starts a

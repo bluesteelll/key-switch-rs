@@ -101,7 +101,9 @@
 //
 // Each binding has an optional `trigger:` field, defaulting to Immediate:
 //
-//   trigger: Immediate           — fire on key-down (the default)
+//   trigger: Immediate           — fire on key-down (the default); on an
+//                                  auto-repeat only with repeat (see the
+//                                  per-binding flags)
 //   trigger: Tap(200)            — fire on key-up if released within 200 ms
 //   trigger: Hold(200)           — fire after key held for 200 ms
 //   trigger: DoubleTap(250)      — fire on second key-down within 250 ms
@@ -159,6 +161,18 @@
 //                       - keys bindings only: also fire while modifiers
 //                         the binding does not name are held. A load
 //                         error on sequence and chord bindings.
+// repeat: true | false  (default true for PressKey, Media(VolumeUp) and
+//                        Media(VolumeDown), false for every other action)
+//                       - keys bindings with the Immediate trigger: also fire
+//                         on every auto-repeat while the key is held. With
+//                         false the action fires once per press; the
+//                         repeats are still swallowed when the press was.
+//                         repeat: true is a load error on Tap, Hold,
+//                         DoubleTap, sequence and chord bindings, which
+//                         never fire on an auto-repeat.
+//                         Each repeat of a PressKey sends a new press: for
+//                         a toggle key (CapsLock, NumLock) or a modifier,
+//                         write repeat: false.
 //
 // ---- conditions (`when:` field) ----
 //
@@ -209,12 +223,15 @@
         // ( keys: "Win+Alt+G", action: OpenUrl("https://github.com") ),
         // ( keys: "Win+Alt+M", action: OpenUrl("mailto:me@example.com") ),
         //
-        // // Media / volume controls
+        // // Media / volume controls. VolumeUp/VolumeDown keep changing the
+        // // volume while held; the others fire once per press unless
+        // // repeat: true (the last line skips tracks while held):
         // ( keys: "Pause",       action: Media(PlayPause) ),
         // ( keys: "Ctrl+Pause",  action: Media(Next) ),
         // ( keys: "Alt+Up",      action: Media(VolumeUp) ),
         // ( keys: "Alt+Down",    action: Media(VolumeDown) ),
         // ( keys: "Alt+M",       action: Media(VolumeMute) ),
+        // ( keys: "Ctrl+Alt+PageDown", action: Media(Next), repeat: true ),
         //
         // // Per-app condition: Pause acts as media play/pause only when
         // // Spotify is foreground.

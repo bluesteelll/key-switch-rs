@@ -156,6 +156,33 @@ impl BindAction {
         self.to_system_function()
             .and_then(|sf| sf.get_system_combination())
     }
+
+    /// Whether a binding with this action fires again on every auto-repeat
+    /// of its key when the config does not set `repeat:` (owner decision,
+    /// roadmap item 1.1, KS-10): only a key press and the two volume keys,
+    /// whose effect a held key is meant to repeat. Every arm is spelled out,
+    /// so a new action does not compile until its default is decided.
+    pub fn repeats_by_default(&self) -> bool {
+        match self {
+            BindAction::PressKey(_) => true,
+            BindAction::Media(key) => match key {
+                MediaKey::VolumeUp | MediaKey::VolumeDown => true,
+                MediaKey::PlayPause
+                | MediaKey::Stop
+                | MediaKey::Next
+                | MediaKey::Previous
+                | MediaKey::VolumeMute => false,
+            },
+            BindAction::SwitchLanguage
+            | BindAction::SwitchLanguageBackward
+            | BindAction::ToggleCapsLock
+            | BindAction::PostMessage { .. }
+            | BindAction::Sequence(_)
+            | BindAction::Launch { .. }
+            | BindAction::OpenUrl(_)
+            | BindAction::DoNothing => false,
+        }
+    }
 }
 
 /// Synthesize a single key press (down + up). Shared between `PressKey`,
@@ -281,6 +308,51 @@ impl std::fmt::Display for BindAction {
             BindAction::OpenUrl(url) => write!(f, "open {}", url),
             BindAction::Media(key) => write!(f, "media {:?}", key),
             BindAction::DoNothing => write!(f, "do nothing"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_BACK;
+    use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+
+    #[test]
+    fn only_press_key_volume_up_and_volume_down_repeat_by_default() {
+        let actions = [
+            (BindAction::SwitchLanguage, false),
+            (BindAction::SwitchLanguageBackward, false),
+            (BindAction::ToggleCapsLock, false),
+            (BindAction::PressKey(VK_BACK), true),
+            (
+                BindAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 0,
+                    lparam: 0,
+                },
+                false,
+            ),
+            (BindAction::Sequence(Arc::new(Vec::new())), false),
+            (
+                BindAction::Launch {
+                    exe: "wt.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                false,
+            ),
+            (BindAction::OpenUrl("https://example.com".to_owned()), false),
+            (BindAction::Media(MediaKey::PlayPause), false),
+            (BindAction::Media(MediaKey::Stop), false),
+            (BindAction::Media(MediaKey::Next), false),
+            (BindAction::Media(MediaKey::Previous), false),
+            (BindAction::Media(MediaKey::VolumeUp), true),
+            (BindAction::Media(MediaKey::VolumeDown), true),
+            (BindAction::Media(MediaKey::VolumeMute), false),
+            (BindAction::DoNothing, false),
+        ];
+        for (action, expected) in actions {
+            assert_eq!(action.repeats_by_default(), expected, "{action:?}");
         }
     }
 }
