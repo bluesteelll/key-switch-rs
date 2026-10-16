@@ -3876,6 +3876,367 @@ fn repeats_after_the_modifier_is_released_elect_again_and_follow_the_key_down() 
         .expect_total_fired(&[BindAction::PressKey(VK_DOWN), BindAction::PressKey(VK_DOWN)]);
 }
 
+// ---- Menu mask key (roadmap item 1.2, KS-12) ----
+
+/// `PostMessage(msg: "WM_CLOSE")` as the loader builds it.
+const POST_WM_CLOSE: BindAction = BindAction::PostMessage {
+    msg: 0x0010,
+    wparam: 0,
+    lparam: 0,
+};
+
+#[test]
+fn win_q_post_message_masks_the_swallowed_q_and_its_release() {
+    // KS-12: Windows saw Win go down and nothing after it, so Win's release
+    // would open the Start menu. The swallowed Q and its release ask for
+    // the mask key; the events that pass do not.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Win+Q", action: PostMessage(msg: "WM_CLOSE")) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .expect_unmasked()
+    .down("Q")
+    .expect_suppressed()
+    .expect_fired(&[POST_WM_CLOSE])
+    .expect_masked()
+    .up("Q")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn alt_then_shift_with_the_template_blocker_masks_the_swallowed_shift() {
+    // The template's `block_original_combo: true` swallows Shift pressed
+    // after Alt; Windows saw a lone Alt, whose release would activate the
+    // menu bar.
+    template()
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_masked()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn right_alt_and_right_win_mask_a_swallowed_key() {
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Alt+J", action: DoNothing),
+            (keys: "Win+J", action: DoNothing),
+        ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("RAlt")
+    .expect_passed()
+    .expect_unmasked()
+    .down("J")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_masked()
+    .up("J")
+    .expect_suppressed()
+    .expect_masked()
+    .up("RAlt")
+    .expect_passed()
+    .expect_unmasked()
+    .down("RWin")
+    .expect_passed()
+    .expect_unmasked()
+    .down("J")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_masked()
+    .up("J")
+    .expect_suppressed()
+    .expect_masked()
+    .up("RWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn swallowed_repeats_and_key_up_while_win_is_held_are_masked() {
+    // Q's key-down was swallowed before Win went down, so its repeats and
+    // its key-up stay swallowed; with Win down in Windows they mask too.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("Q")
+        .expect_suppressed()
+        .expect_unmasked()
+        .down("LWin")
+        .expect_passed()
+        .expect_unmasked()
+        .advance_ms(500)
+        .repeat("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn a_swallowed_event_without_alt_or_win_in_windows_is_not_masked() {
+    // CapsLock alone, the Ctrl+Shift blocker and Shift+CapsLock swallow
+    // keys while neither Alt nor Win is down: nothing to mask.
+    Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .down("LCtrl")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LCtrl")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .expect_unmasked()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn a_swallowed_key_is_not_masked_when_the_alt_or_win_key_down_was_swallowed() {
+    // Windows never saw that Alt or Win go down, so its release opens
+    // nothing.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed();
+
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Win", action: ToggleCapsLock, trigger: Tap(200), block_default: true),
+            (keys: "Q", action: DoNothing, allow_extra_modifiers: true),
+        ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_suppressed()
+    .expect_unmasked()
+    .down("Q")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_unmasked()
+    .up("Q")
+    .expect_suppressed()
+    .expect_unmasked()
+    .up("LWin")
+    .expect_suppressed()
+    .expect_unmasked();
+}
+
+#[test]
+fn a_passed_event_is_not_masked() {
+    // An event that reaches Windows tells it that Alt is not alone.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Alt+L", action: DoNothing, block_default: false) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LCtrl")
+    .expect_passed()
+    .down("LAlt")
+    .expect_passed()
+    .down("L")
+    .expect_passed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_unmasked()
+    .up("L")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LCtrl")
+    .expect_passed()
+    .down("A")
+    .expect_passed()
+    .expect_unmasked()
+    .up("A")
+    .expect_passed()
+    .up("LAlt")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn alt_held_before_the_hook_saw_it_masks_a_swallowed_key() {
+    // The resync finds Alt held with no record of its key-down: Windows
+    // has it down.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Alt+J", action: DoNothing) ] )"#)
+        .down_unseen("LAlt")
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("J")
+        .expect_suppressed()
+        .expect_masked();
+}
+
+#[test]
+fn win_held_through_remapping_on_masks_a_swallowed_key() {
+    // `swch on` takes Win from the OS as a key-down Windows saw.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .remapping_off()
+        .down("LWin")
+        .expect_passed()
+        .remapping_on()
+        .down("Q")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn win_held_across_a_foreground_change_masks_a_swallowed_key() {
+    // A foreground change keeps the records of key-downs that passed.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LWin")
+        .expect_passed()
+        .foreground_changed()
+        .down("Q")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn sequence_and_chord_keys_swallowed_while_win_is_held_are_masked() {
+    Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["Win+F13", "Win+F14"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .up("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_masked()
+    .up("F14")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["F13", "F14"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_masked()
+    .up("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .up("F14")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn a_hold_timer_never_masks() {
+    // `advance_ms` asserts that no timer decision asks for the mask: a
+    // timer has no event in the hook to put it in front of.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Win+F13", action: DoNothing, trigger: Hold(200)) ] )"#,
+    )
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(250)
+    .expect_fired(&[BindAction::DoNothing])
+    .up("F13")
+    .expect_suppressed()
+    .up("LWin")
+    .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]

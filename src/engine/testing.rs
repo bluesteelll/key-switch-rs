@@ -23,17 +23,22 @@
 //!
 //! The `expect_*` methods check the most recent step: a key event, or an
 //! `advance_ms` together with the timers that fired during it.
-//! [`Scenario::expect_down_in_windows`] checks the modelled OS key state
-//! after it. A failing expectation panics with the whole transcript of the
-//! scenario, and with the context set by [`Scenario::with_context`], such
-//! as the seed of a generated script.
+//! [`Scenario::expect_masked`] and [`Scenario::expect_unmasked`] check
+//! whether the engine asked for the menu mask key (`Decision::mask`, KS-12)
+//! on a key event. [`Scenario::expect_down_in_windows`] checks the modelled
+//! OS key state after it. A failing expectation panics with the whole
+//! transcript of the scenario, and with the context set by
+//! [`Scenario::with_context`], such as the seed of a generated script.
 //!
-//! Three checks can also run on every later step:
+//! Four checks can also run on every later step:
 //! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
 //! press are suppressed or passed like its key-down),
 //! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
-//! while the script has it up) and [`Scenario::check_repeats_fire_only`]
-//! (an auto-repeat fires only actions from a given list).
+//! while the script has it up), [`Scenario::check_repeats_fire_only`] (an
+//! auto-repeat fires only actions from a given list) and
+//! [`Scenario::check_mask_rule`] (a key event asks for the menu mask exactly
+//! when it is suppressed while Windows has Alt or Win down). A timer never
+//! asks for the mask: [`Scenario::advance_ms`] asserts it.
 //!
 //! [`Scenario::reload`] models a hot reload: the bindings are replaced, and
 //! the engine keeps its state, pending gestures and held keys included, as
@@ -120,11 +125,18 @@ fn physical_key(name: &str) -> VIRTUAL_KEY {
     vk
 }
 
+/// The Alt and Win keys, by physical code, whose being down in Windows makes
+/// a swallowed key event ask for the menu mask key (KS-12).
+const ALT_AND_WIN: [VIRTUAL_KEY; 4] = [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN];
+
 /// One step of a scenario and what the engine decided for it.
 struct Step {
     label: String,
     /// `None` for steps that are not key events (`advance_ms`).
     suppressed: Option<bool>,
+    /// Whether the engine asked for the menu mask key; `None` for steps
+    /// that are not key events.
+    masked: Option<bool>,
     fired: Vec<BindAction>,
 }
 
@@ -151,6 +163,8 @@ pub(crate) struct Scenario {
     /// With [`check_repeats_fire_only`](Self::check_repeats_fire_only) on:
     /// the actions an auto-repeat may fire.
     repeat_fire_allowed: Option<Vec<BindAction>>,
+    /// Whether [`check_mask_rule`](Self::check_mask_rule) is on.
+    check_mask: bool,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
 }
@@ -198,6 +212,7 @@ impl Scenario {
             press_suppressed: [None; 256],
             check_stuck: false,
             repeat_fire_allowed: None,
+            check_mask: false,
             enabled: true,
         }
     }
@@ -230,6 +245,16 @@ impl Scenario {
         self
     }
 
+    /// From now on, every key event must ask for the menu mask key exactly
+    /// when it is suppressed while the modelled OS has an Alt or Win key
+    /// down (KS-12). The oracle reads the modelled OS, not the engine's
+    /// records. A `MaskOnly` auto-blocker masks events it lets through, so
+    /// do not combine this check with one.
+    pub(crate) fn check_mask_rule(mut self) -> Self {
+        self.check_mask = true;
+        self
+    }
+
     /// Replaces the bindings with those of `text`, loaded like
     /// [`from_ron`](Self::from_ron) and sorted, as a hot reload does through
     /// `KeyboardHook::update_bindings`. The engine is not reset.
@@ -240,7 +265,7 @@ impl Scenario {
         sort_by_specificity(&mut bindings);
         self.bindings = bindings;
         let label = format!("reload at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -290,7 +315,7 @@ impl Scenario {
         self.env.os_down[vk.0 as usize] = false;
         self.press_suppressed[vk.0 as usize] = None;
         let label = format!("up {key} unseen by the hook at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -310,7 +335,7 @@ impl Scenario {
             self.press_suppressed[vk.0 as usize] = Some(false);
         }
         let label = format!("down {key} unseen by the hook at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -325,7 +350,7 @@ impl Scenario {
         }
         self.engine.on_foreground_changed(&self.env);
         let label = format!("foreground change at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -346,7 +371,7 @@ impl Scenario {
         self.enabled = false;
         self.press_suppressed = [None; 256];
         let label = format!("remapping off at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -365,7 +390,7 @@ impl Scenario {
         self.engine.reset(&self.env);
         self.enabled = true;
         let label = format!("remapping on at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -387,12 +412,13 @@ impl Scenario {
             self.env.now = self.env.now.max(timer.due);
             let decision = self.engine.on_timer(timer.token);
             assert!(!decision.suppress, "a timer has no event to suppress");
+            assert!(!decision.mask, "a timer has no event to mask");
             self.timers.extend(decision.timers);
             fired.extend(decision.fire);
         }
         self.env.now = target;
         let label = format!("advance {ms} ms to {}", self.clock());
-        self.push_step(label, None, fired);
+        self.push_step(label, None, None, fired);
         self
     }
 
@@ -403,7 +429,7 @@ impl Scenario {
     pub(crate) fn advance_ms_stalled(mut self, ms: u64) -> Self {
         self.env.now += Duration::from_millis(ms);
         let label = format!("advance {ms} ms to {}, timers stalled", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -415,7 +441,7 @@ impl Scenario {
             self.engine.forget_timer(timer.token);
         }
         let label = format!("timers lost at {}", self.clock());
-        self.push_step(label, None, Vec::new());
+        self.push_step(label, None, None, Vec::new());
         self
     }
 
@@ -429,6 +455,18 @@ impl Scenario {
     #[track_caller]
     pub(crate) fn expect_passed(self) -> Self {
         self.expect_suppression(false)
+    }
+
+    /// The engine asked for the menu mask key on the last key event.
+    #[track_caller]
+    pub(crate) fn expect_masked(self) -> Self {
+        self.expect_mask(true)
+    }
+
+    /// The engine did not ask for the menu mask key on the last key event.
+    #[track_caller]
+    pub(crate) fn expect_unmasked(self) -> Self {
+        self.expect_mask(false)
     }
 
     /// The last step fired exactly `expected`, in order.
@@ -495,6 +533,7 @@ impl Scenario {
             Decision::default()
         };
         let suppressed = decision.suppress;
+        let masked = decision.mask;
         let down = direction == KeyDirection::Down;
         // The OS only learns about events the hook passes on.
         if !suppressed {
@@ -503,14 +542,36 @@ impl Scenario {
         self.held[vk.0 as usize] = down;
         let label = format!("{what} {key} at {}", self.clock());
         self.timers.extend(decision.timers);
-        self.push_step(label, Some(suppressed), decision.fire);
+        self.push_step(label, Some(suppressed), Some(masked), decision.fire);
         if self.check_symmetry {
             self.check_press(vk, key, what, suppressed);
         }
         if what == "repeat" {
             self.check_repeat_fire();
         }
+        if self.check_mask {
+            self.check_mask_of(suppressed, masked);
+        }
         self
+    }
+
+    /// The mask rule for the key event just recorded. A suppressed event
+    /// leaves the modelled OS as it was, so reading it after the decision
+    /// reads what Windows had down while the event was in the hook.
+    #[track_caller]
+    fn check_mask_of(&self, suppressed: bool, masked: bool) {
+        let alt_or_win = ALT_AND_WIN.iter().any(|&key| self.env.os_down(key));
+        let want = suppressed && alt_or_win;
+        if masked != want {
+            let label = &self
+                .steps
+                .last()
+                .expect("invariant: the event was just recorded")
+                .label;
+            self.fail(&format!(
+                "{label}: mask {masked}, the rule says {want} (suppressed {suppressed}, Alt or Win down in Windows {alt_or_win})"
+            ));
+        }
     }
 
     /// The auto-repeat check for the repeat just recorded, if it is on.
@@ -561,10 +622,17 @@ impl Scenario {
 
     /// Records a step, then runs the stuck check if it is on.
     #[track_caller]
-    fn push_step(&mut self, label: String, suppressed: Option<bool>, fired: Vec<BindAction>) {
+    fn push_step(
+        &mut self,
+        label: String,
+        suppressed: Option<bool>,
+        masked: Option<bool>,
+        fired: Vec<BindAction>,
+    ) {
         self.steps.push(Step {
             label,
             suppressed,
+            masked,
             fired,
         });
         if self.check_stuck {
@@ -626,6 +694,18 @@ impl Scenario {
     }
 
     #[track_caller]
+    fn expect_mask(self, expected: bool) -> Self {
+        let step = self.last_step();
+        let message = match step.masked {
+            Some(actual) if actual == expected => return self,
+            Some(_) if expected => format!("{}: expected the menu mask, got none", step.label),
+            Some(_) => format!("{}: expected no menu mask, got one", step.label),
+            None => format!("{}: not a key event, nothing to mask", step.label),
+        };
+        self.fail(&message)
+    }
+
+    #[track_caller]
     fn fail(&self, message: &str) -> ! {
         let mut transcript = String::new();
         for step in &self.steps {
@@ -634,9 +714,14 @@ impl Scenario {
                 Some(false) => "passed",
                 None => "-",
             };
+            let mask = if step.masked == Some(true) {
+                ", masked"
+            } else {
+                ""
+            };
             let _ = writeln!(
                 transcript,
-                "  {}: {outcome}, fired {:?}",
+                "  {}: {outcome}{mask}, fired {:?}",
                 step.label, step.fired
             );
         }

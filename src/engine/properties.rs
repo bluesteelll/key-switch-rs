@@ -11,7 +11,10 @@
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
-//! (`Scenario::with_context`) above the transcript. Three properties:
+//! (`Scenario::with_context`) above the transcript. Three properties, and in
+//! every run the menu mask rule (`check_mask_rule`, KS-12): a key event asks
+//! for the mask key exactly when it is suppressed while the modelled OS has
+//! Alt down.
 //!
 //! - Strict mode, with no focus change and no lost key-up: every press is
 //!   suppressed or passed as a whole, its key-down, auto-repeats and key-up
@@ -234,7 +237,8 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
             "config {}, seed {seed}, {mode:?} mode",
             config.name
         ))
-        .check_nothing_stuck();
+        .check_nothing_stuck()
+        .check_mask_rule();
     if mode == Mode::Strict {
         scenario = scenario.check_press_symmetry();
     }
