@@ -1051,6 +1051,25 @@ mod tests {
     }
 
     #[test]
+    fn a_language_hotkey_not_assigned_in_windows_gives_no_auto_blocker() {
+        // KS-17: the template's CapsLock binding asks for the blocker of a
+        // Windows hotkey that does not exist.
+        let not_assigned = toggle_values([Some("3"), Some("3")]);
+        let bindings =
+            from_ron_str_with_hotkeys(DEFAULT_CONFIG, &not_assigned).expect("the template loads");
+        assert_eq!(blockers(&bindings), 0);
+        assert_eq!(bindings.len(), 2);
+
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+        ] )"#;
+        let parsed = parse_ron_str(text, &not_assigned)
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        assert_eq!(blockers(&parsed.bindings), 0);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
     fn auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order() {
         // KS-18: the dedup looked only at the bindings above the flagged one.
         let configs = [

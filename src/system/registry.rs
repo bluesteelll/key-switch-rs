@@ -428,6 +428,30 @@ mod tests {
     }
 
     #[test]
+    fn a_language_hotkey_not_assigned_in_windows_has_no_combination() {
+        // KS-17: "3" decides like a combination does, so there is no
+        // Alt+Shift fallback and no auto-blocker.
+        for values in [
+            [Some("3"), Some("3")],
+            [Some("3"), None],
+            [None, Some("3")],
+            [Some("3"), Some("2")],
+            [Some("x"), Some("3")],
+            [Some(" 3 "), Some("1")],
+        ] {
+            assert_eq!(language(values), None, "{values:?}");
+        }
+        let values =
+            std::iter::once(Some("3")).chain(std::iter::repeat_with(|| -> Option<&'static str> {
+                panic!("a value after the deciding one was read")
+            }));
+        assert_eq!(
+            hotkey_from_values(SystemFunction::SwitchLanguage, values),
+            None
+        );
+    }
+
+    #[test]
     fn test_get_system_hotkey_returns_combinations() {
         // The language hotkey depends on this machine's Windows setting,
         // which may also be "Not assigned".
