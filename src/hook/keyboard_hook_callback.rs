@@ -300,6 +300,8 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::core::constants::injected_sentinel;
     use crate::core::windows_actions::BindAction;
@@ -458,5 +460,44 @@ mod tests {
             "remapping on again: the bound key is swallowed"
         );
         assert_eq!(call(f13, WM_KEYUP), LRESULT(1));
+    }
+
+    #[test]
+    fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
+        let inputs = menu_mask_inputs();
+        for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {
+            assert_eq!(input.r#type, INPUT_KEYBOARD);
+            // SAFETY: every element is built with r#type INPUT_KEYBOARD, so
+            // ki is the initialised field of the union.
+            let ki = unsafe { input.Anonymous.ki };
+            assert_eq!(ki.wVk, VIRTUAL_KEY(0xE8));
+            assert_eq!(ki.wScan, 0);
+            assert_eq!(ki.dwFlags, flags);
+            assert_eq!(ki.time, 0);
+            assert_eq!(
+                ki.dwExtraInfo,
+                injected_sentinel(),
+                "the hook must pass the mask key it injects"
+            );
+        }
+    }
+
+    #[test]
+    fn carry_out_sends_the_menu_mask_only_when_the_decision_asks() {
+        // Under test `send_menu_mask` only counts, on this thread.
+        let before = MASKS_SENT.with(Cell::get);
+        carry_out(Decision::default());
+        assert_eq!(MASKS_SENT.with(Cell::get), before, "no mask asked for");
+        carry_out(Decision {
+            mask: true,
+            ..Decision::default()
+        });
+        assert_eq!(MASKS_SENT.with(Cell::get), before + 1, "one mask asked for");
+    }
+
+    #[test]
+    #[ignore = "manual: injects vk 0xE8 down and up into the live input stream; run it with --ignored while Notepad has focus and check that it passes and nothing is typed and no menu opens"]
+    fn the_menu_mask_key_is_inserted_into_the_input_stream() {
+        assert_eq!(inject_menu_mask(), 2);
     }
 }
