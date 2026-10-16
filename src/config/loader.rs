@@ -991,6 +991,88 @@ mod tests {
     }
 
     #[test]
+    fn a_misspelled_bindings_field_is_an_error_that_names_it() {
+        // KS-22: serde used to skip the unknown field and default
+        // `bindings` to an empty list.
+        let err = from_ron_str(r#"( bindngs: [ ( keys: "F13", action: DoNothing ) ] )"#)
+            .expect_err("a misspelled `bindings` must be an error");
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
+        assert!(err.to_string().contains("named `bindngs`"), "{err}");
+    }
+
+    #[test]
+    fn unknown_fields_are_errors_that_name_the_field() {
+        let in_list = |binding: &str| format!("( bindings: [ {binding} ] )");
+        for (field, ron) in [
+            (
+                "version",
+                r#"( bindings: [ ( keys: "F13", action: DoNothing ) ], version: 1 )"#.to_owned(),
+            ),
+            (
+                "tigger",
+                in_list(r#"( keys: "CapsLock", action: SwitchLanguage, tigger: Tap(200) )"#),
+            ),
+            (
+                "block_defualt",
+                in_list(r#"( keys: "CapsLock", action: SwitchLanguage, block_defualt: false )"#),
+            ),
+            (
+                "whne",
+                in_list(
+                    r#"( keys: "CapsLock", action: SwitchLanguage, whne: AppEquals("code.exe") )"#,
+                ),
+            ),
+            (
+                "allow_extra_modifier",
+                in_list(
+                    r#"( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifier: true )"#,
+                ),
+            ),
+            (
+                "maxgap_ms",
+                in_list(
+                    r#"( sequence: (steps: ["F13", "F14"], maxgap_ms: 300), action: DoNothing )"#,
+                ),
+            ),
+            (
+                "windw_ms",
+                in_list(r#"( chord: (keys: ["F13", "F14"], windw_ms: 80), action: DoNothing )"#),
+            ),
+            (
+                "cwd",
+                in_list(r#"( keys: "F13", action: Launch(exe: "notepad.exe", cwd: "C:/temp") )"#),
+            ),
+            (
+                "wparm",
+                in_list(r#"( keys: "F13", action: PostMessage(msg: "WM_CLOSE", wparm: 1) )"#),
+            ),
+            (
+                "argz",
+                in_list(
+                    r#"( keys: "F13", action: Sequence([ Launch(exe: "notepad.exe", argz: ["x"]) ]) )"#,
+                ),
+            ),
+        ] {
+            let err = from_ron_str(&ron)
+                .expect_err(&format!("{field}: an unknown field must be an error"));
+            assert!(matches!(err, ConfigError::Parse { .. }), "{field}: {err}");
+            // With the backticks, so that a valid field in RON's list of
+            // expected names cannot satisfy it.
+            assert!(
+                err.to_string().contains(&format!("named `{field}`")),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_without_bindings_is_an_error() {
+        let err = from_ron_str("()").expect_err("a config without `bindings` must be an error");
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
+        assert!(err.to_string().contains("`bindings`"), "{err}");
+    }
+
+    #[test]
     fn empty_config_is_ok_but_warned() {
         let ron_text = r#"( bindings: [] )"#;
         let bindings = from_ron_str(ron_text).unwrap();

@@ -324,6 +324,28 @@ mod tests {
     }
 
     #[test]
+    fn a_save_with_a_misspelled_field_keeps_the_live_bindings() {
+        let dir = TempDir::new("misspelled");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, ONE).expect("write the config");
+        let hook = KeyboardHook::new();
+        hook.update_bindings(config::reload(&path).expect("the config loads"));
+
+        fs::write(
+            &path,
+            r#"( bindngs: [ ( keys: "F14", action: DoNothing ) ] )"#,
+        )
+        .expect("write the misspelled config");
+        reload_into(&path, &hook);
+
+        assert_eq!(
+            hook.bindings().len(),
+            1,
+            "a misspelled `bindings` must keep the live bindings (KS-22)"
+        );
+    }
+
+    #[test]
     fn a_spawned_watcher_keeps_the_bindings_when_the_file_is_deleted() {
         let dir = TempDir::new("deleted-live");
         let path = dir.path().join("config.ron");
