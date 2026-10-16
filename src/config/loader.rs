@@ -2,9 +2,11 @@
 //! ready for `App`. Default-config generation lives here so first run is
 //! zero-touch.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,12 +27,21 @@ use super::schema::{
     RawTrigger, RawWindowKind, SequenceSpec,
 };
 
-/// Bundled default `config.ron`. Written to disk the first time the program
-/// runs without an existing config.
+/// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
+/// daemon starts without one.
 const DEFAULT_CONFIG: &str = include_str!("default_config.ron");
+
+/// Every timing value of a binding: the Tap, Hold and DoubleTap terms,
+/// `max_gap_ms` and `window_ms` (KS-27). `Tap(0)` or `window_ms: 0` would
+/// swallow keys and almost never fire; an hour-long `Hold` is a typo.
+const TIMING_RANGE_MS: RangeInclusive<u64> = 1..=10_000;
 
 #[derive(Debug)]
 pub enum ConfigError {
+    /// The config file, or a folder on its path, does not exist.
+    Missing {
+        path: PathBuf,
+    },
     Io {
         path: PathBuf,
         source: io::Error,
@@ -53,6 +64,9 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ConfigError::Missing { path } => {
+                write!(f, "config file {} does not exist", path.display())
+            }
             ConfigError::Io { path, source } => {
                 write!(f, "config I/O error ({}): {}", path.display(), source)
             }
@@ -93,24 +107,98 @@ pub fn default_config_path() -> Result<PathBuf, ConfigError> {
     Ok(dir.join("config.ron"))
 }
 
-/// Loads bindings from `path`, generating the default file there if it does
-/// not yet exist. The "missing → write default" branch is by design: the
-/// first run of the binary should produce a working setup without forcing
-/// the user to author a config by hand.
-pub fn load(path: &Path) -> Result<Vec<Binding>, ConfigError> {
-    if !path.exists() {
-        write_default(path)?;
-        println!("[INFO] generated default config at {}", path.display());
-    } else {
-        println!("[INFO] loading config from {}", path.display());
+/// Where the config file is, decided once at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigPath {
+    /// The first command-line argument, made absolute against the current
+    /// directory.
+    CommandLine(PathBuf),
+    /// `<exe_dir>\config.ron`.
+    BesideExe(PathBuf),
+}
+
+impl ConfigPath {
+    /// The first command-line argument if there is one, else
+    /// `<exe_dir>\config.ron`.
+    ///
+    /// A relative argument is resolved here, once, against the current
+    /// directory, so the startup load, the console and the watcher all use
+    /// the same absolute path (KS-21).
+    pub fn from_arg(arg: Option<OsString>) -> Result<Self, ConfigError> {
+        match arg {
+            Some(arg) => std::path::absolute(&arg)
+                .map(ConfigPath::CommandLine)
+                .map_err(|e| {
+                    ConfigError::Other(format!("config path {arg:?} cannot be used: {e}"))
+                }),
+            None => default_config_path().map(ConfigPath::BesideExe),
+        }
     }
 
-    let text = fs::read_to_string(path).map_err(|e| ConfigError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    pub fn path(&self) -> &Path {
+        match self {
+            ConfigPath::CommandLine(path) | ConfigPath::BesideExe(path) => path,
+        }
+    }
 
-    from_ron_str(&text).map_err(|e| match e {
+    pub fn into_path(self) -> PathBuf {
+        match self {
+            ConfigPath::CommandLine(path) | ConfigPath::BesideExe(path) => path,
+        }
+    }
+}
+
+/// Loads the bindings at startup.
+///
+/// A missing `<exe_dir>\config.ron` is first written from the bundled
+/// template, so the first run produces a working setup without a
+/// hand-written config. A missing command-line path is
+/// [`ConfigError::Missing`] and nothing is created for it: a typo must not
+/// start the daemon with the defaults (KS-23).
+pub fn load(config: &ConfigPath) -> Result<Vec<Binding>, ConfigError> {
+    let path = config.path();
+    let text = match (config, read_config(path)) {
+        (ConfigPath::BesideExe(_), Err(ConfigError::Missing { .. })) => {
+            write_default(path)?;
+            println!("[INFO] generated default config at {}", path.display());
+            read_config(path)?
+        }
+        (_, read) => {
+            let text = read?;
+            println!("[INFO] loading config from {}", path.display());
+            text
+        }
+    };
+    parse_config(path, &text)
+}
+
+/// Loads the bindings again after the file at `path` changed. Never writes:
+/// a deleted or renamed file is [`ConfigError::Missing`], and the caller
+/// keeps the bindings it has (KS-23).
+pub fn reload(path: &Path) -> Result<Vec<Binding>, ConfigError> {
+    let text = read_config(path)?;
+    println!("[INFO] loading config from {}", path.display());
+    parse_config(path, &text)
+}
+
+/// The text of the config file. A missing file, or a missing folder on its
+/// path, is [`ConfigError::Missing`]. There is no `exists()` check first:
+/// the file could come or go between the check and the read.
+fn read_config(path: &Path) -> Result<String, ConfigError> {
+    fs::read_to_string(path).map_err(|source| match source.kind() {
+        io::ErrorKind::NotFound => ConfigError::Missing {
+            path: path.to_path_buf(),
+        },
+        _ => ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+    })
+}
+
+/// [`from_ron_str`] with `path` in a parse error.
+fn parse_config(path: &Path, text: &str) -> Result<Vec<Binding>, ConfigError> {
+    from_ron_str(text).map_err(|e| match e {
         // Attach the path for I/O-less variants so error messages are useful.
         ConfigError::Parse { source, .. } => ConfigError::Parse {
             path: path.to_path_buf(),
@@ -142,6 +230,11 @@ pub(crate) fn from_ron_str_with_hotkeys(
     text: &str,
     system_combination: &SystemCombination,
 ) -> Result<Vec<Binding>, ConfigError> {
+    // Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+    // `-Encoding UTF8` start the file with U+FEFF, which ron 0.10.1 does not
+    // skip (KS-24). Only a leading one goes: inside a string it is text.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+
     // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
@@ -218,6 +311,9 @@ fn expand_with_auto_blockers(
     result
 }
 
+/// Writes the bundled template to `path`, creating its folder; only for
+/// `<exe_dir>\config.ron` at startup. A file that appeared after the read
+/// is left as it is and loaded.
 fn write_default(path: &Path) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -227,10 +323,19 @@ fn write_default(path: &Path) -> Result<(), ConfigError> {
             source: e,
         })?;
     }
-    fs::write(path, DEFAULT_CONFIG).map_err(|e| ConfigError::Io {
+    let io_error = |source| ConfigError::Io {
         path: path.to_path_buf(),
-        source: e,
-    })
+        source,
+    };
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(DEFAULT_CONFIG.as_bytes()).map_err(io_error),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(io_error(e)),
+    }
 }
 
 fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, String> {
@@ -242,7 +347,8 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
     let action =
         raw_action_to_bind_action(&raw.action).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
-    let trigger = raw_trigger_to_trigger(raw.trigger);
+    let trigger =
+        raw_trigger_to_trigger(raw.trigger).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
     // Sequence/Chord have their own temporal semantics; pairing them with
     // a deferred Tap/Hold/DoubleTap trigger would double-up state machines
@@ -319,9 +425,10 @@ fn sequence_spec_to_kind(seq: &SequenceSpec) -> Result<BindingKind, String> {
         let c = parse_combo(step).map_err(|e| format!("Sequence step #{}: {}", i, e))?;
         parsed.push(c);
     }
+    let max_gap_ms = check_timing_ms(&format!("max_gap_ms: {}", seq.max_gap_ms), seq.max_gap_ms)?;
     Ok(BindingKind::Sequence {
         steps: parsed,
-        max_gap: Duration::from_millis(seq.max_gap_ms),
+        max_gap: Duration::from_millis(max_gap_ms),
     })
 }
 
@@ -343,9 +450,10 @@ fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
         }
         specs.push(spec);
     }
+    let window_ms = check_timing_ms(&format!("window_ms: {}", chord.window_ms), chord.window_ms)?;
     Ok(BindingKind::Chord {
         keys: specs,
-        window: Duration::from_millis(chord.window_ms),
+        window: Duration::from_millis(window_ms),
     })
 }
 
@@ -362,12 +470,29 @@ fn format_raw_binding_keys(raw: &RawBinding) -> String {
     "<unset>".into()
 }
 
-fn raw_trigger_to_trigger(raw: RawTrigger) -> Trigger {
-    match raw {
+fn raw_trigger_to_trigger(raw: RawTrigger) -> Result<Trigger, String> {
+    Ok(match raw {
         RawTrigger::Immediate => Trigger::Immediate,
-        RawTrigger::Tap(ms) => Trigger::Tap(ms),
-        RawTrigger::Hold(ms) => Trigger::Hold(ms),
-        RawTrigger::DoubleTap(ms) => Trigger::DoubleTap(ms),
+        RawTrigger::Tap(ms) => Trigger::Tap(check_timing_ms(&format!("Tap({ms})"), ms)?),
+        RawTrigger::Hold(ms) => Trigger::Hold(check_timing_ms(&format!("Hold({ms})"), ms)?),
+        RawTrigger::DoubleTap(ms) => {
+            Trigger::DoubleTap(check_timing_ms(&format!("DoubleTap({ms})"), ms)?)
+        }
+    })
+}
+
+/// `Ok(ms)` inside [`TIMING_RANGE_MS`], else "`<written>` is out of range:
+/// timings are 1 to 10000 ms", with `written` the value as the config
+/// spells it (`Tap(0)`, `max_gap_ms: 0`).
+fn check_timing_ms(written: &str, ms: u64) -> Result<u64, String> {
+    if TIMING_RANGE_MS.contains(&ms) {
+        Ok(ms)
+    } else {
+        Err(format!(
+            "{written} is out of range: timings are {} to {} ms",
+            TIMING_RANGE_MS.start(),
+            TIMING_RANGE_MS.end()
+        ))
     }
 }
 
@@ -499,6 +624,7 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
@@ -510,6 +636,28 @@ mod tests {
         // exercised here.
         let bindings = from_ron_str(DEFAULT_CONFIG).expect("default parses");
         assert!(!bindings.is_empty(), "default config must have bindings");
+    }
+
+    #[test]
+    fn default_config_commented_examples_load() {
+        // Users enable the template's examples by removing the `// `, so
+        // they must load as written.
+        let mut lines = DEFAULT_CONFIG.lines();
+        lines
+            .by_ref()
+            .find(|line| line.contains("// ---- examples (uncomment to enable) ----"))
+            .expect("the template has an examples section");
+        let examples: Vec<&str> = lines
+            .take_while(|line| line.trim() != "],")
+            .map(|line| match line.trim_start() {
+                "//" => "",
+                line => line.strip_prefix("// ").unwrap_or(line),
+            })
+            .collect();
+        let ron = format!("( bindings: [\n{}\n] )", examples.join("\n"));
+        let bindings = from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"));
+        assert!(!bindings.is_empty(), "the template's examples are empty");
     }
 
     #[test]
@@ -871,6 +1019,105 @@ mod tests {
         } else {
             panic!("expected Bindings error, got {:?}", err);
         }
+    }
+
+    #[test]
+    fn a_misspelled_bindings_field_is_an_error_that_names_it() {
+        // KS-22: serde used to skip the unknown field and default
+        // `bindings` to an empty list.
+        let err = from_ron_str(r#"( bindngs: [ ( keys: "F13", action: DoNothing ) ] )"#)
+            .expect_err("a misspelled `bindings` must be an error");
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
+        assert!(err.to_string().contains("named `bindngs`"), "{err}");
+    }
+
+    #[test]
+    fn unknown_fields_are_errors_that_name_the_field() {
+        let in_list = |binding: &str| format!("( bindings: [ {binding} ] )");
+        for (field, ron) in [
+            (
+                "version",
+                r#"( bindings: [ ( keys: "F13", action: DoNothing ) ], version: 1 )"#.to_owned(),
+            ),
+            (
+                "tigger",
+                in_list(r#"( keys: "CapsLock", action: SwitchLanguage, tigger: Tap(200) )"#),
+            ),
+            (
+                "block_defualt",
+                in_list(r#"( keys: "CapsLock", action: SwitchLanguage, block_defualt: false )"#),
+            ),
+            (
+                "whne",
+                in_list(
+                    r#"( keys: "CapsLock", action: SwitchLanguage, whne: AppEquals("code.exe") )"#,
+                ),
+            ),
+            (
+                "allow_extra_modifier",
+                in_list(
+                    r#"( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifier: true )"#,
+                ),
+            ),
+            (
+                "maxgap_ms",
+                in_list(
+                    r#"( sequence: (steps: ["F13", "F14"], maxgap_ms: 300), action: DoNothing )"#,
+                ),
+            ),
+            (
+                "windw_ms",
+                in_list(r#"( chord: (keys: ["F13", "F14"], windw_ms: 80), action: DoNothing )"#),
+            ),
+            (
+                "cwd",
+                in_list(r#"( keys: "F13", action: Launch(exe: "notepad.exe", cwd: "C:/temp") )"#),
+            ),
+            (
+                "wparm",
+                in_list(r#"( keys: "F13", action: PostMessage(msg: "WM_CLOSE", wparm: 1) )"#),
+            ),
+            (
+                "argz",
+                in_list(
+                    r#"( keys: "F13", action: Sequence([ Launch(exe: "notepad.exe", argz: ["x"]) ]) )"#,
+                ),
+            ),
+        ] {
+            let err = from_ron_str(&ron)
+                .expect_err(&format!("{field}: an unknown field must be an error"));
+            assert!(matches!(err, ConfigError::Parse { .. }), "{field}: {err}");
+            // With the backticks, so that a valid field in RON's list of
+            // expected names cannot satisfy it.
+            assert!(
+                err.to_string().contains(&format!("named `{field}`")),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_without_bindings_is_an_error() {
+        let err = from_ron_str("()").expect_err("a config without `bindings` must be an error");
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
+        assert!(err.to_string().contains("`bindings`"), "{err}");
+    }
+
+    #[test]
+    fn a_utf8_bom_before_the_config_is_ignored() {
+        // KS-24: Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+        // `-Encoding UTF8` start the file with U+FEFF.
+        let bindings =
+            from_ron_str("\u{feff}( bindings: [ ( keys: \"F13\", action: DoNothing ) ] )")
+                .unwrap_or_else(|e| panic!("a UTF-8 BOM must be ignored: {e}"));
+        assert_eq!(bindings.len(), 1);
+
+        let err = from_ron_str("\u{feff}( bindings: [ ( keys: \"F13\", action: DoNothing ) ]")
+            .expect_err("a config without its closing parenthesis must be an error");
+        assert!(
+            err.to_string().contains("1:51:"),
+            "positions count from the first character after the BOM: {err}"
+        );
     }
 
     #[test]
@@ -1452,6 +1699,79 @@ mod tests {
         }
     }
 
+    // ---- timing values (KS-27) ----
+
+    /// `row` as binding #1, after a valid binding #0, so that a message
+    /// names the binding by its own number.
+    fn after_binding_0(row: &str) -> String {
+        format!(r#"( bindings: [ ( keys: "F20", action: DoNothing ), {row} ] )"#)
+    }
+
+    #[test]
+    fn a_zero_tap_term_is_an_error_that_names_the_binding() {
+        let err = from_ron_str(&after_binding_0(
+            r#"( keys: "CapsLock", action: SwitchLanguage, trigger: Tap(0) )"#,
+        ))
+        .expect_err("Tap(0) must be an error");
+        match err {
+            ConfigError::Bindings(errs) => assert_eq!(
+                errs,
+                ["binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms"]
+            ),
+            other => panic!("expected Bindings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timing_values_outside_1_to_10000_ms_are_errors_that_name_the_binding() {
+        let deferred = |trigger: &str| {
+            format!(r#"( keys: "CapsLock", action: SwitchLanguage, trigger: {trigger} )"#)
+        };
+        let sequence = |gap: &str| {
+            format!(
+                r#"( sequence: (steps: ["F13", "F14"], max_gap_ms: {gap}), action: DoNothing )"#
+            )
+        };
+        let chord = |window: &str| {
+            format!(r#"( chord: (keys: ["F13", "F14"], window_ms: {window}), action: DoNothing )"#)
+        };
+        for (written, row) in [
+            ("Hold(0)", deferred("Hold(0)")),
+            ("DoubleTap(0)", deferred("DoubleTap(0)")),
+            ("Tap(10001)", deferred("Tap(10001)")),
+            ("Hold(3600000)", deferred("Hold(3600000)")),
+            ("max_gap_ms: 0", sequence("0")),
+            ("max_gap_ms: 10001", sequence("10001")),
+            ("window_ms: 0", chord("0")),
+            ("window_ms: 10001", chord("10001")),
+        ] {
+            let err = from_ron_str(&after_binding_0(&row))
+                .expect_err(&format!("{written} must be an error"));
+            match err {
+                ConfigError::Bindings(errs) => {
+                    assert_eq!(errs.len(), 1, "{written}: {errs:?}");
+                    assert!(errs[0].starts_with("binding #1 "), "{written}: {errs:?}");
+                    assert!(errs[0].contains(written), "{written}: {errs:?}");
+                    assert!(errs[0].contains("1 to 10000 ms"), "{written}: {errs:?}");
+                }
+                other => panic!("{written}: expected Bindings, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn timing_values_at_the_bounds_load() {
+        let ron = r#"( bindings: [
+            (keys: "F13", action: DoNothing, trigger: Tap(1)),
+            (keys: "F14", action: DoNothing, trigger: Hold(10000)),
+            (keys: "F15", action: DoNothing, trigger: DoubleTap(10000)),
+            (sequence: (steps: ["F16", "F17"], max_gap_ms: 1), action: DoNothing),
+            (chord: (keys: ["F18", "F19"], window_ms: 10000), action: DoNothing),
+        ] )"#;
+        let bindings = from_ron_str(ron).unwrap_or_else(|e| panic!("the bounds must load: {e}"));
+        assert_eq!(bindings.len(), 5);
+    }
+
     #[test]
     fn allow_extra_modifiers_defaults_to_false() {
         let bindings =
@@ -1521,6 +1841,87 @@ mod tests {
                 other => panic!("expected Bindings error for {kind}, got {other:?}"),
             }
         }
+    }
+
+    // ---- the config path and the file ----
+
+    #[test]
+    fn a_relative_config_argument_is_made_absolute() {
+        // KS-21: the watcher compares absolute event paths, so a relative
+        // argument must not reach it as given.
+        let cwd = std::env::current_dir().expect("the test has a current folder");
+        for arg in ["my.ron", r".\sub\..\my.ron"] {
+            let config = ConfigPath::from_arg(Some(arg.into())).expect("a relative path is valid");
+            assert!(matches!(config, ConfigPath::CommandLine(_)), "{arg}");
+            assert_eq!(config.path(), cwd.join("my.ron"), "{arg}");
+        }
+    }
+
+    #[test]
+    fn an_empty_config_argument_is_an_error() {
+        ConfigPath::from_arg(Some(OsString::new()))
+            .expect_err("an empty config path must be an error");
+    }
+
+    #[test]
+    fn a_missing_command_line_config_is_an_error_and_is_not_created() {
+        let dir = TempDir::new("missing-cli");
+        let path = dir.path().join("my.ron");
+        let err = load(&ConfigPath::CommandLine(path.clone()))
+            .expect_err("a missing command-line config must be an error");
+        assert!(
+            !path.exists(),
+            "a missing command-line config must not be created"
+        );
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_folder_of_a_command_line_config_is_not_created() {
+        let dir = TempDir::new("missing-folder");
+        let path = dir.path().join("nope").join("my.ron");
+        load(&ConfigPath::CommandLine(path))
+            .expect_err("a command-line config in a missing folder must be an error");
+        assert!(
+            !dir.path().join("nope").exists(),
+            "the folder of a missing command-line config must not be created"
+        );
+    }
+
+    #[test]
+    fn reload_of_a_missing_config_is_an_error_and_writes_nothing() {
+        let dir = TempDir::new("missing-reload");
+        let path = dir.path().join("config.ron");
+        let err = reload(&path).expect_err("reloading a missing config must be an error");
+        assert!(
+            !path.exists(),
+            "reloading a missing config must not create it"
+        );
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn reload_reads_a_file_saved_with_a_bom() {
+        let dir = TempDir::new("bom");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, [b"\xEF\xBB\xBF".as_slice(), ONE.as_bytes()].concat())
+            .expect("write the config");
+        let bindings =
+            reload(&path).unwrap_or_else(|e| panic!("a file saved with a BOM must load: {e}"));
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn a_missing_config_beside_the_exe_is_generated_and_loaded() {
+        let dir = TempDir::new("beside-exe");
+        let path = dir.path().join("config.ron");
+        let bindings = load(&ConfigPath::BesideExe(path.clone()))
+            .expect("the template is generated and loads");
+        assert!(!bindings.is_empty(), "the template has bindings");
+        assert_eq!(
+            fs::read_to_string(&path).expect("the template was written"),
+            DEFAULT_CONFIG
+        );
     }
 
     // ---- existing test, kept at the bottom ----

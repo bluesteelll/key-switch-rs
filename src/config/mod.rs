@@ -1,4 +1,4 @@
-//! Configuration: `config.toml` loading, parsing, and conversion into the
+//! Configuration: `config.ron` loading, parsing, and conversion into the
 //! runtime `Binding` representation.
 //!
 //! Layout:
@@ -11,8 +11,10 @@
 mod loader;
 mod parsing;
 mod schema;
+#[cfg(test)]
+pub(crate) mod testing;
 
-pub use loader::{default_config_path, load};
+pub use loader::{ConfigPath, load, reload};
 
 /// RON text to bindings without touching the disk, for the engine's
 /// scenario tests; `from_ron_str_with_hotkeys` without the registry either.

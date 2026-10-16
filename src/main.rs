@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use key_switch_rs::config;
@@ -22,17 +21,15 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Resolution order for the config path:
-    //   1. First positional CLI argument, if provided.
+    //   1. First positional CLI argument, if provided, made absolute against
+    //      the current folder. The file must exist; nothing is created.
     //   2. <exe_dir>/config.ron (portable layout: drop the .exe anywhere and
-    //      its config lives beside it).
-    let config_path: PathBuf = match std::env::args_os().nth(1) {
-        Some(arg) => PathBuf::from(arg),
-        None => config::default_config_path()?,
-    };
+    //      its config lives beside it), written from the template if missing.
+    let config = config::ConfigPath::from_arg(std::env::args_os().nth(1))?;
 
-    let bindings = config::load(&config_path)?;
+    let bindings = config::load(&config)?;
 
-    let mut app = App::new().with_config_watcher(config_path);
+    let mut app = App::new().with_config_watcher(config.into_path());
     for b in bindings {
         app = app.add_binding(b);
     }

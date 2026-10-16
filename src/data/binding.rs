@@ -118,7 +118,6 @@ impl Binding {
         }
     }
 
-    #[allow(dead_code)] // Part of the public builder API.
     pub fn with_block_default(mut self, block: bool) -> Self {
         self.block_default = block;
         self
@@ -129,13 +128,11 @@ impl Binding {
         self
     }
 
-    #[allow(dead_code)] // Part of the public builder API.
     pub fn with_condition(mut self, condition: Condition) -> Self {
         self.condition = condition;
         self
     }
 
-    #[allow(dead_code)] // Part of the public builder API.
     pub fn with_trigger(mut self, trigger: Trigger) -> Self {
         self.trigger = trigger;
         self

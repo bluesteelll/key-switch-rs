@@ -2,11 +2,12 @@
 // `key-switch-rs.exe`. The CLI `swch.exe` stays a normal-user process —
 // it talks to the daemon via a named pipe; no elevation needed.
 //
-// Approach: rather than pass an external `.manifest` file (which conflicts
-// with rustc's default auto-generated manifest), we override only the UAC
-// fragment via the MSVC linker's `/MANIFESTUAC` switch. The default
-// manifest stays in place for everything else (compatibility shims,
-// dpiAware, etc. — defaults are sane). Scoping is per-binary via
+// Approach: we set only the UAC fragment, through the MSVC linker's
+// `/MANIFESTUAC`; the linker generates the rest of the manifest. The audit's
+// probe build of this setup embedded only the `trustInfo` block, so there is
+// no `supportedOS` section. `app.manifest` in the repository root is not
+// passed to the linker (no `/MANIFESTINPUT`); the roadmap's version item
+// decides whether to embed or delete it. Scoping is per-binary via
 // `cargo:rustc-link-arg-bin=<name>=<arg>`.
 //
 // The decision logic is a pure function so it can be unit-tested: cargo never

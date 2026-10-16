@@ -88,6 +88,32 @@ minor version; such entries sit under **Changed** and start with
   while another key is down in Windows (KS-05): with the `` ` `` hotkey
   (registry value 4), a `` ` `` typed while another key is held now reaches
   Windows and may switch the layout.
+- **Breaking:** unknown and misspelled field names are load errors
+  (KS-22): in a binding (`tigger: Tap(200)`, `block_defualt: false`,
+  `whne: AppEquals("code.exe")`, `allow_extra_modifier: true`), at the top
+  level (`bindngs: [...]`), in `sequence: (...)` and `chord: (...)`, and
+  in `Launch(...)`, `PostMessage(...)` and a macro's `Launch(...)` step,
+  where `cwd: "C:/temp"` used to be dropped silently. `bindings` is
+  required: `()` is an error. The message names the field, for example
+  ``1:10: Unexpected field named `bindngs` in `RawConfig`, expected `bindings` instead``.
+  Such a file stops the daemon at startup; saved while it runs, it is
+  rejected and the previous bindings stay live, where a misspelled
+  `bindings` used to leave zero bindings live. `bindings: []` still loads,
+  with `[WARN] config contains no bindings`.
+- **Breaking:** a config path given on the command line must exist. With
+  a missing file the daemon stops with `[FATAL] config file <path> does
+  not exist` instead of writing the default template there (creating its
+  folders) and starting with it; `key-switch-rs.exe --help` no longer
+  creates a file named `--help` (KS-41, an unverified report, partly;
+  roadmap item 4.2 adds argument parsing). Without an argument nothing
+  changes: a missing `config.ron` next to `key-switch-rs.exe` is still
+  created from the template at startup.
+- **Breaking:** timing values must be 1 to 10000 ms: the `Tap`, `Hold`
+  and `DoubleTap` terms, `max_gap_ms` and `window_ms` (KS-27, an
+  unverified report). `Tap(0)` used to swallow the key and almost never
+  fire, and `window_ms: 0` gave a chord that swallowed its keys and never
+  completed. The error names the binding, counting from 0:
+  `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`.
 
 ### Fixed
 
@@ -227,6 +253,24 @@ minor version; such entries sit under **Changed** and start with
   binding of yours that matches the same press: with `LAlt+LShift` bound,
   that binding fires, and the `Alt+Shift` blocker still swallows Shift
   pressed with the right Alt.
+- KS-21: hot reload works when the config path given on the command line
+  is relative (`key-switch-rs.exe my.ron`, or a Scheduled Task with a
+  relative argument and a "Start in" folder) or differs in letter case
+  from the file on disk (`MY.RON` for `my.ron`). The daemon makes the path
+  absolute once at startup, so the console shows the full path, and the
+  watcher compares file names the way Windows does, ignoring case. It used
+  to print `Watching my.ron for changes` and then never reload.
+- KS-23: deleting or renaming `config.ron` while the daemon runs keeps the
+  live bindings. The daemon used to write the default template in its
+  place about 250 ms later and switch to it, so CapsLock switched the
+  language again. The console shows `[ERROR] config reload failed:` with
+  `config file <path> does not exist`, and putting the file back reloads
+  it. The template is written only at startup.
+- KS-24: a `config.ron` saved as UTF-8 with a byte-order mark (Notepad's
+  "UTF-8 with BOM", or `Set-Content -Encoding UTF8` in Windows PowerShell
+  5.1) loads. It used to stop the daemon at startup with
+  ``1:1: Expected opening `(` for struct `RawConfig` `` and was rejected
+  on every reload.
 - KS-28 (an unverified report): `TitleEquals` and `AppEquals` ignore case
   in every alphabet, with the same Unicode lowercasing as `TitleContains`:
   `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор". They
@@ -256,6 +300,19 @@ minor version; such entries sit under **Changed** and start with
   `/MANIFESTUAC` only when the target environment is `msvc`. A release build
   for `x86_64-pc-windows-gnu` now links, and warns that no UAC manifest is
   embedded.
+- Documentation drift (roadmap Workstream B): the generated `config.ron` no
+  longer says that changes need a restart; its `sequence` and `chord`
+  examples use F13 and F14 instead of `g`, `j` and `k`, which such bindings
+  swallow while you type (KS-15); it lists all eight macro steps, as the
+  README now does (it said five). The README lists the key names it left
+  out (`Caps`, `Break`, `PrtSc`, `Scroll`, the media keys and more), the
+  `swch` command aliases, every `BindAction` variant and `Binding` field,
+  and the `windows` features in use. `Launch` is no longer called
+  detached: until roadmap item 3.3 the program it starts gets the daemon's
+  administrator rights and console (KS-09, KS-34). The README no longer
+  says that the elevated daemon sees keys in the UAC consent prompt, which
+  runs on the Secure Desktop, or that the UAC prompt appears only once.
+  `swch help` is listed in the usage text.
 
 ## [0.1.0] - 2026-05-20
 

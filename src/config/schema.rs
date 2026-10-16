@@ -15,15 +15,20 @@
 
 use serde::Deserialize;
 
+// Every container with named fields denies unknown ones: a misspelled field
+// would otherwise be skipped and its default used silently (KS-22).
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RawConfig {
-    /// Top-level list of bindings. Empty / missing is OK (loader warns but
-    /// doesn't fail), so iterating on the file never crashes the daemon.
-    #[serde(default)]
+    /// Top-level list of bindings. Required: a missing or misspelled
+    /// `bindings` is a load error (KS-22). An explicit `bindings: []`
+    /// loads, with a warning, so every binding can be commented out.
     pub bindings: Vec<RawBinding>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RawBinding {
     /// Combo-style binding. Mutually exclusive with `sequence` and `chord`.
     /// The loader rejects bindings that set zero or more than one of these.
@@ -77,6 +82,7 @@ pub(crate) enum RawTrigger {
 /// Vim/Emacs-style leader sequence. Used as `sequence: (steps: ["g", "g"])`
 /// at the binding level (RON struct literal).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SequenceSpec {
     pub steps: Vec<String>,
     #[serde(default = "default_seq_gap_ms")]
@@ -86,6 +92,7 @@ pub(crate) struct SequenceSpec {
 /// Simultaneous chord (all keys go down within a tight window).
 /// Used as `chord: (keys: ["j", "k"])` at the binding level.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ChordSpec {
     pub keys: Vec<String>,
     #[serde(default = "default_chord_window_ms")]
@@ -124,7 +131,10 @@ pub(crate) enum RawCondition {
 }
 
 /// `BindAction` mirror with VK fields kept as strings until the loader runs.
+/// `deny_unknown_fields` applies to the struct variants `PostMessage` and
+/// `Launch`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum RawAction {
     SwitchLanguage,
     SwitchLanguageBackward,
@@ -184,6 +194,7 @@ pub(crate) enum MessageRef {
 /// `Window(Restore)`, `Delay(100)`, `Text("hi")`, `Key("Enter")`,
 /// `Combo("Ctrl+S")`, `Launch(...)`, `OpenUrl("...")`, `Media(PlayPause)`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) enum RawStep {
     Window(RawWindowKind),
     Delay(u64),
