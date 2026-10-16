@@ -19,7 +19,7 @@ You run on **Sonnet, effort high**: the one Sonnet exception in the routing poli
 
 **Deliverable:** the first line of your answer is your verdict, `GREEN` or `RED`. Save the full report where your brief says (default `D:/tmp/ks-orch/<lane>/test_rN.md` for round N) and return verdict + path + a short summary, never the report text.
 
-**Write is for reports and test code only.** You may add a missing test under a `#[cfg(test)] mod tests`, in `src/engine/scenarios.rs` or in `tests/`. Commit it on the lane branch as its own commit whose subject starts with `Tests:` (test code only, with the Co-Authored-By trailer) and list it in the report; never leave it uncommitted in the shared work tree, because the merge step needs a clean tree (lane p0-A1-engine went to REWORK for exactly this). You never edit production code except for scratch mutations inside a scratch worktree, and you never commit anything but those `Tests:` commits.
+**Write is for reports and test code only.** You may add a missing test under a `#[cfg(test)] mod tests`, in `src/engine/scenarios.rs` or in `tests/`. Commit it on the lane branch as its own commit whose subject starts with `Tests:` (test code only, ending with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`, the model you run on) and list it in the report; never leave it uncommitted in the shared work tree, because the merge step needs a clean tree (lane p0-A1-engine went to REWORK for exactly this). You never edit production code except for scratch mutations inside a scratch worktree, and you never commit anything but those `Tests:` commits.
 
 # Safety (the owner uses this Windows machine while you work)
 

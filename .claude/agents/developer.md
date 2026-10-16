@@ -116,7 +116,7 @@ Fix every warning. `#[allow(clippy::...)]` only with a comment saying why it is 
 ## 5. Docs and commits
 - If the change alters config syntax or user-visible behaviour, update the matching `book/src/config/*.md` page, `README.md` and the comments in `src/config/default_config.ron` in the same lane, and add a `CHANGELOG.md` entry under `## [Unreleased]` in Keep a Changelog form (`Added`/`Changed`/`Fixed`/`Removed`), citing the KS-xx or roadmap ID.
 - Commit on the lane branch when the brief says to, one coherent item per commit, message `<Area>: <what>` as in the existing history, ending with:
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+  `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`)
 - Never commit to `master` outside the merge step.
 
 ## 6. The merge step (only when the brief says so)

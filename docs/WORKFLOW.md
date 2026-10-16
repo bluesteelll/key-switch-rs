@@ -233,7 +233,7 @@ which installs no hook. `settings.json` denies force-push, `reset --hard`, `stas
 - One branch per feature, from `master` (the `base` arg). No pull requests.
 - Commits on the lane branch: one coherent item each, red-first (the failing line goes in the
   message body), subject `<Area>: <what>`. Every message ends with a blank line and
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`).
 - Fix rounds add follow-up commits and never amend.
 - Merge step only: `git checkout master`, `git merge --no-ff <branch>` with the message
   `Merge branch '<branch>': <title>` + the trailer. For CHANGELOG/README conflicts, keep both sides.

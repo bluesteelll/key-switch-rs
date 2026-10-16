@@ -102,7 +102,8 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 - One branch per feature, cut from `master`. It is merged into `master` with `git merge --no-ff` (no pull
   requests), and then `master` is pushed. Only the lane's merge step pushes.
 - One coherent item per commit, with the subject `<Area>: <what>`. Every commit message ends with a blank line and
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>`, naming the model that wrote it: `Opus` for every role
+  except the tester, which runs on `Sonnet`.
 - Fix rounds add follow-up commits and never amend. Never use `--force`, `--no-verify`, `reset --hard`, `stash`
   or `clean` (`settings.json` denies them).
 - `CHANGELOG.md` follows Keep a Changelog. Entries go under `## [Unreleased]` (Added/Changed/Fixed/Removed)

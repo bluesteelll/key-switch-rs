@@ -152,7 +152,7 @@ Internal: <N> checked, <m> broken (fixed). Permalinks: <N> checked. External: <N
 - **Do not invent facts,** behaviour, defaults or error texts. If it is not in the code or a validated run, it is not in the book.
 - **Do not document unmerged behaviour as current,** and do not drop a "not independently verified" label without new evidence.
 - **Do not break the build or the anchors** that other pages and the outside world link to.
-- **Do not commit** unless the brief says so. If it does: on the branch the brief names only (the lane branch, or `docs/book-<phase>` for a phase book sync), a focused message, ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Merge (`--no-ff` into `master`, no pull requests), push and branch deletion only when the brief is a merge step, as the `ks-phase` book sync is; follow the merge step in `CLAUDE.md` and run the quality gate on `master` before pushing.
+- **Do not commit** unless the brief says so. If it does: on the branch the brief names only (the lane branch, or `docs/book-<phase>` for a phase book sync), a focused message, ending with `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`). Merge (`--no-ff` into `master`, no pull requests), push and branch deletion only when the brief is a merge step, as the `ks-phase` book sync is; follow the merge step in `CLAUDE.md` and run the quality gate on `master` before pushing.
 
 # Tone in final pages
 
