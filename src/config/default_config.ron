@@ -17,6 +17,8 @@
 //   sequence: (steps: [...], ...)     — Vim/Emacs-style ordered sequence
 //   chord:    (keys: [...], ...)      — simultaneous chord (F13+F14 together)
 //
+// max_gap_ms (default 500) and window_ms (default 50) are 1 to 10000 ms.
+//
 // Examples:
 //
 //   ( keys: "Ctrl+Alt+L", action: PressKey("L") )
@@ -104,6 +106,8 @@
 //   trigger: Hold(200)           — fire after key held for 200 ms
 //   trigger: DoubleTap(250)      — fire on second key-down within 250 ms
 //                                  of the first
+//
+// Terms are 1 to 10000 ms.
 //
 // Multiple bindings on the same combo with different triggers coexist:
 // e.g. one Tap(200) binding for SwitchLanguage and one Hold(200) binding

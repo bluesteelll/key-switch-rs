@@ -108,6 +108,12 @@ minor version; such entries sit under **Changed** and start with
   roadmap item 4.2 adds argument parsing). Without an argument nothing
   changes: a missing `config.ron` next to `key-switch-rs.exe` is still
   created from the template at startup.
+- **Breaking:** timing values must be 1 to 10000 ms: the `Tap`, `Hold`
+  and `DoubleTap` terms, `max_gap_ms` and `window_ms` (KS-27, an
+  unverified report). `Tap(0)` used to swallow the key and almost never
+  fire, and `window_ms: 0` gave a chord that swallowed its keys and never
+  completed. The error names the binding, counting from 0:
+  `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`.
 
 ### Fixed
 

@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,6 +30,11 @@ use super::schema::{
 /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
 /// daemon starts without one.
 const DEFAULT_CONFIG: &str = include_str!("default_config.ron");
+
+/// Every timing value of a binding: the Tap, Hold and DoubleTap terms,
+/// `max_gap_ms` and `window_ms` (KS-27). `Tap(0)` or `window_ms: 0` would
+/// swallow keys and almost never fire; an hour-long `Hold` is a typo.
+const TIMING_RANGE_MS: RangeInclusive<u64> = 1..=10_000;
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -341,7 +347,8 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
     let action =
         raw_action_to_bind_action(&raw.action).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
-    let trigger = raw_trigger_to_trigger(raw.trigger);
+    let trigger =
+        raw_trigger_to_trigger(raw.trigger).map_err(|e| format!("{}: {}", err_prefix, e))?;
 
     // Sequence/Chord have their own temporal semantics; pairing them with
     // a deferred Tap/Hold/DoubleTap trigger would double-up state machines
@@ -418,9 +425,10 @@ fn sequence_spec_to_kind(seq: &SequenceSpec) -> Result<BindingKind, String> {
         let c = parse_combo(step).map_err(|e| format!("Sequence step #{}: {}", i, e))?;
         parsed.push(c);
     }
+    let max_gap_ms = check_timing_ms(&format!("max_gap_ms: {}", seq.max_gap_ms), seq.max_gap_ms)?;
     Ok(BindingKind::Sequence {
         steps: parsed,
-        max_gap: Duration::from_millis(seq.max_gap_ms),
+        max_gap: Duration::from_millis(max_gap_ms),
     })
 }
 
@@ -442,9 +450,10 @@ fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
         }
         specs.push(spec);
     }
+    let window_ms = check_timing_ms(&format!("window_ms: {}", chord.window_ms), chord.window_ms)?;
     Ok(BindingKind::Chord {
         keys: specs,
-        window: Duration::from_millis(chord.window_ms),
+        window: Duration::from_millis(window_ms),
     })
 }
 
@@ -461,12 +470,29 @@ fn format_raw_binding_keys(raw: &RawBinding) -> String {
     "<unset>".into()
 }
 
-fn raw_trigger_to_trigger(raw: RawTrigger) -> Trigger {
-    match raw {
+fn raw_trigger_to_trigger(raw: RawTrigger) -> Result<Trigger, String> {
+    Ok(match raw {
         RawTrigger::Immediate => Trigger::Immediate,
-        RawTrigger::Tap(ms) => Trigger::Tap(ms),
-        RawTrigger::Hold(ms) => Trigger::Hold(ms),
-        RawTrigger::DoubleTap(ms) => Trigger::DoubleTap(ms),
+        RawTrigger::Tap(ms) => Trigger::Tap(check_timing_ms(&format!("Tap({ms})"), ms)?),
+        RawTrigger::Hold(ms) => Trigger::Hold(check_timing_ms(&format!("Hold({ms})"), ms)?),
+        RawTrigger::DoubleTap(ms) => {
+            Trigger::DoubleTap(check_timing_ms(&format!("DoubleTap({ms})"), ms)?)
+        }
+    })
+}
+
+/// `Ok(ms)` inside [`TIMING_RANGE_MS`], else "`<written>` is out of range:
+/// timings are 1 to 10000 ms", with `written` the value as the config
+/// spells it (`Tap(0)`, `max_gap_ms: 0`).
+fn check_timing_ms(written: &str, ms: u64) -> Result<u64, String> {
+    if TIMING_RANGE_MS.contains(&ms) {
+        Ok(ms)
+    } else {
+        Err(format!(
+            "{written} is out of range: timings are {} to {} ms",
+            TIMING_RANGE_MS.start(),
+            TIMING_RANGE_MS.end()
+        ))
     }
 }
 

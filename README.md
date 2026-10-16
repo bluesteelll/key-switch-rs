@@ -142,8 +142,9 @@ executable, then loads it. **Bindings are hot-reloaded automatically** — edit
 without a restart.
 
 If the file does not load (a syntax error, an unknown or misspelled field,
-an unknown key name, ...) or is deleted or renamed, the error is printed and
-the **previously-running bindings stay live** — a malformed save never
+an unknown key name, a timing value outside 1 to 10000 ms, ...) or is
+deleted or renamed, the error is printed and the **previously-running
+bindings stay live** — a malformed save never
 bricks the daemon. Fix the file and save again to apply. The file is UTF-8,
 with or without a BOM.
 
@@ -283,8 +284,8 @@ Each binding specifies **exactly one** of three trigger shapes:
 | Field          | Shape                                                                                                  | Fires when                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
 | `keys: "..."`  | Plain combo string (e.g. `"Ctrl+Alt+L"`).                                                              | All keys of the combo are held, on the key-down of one of its own keys (see "Which key fires a binding" above). |
-| `sequence: (steps: [...], max_gap_ms: 500)` | Vim/Emacs-style ordered sequence. Each step is a combo string. `max_gap_ms` (default 500) is the maximum time between consecutive steps. | Steps pressed in order, each within `max_gap_ms` of the previous.       |
-| `chord: (keys: [...], window_ms: 50)`       | Simultaneous chord. `window_ms` (default 50, typical QMK COMBO_TERM) is how close together the presses must be. | All listed keys go down within `window_ms` of each other, in any order. |
+| `sequence: (steps: [...], max_gap_ms: 500)` | Vim/Emacs-style ordered sequence. Each step is a combo string. `max_gap_ms` (default 500, 1 to 10000) is the maximum time between consecutive steps. | Steps pressed in order, each within `max_gap_ms` of the previous.       |
+| `chord: (keys: [...], window_ms: 50)`       | Simultaneous chord. `window_ms` (default 50, 1 to 10000, typical QMK COMBO_TERM) is how close together the presses must be. | All listed keys go down within `window_ms` of each other, in any order. |
 
 Examples:
 
@@ -350,6 +351,8 @@ Shift is unaffected.
 | `Tap(<ms>)`        | On key-up, but only if the key was released within `<ms>` of being pressed.            |
 | `Hold(<ms>)`       | After the key has been held for `<ms>` without being released.                         |
 | `DoubleTap(<ms>)`  | On the *second* key-down within `<ms>` of the first. Single press emits nothing.       |
+
+`<ms>` is 1 to 10000; another value is a load error.
 
 **How resolution works (under the hood):**
 
@@ -516,6 +519,12 @@ every problem in one pass. Common cases:
 - ``Unexpected missing field named `bindings` in `RawConfig` `` — the file
   has no `bindings: [...]` list; a misspelled one gives
   ``Unexpected field named `bindngs` in `RawConfig`, expected `bindings` instead``.
+- `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`
+  — a `Tap`, `Hold` or `DoubleTap` term, `max_gap_ms` or `window_ms`
+  outside 1 to 10000 ms.
+
+Bindings and steps are numbered from 0 in file order: `binding #1` is the
+second binding of the file.
 - `unknown variant 'FlyToMars'` — variant name is misspelled.
 
 ## Build
