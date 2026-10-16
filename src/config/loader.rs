@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::core::windows_actions::{BindAction, MediaKey};
-use crate::data::binding::{Binding, BindingKind};
+use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
 use crate::data::key_spec::KeySpec;
@@ -23,8 +23,8 @@ use crate::data::vk_name::parse_vk;
 
 use super::parsing::{parse_combo, parse_key_list, parse_wm_name};
 use super::schema::{
-    ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawCondition, RawConfig, RawStep,
-    RawTrigger, RawWindowKind, SequenceSpec,
+    ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawBlockOriginalCombo, RawCondition,
+    RawConfig, RawStep, RawTrigger, RawWindowKind, SequenceSpec,
 };
 
 /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
@@ -216,9 +216,9 @@ pub(crate) type SystemCombination = dyn Fn(&BindAction) -> Option<KeyCombination
 /// to the crate so tests can exercise the schema without touching the disk.
 ///
 /// The returned list holds the file's bindings in file order, followed by
-/// the auto-blockers for the entries that set `block_original_combo: true`,
-/// with the hotkeys read from the registry. Callers can hand the list
-/// straight to `KeyboardHook::update_bindings`.
+/// the auto-blockers for the entries that set `block_original_combo: true`
+/// or `MaskOnly`, with the hotkeys read from the registry. Callers can hand
+/// the list straight to `KeyboardHook::update_bindings`.
 pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
     from_ron_str_with_hotkeys(text, &BindAction::get_system_combination)
 }
@@ -289,11 +289,9 @@ fn parse_ron_str(
 
     // Every entry converted (an error returned above), so `raw.bindings[k]`
     // and `user_bindings[k]` are the same entry of the file.
-    let warnings = duplicate_warnings(&raw.bindings, &user_bindings);
-    Ok(ParsedConfig {
-        bindings: expand_with_auto_blockers(user_bindings, system_combination),
-        warnings,
-    })
+    let mut warnings = duplicate_warnings(&raw.bindings, &user_bindings);
+    let bindings = expand_with_auto_blockers(user_bindings, system_combination, &mut warnings);
+    Ok(ParsedConfig { bindings, warnings })
 }
 
 /// One warning for every binding that duplicates an earlier one
@@ -321,10 +319,13 @@ fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
 }
 
 /// Appends an auto-blocker for the Windows hotkey of every binding that
-/// declared `block_original_combo: true`, so that Windows' own behaviour for
-/// that hotkey does not run next to the user's remap.
+/// declared `block_original_combo: true` or `MaskOnly`, so that Windows' own
+/// behaviour for that hotkey does not run next to the user's remap.
 ///
-/// One blocker per distinct hotkey, after all of the file's bindings. None
+/// One blocker per distinct hotkey and mode, in the order the file first
+/// asks for them, after all of the file's bindings. `MaskOnly` needs a
+/// hotkey made only of modifiers: on another hotkey, such as `` ` ``, it
+/// gives a blocker that swallows, as `true` does, and a warning. No blocker
 /// for a hotkey whose exact keys a `keys` binding of the file uses, the
 /// flagged one included, whatever its trigger or `when:`: that binding takes
 /// the hotkey over, and its own `block_default` and `when:` decide whether
@@ -332,29 +333,52 @@ fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
 fn expand_with_auto_blockers(
     user_bindings: Vec<Binding>,
     system_combination: &SystemCombination,
+    warnings: &mut Vec<String>,
 ) -> Vec<Binding> {
-    let mut hotkeys: Vec<KeyCombination> = Vec::new();
-    for binding in &user_bindings {
-        if binding.block_original_combo
-            && let Some(hotkey) = system_combination(&binding.action)
-            && !hotkeys.contains(&hotkey)
-        {
-            hotkeys.push(hotkey);
-        }
+    // What the file asks for, in file order.
+    let mut requests: Vec<(KeyCombination, BlockerMode)> = Vec::new();
+    for (index, binding) in user_bindings.iter().enumerate() {
+        let Some(requested) = binding.block_original_combo else {
+            continue;
+        };
+        let Some(hotkey) = system_combination(&binding.action) else {
+            continue;
+        };
+        let mode = if requested == BlockerMode::MaskOnly && !hotkey.is_modifier_only() {
+            warnings.push(format!(
+                "binding #{index}: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the {hotkey} hotkey is blocked as with true"
+            ));
+            BlockerMode::Swallow
+        } else {
+            requested
+        };
+        requests.push((hotkey, mode));
     }
 
-    let mut blockers = Vec::with_capacity(hotkeys.len());
-    for hotkey in hotkeys {
+    let mut blockers = Vec::new();
+    let mut hotkeys_seen: Vec<&KeyCombination> = Vec::new();
+    for (hotkey, _) in &requests {
+        if hotkeys_seen.contains(&hotkey) {
+            continue;
+        }
+        hotkeys_seen.push(hotkey);
         // Only `keys` bindings hold a set of keys the way a hotkey does;
         // sequences and chords have no `combination()`.
-        match user_bindings
+        if let Some(index) = user_bindings
             .iter()
-            .position(|b| b.combination() == Some(&hotkey))
+            .position(|b| b.combination() == Some(hotkey))
         {
-            Some(index) => {
-                println!("[INFO] no auto-blocker for {hotkey}: binding #{index} uses the same keys")
+            println!("[INFO] no auto-blocker for {hotkey}: binding #{index} uses the same keys");
+            continue;
+        }
+        let mut modes: Vec<BlockerMode> = Vec::new();
+        for (other, mode) in &requests {
+            if other == hotkey && !modes.contains(mode) {
+                modes.push(*mode);
             }
-            None => blockers.push(Binding::new_auto_blocker(hotkey)),
+        }
+        for mode in modes {
+            blockers.push(Binding::new_auto_blocker(hotkey.clone(), mode));
         }
     }
 
@@ -439,7 +463,7 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         .unwrap_or_else(|| Binding::blocks_by_default(&kind, trigger));
     let binding = Binding::with_kind(kind, action)
         .with_block_default(block_default)
-        .with_block_original_combo(raw.block_original_combo)
+        .with_block_original_combo(raw_blocker_to_mode(raw.block_original_combo))
         .with_condition(raw_condition_to_condition(&raw.when))
         .with_trigger(trigger)
         .with_allow_extra_modifiers(raw.allow_extra_modifiers);
@@ -539,6 +563,14 @@ fn format_raw_binding_keys(raw: &RawBinding) -> String {
         return format!("Chord[{}]", chord.keys.join("+"));
     }
     "<unset>".into()
+}
+
+fn raw_blocker_to_mode(raw: RawBlockOriginalCombo) -> Option<BlockerMode> {
+    match raw {
+        RawBlockOriginalCombo::On => Some(BlockerMode::Swallow),
+        RawBlockOriginalCombo::Off => None,
+        RawBlockOriginalCombo::MaskOnly => Some(BlockerMode::MaskOnly),
+    }
 }
 
 fn raw_trigger_to_trigger(raw: RawTrigger) -> Result<Trigger, String> {
@@ -832,16 +864,16 @@ mod tests {
         // auto-blocker.
         assert_eq!(bindings.len(), 2);
 
-        let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();
+        let user = bindings.iter().find(|b| !b.is_auto_blocker()).unwrap();
         assert_eq!(
             user.combination().unwrap().keys,
             vec![KeySpec::Key(VK_CAPITAL)]
         );
         assert_eq!(user.action, BindAction::SwitchLanguage);
-        assert!(user.block_original_combo);
+        assert_eq!(user.block_original_combo, Some(BlockerMode::Swallow));
         assert!(user.block_default); // default
 
-        let auto = bindings.iter().find(|b| b.is_auto_blocker).unwrap();
+        let auto = bindings.iter().find(|b| b.is_auto_blocker()).unwrap();
         assert_eq!(auto.action, BindAction::DoNothing);
     }
 
@@ -857,7 +889,7 @@ mod tests {
         "#;
         let bindings = from_ron_str(ron_text).unwrap();
         assert_eq!(bindings.len(), 1);
-        assert!(!bindings[0].is_auto_blocker);
+        assert!(!bindings[0].is_auto_blocker());
     }
 
     #[test]
@@ -876,7 +908,7 @@ mod tests {
         "#;
         let bindings = from_ron_str(ron_text).unwrap();
         assert_eq!(bindings.len(), 1);
-        assert!(!bindings[0].is_auto_blocker);
+        assert!(!bindings[0].is_auto_blocker());
     }
 
     #[test]
@@ -902,7 +934,7 @@ mod tests {
         let bindings = from_ron_str(ron_text).unwrap();
         // 2 user + 1 auto-blocker = 3, not 4.
         assert_eq!(bindings.len(), 3);
-        assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker).count(), 1);
+        assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker()).count(), 1);
     }
 
     #[test]
@@ -916,7 +948,7 @@ mod tests {
                 .expect("config loads");
 
         assert_eq!(bindings.len(), 3);
-        let mut blockers = bindings.iter().filter(|b| b.is_auto_blocker);
+        let mut blockers = bindings.iter().filter(|b| b.is_auto_blocker());
         let blocker = blockers.next().expect("SwitchLanguage gets a blocker");
         assert_eq!(
             blocker.combination(),
@@ -942,7 +974,7 @@ mod tests {
 
     /// How many auto-blockers the loader added.
     fn blockers(bindings: &[Binding]) -> usize {
-        bindings.iter().filter(|b| b.is_auto_blocker).count()
+        bindings.iter().filter(|b| b.is_auto_blocker()).count()
     }
 
     const ALT_SHIFT: &[VIRTUAL_KEY] = &[VK_MENU, VK_SHIFT];
@@ -1007,7 +1039,7 @@ mod tests {
             from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).expect("config loads");
         assert_eq!(bindings.len(), 3);
         assert!(
-            !bindings[0].is_auto_blocker,
+            !bindings[0].is_auto_blocker(),
             "the file's bindings come first"
         );
         assert_eq!(
@@ -1018,7 +1050,7 @@ mod tests {
             bindings[1].combination().expect("a keys binding").keys,
             vec![KeySpec::Key(VK_F14)]
         );
-        assert!(bindings[2].is_auto_blocker, "the blocker comes last");
+        assert!(bindings[2].is_auto_blocker(), "the blocker comes last");
         assert_eq!(
             bindings[2].combination(),
             Some(&KeyCombination::from_keys(ALT_SHIFT.iter().copied()))
@@ -1691,7 +1723,7 @@ mod tests {
             )
         "#;
         let bindings = from_ron_str(ron).unwrap();
-        let user = bindings.iter().find(|b| !b.is_auto_blocker).unwrap();
+        let user = bindings.iter().find(|b| !b.is_auto_blocker()).unwrap();
         assert_eq!(user.trigger, Trigger::Tap(200));
         assert_eq!(user.action, BindAction::SwitchLanguage);
     }

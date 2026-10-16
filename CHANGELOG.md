@@ -62,6 +62,30 @@ minor version; such entries sit under **Changed** and start with
   The file still loads. The warning is printed at startup and on every
   reload. If the copy you remove sets `block_original_combo: true`, move
   the flag to the one you keep.
+- `block_original_combo: MaskOnly`, experimental (roadmap item 1.2, KS-05):
+  an auto-blocker that swallows nothing. When Windows would see its hotkey
+  and no other key, it sends the menu mask key (0xE8, see KS-12 under
+  **Fixed**) on the key-down that completes the hotkey and again on the
+  next key event, so that Windows does not see a clean hotkey press.
+  `Ctrl+Shift+T`, `Alt+Shift+Tab` and `Alt+Shift+X` then reach applications,
+  where `true` swallows the hotkey's second modifier. It rests on an
+  unverified hypothesis: that Windows switches the layout only on a clean
+  press and release of `Alt+Shift` or `Ctrl+Shift`. `true` and `false` keep
+  their meaning, and the template keeps `true`. The startup list shows such
+  a blocker as `-> (masked, experimental)`. On a hotkey that is not made only
+  of modifiers (the `` ` `` hotkey) `MaskOnly` blocks as `true` does and
+  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``.
+  A misspelled value is a load error that lists the valid ones,
+  ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``;
+  `Some(true)`, an error before too, now gets that message for `` `Some` ``.
+  Manual check (no test can tell what Windows does): with
+  `( keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly )`
+  and the `Ctrl+Shift` hotkey, `Ctrl+Shift+T` reopens a closed browser tab
+  and a bare Ctrl+Shift pressed and released five times never switches the
+  layout; with the `Alt+Shift` hotkey, a bare Alt+Shift five times never
+  switches it, Alt+Shift+Tab steps back in the switcher, and Alt, Shift,
+  release in Notepad activates no menu. If the layout still switches, the
+  hypothesis does not hold: keep `true`.
 
 ### Changed
 
@@ -260,17 +284,19 @@ minor version; such entries sit under **Changed** and start with
   swallows the typed keys, Shift pressed while CapsLock is held no longer
   fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
   (J, then Ctrl) no longer fires `Ctrl+J`.
-- KS-05 (partly; roadmap item 1.2 fixes the rest): an auto-blocker swallows
-  a key only when Windows would see the hotkey's keys and no other key
-  held. Shift pressed while Alt and Tab are both held, Shift pressed while
-  Ctrl and T are held, and Alt+Shift pressed while a letter is still held in
-  fast typing now reach Windows. A key Windows does not have down (one a
-  binding swallowed, or one whose release went to the lock screen) does not
-  count. Pressed in the order Alt, Shift, Tab, the hotkey's Shift is still
-  swallowed and the application gets Alt+Tab (Ctrl+T for Ctrl, Shift, T
-  with the `Ctrl+Shift` hotkey) until item 1.2. That includes the usual way
-  back in the Alt+Tab switcher, Alt held, Tab released, then Shift+Tab,
-  which still moves forward.
+- KS-05 (partly with `true`; the experimental `MaskOnly` under **Added**
+  covers the rest): an auto-blocker swallows a key only when Windows would
+  see the hotkey's keys and no other key held. Shift pressed while Alt and
+  Tab are both held, Shift pressed while Ctrl and T are held, and Alt+Shift
+  pressed while a letter is still held in fast typing now reach Windows. A
+  key Windows does not have down (one a binding swallowed, or one whose
+  release went to the lock screen) does not count. Pressed in the order
+  Alt, Shift, Tab, the hotkey's Shift is still swallowed with
+  `block_original_combo: true` and the application gets Alt+Tab (Ctrl+T for
+  Ctrl, Shift, T with the `Ctrl+Shift` hotkey); `MaskOnly` lets that Shift
+  through. That includes the usual way back in the Alt+Tab switcher, Alt
+  held, Tab released, then Shift+Tab, which still moves forward with
+  `true`.
 - KS-06: an auto-repeat is suppressed exactly when its key's first key-down
   was, and a key-down that reaches Windows clears any suppression left for
   its key-up. Holding a key past the repeat delay no longer lets its
@@ -365,7 +391,8 @@ minor version; such entries sit under **Changed** and start with
   Shift pressed after Alt with the default config's auto-blocker now stays
   swallowed for its whole press, auto-repeats and release included, even
   after Alt is released; its repeats used to reach Windows from the first
-  one on (roadmap item 1.2 stops the blocker swallowing it).
+  one on. `block_original_combo: MaskOnly` (under **Added**) lets that
+  Shift through instead.
 - KS-18: `block_original_combo` no longer adds an auto-blocker when a
   `keys` binding anywhere in the file uses the same keys as the Windows
   hotkey, in any order and with any trigger or `when:`, the flagged binding

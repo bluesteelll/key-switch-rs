@@ -98,12 +98,12 @@ key-switch-rs/
 - `kind` (`BindingKind`: `Combo` / `Sequence` / `Chord`)
 - `action` (`BindAction`)
 - `block_default`: block default behavior flag
-- `block_original_combo`: auto-block original system combination flag
+- `block_original_combo`: the auto-blocker this binding asks for, for the original system combination (`Option<BlockerMode>`: `true` is `Swallow`, `MaskOnly` is `MaskOnly`, `false` is `None`)
 - `condition` (`Condition`, the `when:` field)
 - `trigger` (`Trigger`: `Immediate` / `Tap` / `Hold` / `DoubleTap`)
 - `allow_extra_modifiers`
 - `repeat`: whether an `Immediate` `keys` binding fires again on each auto-repeat
-- crate-private `is_auto_blocker`, set only on the auto-blockers the loader adds
+- crate-private `auto_blocker` (`Option<BlockerMode>`), set only on the auto-blockers the loader adds
 
 #### `keyboard_hook.rs`
 
@@ -536,7 +536,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 | Field                  | Default  | Meaning                                                                                                                                                                              |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `block_default`        | `true`; `false` for a `Tap`, `Hold` or `DoubleTap` binding made only of modifiers | Suppress the original OS key events (the press, its auto-repeats and its release) so the foreground app does not also see them. Set to `false` to let the keystroke pass through: an `Immediate` binding still fires, and a `Tap`, `Hold` or `DoubleTap` binding still detects its gesture. When several `keys` bindings match one press, only the binding that wins it, or its `Tap`/`Hold`/`DoubleTap` group, counts (see [Which binding wins](#combo-syntax-the-keys-field)). `Some(..)` and `None` (the default) load too. `sequence` and `chord` bindings ignore it. |
-| `block_original_combo` | `false`  | Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. An auto-blocker that is added ignores the flagged binding's `when:` and acts in every window until roadmap item 1.2 (KS-35): with `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey (`Alt+Shift` by default) stays blocked there, so neither switches the layout in the game. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
+| `block_original_combo` | `false`  | `true`, `false` or `MaskOnly` (experimental). Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. An auto-blocker that is added ignores the flagged binding's `when:` and acts in every window until roadmap item 1.2 (KS-35): with `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey (`Alt+Shift` by default) stays blocked there, so neither switches the layout in the game. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. With `true` the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire, and with Alt held the menu mask key keeps Alt's release from activating the menu bar. **`MaskOnly`** swallows nothing: the hotkey reaches Windows with the menu mask key (0xE8, see "Win and Alt" under [Combo syntax](#combo-syntax-the-keys-field)) sent on the key-down that completes it and again on the next key event, so `Ctrl+Shift+T`, `Alt+Shift+Tab` and `Alt+Shift+X` reach applications. It is experimental: it assumes that Windows switches the layout only on a clean press of its hotkey, which no test can check. Check it by hand (a bare `Alt+Shift` or `Ctrl+Shift` pressed and released several times must not switch the layout) and go back to `true` if it does. Startup lists such a blocker as `(masked, experimental)`. On a hotkey that is not made only of modifiers (the `` ` `` hotkey) `MaskOnly` blocks as `true` does, with a warning. |
 | `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `repeat`               | `true` for `PressKey`, `Media(VolumeUp)`, `Media(VolumeDown)`; `false` otherwise | `keys` bindings with the `Immediate` trigger: fire again on every auto-repeat while the key is held. With `false` the action fires once per press; the repeats and the release are still swallowed when the press was. `repeat: true` is a load error on `Tap`, `Hold`, `DoubleTap`, `sequence` and `chord` bindings, which never fire on an auto-repeat; `repeat: false` is accepted there. The startup list marks a value that differs from the default with `[repeat]` or `[no repeat]`. Each repeat of a `PressKey` sends a new press and release, so for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`: otherwise holding the trigger toggles the key at the repeat rate, or taps the modifier, where the real key held down toggles once or stays down. |
 | `when`                 | `Always` | Foreground-window guard. The binding fires only when the predicate matches. See [`Conditions`](#conditions-when-field) below.                                                        |
@@ -610,6 +610,9 @@ every problem in one pass. Common cases:
 - ``Unexpected variant named `FlyToMars` in enum `RawAction`, expected one of `SwitchLanguage`, …``
   — an action, trigger, condition or step name is misspelled; names are
   case-sensitive.
+- ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``
+  — a misspelled `block_original_combo` value; `Some(true)` gives the same
+  message for `` `Some` ``.
 
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
@@ -629,6 +632,10 @@ on every reload:
   the auto-blocker comes from it. An `Immediate` binding next to a `Tap`,
   `Hold` or `DoubleTap` binding on the same keys is not warned about,
   although only one of them acts on a press.
+- ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``
+  — the Windows hotkey is `` ` `` (or another key that is not a modifier),
+  so the experimental `MaskOnly` blocker would let it through and Windows
+  would switch the layout; the blocker swallows it as with `true`.
 
 ## Build
 

@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::testing::Scenario;
 use crate::core::windows_actions::{BindAction, MediaKey};
-use crate::data::binding::Binding;
+use crate::data::binding::{Binding, BlockerMode};
 use crate::data::key_combination::KeyCombination;
 
 fn launch(exe: &str) -> BindAction {
@@ -24,15 +24,26 @@ pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
     (keys: "Shift+CapsLock", action: ToggleCapsLock),
 ] )"#;
 
-/// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
-/// Windows language hotkey, followed by the bindings of `ron`. The blocker
-/// comes first, where it used to shadow a binding on the same keys; the
-/// loader now appends it. It is built directly: loading it from RON would
-/// read the registry.
+/// The `Alt+Shift` auto-blocker that `block_original_combo: true` adds for
+/// the Windows language hotkey, followed by the bindings of `ron`. The
+/// blocker comes first, where it used to shadow a binding on the same keys;
+/// the loader now appends it. It is built directly: loading it from RON
+/// would read the registry.
 pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
-    let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
-        VK_MENU, VK_SHIFT,
-    ]))];
+    with_alt_shift_blocker_of(BlockerMode::Swallow, ron)
+}
+
+/// [`with_alt_shift_blocker`] with the experimental
+/// `block_original_combo: MaskOnly` blocker.
+pub(super) fn with_alt_shift_mask_only_blocker(ron: &str) -> Vec<Binding> {
+    with_alt_shift_blocker_of(BlockerMode::MaskOnly, ron)
+}
+
+fn with_alt_shift_blocker_of(mode: BlockerMode, ron: &str) -> Vec<Binding> {
+    let mut bindings = vec![Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        mode,
+    )];
     bindings.extend(
         crate::config::from_ron_str(ron)
             .unwrap_or_else(|e| panic!("scenario: config does not load: {e}")),
@@ -1209,9 +1220,10 @@ fn either_shift_counts_as_the_same_modifier() {
 fn auto_blocker_matches_its_modifiers_exactly() {
     // The Alt+Shift blocker that `block_original_combo` adds, built
     // directly: loading it from RON would read the registry.
-    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
-        vec![VK_MENU, VK_SHIFT],
-    ))])
+    Scenario::with_bindings(vec![Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        BlockerMode::Swallow,
+    )])
     .down("LAlt")
     .expect_passed()
     .down("LShift")
@@ -2578,8 +2590,10 @@ fn grave_blocker_acts_only_on_a_lone_grave() {
 #[test]
 fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
     // Pressed in the order Ctrl, Shift, T, Windows would see a bare
-    // Ctrl+Shift when Shift goes down: the blocker swallows Shift, and T
-    // reaches Windows as Ctrl+T until roadmap item 1.2.
+    // Ctrl+Shift when Shift goes down: with `true` the blocker swallows
+    // Shift, and T reaches Windows as Ctrl+T. Neither Alt nor Win is down,
+    // so nothing is masked. `MaskOnly` lets Shift through
+    // (mask_only_blocker_lets_ctrl_shift_t_reach_the_application).
     Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
         .check_nothing_stuck()
         .check_press_symmetry()
@@ -2588,6 +2602,7 @@ fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
         .down("LShift")
         .expect_suppressed()
         .expect_nothing_fired()
+        .expect_unmasked()
         .down("T")
         .expect_passed()
         .up("T")
@@ -2603,8 +2618,9 @@ fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
 fn shift_pressed_after_tab_was_released_is_still_swallowed() {
     // The usual way back in the Alt+Tab switcher: Alt held, Tab tapped,
     // then Shift and Tab. Windows would see a bare Alt+Shift when Shift goes
-    // down, so the blocker swallows it and Tab reaches Windows as Alt+Tab
-    // until roadmap item 1.2.
+    // down, so with `true` the blocker swallows it, with the menu mask key
+    // since Alt is down in Windows, and Tab reaches Windows as Alt+Tab.
+    // `MaskOnly` lets Shift through.
     Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
         .check_nothing_stuck()
         .check_press_symmetry()
@@ -2617,6 +2633,7 @@ fn shift_pressed_after_tab_was_released_is_still_swallowed() {
         .down("LShift")
         .expect_suppressed()
         .expect_nothing_fired()
+        .expect_masked()
         .down("Tab")
         .expect_passed()
         .up("Tab")
@@ -2634,9 +2651,10 @@ fn user_binding_on_alt_shift_fires_with_the_blocker_in_either_order() {
     // list, never takes that binding's fire.
     const USER: &str = r#"( bindings: [ (keys: "Alt+Shift", action: SwitchLanguageBackward) ] )"#;
     let mut blocker_last = crate::config::from_ron_str(USER).expect("config loads");
-    blocker_last.push(Binding::new_auto_blocker(KeyCombination::from_keys(vec![
-        VK_MENU, VK_SHIFT,
-    ])));
+    blocker_last.push(Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        BlockerMode::Swallow,
+    ));
     for (name, bindings) in [
         ("blocker first", with_alt_shift_blocker(USER)),
         ("blocker last", blocker_last),

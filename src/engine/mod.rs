@@ -44,10 +44,12 @@
 //! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
 //!   `DoubleTap` entries, keyed by virtual-key code.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
+//! - `mask_owed`: a `MaskOnly` auto-blocker matched the last key-down, so
+//!   the next key event asks for the menu mask key too.
 //!
-//! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry,
-//! keeps only the Hold generation counter, and takes the held keys from the
-//! OS key state.
+//! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry and
+//! an owed mask, keeps only the Hold generation counter, and takes the held
+//! keys from the OS key state.
 //!
 //! The binding list is not engine state. The caller passes a snapshot on
 //! every call, already sorted with [`sort_by_specificity`], so a hot reload
@@ -143,12 +145,15 @@
 //!    modifiers. The other bindings are visited in list order, next to the
 //!    winner:
 //!    - An auto-blocker (`block_original_combo`) is a `Combo` of the
-//!      Windows hotkey that only suppresses: it fires nothing and is no
-//!      candidate, so it never keeps a user binding from winning (KS-18).
-//!      It matches when the key just pressed is one of the hotkey's, all of
-//!      them are held, and every other key held is one that
-//!      [`Env::os_key_down`] reports up: Windows would see the hotkey and
-//!      nothing else (KS-05).
+//!      Windows hotkey that only suppresses or masks: it fires nothing and
+//!      is no candidate, so it never keeps a user binding from winning
+//!      (KS-18). It matches when the key just pressed is one of the
+//!      hotkey's, all of them are held, and every other key held is one
+//!      that [`Env::os_key_down`] reports up: Windows would see the hotkey
+//!      and nothing else (KS-05). A `Swallow` blocker (`true`) then asks for
+//!      suppression. A `MaskOnly` blocker (experimental) lets the key-down
+//!      through and, on a first key-down, asks for the menu mask key on
+//!      this event and on the next key event, whatever its key.
 //!    - `Sequence` and `Chord` check their `when:` first and ignore
 //!      repeats; any key-down that starts, advances or completes one is
 //!      suppressed, whichever `Combo` binding wins it.
@@ -181,7 +186,8 @@
 //! no record. Windows then has a lone Alt or Win press so far, whose release
 //! would activate the menu bar or open the Start menu; the mask key comes
 //! between. An Alt or Win whose key-down was swallowed, this event's
-//! included, does not count. A timer never asks for the mask.
+//! included, does not count. A `MaskOnly` auto-blocker also asks for the
+//! mask on events that pass (rule 4). A timer never asks for the mask.
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: the sequence matching
@@ -212,7 +218,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use crate::core::windows_actions::BindAction;
-use crate::data::binding::{Binding, BindingKind};
+use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::trigger::Trigger;
 
 pub use env::Env;
@@ -286,7 +292,9 @@ pub struct Decision {
     /// Send the menu mask key before the hook returns (roadmap item 1.2,
     /// KS-12), so that Windows does not see a lone Win or Alt press. Set on
     /// a key event that is suppressed while Windows has an Alt or Win key
-    /// down whose key-down it saw. Always `false` for a timer.
+    /// down whose key-down it saw, and by a `MaskOnly` auto-blocker on the
+    /// key-down that completes its hotkey and on the next key event, which
+    /// both pass (KS-05, experimental). Always `false` for a timer.
     pub mask: bool,
 }
 
@@ -306,6 +314,9 @@ pub struct Engine {
     gestures: Gestures,
     chords: Chords,
     sequences: Sequences,
+    /// A `MaskOnly` auto-blocker matched the last key-down: the next key
+    /// event asks for the menu mask key too.
+    mask_owed: bool,
 }
 
 impl Default for Engine {
@@ -321,22 +332,31 @@ impl Engine {
             gestures: Gestures::new(),
             chords: Chords::new(),
             sequences: Sequences::new(),
+            mask_owed: false,
         }
     }
 
     /// Decides one keyboard event. `bindings` must be sorted with
     /// [`sort_by_specificity`].
     pub fn on_key(&mut self, event: KeyEvent, bindings: &[Binding], env: &dyn Env) -> Decision {
+        // Owed by a `MaskOnly` blocker that matched the previous key-down.
+        // This event comes after that key-down reached Windows, whatever
+        // the order of the mask sent with it, so its mask lands inside the
+        // hotkey.
+        let mask_owed = std::mem::take(&mut self.mask_owed);
+
         // Repair phantom-held modifiers from any earlier focus transition
         // before matching. The key being delivered is skipped: its OS state
         // lags until the hook returns. So is every modifier whose key-down
         // was swallowed: the OS never saw it go down (KS-14).
         self.keys.sync_modifiers(env, Some(event.vk));
 
-        match event.direction {
+        let mut decision = match event.direction {
             KeyDirection::Down => self.on_key_down(event.vk, bindings, env),
             KeyDirection::Up => self.on_key_up(event.vk, env),
-        }
+        };
+        decision.mask |= mask_owed;
+        decision
     }
 
     /// Decides a timer that the caller started for a [`TimerRequest`]. A
@@ -393,6 +413,7 @@ impl Engine {
         self.gestures.clear();
         self.chords = Chords::new();
         self.sequences = Sequences::new();
+        self.mask_owed = false;
         self.keys.reset_from_os(env);
     }
 
@@ -413,7 +434,7 @@ impl Engine {
         for (index, binding) in bindings.iter().enumerate() {
             match &binding.kind {
                 BindingKind::Combo(combo) => {
-                    if binding.is_auto_blocker {
+                    if let Some(mode) = binding.auto_blocker {
                         // `Always` returns true without asking the Env, so a
                         // config without `when:` never looks at the
                         // foreground window.
@@ -428,7 +449,18 @@ impl Engine {
                         if matching::blocker_matches(combo, vk, &self.keys, |key| {
                             env.os_key_down(key)
                         }) {
-                            decision.suppress = true;
+                            match mode {
+                                BlockerMode::Swallow => decision.suppress = true,
+                                // The hotkey reaches Windows with the mask
+                                // key inside it, now and on the next event
+                                // (KS-05, experimental). A repeat changes
+                                // nothing Windows has seen.
+                                BlockerMode::MaskOnly if !was_repeat => {
+                                    decision.mask = true;
+                                    self.mask_owed = true;
+                                }
+                                BlockerMode::MaskOnly => {}
+                            }
                         }
                         continue;
                     }
