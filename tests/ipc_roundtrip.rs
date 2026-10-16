@@ -1,6 +1,6 @@
 //! The `swch` client (`ipc::request`) against test pipes with unique names,
-//! and the daemon's pipe server (`ipc_server::spawn`) driven through a
-//! stand-in for the daemon.
+//! and the daemon's pipe server (`ipc_server::bind`, then
+//! `IpcListener::serve`) driven through a stand-in for the daemon.
 //!
 //! No test here installs a keyboard hook or talks to a daemon: every pipe
 //! is created by the test itself, under a name no daemon uses, and the
@@ -83,7 +83,10 @@ fn status_off_on_status_round_trip_without_a_hook() {
         bindings: 2,
         toggles: Mutex::new(Vec::new()),
     });
-    ipc_server::spawn(&name, control.clone()).expect("the server starts on its own pipe");
+    ipc_server::bind(&name)
+        .expect("the pipe can be created under its own name")
+        .serve(control.clone())
+        .expect("the server thread starts");
     let send = |command: Command| {
         request(&name, &command, REPLY_TIMEOUT)
             .unwrap_or_else(|error| panic!("{command:?}: no reply: {error}"))

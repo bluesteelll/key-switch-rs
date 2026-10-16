@@ -136,7 +136,7 @@ impl App {
             hook,
             main_thread_id: main_tid,
         });
-        match ipc_server::spawn(ipc::PIPE_NAME, control) {
+        match ipc_server::bind(ipc::PIPE_NAME).and_then(|listener| listener.serve(control)) {
             Ok(()) => println!("✓ IPC server listening (use `swch on/off/exit`)\n"),
             Err(e) => {
                 eprintln!(

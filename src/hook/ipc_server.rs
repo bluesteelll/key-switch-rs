@@ -1,6 +1,7 @@
-//! Daemon-side IPC listener. Spawned as a background thread by `App::run`,
-//! accepts connections on a named pipe, hands each command to a
-//! [`DaemonControl`] and writes the formatted response back.
+//! Daemon-side IPC listener. [`bind`] creates the named pipe and starts
+//! nothing; [`IpcListener::serve`] then spawns the background thread that
+//! accepts connections on it, hands each command to a [`DaemonControl`]
+//! and writes the formatted response back.
 //!
 //! The server knows nothing of the keyboard hook: the daemon passes its own
 //! `DaemonControl` (`core::app`), and the tests pass a stand-in on a pipe
@@ -99,31 +100,46 @@ fn create_listener(pipe_name: &str) -> io::Result<Listener> {
         .create_sync()
 }
 
-/// Creates the pipe `pipe_name` and spawns the `ipc-server` thread that
-/// serves it with `control`. Returns once the pipe exists; the thread runs
-/// for the lifetime of the process. An error means no pipe and no thread:
-/// the caller decides whether to go on without IPC.
-pub fn spawn(pipe_name: &str, control: Arc<dyn DaemonControl>) -> io::Result<()> {
-    let listener = create_listener(pipe_name)?;
-    thread::Builder::new()
-        .name("ipc-server".into())
-        .spawn(move || {
-            for conn in listener.incoming() {
-                match conn {
-                    Ok(stream) => {
-                        // Each request is independent; spawn a short-lived
-                        // worker so a slow client can't block subsequent
-                        // commands.
-                        let control = Arc::clone(&control);
-                        thread::spawn(move || handle_connection(stream, control.as_ref()));
-                    }
-                    Err(e) => {
-                        eprintln!("[WARN] IPC accept error: {}", e);
+/// The daemon's pipe, created but not yet served.
+#[must_use = "the pipe is closed when an unserved listener is dropped"]
+pub struct IpcListener {
+    listener: Listener,
+}
+
+/// Creates the pipe `pipe_name` (`\\.\pipe\<pipe_name>`), protected by
+/// [`PIPE_SDDL`]. Starts no thread. A name another listener holds is
+/// refused with `ERROR_ACCESS_DENIED`, because the first instance of a pipe
+/// is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`.
+pub fn bind(pipe_name: &str) -> io::Result<IpcListener> {
+    create_listener(pipe_name).map(|listener| IpcListener { listener })
+}
+
+impl IpcListener {
+    /// Spawns the `ipc-server` thread that serves the pipe with `control`
+    /// for the lifetime of the process. On error no thread runs, and the
+    /// listener, and with it the pipe, is dropped.
+    pub fn serve(self, control: Arc<dyn DaemonControl>) -> io::Result<()> {
+        let listener = self.listener;
+        thread::Builder::new()
+            .name("ipc-server".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    match conn {
+                        Ok(stream) => {
+                            // Each request is independent; spawn a short-lived
+                            // worker so a slow client can't block subsequent
+                            // commands.
+                            let control = Arc::clone(&control);
+                            thread::spawn(move || handle_connection(stream, control.as_ref()));
+                        }
+                        Err(e) => {
+                            eprintln!("[WARN] IPC accept error: {}", e);
+                        }
                     }
                 }
-            }
-        })?;
-    Ok(())
+            })?;
+        Ok(())
+    }
 }
 
 fn handle_connection<S>(stream: S, control: &dyn DaemonControl)
@@ -328,5 +344,20 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(5))
             .expect("connect did not return within 5 s")
             .expect("the DACL admits this process's token");
+    }
+
+    #[test]
+    fn a_second_listener_on_a_taken_pipe_name_is_refused() {
+        // A pipe of its own, so no daemon on this machine is involved.
+        let name = format!("key-switch-rs-unit-{}-taken.sock", std::process::id());
+        let _first = bind(&name).expect("the first listener creates the pipe");
+        let Err(error) = bind(&name) else {
+            panic!("a second listener on a taken pipe name was created");
+        };
+        assert_eq!(
+            error.raw_os_error(),
+            Some(5),
+            "FILE_FLAG_FIRST_PIPE_INSTANCE refuses a taken name with ERROR_ACCESS_DENIED: {error}"
+        );
     }
 }
