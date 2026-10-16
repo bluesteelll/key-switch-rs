@@ -141,10 +141,10 @@ executable, then loads it. **Bindings are hot-reloaded automatically** — edit
 `config.ron` in any editor, save, and the new bindings go live within ~250 ms
 without a restart.
 
-If the file does not load (a syntax error, an unknown key name, ...) or is
-deleted or renamed, the error is printed and the **previously-running
-bindings stay live** — a malformed save never bricks the daemon. Fix the
-file and save again to apply.
+If the file does not load (a syntax error, an unknown or misspelled field,
+an unknown key name, ...) or is deleted or renamed, the error is printed and
+the **previously-running bindings stay live** — a malformed save never
+bricks the daemon. Fix the file and save again to apply.
 
 ### Where the file lives
 
@@ -508,6 +508,13 @@ every problem in one pass. Common cases:
 - `PostMessage: unknown WM_* name "WM_FOO"` — not in the built-in table; use a numeric code.
 - `config file <path> does not exist` — the file named on the command line,
   or the config at a reload, is missing; nothing is created.
+- ``Unexpected field named `tigger` in `RawBinding`, expected one of `keys`, `sequence`, `chord`, `action`, `block_default`, `block_original_combo`, `when`, `trigger`, or `allow_extra_modifiers` instead``
+  — an unknown or misspelled field, here in a binding; the message lists
+  the valid names. Field names are case-sensitive; RON reports the first
+  such error only.
+- ``Unexpected missing field named `bindings` in `RawConfig` `` — the file
+  has no `bindings: [...]` list; a misspelled one gives
+  ``Unexpected field named `bindngs` in `RawConfig`, expected `bindings` instead``.
 - `unknown variant 'FlyToMars'` — variant name is misspelled.
 
 ## Build
@@ -634,7 +641,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
-- **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). Parse errors keep the previous config live — never bricks the daemon.
+- **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **Priority bindings**: among the `Immediate` bindings that match one press, the one with more keys fires; a matching deferred binding still arms until roadmap item 1.6 (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
 - **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition

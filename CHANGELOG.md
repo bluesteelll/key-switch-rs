@@ -88,6 +88,18 @@ minor version; such entries sit under **Changed** and start with
   while another key is down in Windows (KS-05): with the `` ` `` hotkey
   (registry value 4), a `` ` `` typed while another key is held now reaches
   Windows and may switch the layout.
+- **Breaking:** unknown and misspelled field names are load errors
+  (KS-22): in a binding (`tigger: Tap(200)`, `block_defualt: false`,
+  `whne: AppEquals("code.exe")`, `allow_extra_modifier: true`), at the top
+  level (`bindngs: [...]`), in `sequence: (...)` and `chord: (...)`, and
+  in `Launch(...)`, `PostMessage(...)` and a macro's `Launch(...)` step,
+  where `cwd: "C:/temp"` used to be dropped silently. `bindings` is
+  required: `()` is an error. The message names the field, for example
+  ``1:10: Unexpected field named `bindngs` in `RawConfig`, expected `bindings` instead``.
+  Such a file stops the daemon at startup; saved while it runs, it is
+  rejected and the previous bindings stay live, where a misspelled
+  `bindings` used to leave zero bindings live. `bindings: []` still loads,
+  with `[WARN] config contains no bindings`.
 - **Breaking:** a config path given on the command line must exist. With
   a missing file the daemon stops with `[FATAL] config file <path> does
   not exist` instead of writing the default template there (creating its
