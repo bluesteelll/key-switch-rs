@@ -11,6 +11,8 @@
 mod loader;
 mod parsing;
 mod schema;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub use loader::{ConfigPath, load, reload};
 

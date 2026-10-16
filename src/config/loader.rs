@@ -1591,6 +1591,26 @@ mod tests {
         }
     }
 
+    // ---- the config path and the file ----
+
+    #[test]
+    fn a_relative_config_argument_is_made_absolute() {
+        // KS-21: the watcher compares absolute event paths, so a relative
+        // argument must not reach it as given.
+        let cwd = std::env::current_dir().expect("the test has a current folder");
+        for arg in ["my.ron", r".\sub\..\my.ron"] {
+            let config = ConfigPath::from_arg(Some(arg.into())).expect("a relative path is valid");
+            assert!(matches!(config, ConfigPath::CommandLine(_)), "{arg}");
+            assert_eq!(config.path(), cwd.join("my.ron"), "{arg}");
+        }
+    }
+
+    #[test]
+    fn an_empty_config_argument_is_an_error() {
+        ConfigPath::from_arg(Some(OsString::new()))
+            .expect_err("an empty config path must be an error");
+    }
+
     // ---- existing test, kept at the bottom ----
 
     #[test]

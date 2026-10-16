@@ -138,3 +138,110 @@ fn reload_into(config_path: &Path, hook: &KeyboardHook) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::Instant;
+
+    use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind, RenameMode};
+
+    use super::*;
+    use crate::config::testing::{ONE, TWO, TempDir};
+
+    fn cwd() -> PathBuf {
+        std::env::current_dir().expect("the test has a current folder")
+    }
+
+    fn event(kind: EventKind, path: PathBuf) -> Event {
+        Event::new(kind).add_path(path)
+    }
+
+    /// A hook of its own for the watcher thread, which needs a `'static`
+    /// one. No hook is installed through it.
+    fn leaked_hook() -> &'static KeyboardHook {
+        Box::leak(Box::new(KeyboardHook::new()))
+    }
+
+    /// Writes `text` to `file` once a second, for up to 10 s, until `hook`
+    /// has `count` bindings live; polls every 50 ms. Writing more than once
+    /// covers a first write that lands before the watch is armed.
+    fn rewrite_until_live(file: &Path, text: &str, hook: &KeyboardHook, count: usize) -> bool {
+        let start = Instant::now();
+        let mut written: Option<Instant> = None;
+        while start.elapsed() < Duration::from_secs(10) {
+            if written.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                fs::write(file, text).expect("write the config");
+                written = Some(Instant::now());
+            }
+            if hook.bindings().len() == count {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn an_event_for_a_relative_config_path_matches() {
+        let target = WatchTarget::new(Path::new("my.ron")).expect("has a parent");
+        // notify reports the watched folder, made absolute, joined with the
+        // name the file system reports.
+        let modify = event(EventKind::Modify(ModifyKind::Any), cwd().join("my.ron"));
+        assert!(
+            target.wants_reload(&modify),
+            "a Modify of <cwd>\\my.ron must reload the config given as my.ron (KS-21)"
+        );
+    }
+
+    #[test]
+    fn an_event_matches_the_config_file_name_in_any_case() {
+        let target = WatchTarget::new(&cwd().join("my.ron")).expect("has a parent");
+        for e in [
+            event(EventKind::Modify(ModifyKind::Any), cwd().join("MY.RON")),
+            event(EventKind::Create(CreateKind::Any), cwd().join("My.Ron")),
+            event(EventKind::Remove(RemoveKind::Any), cwd().join("my.ron")),
+            event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                cwd().join("MY.RON"),
+            ),
+        ] {
+            assert!(target.wants_reload(&e), "{e:?}");
+        }
+    }
+
+    #[test]
+    fn other_files_and_other_event_kinds_do_not_match() {
+        let target = WatchTarget::new(&cwd().join("my.ron")).expect("has a parent");
+        for e in [
+            event(EventKind::Modify(ModifyKind::Any), cwd().join("my.ron.tmp")),
+            event(EventKind::Create(CreateKind::Any), cwd().join("other.ron")),
+            event(EventKind::Access(AccessKind::Read), cwd().join("my.ron")),
+            event(EventKind::Any, cwd().join("my.ron")),
+        ] {
+            assert!(!target.wants_reload(&e), "{e:?}");
+        }
+    }
+
+    #[test]
+    fn a_root_path_has_no_watch_target() {
+        assert!(WatchTarget::new(Path::new(r"C:\")).is_none());
+    }
+
+    #[test]
+    fn a_spawned_watcher_reloads_a_path_whose_case_differs_from_the_file() {
+        let dir = TempDir::new("case");
+        let file = dir.path().join("config.ron");
+        fs::write(&file, ONE).expect("write the config");
+        let hook = leaked_hook();
+        hook.update_bindings(config::reload(&file).expect("the config loads"));
+        // Declared after `dir`, so the watch stops before the folder goes.
+        let _watcher = spawn_watcher(dir.path().join("CONFIG.RON"), hook).expect("watcher starts");
+
+        let reloaded = rewrite_until_live(&file, TWO, hook, 2);
+        assert!(
+            reloaded,
+            "no reload within 10 s: the watcher of CONFIG.RON never swapped in the 2 bindings of config.ron"
+        );
+    }
+}

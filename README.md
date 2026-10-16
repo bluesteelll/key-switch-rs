@@ -30,6 +30,7 @@ key-switch-rs/
     │   ├── schema.rs           - serde structs for the on-disk shape
     │   ├── parsing.rs          - combo string and WM_* name parsers
     │   ├── loader.rs           - file I/O, default-config generation, conversion to Vec<Binding>
+    │   ├── testing.rs          - test-only temporary folders for the loader and watcher tests
     │   └── default_config.ron  - embedded RON template, written on first run
     ├── core/
     │   ├── app.rs              - main application with binding management
