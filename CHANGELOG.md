@@ -45,6 +45,14 @@ minor version; such entries sit under **Changed** and start with
   refuses the client, a busy pipe and a server that answers, and the
   daemon's pipe server answering `status`, `off`, `on`, `status` through a
   stand-in for the daemon, with no keyboard hook installed.
+- Per-binding `repeat: true | false` for `keys` bindings with the
+  `Immediate` trigger (roadmap item 1.1): whether the action fires again on
+  every auto-repeat while its key is held. It defaults to `true` for
+  `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` and to `false` for
+  every other action. `repeat: true` on a `Tap`, `Hold`, `DoubleTap`,
+  `sequence` or `chord` binding is a load error, because those never fire
+  on an auto-repeat. The startup list marks a value that differs from the
+  default with `[repeat]` or `[no repeat]`.
 
 ### Changed
 
@@ -114,6 +122,13 @@ minor version; such entries sit under **Changed** and start with
   fire, and `window_ms: 0` gave a chord that swallowed its keys and never
   completed. The error names the binding, counting from 0:
   `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`.
+- **Breaking:** an `Immediate` `keys` binding whose action is not
+  `PressKey`, `Media(VolumeUp)` or `Media(VolumeDown)` now fires once per
+  press instead of on every auto-repeat (KS-10, roadmap item 1.1). Add
+  `repeat: true` for the old behaviour, for example to skip tracks with a
+  held `Media(Next)` key. A `PressKey` still repeats, one press and release
+  per auto-repeat: for a toggle key or a modifier, `repeat: false` keeps
+  it to one press.
 
 ### Fixed
 
@@ -200,7 +215,8 @@ minor version; such entries sit under **Changed** and start with
   released. A key whose key-down reached Windows (CapsLock pressed with
   Ctrl, which no longer matches `"CapsLock"`) keeps its repeats and its
   release when the binding starts matching after Ctrl is released; such a
-  repeat still fires an `Immediate` action (KS-10, roadmap item 1.1).
+  repeat fires an `Immediate` action only if the binding repeats (KS-10,
+  below).
   A foreground change while a key is held forgets only that its release is
   due to be swallowed (roadmap item 2.3): the release reaches Windows unless
   a `Tap` or `Hold` of the press is still pending, and its repeats stay
@@ -216,6 +232,17 @@ minor version; such entries sit under **Changed** and start with
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
   left-Shift press.
+- KS-10: holding a key no longer re-runs a one-shot action at the
+  auto-repeat rate. With the default config, holding CapsLock switches the
+  layout once and holding Shift+CapsLock toggles CapsLock once. A held
+  `Launch` or `OpenUrl` hotkey starts one program, and a held `Sequence`
+  macro runs once. The repeats are still swallowed when the key-down was.
+  A press that the daemon reads as an auto-repeat, because the key's
+  previous release went to the lock screen or another desktop (KS-29), now
+  fires nothing for such a binding; its release passes and the next press
+  works. For a key whose key-down the daemon swallowed, which is the usual
+  trigger key, no roadmap item repairs that record yet: the key resync of
+  roadmap item 2.3 leaves such keys alone.
 - KS-11: a timer left over from an earlier press no longer acts on a newer
   press of the same key. Two quick taps fire twice, a Hold no longer fires
   early on the next press, and a quick series of DoubleTaps no longer loses
