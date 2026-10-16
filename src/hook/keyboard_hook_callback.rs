@@ -383,6 +383,8 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::sync::{Mutex, PoisonError, mpsc};
+    use std::time::Duration;
 
     use super::*;
     use crate::core::constants::injected_sentinel;
@@ -393,11 +395,27 @@ mod tests {
 
     // No test installs a hook. The `decide_event` tests use a local
     // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
-    // never called); the extern-callback test drives the process-wide hook
-    // and says why that is safe. `HookEnv` only reads `GetAsyncKeyState`, the
-    // live state of the machine's keyboard, so every F13 binding sets
-    // `allow_extra_modifiers`: under exact matching a modifier the user
-    // happens to hold while the tests run would otherwise stop it matching.
+    // never called); the extern-callback tests drive the process-wide hook,
+    // one at a time (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
+    // reads `GetAsyncKeyState`, the live state of the machine's keyboard, so
+    // every F13 binding sets `allow_extra_modifiers`: under exact matching a
+    // modifier the user happens to hold while the tests run would otherwise
+    // stop it matching.
+
+    /// Taken by every test that drives the process-wide hook through
+    /// `get_hook()`. One of them turns remapping off, which would break the
+    /// swallow asserts of another running at the same time.
+    static GLOBAL_HOOK: Mutex<()> = Mutex::new(());
+
+    /// Turns the process-wide hook's remapping back on when dropped, also on
+    /// unwind, so a failed test leaves the next one remapping on.
+    struct RemappingOnAtEnd;
+
+    impl Drop for RemappingOnAtEnd {
+        fn drop(&mut self) {
+            let _ = get_hook().set_enabled(true);
+        }
+    }
 
     fn hook_with(binding: Binding) -> KeyboardHook {
         let hook = KeyboardHook::new();
@@ -407,6 +425,29 @@ mod tests {
 
     fn message(msg: u32) -> WPARAM {
         WPARAM(msg as usize)
+    }
+
+    /// Calls the extern keyboard callback with one event of `vk`, as the
+    /// hook dispatcher would, and returns what it returns.
+    fn call_keyboard_callback(vk: u32, msg: u32) -> LRESULT {
+        let info = KBDLLHOOKSTRUCT {
+            vkCode: vk,
+            ..Default::default()
+        };
+        // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
+        // KBDLLHOOKSTRUCT on this stack frame that outlives the call: all
+        // the callback dereferences. No hook is installed and this thread is
+        // not inside a hook dispatch, so the pass path's CallNextHookEx has
+        // no next hook procedure to call; its hhk argument is ignored
+        // (Microsoft Learn, CallNextHookEx), and it neither injects input
+        // nor delivers the event to any window.
+        unsafe {
+            keyboard_hook_callback(
+                0,
+                WPARAM(msg as usize),
+                LPARAM(&info as *const KBDLLHOOKSTRUCT as isize),
+            )
+        }
     }
 
     #[test]
@@ -485,65 +526,126 @@ mod tests {
     #[test]
     fn extern_callback_swallows_a_bound_key_only_while_remapping_is_on() {
         // The only test of `LRESULT(1)` iff `Decision::suppress` at the
-        // extern level, and of the gate before the engine lock. The callback
-        // reads the process-wide hook, so this is the only test that may
-        // touch `get_hook()`. `carry_out` runs here, and the binding is
-        // `DoNothing` so that it starts and sends nothing. If the user holds
-        // Win or Alt meanwhile, the swallowed F13 asks for the menu mask key,
-        // which under test is only counted (`send_menu_mask`).
+        // extern level. Its remapping-off asserts hold with or without the
+        // callback's gate before the engine lock, because the check under
+        // the lock passes the event too;
+        // `remapping_off_callbacks_pass_without_waiting_for_the_engine_lock`
+        // pins that gate (A5-m1). The callback reads the process-wide hook,
+        // so this test holds `GLOBAL_HOOK`. `carry_out` runs here, and the
+        // binding is `DoNothing` so that it starts and sends nothing. If the
+        // user holds Win or Alt meanwhile, the swallowed F13 asks for the
+        // menu mask key, which under test is only counted (`send_menu_mask`).
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
         let f13 = u32::from(VK_F13.0);
         get_hook().update_bindings(vec![
             Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
                 .with_allow_extra_modifiers(true),
         ]);
-        let call = |vk: u32, msg: u32| {
-            let info = KBDLLHOOKSTRUCT {
-                vkCode: vk,
-                ..Default::default()
-            };
-            // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
-            // KBDLLHOOKSTRUCT on this stack frame that outlives the call:
-            // all the callback dereferences. No hook is installed and this
-            // thread is not inside a hook dispatch, so the pass path's
-            // CallNextHookEx has no next hook procedure to call; its hhk
-            // argument is ignored (Microsoft Learn, CallNextHookEx), and it
-            // neither injects input nor delivers the event to any window.
-            unsafe {
-                keyboard_hook_callback(
-                    0,
-                    WPARAM(msg as usize),
-                    LPARAM(&info as *const KBDLLHOOKSTRUCT as isize),
-                )
-            }
-        };
         assert_eq!(
-            call(f13, WM_KEYDOWN),
+            call_keyboard_callback(f13, WM_KEYDOWN),
             LRESULT(1),
             "bound F13 down is swallowed"
         );
-        assert_eq!(call(f13, WM_KEYUP), LRESULT(1), "its key-up is swallowed");
+        assert_eq!(
+            call_keyboard_callback(f13, WM_KEYUP),
+            LRESULT(1),
+            "its key-up is swallowed"
+        );
         assert_ne!(
-            call(u32::from(VK_A.0), WM_KEYDOWN),
+            call_keyboard_callback(u32::from(VK_A.0), WM_KEYDOWN),
             LRESULT(1),
             "an unbound key is passed on"
         );
-        assert_ne!(call(u32::from(VK_A.0), WM_KEYUP), LRESULT(1));
+        assert_ne!(
+            call_keyboard_callback(u32::from(VK_A.0), WM_KEYUP),
+            LRESULT(1)
+        );
 
         assert_eq!(get_hook().set_enabled(false), Some(true));
         assert_ne!(
-            call(f13, WM_KEYDOWN),
+            call_keyboard_callback(f13, WM_KEYDOWN),
             LRESULT(1),
             "remapping off: the bound key is passed on"
         );
-        assert_ne!(call(f13, WM_KEYUP), LRESULT(1));
+        assert_ne!(call_keyboard_callback(f13, WM_KEYUP), LRESULT(1));
 
         assert_eq!(get_hook().set_enabled(true), Some(true));
         assert_eq!(
-            call(f13, WM_KEYDOWN),
+            call_keyboard_callback(f13, WM_KEYDOWN),
             LRESULT(1),
             "remapping on again: the bound key is swallowed"
         );
-        assert_eq!(call(f13, WM_KEYUP), LRESULT(1));
+        assert_eq!(call_keyboard_callback(f13, WM_KEYUP), LRESULT(1));
+    }
+
+    #[test]
+    fn remapping_off_callbacks_pass_without_waiting_for_the_engine_lock() {
+        // A5-m1: while remapping is off, both callbacks return before they
+        // ask for the engine. A holder thread keeps the engine lock while
+        // they run, so a callback that asks for it waits until the holder
+        // gives up, after 5 s, and its time shows it.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _on_at_end = RemappingOnAtEnd;
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        get_hook()
+            .set_enabled(false)
+            .expect("not inside with_engine");
+
+        // On a panic below `release_tx` is dropped before `_on_at_end`: the
+        // holder's wait ends at once, so the suite does not hang.
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = thread::spawn(move || {
+            get_hook().with_engine(|_| {
+                let _ = locked_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            })
+        });
+        locked_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the holder thread took the engine lock");
+
+        let f13 = u32::from(VK_F13.0);
+        let keyboard_start = Instant::now();
+        let down = call_keyboard_callback(f13, WM_KEYDOWN);
+        let up = call_keyboard_callback(f13, WM_KEYUP);
+        let keyboard = keyboard_start.elapsed();
+
+        let foreground_start = Instant::now();
+        // SAFETY: `foreground_changed` reads none of its arguments, so the
+        // null handles are never dereferenced or passed on. No hook is
+        // installed and no message is pumped here.
+        unsafe {
+            foreground_changed(
+                HWINEVENTHOOK::default(),
+                EVENT_SYSTEM_FOREGROUND,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+        let foreground = foreground_start.elapsed();
+
+        // When a callback did wait, the holder has already given up and
+        // dropped its receiver; the asserts below report that, not the send.
+        let _ = release_tx.send(());
+        holder.join().expect("the holder thread does not panic");
+
+        assert!(
+            keyboard < Duration::from_secs(1),
+            "with remapping off the keyboard callback waited {keyboard:?} for the engine lock"
+        );
+        assert!(
+            foreground < Duration::from_secs(1),
+            "with remapping off the foreground callback waited {foreground:?} for the engine lock"
+        );
+        assert_ne!(down, LRESULT(1), "remapping off: the bound key-down passes");
+        assert_ne!(up, LRESULT(1), "remapping off: its key-up passes");
     }
 
     #[test]

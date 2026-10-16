@@ -62,8 +62,9 @@ key-switch-rs/
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
+    │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
     │   └── system_function.rs  - Windows system functions
-    └── main.rs                 - entry point: loads config, builds App
+    └── main.rs                 - entry point: single-instance guard, loads config, builds App
 ```
 
 ### Modules
@@ -129,6 +130,7 @@ Main application:
 
 - Manage bindings via builder pattern
 - Install keyboard + foreground-change hooks
+- Creates the IPC pipe before it installs the hooks; a pipe it cannot create stops the daemon (KS-20)
 - Ctrl+C handler for correct shutdown
 - Windows message loop
 
@@ -718,12 +720,23 @@ every user signed in to the machine: under fast user switching or Remote
 Desktop another user can switch your remapping on or off, stop your daemon,
 or answer `swch` in its place, until roadmap item 4.1 gives each session its
 own pipe.
+Until then only one daemon on the machine can own the pipe: a daemon that
+cannot create it, for example a second signed-in user's, stops with
+`[FATAL] could not create the IPC pipe \\.\pipe\key-switch-rs.sock: ...`
+before it installs any hook.
 
 ### Direct launch (without swch)
 
 You can also launch the daemon directly — right-click → "Run as administrator"
 or just double-click and accept the UAC prompt. `Ctrl+C` in the console exits
 cleanly. `swch` commands continue to work against the directly-launched daemon.
+
+Only one daemon runs per Windows session. A second start, by double-click,
+from a console or from a Scheduled Task, prints
+``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+and exits with code 2 before it reads the config, without waiting for Enter.
+The check covers the Windows session the daemon starts in; a second
+signed-in user's daemon stops at the pipe instead (see above).
 
 ### Avoiding the UAC prompt at every boot
 
@@ -744,6 +757,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
+  - `Win32_Security` (`CreateMutexW` for the single-instance guard)
 - `serde` + `ron` for `config.ron` parsing — native Rust enum-variant literal syntax
 - `arc-swap` for lock-free, hot-reloadable binding list
 - `notify` for filesystem-driven config reload
