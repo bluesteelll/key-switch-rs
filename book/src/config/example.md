@@ -3,7 +3,7 @@
 <a id="s17"></a>
 ## 17. Complete `config.ron` example
 
-The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no Win/Alt combinations with actions that inject no keystrokes ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`.
+The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no `Tap`, `Hold` or `DoubleTap` on Win or Alt alone ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`.
 
 Checked with the validator (the real loader) on a machine where the `Hotkey`/`Language Hotkey` values did not yield a combination, so the fallback `Alt+Shift` was used:
 
@@ -30,13 +30,13 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 //
 // Deliberately NOT used:
 //   * Ctrl+Pause / Ctrl+Break: Windows sends VK_CANCEL, not Pause;
-//   * Win+X / Alt+X with an action that injects no keystrokes (SwitchLanguage*,
-//     PostMessage, Launch, OpenUrl, DoNothing): releasing Win/Alt
-//     opens the Start menu or the menu bar;
+//   * a Tap, Hold or DoubleTap on Win or Alt alone: the press reaches
+//     Windows, so a tap also opens the Start menu or the menu bar;
 //   * modifiers in a chord: every press of a chord key is swallowed;
 //   * three-key shortcuts on Alt and Shift (Alt+Shift+X): the auto-blocker
-//     from the CapsLock binding below swallows whichever of the two
-//     modifiers is pressed second, so the application gets Alt+X or Shift+X.
+//     from the CapsLock binding below (block_original_combo: true) swallows
+//     whichever of the two modifiers is pressed second, so the application
+//     gets Alt+X or Shift+X. The experimental MaskOnly lets them through.
 (
     bindings: [
         // ───────────────────────── 1. Language and CapsLock ───────────────────
@@ -231,8 +231,8 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
 > [!WARNING]
 > The comments in the example mark or work around these known defects, all still open at `1dfd80a`:
-> - Win/Alt combinations with an action that injects no keystrokes open the Start menu or the menu bar: [KS-12](../audit.md#ks-12);
-> - the `CapsLock` auto-blocker swallows the second modifier of Alt, Shift, X (or Shift, Alt, X), so the application gets Alt+X (or Shift+X): the rest of [KS-05](../audit.md#ks-05);
+> - a `Tap`, `Hold` or `DoubleTap` on Win or Alt alone lets the tap reach Windows, which opens the Start menu or the menu bar: the part of [KS-12](../audit.md#ks-12) that the menu mask key of `feat/mask-key` does not cover (a Win or Alt combination whose key is swallowed no longer opens either);
+> - the `CapsLock` auto-blocker (`block_original_combo: true`) swallows the second modifier of Alt, Shift, X (or Shift, Alt, X), so the application gets Alt+X (or Shift+X): the rest of [KS-05](../audit.md#ks-05), which the experimental `MaskOnly` of `feat/mask-key` addresses;
 > - programs started by `Launch` run with the daemon's administrator rights (`F21`, and `wt.exe` in the `F20` macro): [KS-09](../audit.md#ks-09);
 > - most actions run on the hook thread, which is why `Launch` and `OpenUrl` are placed under `Hold` or inside `Sequence` (`F21`, `F20`, `F23`): [KS-08](../audit.md#ks-08);
 > - synthesized input combines with physically held modifiers (the first `Delay` of `Ctrl+Alt+N`): [KS-19](../audit.md#ks-19).
