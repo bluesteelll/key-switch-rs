@@ -110,23 +110,29 @@ OK: 2 bindings (after auto-blocker expansion)
 <a id="s16-2"></a>
 ### 16.2 Matching on every key press
 
-On every key-down ([src/engine/mod.rs:365-500](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L365-L500)) **all** bindings are checked in this order. No binding takes the event away from the others.
+On every key-down ([src/engine/mod.rs:388-570](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/mod.rs#L388-L570)) one `keys` binding wins the press, and the other bindings are visited next to it ([src/engine/winner.rs:44-82](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/winner.rs#L44-L82)). This holds since `feat/one-winner` (roadmap [item 1.6](../roadmap.md#16-one-winner-per-event), [KS-13](../audit.md#ks-13)); before it every matching binding acted, and only `Immediate` bindings competed.
 
-- `when` is checked first. If the condition is false, the binding is skipped entirely. The active window is queried only when a condition other than `Always` is evaluated ([§12.4](triggers-conditions.md#s12-4)).
-- `keys` + `Immediate`: a binding matches by the rules of [§7](kinds.md#s7). **Only the first** matching binding runs. The other matching `Immediate` bindings do not run, but if they have `block_default: true`, the key is still suppressed.
-- `keys` + `Tap`/`Hold`/`DoubleTap`: these arm regardless of whether an `Immediate` binding has run, and ask for suppression if they have `block_default: true` (always before `feat/deferred-block-default`; [§11.4](triggers-conditions.md#s11-4)). Of several matching `Tap` bindings (or several `Hold` bindings), only the first is armed ([§11.7](triggers-conditions.md#s11-7)). A `Tap` and a `Hold` on the same key are both armed.
+- The candidates are the `keys` bindings that match the press by the rules of [§7](kinds.md#s7) (the trigger key, all keys held, exact modifiers or `allow_extra_modifiers: true`) and whose `when` holds. Auto-blockers, `sequence` and `chord` bindings are not candidates.
+- The winner is the candidate with the most keys; with equal key counts, a binding with `when` beats one without; then the one higher in the file. `when: Always` written out counts as no condition.
+- A candidate's `when` is evaluated only once its keys match the press and only if it could still beat the winner so far, so the active window is queried only for such a condition ([§12.4](triggers-conditions.md#s12-4)).
+- Only the winner acts. An `Immediate` winner fires (on an auto-repeat only if it repeats, [§11.3](triggers-conditions.md#s11-3)). A `Tap`, `Hold` or `DoubleTap` winner arms together with every deferred binding on the same keys (in any order) with the same `when` (written the same way) that matches the press: one group. Of several bindings with the same trigger in the group only the first acts ([§11.7](triggers-conditions.md#s11-7); [src/engine/winner.rs:84-140](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/winner.rs#L84-L140)).
+- A losing binding neither fires, nor arms, nor asks for suppression. The winner, or a member of its group, with `block_default: true` asks for it.
+- The election runs again on every auto-repeat ([§11.3](triggers-conditions.md#s11-3)).
 - An auto-blocker only suppresses, by its own rule ([§15.1](#s15-1)).
-- `sequence` and `chord` bindings are each processed independently, with no link to combinations.
-- The key is suppressed if at least one binding requested it ([§10](kinds.md#s10)).
+- `sequence` and `chord` bindings check their `when` first and are each processed independently, whichever `keys` binding wins. A key that is both a `keys` trigger and a sequence step or chord key drives both, and a sequence or chord that starts, advances or completes on it swallows it: a winner with `block_default: false` lets the key through only when no `sequence` or `chord` takes it.
+- The key is suppressed if the winner or its group, an auto-blocker, or a `sequence` or `chord` asked for it ([§10](kinds.md#s10)).
 
 <a id="s16-3"></a>
 ### 16.3 Practical consequences and issues
 
-- With exact modifiers, bindings on the same key with different modifiers do not compete: `"Shift+CapsLock"` matches only with Shift held, and `"CapsLock"` only without it. Order matters when bindings have the same keys or when one sets `allow_extra_modifiers: true`.
-- A binding with a condition gets no priority over a binding without one: at equal key count, file order decides. Put the binding with `when` **above** the general binding on the same combination. Then it runs in the intended window, and in all other windows its `when` is false and the general binding fires.
-- Of two identical `Immediate` bindings without `when`, only the upper one works; there is no warning about this.
+- With exact modifiers, bindings on the same key with different modifiers do not compete: `"Shift+CapsLock"` matches only with Shift held, and `"CapsLock"` only without it. Bindings compete when they have the same keys or when one sets `allow_extra_modifiers: true`.
+- A binding with a condition wins over a binding without one on the same keys, wherever it sits in the file. It runs in the intended window, and in all other windows its `when` is false and the general binding fires. Before `feat/one-winner` it had to sit **above** the general binding.
+- Of two identical `Immediate` bindings without `when`, only the upper one works; the loader warns about it ([§18.6](errors.md#s18-6)).
+- A sided key does not count as more specific than its family: `"LShift+F13"` and `"Shift+F13"` have the same key count, so with the left Shift held the one higher in the file wins ([§19](known-issues.md#s19) row 71).
 
-> [!WARNING]
-> More specific bindings do not override less specific deferred ones ([src/engine/mod.rs:403-453](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L403-L453)). For example, with `"Shift+F13"` as `Immediate` and `"F13"` as `Tap(200)` with `allow_extra_modifiers: true`, pressing Shift+F13 runs the first binding and **arms** the second. The reverse also holds: if the more specific binding is deferred (`"Ctrl+F22"` with `Tap`) and the less specific one is `Immediate` with `allow_extra_modifiers: true` (`"F22"`), pressing Ctrl+F22 runs `"F22"` at once. Make overlapping bindings on one key the same type: all `Immediate` or all `Tap`. See [KS-13](../audit.md#ks-13), open until roadmap [item 1.6](../roadmap.md#16-one-winner-per-event).
+> [!NOTE]
+> Fixed on `feat/one-winner` ([KS-13](../audit.md#ks-13), roadmap [item 1.6](../roadmap.md#16-one-winner-per-event)): a more specific binding overrides less specific ones whatever their triggers. With `"Shift+F13"` as `Immediate` and `"F13"` as `Tap(200)` with `allow_extra_modifiers: true`, pressing Shift+F13 runs the first binding and no longer arms the second; with `"Ctrl+F22"` on `Tap` and `"F22"` as `Immediate` with `allow_extra_modifiers: true`, pressing Ctrl+F22 no longer runs `"F22"`. Two consequences:
+> - An `Immediate` binding and a `Tap`, `Hold` or `DoubleTap` binding on the same keys and `when` never act on the same press: the one higher in the file wins every press, and the loader does not warn about it ([§19](known-issues.md#s19) row 69).
+> - A `Tap` and a `Hold` on the same keys with different `when` conditions do not arm together where both conditions hold ([§11.6](triggers-conditions.md#s11-6), row 70).
 
-- The other matching rules and issues are described with their binding kinds: which bindings fire on an auto-repeat, the `repeat` flag ([§11.3](triggers-conditions.md#s11-3)), `block_default: false` when another binding also matches ([§10](kinds.md#s10); [KS-13](../audit.md#ks-13)), and two `DoubleTap` bindings on one press ([§11.7](triggers-conditions.md#s11-7)).
+- The other matching rules and issues are described with their binding kinds: which bindings fire on an auto-repeat, the `repeat` flag ([§11.3](triggers-conditions.md#s11-3)), `block_default` when several bindings match ([§10](kinds.md#s10)), and two `DoubleTap` bindings on one press ([§11.7](triggers-conditions.md#s11-7)).

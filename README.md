@@ -258,6 +258,32 @@ On keyboard layouts with an AltGr key (German, Polish and others), the right
 Alt key arrives together with a left Ctrl. A binding on `RAlt` or `Alt` then
 does not fire on AltGr: write `Ctrl+RAlt` or set `allow_extra_modifiers: true`.
 
+**Which binding wins.** When several `keys` bindings match one key press, one
+of them wins, and only the winner runs its action and decides whether the key
+is swallowed. A binding that loses neither fires, nor arms its `Tap`, `Hold`
+or `DoubleTap`, nor swallows the key. The binding with more keys wins; with
+equal key counts, one with a `when:` condition beats one without; then the one
+higher in the file. `Tap`, `Hold` and `DoubleTap` bindings on the same keys
+with the same `when:` (written the same way) win or lose together, so a `Tap`
+and a `Hold` on CapsLock both arm (see [Triggers](#triggers-trigger-field));
+of two such bindings with the same trigger, only the first acts. An
+`Immediate` binding and a `Tap`, `Hold` or `DoubleTap` binding on the same
+keys and `when:` never act on the same press: the one higher in the file wins
+every press. The election runs again on every auto-repeat. Auto-blockers,
+`sequence` and `chord` bindings keep their own rules next to the winner: a key
+that is also a sequence step or a chord key still drives the sequence or the
+chord, which swallows the key when it advances. The loader warns about a
+binding that duplicates one above it (see [Errors](#errors)).
+
+```ron
+// Shift+CapsLock has more keys: it wins, and the Tap does not arm with it.
+( keys: "Shift+CapsLock", action: ToggleCapsLock ),
+( keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true ),
+// In Spotify the binding with a when: wins, wherever it sits in the file.
+( keys: "Pause", action: SwitchLanguage ),
+( keys: "Pause", action: Media(PlayPause), when: AppEquals("Spotify.exe") ),
+```
+
 ### Action variants
 
 | Variant                              | Purpose                                                                  |
@@ -328,12 +354,15 @@ matched. Default is `Immediate` (fire on key-down — the existing behaviour
 of every binding before triggers existed). Deferred triggers — `Tap`,
 `Hold`, `DoubleTap` — defer to an asynchronous gesture state machine.
 
-**The whole point**: two bindings on the same combo with different
-triggers coexist as independent entries. Tap and Hold both arm on key-down;
-with equal terms exactly one of them fires (see below).
+**The whole point**: two bindings on the same combo and `when:` with
+different triggers coexist. They win a press together (see
+[Which binding wins](#combo-syntax-the-keys-field)), Tap and Hold both arm
+on key-down, and with equal terms exactly one of them fires (see below).
 
 ```ron
-// CapsLock — quick press switches language, holding sends one LShift press
+// CapsLock — quick press switches language, holding sends one LShift press.
+// Replace the default CapsLock binding with these two: an Immediate binding
+// listed above them on the same key wins every press.
 ( keys: "CapsLock", action: SwitchLanguage,   trigger: Tap(200), block_original_combo: true ),
 ( keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200) ),
 
@@ -362,11 +391,11 @@ to keep the left Shift for the gesture alone.
 **How resolution works (under the hood):**
 
 - Key-down of one of the binding's own keys (see "Which key fires a
-  binding"): every matching binding arms its gesture (`Tap`, `Hold`,
-  `DoubleTap`) in the decision core (`src/engine/gestures.rs`) under that
-  key, and that key's key-up resolves it — multiple gestures on the same key
-  are independent. A key pressed while the gesture is pending passes and
-  arms nothing.
+  binding"): the winning group (see "Which binding wins") arms its gestures
+  (`Tap`, `Hold`, `DoubleTap`), one per trigger, in the decision core
+  (`src/engine/gestures.rs`) under that key, and that key's key-up resolves
+  them — a `Tap` and a `Hold` on the same key resolve independently. A key
+  pressed while the gesture is pending passes and arms nothing.
 - For `Tap`: the entry stores a deadline `<ms>` after the key-down; the
   key-up fires the action only before the deadline. No thread is involved.
 - For `Hold`: arming starts a timer thread that fires the action after
@@ -388,9 +417,16 @@ to keep the left Shift for the gesture alone.
   gesture still arms and fires. Without the field, a `Tap`, `Hold` or
   `DoubleTap` binding made only of modifiers (`"LShift"`, `"Ctrl+Shift"`,
   `"Win"`) lets its keys through, and every other binding, every
-  `Immediate` one included, swallows them. When several bindings match one
-  press, the key is swallowed if any of them swallows it (KS-13, until
-  roadmap item 1.6).
+  `Immediate` one included, swallows them. When several `keys` bindings
+  match one press, only the winner decides (see "Which binding wins"); in a
+  group of `Tap`, `Hold` and `DoubleTap` bindings the key is swallowed if
+  any of them swallows it. Once a modifier is released under a held key,
+  its repeats may elect another binding, which fires as that binding says,
+  while the repeats themselves still follow the key-down: with
+  `( keys: "J", action: PressKey("Down"), allow_extra_modifiers: true )` and
+  `( keys: "Ctrl+J", action: SwitchLanguage, trigger: Tap(200), block_default: false )`,
+  holding Ctrl+J and releasing Ctrl sends Down per repeat and lets `j`
+  repeat too.
 - A key pressed while a gesture whose key passes is pending does not cancel
   it. An `LShift` `Tap` also fires when Shift+A is released within its
   term, an `LShift` `DoubleTap` fires when the left Shift is pressed twice
@@ -487,7 +523,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 
 | Field                  | Default  | Meaning                                                                                                                                                                              |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `block_default`        | `true`; `false` for a `Tap`, `Hold` or `DoubleTap` binding made only of modifiers | Suppress the original OS key events (the press, its auto-repeats and its release) so the foreground app does not also see them. Set to `false` to let the keystroke pass through: an `Immediate` binding still fires, and a `Tap`, `Hold` or `DoubleTap` binding still detects its gesture. `Some(..)` and `None` (the default) load too. `sequence` and `chord` bindings ignore it. |
+| `block_default`        | `true`; `false` for a `Tap`, `Hold` or `DoubleTap` binding made only of modifiers | Suppress the original OS key events (the press, its auto-repeats and its release) so the foreground app does not also see them. Set to `false` to let the keystroke pass through: an `Immediate` binding still fires, and a `Tap`, `Hold` or `DoubleTap` binding still detects its gesture. When several `keys` bindings match one press, only the binding that wins it, or its `Tap`/`Hold`/`DoubleTap` group, counts (see [Which binding wins](#combo-syntax-the-keys-field)). `Some(..)` and `None` (the default) load too. `sequence` and `chord` bindings ignore it. |
 | `block_original_combo` | `false`  | Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. An auto-blocker that is added ignores the flagged binding's `when:` and acts in every window until roadmap item 1.2 (KS-35): with `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey (`Alt+Shift` by default) stays blocked there, so neither switches the layout in the game. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
 | `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `repeat`               | `true` for `PressKey`, `Media(VolumeUp)`, `Media(VolumeDown)`; `false` otherwise | `keys` bindings with the `Immediate` trigger: fire again on every auto-repeat while the key is held. With `false` the action fires once per press; the repeats and the release are still swallowed when the press was. `repeat: true` is a load error on `Tap`, `Hold`, `DoubleTap`, `sequence` and `chord` bindings, which never fire on an auto-repeat; `repeat: false` is accepted there. The startup list marks a value that differs from the default with `[repeat]` or `[no repeat]`. Each repeat of a `PressKey` sends a new press and release, so for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`: otherwise holding the trigger toggles the key at the repeat rate, or taps the modifier, where the real key held down toggles once or stays down. |
@@ -565,6 +601,22 @@ every problem in one pass. Common cases:
 
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
+
+A warning does not stop the file from loading; it is printed at startup and
+on every reload:
+
+- `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`
+  — the later binding repeats an earlier one: the same kind (`keys`,
+  `sequence` or `chord`) and keys (in any order for `keys` and `chord`, in
+  order for `sequence` steps), the same trigger whatever its term, the same
+  `when:` written the same way and, for `keys`, the same
+  `allow_extra_modifiers`. The action does not count. Of two such `keys`
+  bindings only the first ever acts (see
+  [Which binding wins](#combo-syntax-the-keys-field)). If the one you remove
+  sets `block_original_combo: true`, move that flag to the one you keep:
+  the auto-blocker comes from it. An `Immediate` binding next to a `Tap`,
+  `Hold` or `DoubleTap` binding on the same keys is not warned about,
+  although only one of them acts on a press.
 
 ## Build
 
@@ -694,7 +746,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
-- **Priority bindings**: among the `Immediate` bindings that match one press, the one with more keys fires; a matching deferred binding still arms until roadmap item 1.6 (KS-13)
+- **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
 - **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition
 - **Per-process sentinel**: injected-event marker is mixed with the process ID so this daemon does not collide with other input-synthesizing apps (AHK, PowerToys)

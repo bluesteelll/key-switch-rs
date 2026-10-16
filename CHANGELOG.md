@@ -53,6 +53,15 @@ minor version; such entries sit under **Changed** and start with
   `sequence` or `chord` binding is a load error, because those never fire
   on an auto-repeat. The startup list marks a value that differs from the
   default with `[repeat]` or `[no repeat]`.
+- The loader warns about a binding that duplicates one above it: the same
+  kind (`keys`, `sequence` or `chord`) and keys (in any order for `keys`
+  and `chord`, in order for `sequence` steps), the same trigger whatever its
+  term, the same `when:` written the same way and, for `keys`, the same
+  `allow_extra_modifiers` (roadmap item 1.6). For example
+  `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`.
+  The file still loads. The warning is printed at startup and on every
+  reload. If the copy you remove sets `block_original_combo: true`, move
+  the flag to the one you keep.
 
 ### Changed
 
@@ -149,6 +158,42 @@ minor version; such entries sit under **Changed** and start with
     activates the menu bar or opens Start (until roadmap item 1.2).
   - `block_default: Some(true)` and `block_default: None` (the default)
     load, as for `keys`.
+- **Breaking:** one binding wins each key press (roadmap item 1.6, KS-13).
+  Among the `keys` bindings that match a key-down, the one with more keys
+  wins; with equal key counts, a binding with `when:` beats one without;
+  then the one higher in the file. Only the winner runs its action and
+  decides whether the key is swallowed. `Tap`, `Hold` and `DoubleTap`
+  bindings on the same keys with the same `when:` win or lose together, so
+  the README's `Tap(200)` + `Hold(200)` pair on CapsLock works as before. Of
+  two such bindings with the same trigger, only the first acts.
+  Auto-blockers, `sequence` and `chord` bindings keep their own rules.
+  Consequences:
+  - A losing binding no longer swallows the key: with
+    `( keys: "Shift+F13", action: ToggleCapsLock, block_default: false )`
+    and `( keys: "F13", action: SwitchLanguage, allow_extra_modifiers: true )`,
+    Shift+F13 reaches applications.
+  - A losing `Tap`, `Hold` or `DoubleTap` no longer arms: next to
+    `Shift+CapsLock`, a `CapsLock` `Tap(200)` with
+    `allow_extra_modifiers: true` no longer switches the language when
+    Shift+CapsLock is released. A more specific `Tap` on `Ctrl+F22` no
+    longer lets `F22` with `allow_extra_modifiers: true` fire on the same
+    press.
+  - A binding with `when:` wins over one without on the same keys wherever
+    it sits in the file; it used to win only when listed first.
+  - An `Immediate` binding and a `Tap`, `Hold` or `DoubleTap` binding on
+    the same keys with the same `when:` no longer both act: the higher one
+    wins every press. Adding the README's CapsLock `Tap`/`Hold` pair below
+    the default `CapsLock` binding leaves the pair inert (it used to switch
+    the layout twice per tap); replace the default binding with the pair.
+  - A `Tap` and a `Hold` on the same keys with different `when:` no longer
+    arm together where both conditions hold; give them the same `when:`.
+  - The winner is elected again on every auto-repeat, and the repeats
+    follow the key-down. With
+    `( keys: "J", action: PressKey("Down"), allow_extra_modifiers: true )`
+    and `( keys: "Ctrl+J", action: SwitchLanguage, trigger: Tap(200), block_default: false )`,
+    holding Ctrl+J and then releasing Ctrl now lets `j` repeat in the
+    application next to one Down per repeat; the losing `J` binding used to
+    swallow the press and its repeats.
 
 ### Fixed
 
@@ -272,6 +317,21 @@ minor version; such entries sit under **Changed** and start with
   before its timer thread wakes now fires when the timer wakes, still on
   that thread, instead of being cancelled. Different terms behave as before
   until roadmap item 2.2.
+- KS-13: specificity decides across every trigger. Of the matching `keys`
+  bindings only the winner (or its `Tap`/`Hold`/`DoubleTap` group) acts. A
+  less specific binding with `block_default: true` no longer swallows the
+  key of a more specific one with `block_default: false`, and a less
+  specific `Tap`, `Hold` or `DoubleTap` no longer arms next to a more
+  specific binding. Tests:
+  `engine::scenarios::shift_capslock_fires_only_toggle_capslock_next_to_a_capslock_tap_that_allows_extra_modifiers`,
+  `a_conditional_pause_binding_wins_over_an_unconditional_one_in_either_file_order`,
+  `a_more_specific_winner_with_block_default_false_lets_the_key_through`.
+  The `when:` of a `keys` binding is now evaluated only when its keys match
+  the press, so the hook thread no longer looks up the foreground window
+  for it on presses of other keys.
+- Two `DoubleTap` bindings on the same keys and `when:` no longer fire the
+  first one's action on the first press; only the first binding acts
+  (roadmap item 1.6).
 - KS-14: the resync of modifiers from the Windows key state leaves alone a
   modifier whose key-down was swallowed, also after a foreground change.
   Windows never saw that key go down, so the next event of any other key

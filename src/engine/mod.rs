@@ -109,35 +109,48 @@
 //!    `LShift`, `RWin` and the other sided names only that key. A key of a
 //!    combo or sequence step is held if a key it accepts is held; a chord
 //!    key is pressed if it accepts the event's code (KS-07).
-//! 4. Every binding is visited in specificity order. Its `when:` condition is
-//!    checked first, then its kind:
-//!    - `Combo`: the key just pressed must be one of its trigger keys, a
-//!      non-modifier key of the combo or, for a combo made only of
-//!      modifiers, any of its keys (KS-04); all of its keys must be held;
-//!      and the modifier families held (Shift, Ctrl, Alt, Win, either key
-//!      of a pair counting as its family) must be exactly the combo's own,
-//!      unless the binding sets `allow_extra_modifiers` (owner decision).
-//!      `Immediate`: the first matching Immediate user binding takes the
-//!      event. It fires on a first key-down and, on an auto-repeat, only if
-//!      it sets `repeat` (by default `PressKey`, `Media(VolumeUp)` and
-//!      `Media(VolumeDown)`; owner decision, KS-10). A binding that does not
-//!      repeat still takes the auto-repeat, so a later binding never fires
-//!      in its place. `Tap`, `Hold` and `DoubleTap` ignore repeats and arm
-//!      under the key just pressed (so under a key of the combo, whose
-//!      key-up resolves them). Every matching binding with `block_default`
-//!      asks for suppression, whatever its trigger; one without it lets the
-//!      key-down through, and a gesture is armed and fires all the same
-//!      (roadmap item 1.3). The loader resolves a missing `block_default`
-//!      to `false` only for a deferred combo made only of modifiers.
+//! 4. One `Combo` user binding wins the key-down (roadmap item 1.6, KS-13).
+//!    A candidate's key just pressed must be one of its trigger keys, a
+//!    non-modifier key of the combo or, for a combo made only of modifiers,
+//!    any of its keys (KS-04); all of its keys must be held; the modifier
+//!    families held (Shift, Ctrl, Alt, Win, either key of a pair counting
+//!    as its family) must be exactly the combo's own, unless the binding
+//!    sets `allow_extra_modifiers` (owner decision); and its `when:` must
+//!    hold, which is asked only once its keys match. The winner has the
+//!    most keys; then a binding with a `when:` beats one without; then the
+//!    earlier binding in the list, which is file order. Only the winner
+//!    acts:
+//!    - `Immediate`: it fires on a first key-down and, on an auto-repeat,
+//!      only if it sets `repeat` (by default `PressKey`, `Media(VolumeUp)`
+//!      and `Media(VolumeDown)`; owner decision, KS-10). The election runs
+//!      on every key-down, auto-repeats included, so a winner that does not
+//!      repeat still takes its repeats, and a lower binding never fires in
+//!      its place.
+//!    - `Tap`, `Hold` and `DoubleTap`: every deferred binding on the same
+//!      keys (in any order) with the same `when:` (as written) that matches
+//!      the press acts with the winner, as one group, so a Tap and a Hold
+//!      on one key arm together. Only the first binding of each trigger
+//!      kind in the group acts. They ignore repeats and arm under the key
+//!      just pressed (so under a key of the combo, whose key-up resolves
+//!      them).
+//!
+//!    The winner, or any acting member of its group, with `block_default`
+//!    asks for suppression; a losing binding never does. One without it
+//!    lets the key-down through, and a gesture is armed and fires all the
+//!    same (roadmap item 1.3). The loader resolves a missing
+//!    `block_default` to `false` only for a deferred combo made only of
+//!    modifiers. The other bindings are visited in list order, next to the
+//!    winner:
 //!    - An auto-blocker (`block_original_combo`) is a `Combo` of the
-//!      Windows hotkey that only suppresses: it fires nothing, so its place
-//!      in the list never keeps a user binding from firing (KS-18). It
-//!      matches when the key just pressed is one of the hotkey's, all of
+//!      Windows hotkey that only suppresses: it fires nothing and is no
+//!      candidate, so it never keeps a user binding from winning (KS-18).
+//!      It matches when the key just pressed is one of the hotkey's, all of
 //!      them are held, and every other key held is one that
 //!      [`Env::os_key_down`] reports up: Windows would see the hotkey and
 //!      nothing else (KS-05).
-//!    - `Sequence` and `Chord` ignore repeats; any key-down that starts,
-//!      advances or completes one is suppressed.
+//!    - `Sequence` and `Chord` check their `when:` first and ignore
+//!      repeats; any key-down that starts, advances or completes one is
+//!      suppressed, whichever `Combo` binding wins it.
 //! 5. A first key-down is suppressed if anything asked for it, and the key
 //!    is then marked blocked; a first key-down that passes is marked
 //!    passed. An auto-repeat continues its key-down (KS-06): it is
@@ -161,8 +174,8 @@
 //! item 2.3).
 //!
 //! The known defects of these rules are listed in the audit and are fixed in
-//! later roadmap items, each with a scenario test: specificity across
-//! trigger kinds (KS-13) and the sequence matching rules (KS-15, KS-16).
+//! later roadmap items, each with a scenario test: the sequence matching
+//! rules (KS-15, KS-16).
 
 #![forbid(unsafe_code)]
 
@@ -172,6 +185,7 @@ mod gestures;
 mod keys;
 mod matching;
 mod sequences;
+mod winner;
 
 #[cfg(test)]
 pub(crate) mod testing;
@@ -198,6 +212,7 @@ use env::EnvForeground;
 use gestures::{Gestures, HoldRelease};
 use keys::KeyState;
 use sequences::{SequenceOutcome, Sequences};
+use winner::GroupArms;
 
 /// Whether a key went down (including auto-repeats) or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,8 +281,10 @@ pub struct Decision {
 
 /// Sorts a binding list into the order the engine visits it: more keys
 /// first. The sort is stable, so bindings with the same key count keep
-/// their config order (two bindings on one key with different `when:`
-/// conditions rely on this).
+/// their config order, and the auto-blockers the loader appends stay after
+/// the file's bindings. Which `keys` binding wins a key-down is decided by
+/// an explicit rank, not by this order alone; the order breaks ties
+/// between bindings of equal rank (file order, roadmap item 1.6).
 pub fn sort_by_specificity(bindings: &mut [Binding]) {
     bindings.sort_by_key(|b| Reverse(b.kind.key_count()));
 }
@@ -373,24 +390,30 @@ impl Engine {
         let was_repeat = self.keys.press(vk);
         let foreground = EnvForeground(env);
 
+        // One `keys` binding, or its gesture group, acts on this key-down;
+        // the others neither fire, arm nor ask for suppression (roadmap item
+        // 1.6, KS-13). Elected on every key-down, auto-repeats included, so
+        // a less specific binding never fires in the winner's place.
+        let winner = winner::elect(vk, bindings, &self.keys, &foreground);
+        let mut arms = GroupArms::default();
+
         let mut decision = Decision::default();
-        let mut immediate_fired = false;
 
-        for binding in bindings {
-            // `Always` returns true without asking the Env, so a config
-            // without `when:` never looks at the foreground window.
-            if !binding.condition.evaluate(&foreground) {
-                continue;
-            }
-
+        for (index, binding) in bindings.iter().enumerate() {
             match &binding.kind {
                 BindingKind::Combo(combo) => {
                     if binding.is_auto_blocker {
+                        // `Always` returns true without asking the Env, so a
+                        // config without `when:` never looks at the
+                        // foreground window.
+                        if !binding.condition.evaluate(&foreground) {
+                            continue;
+                        }
                         // A blocker only keeps a Windows hotkey from
-                        // Windows. It fires nothing and leaves the
-                        // Immediate slot alone, so a user binding matching
-                        // the same key-down fires wherever the blocker sits
-                        // in the list (KS-18).
+                        // Windows. It fires nothing and is no candidate for
+                        // the election, so a user binding matching the same
+                        // key-down fires wherever the blocker sits in the
+                        // list (KS-18).
                         if matching::blocker_matches(combo, vk, &self.keys, |key| {
                             env.os_key_down(key)
                         }) {
@@ -398,31 +421,23 @@ impl Engine {
                         }
                         continue;
                     }
-                    if !matching::combo_matches(
-                        combo,
-                        vk,
-                        &self.keys,
-                        binding.allow_extra_modifiers,
-                    ) {
+                    if !winner
+                        .as_ref()
+                        .is_some_and(|w| w.admits(index, binding, vk, &self.keys))
+                    {
                         continue;
                     }
                     match binding.trigger {
                         Trigger::Immediate => {
-                            // The first match takes the slot on a repeat
-                            // too, even when it does not fire then: a later
-                            // binding must not start firing in its place.
-                            if !immediate_fired {
-                                immediate_fired = true;
-                                if !was_repeat || binding.repeat {
-                                    decision.fire.push(binding.action.clone());
-                                }
+                            if !was_repeat || binding.repeat {
+                                decision.fire.push(binding.action.clone());
                             }
                             if binding.block_default {
                                 decision.suppress = true;
                             }
                         }
                         Trigger::Tap(term_ms) => {
-                            if was_repeat {
+                            if was_repeat || !arms.claim(binding.trigger) {
                                 continue;
                             }
                             self.gestures.arm_tap(
@@ -436,7 +451,7 @@ impl Engine {
                             }
                         }
                         Trigger::Hold(term_ms) => {
-                            if was_repeat {
+                            if was_repeat || !arms.claim(binding.trigger) {
                                 continue;
                             }
                             if let Some(timer) = self.gestures.arm_hold(
@@ -452,7 +467,7 @@ impl Engine {
                             }
                         }
                         Trigger::DoubleTap(term_ms) => {
-                            if was_repeat {
+                            if was_repeat || !arms.claim(binding.trigger) {
                                 continue;
                             }
                             if let Some(action) = self.gestures.double_tap(
@@ -470,7 +485,9 @@ impl Engine {
                     }
                 }
                 BindingKind::Sequence { steps, max_gap } => {
-                    if was_repeat {
+                    // The condition is checked before the feed, which
+                    // changes the sequence's state.
+                    if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
                     match self.sequences.on_key_down(
@@ -495,7 +512,7 @@ impl Engine {
                     }
                 }
                 BindingKind::Chord { keys, window } => {
-                    if was_repeat {
+                    if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
                     match self
@@ -584,7 +601,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14};
 
     /// An [`Env`] stopped at one instant with nothing held and no
     /// foreground window: enough to arm a Hold and read its timer token.
@@ -603,6 +620,49 @@ mod tests {
         fn foreground_title(&self) -> Option<&str> {
             None
         }
+    }
+
+    /// An [`Env`] stopped at one instant with nothing held, which panics if
+    /// the foreground window is asked for.
+    struct ForegroundForbiddenEnv(Instant);
+
+    impl Env for ForegroundForbiddenEnv {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            panic!("the foreground was asked for although no binding with a when: matches this key")
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            panic!("the foreground was asked for although no binding with a when: matches this key")
+        }
+    }
+
+    #[test]
+    fn a_when_condition_is_asked_only_for_a_binding_whose_keys_match() {
+        // On the hook thread a `when:` may capture the foreground window
+        // (GetForegroundWindow, OpenProcess, GetWindowTextW): a binding on
+        // other keys must not pay for it on every key press (KS-08).
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, when: AppEquals("code.exe")),
+                (keys: "F14", action: ToggleCapsLock),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(
+            KeyEvent::down(VK_F14),
+            &bindings,
+            &ForegroundForbiddenEnv(Instant::now()),
+        );
+        assert_eq!(decision.fire, vec![BindAction::ToggleCapsLock]);
+        assert!(decision.suppress, "F14's binding swallows its key-down");
     }
 
     #[test]

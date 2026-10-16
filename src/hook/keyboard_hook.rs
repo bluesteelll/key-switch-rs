@@ -105,8 +105,8 @@ impl KeyboardHook {
 
     /// Atomically replace the binding list. Callable any number of times
     /// (this is the hot-reload entry point). The new list is sorted by
-    /// key-count descending so more specific combinations are checked first
-    /// in the callback.
+    /// key-count descending; among equal key counts, file order breaks a tie
+    /// between two `keys` bindings of equal precedence (roadmap item 1.6).
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
         // A stable sort, so bindings with the same key count keep their
         // config order.
@@ -310,8 +310,9 @@ mod tests {
     #[test]
     fn equal_specificity_keeps_config_order() {
         // The sort must be stable: among bindings with the same key count,
-        // the one listed first in the config is checked first (two bindings
-        // on one key with different `when` conditions rely on this).
+        // the one listed first in the config is checked first (the file-order
+        // tie-break between two `keys` bindings of equal precedence relies on
+        // this, roadmap item 1.6).
         //
         // The list must be longer than 20 and not already sorted: for 20 or
         // fewer elements `sort_unstable*` falls back to insertion sort, which

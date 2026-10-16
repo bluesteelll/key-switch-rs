@@ -6,10 +6,12 @@
 //! (default) or one of the deferred-gesture paths (`Tap`, `Hold`,
 //! `DoubleTap`) handled by the decision core in `crate::engine`.
 //!
-//! Multiple bindings on the same combo with different triggers coexist:
-//! e.g. one `Tap(200)` binding and one `Hold(200)` binding on `CapsLock`
-//! arm both gestures on key-down and the appropriate one resolves on
-//! key-up or timer expiry.
+//! Multiple bindings on the same combo with different triggers coexist on
+//! the same keys with the same `when:`: e.g. one `Tap(200)` binding and one
+//! `Hold(200)` binding on `CapsLock` arm both gestures on key-down and the
+//! appropriate one resolves on key-up or timer expiry. An `Immediate`
+//! binding on those keys competes with them: one of the two wins each key
+//! press (roadmap item 1.6).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Trigger {
@@ -37,6 +39,20 @@ impl Trigger {
     pub fn is_immediate(self) -> bool {
         matches!(self, Trigger::Immediate)
     }
+
+    /// Whether both triggers are of the same kind, whatever their terms:
+    /// `Tap(200)` and `Tap(300)` are, `Tap(200)` and `Hold(200)` are not.
+    /// The loader uses it to find duplicate bindings: of two `Tap` bindings
+    /// on the same keys and `when:` only the first ever acts.
+    pub fn same_kind(self, other: Trigger) -> bool {
+        matches!(
+            (self, other),
+            (Trigger::Immediate, Trigger::Immediate)
+                | (Trigger::Tap(_), Trigger::Tap(_))
+                | (Trigger::Hold(_), Trigger::Hold(_))
+                | (Trigger::DoubleTap(_), Trigger::DoubleTap(_))
+        )
+    }
 }
 
 impl std::fmt::Display for Trigger {
@@ -61,5 +77,19 @@ mod tests {
         assert!(!Trigger::Tap(200).is_immediate());
         assert!(!Trigger::Hold(200).is_immediate());
         assert!(!Trigger::DoubleTap(200).is_immediate());
+    }
+
+    #[test]
+    fn same_kind_ignores_the_term() {
+        assert!(Trigger::Immediate.same_kind(Trigger::Immediate));
+        assert!(Trigger::Tap(200).same_kind(Trigger::Tap(300)));
+        assert!(Trigger::Hold(200).same_kind(Trigger::Hold(500)));
+        assert!(Trigger::DoubleTap(250).same_kind(Trigger::DoubleTap(400)));
+
+        assert!(!Trigger::Tap(200).same_kind(Trigger::Hold(200)));
+        assert!(!Trigger::Hold(200).same_kind(Trigger::DoubleTap(200)));
+        assert!(!Trigger::DoubleTap(200).same_kind(Trigger::Tap(200)));
+        assert!(!Trigger::Immediate.same_kind(Trigger::Tap(200)));
+        assert!(!Trigger::Hold(200).same_kind(Trigger::Immediate));
     }
 }

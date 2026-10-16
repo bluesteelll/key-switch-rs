@@ -25,7 +25,11 @@ use windows::{
     core::{Owned, PWSTR},
 };
 
-#[derive(Debug, Clone, Default)]
+/// Equality is structural, the condition as written: `AppEquals("Code.exe")`
+/// and `AppEquals("code.exe")` differ. The engine uses it to group Tap, Hold
+/// and DoubleTap bindings on the same keys, and the loader to find duplicate
+/// bindings (roadmap item 1.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Condition {
     /// Always true — the binding fires whenever the combo matches. Default
     /// when the config doesn't specify `when:`.

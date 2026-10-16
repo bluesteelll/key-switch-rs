@@ -255,7 +255,7 @@ fn when_title_contains_and_not_conditions() {
 }
 
 #[test]
-fn first_binding_whose_condition_holds_wins_on_a_shared_key() {
+fn a_binding_whose_condition_holds_wins_on_a_shared_key() {
     let config = r#"( bindings: [
         (keys: "F13", action: PressKey("F5"), when: AppEquals("code.exe")),
         (keys: "F13", action: SwitchLanguage),
@@ -3236,9 +3236,9 @@ fn deferred_binding_on_the_language_hotkey_keys_lets_the_hotkey_through_by_defau
 
 #[test]
 fn passing_and_blocking_deferred_bindings_on_one_key_keep_its_press_whole() {
-    // Every matching binding that asks for suppression gets it, so the
-    // Hold's default swallows F13 although the Tap lets it through. The OR
-    // rule holds until roadmap item 1.6 picks one binding per press (KS-13).
+    // Tap and Hold on the same keys and `when:` are one group, which
+    // swallows the key if either asks (roadmap item 1.6): the Hold's default
+    // swallows F13 although the Tap lets it through.
     let config = r#"( bindings: [
         (keys: "F13", action: SwitchLanguage, trigger: Tap(200), block_default: false),
         (keys: "F13", action: ToggleCapsLock, trigger: Hold(200)),
@@ -3397,6 +3397,483 @@ fn a_quick_ctrl_shortcut_still_fires_a_passing_ctrl_tap() {
     .expect_passed()
     .expect_fired(&[BindAction::PressKey(VK_ESCAPE)])
     .expect_total_fired(&[BindAction::PressKey(VK_ESCAPE)]);
+}
+
+// ---- One winner per key event (roadmap item 1.6, KS-13) ----
+
+/// KS-13's first scenario under exact modifiers: a `CapsLock` Tap that
+/// allows extra modifiers also matches Shift+CapsLock.
+const SHIFT_CAPS_AND_CAPS_TAP: &str = r#"( bindings: [
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true),
+] )"#;
+
+#[test]
+fn shift_capslock_fires_only_toggle_capslock_next_to_a_capslock_tap_that_allows_extra_modifiers() {
+    // Shift+CapsLock has more keys, so it wins the press and the Tap does
+    // not arm: releasing CapsLock within the term switches nothing.
+    Scenario::from_ron(SHIFT_CAPS_AND_CAPS_TAP)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_passed()
+        .advance_ms(20)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(50)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_passed()
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn shift_capslock_held_past_the_term_fires_no_capslock_hold() {
+    let config = r#"( bindings: [
+        (keys: "Shift+CapsLock", action: ToggleCapsLock),
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200), allow_extra_modifiers: true),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_passed()
+        .advance_ms(20)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn a_conditional_pause_binding_wins_over_an_unconditional_one_in_either_file_order() {
+    let play_pause = BindAction::Media(MediaKey::PlayPause);
+    let configs = [
+        (
+            "conditional binding first",
+            r#"( bindings: [
+                (keys: "Pause", action: Media(PlayPause), when: AppEquals("Spotify.exe")),
+                (keys: "Pause", action: SwitchLanguage),
+            ] )"#,
+        ),
+        (
+            "unconditional binding first",
+            r#"( bindings: [
+                (keys: "Pause", action: SwitchLanguage),
+                (keys: "Pause", action: Media(PlayPause), when: AppEquals("Spotify.exe")),
+            ] )"#,
+        ),
+    ];
+    for (name, config) in configs {
+        Scenario::from_ron(config)
+            .with_context(name)
+            .check_press_symmetry()
+            .check_nothing_stuck()
+            .foreground("Spotify.exe", "Spotify Premium")
+            .down("Pause")
+            .expect_suppressed()
+            .expect_fired(std::slice::from_ref(&play_pause))
+            .up("Pause")
+            .expect_suppressed()
+            .foreground("notepad.exe", "Untitled - Notepad")
+            .foreground_changed()
+            .down("Pause")
+            .expect_suppressed()
+            .expect_fired(&[BindAction::SwitchLanguage])
+            .up("Pause")
+            .expect_suppressed();
+    }
+}
+
+#[test]
+fn a_more_specific_winner_with_block_default_false_lets_the_key_through() {
+    // KS-13's Shift+X case: the losing `F13` asks to swallow the key, the
+    // winning `Shift+F13` does not, and only the winner decides.
+    let config = r#"( bindings: [
+        (keys: "F13", action: SwitchLanguage, allow_extra_modifiers: true),
+        (keys: "Shift+F13", action: ToggleCapsLock, block_default: false),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_passed()
+        .down("F13")
+        .expect_passed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_conditional_winner_with_block_default_false_lets_the_key_through() {
+    let config = r#"( bindings: [
+        (keys: "F14", action: SwitchLanguage),
+        (keys: "F14", action: ToggleCapsLock, block_default: false, when: AppEquals("code.exe")),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .foreground("code.exe", "main.rs")
+        .down("F14")
+        .expect_passed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(500)
+        .repeat("F14")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F14")
+        .expect_passed()
+        .foreground("notepad.exe", "Untitled - Notepad")
+        .foreground_changed()
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F14")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_more_specific_tap_keeps_a_less_specific_immediate_binding_from_firing() {
+    // KS-13 the other way round: the more specific binding is deferred and
+    // the less specific one Immediate. Ctrl+F22 wins every event of the
+    // press, its auto-repeats included, so `F22` sends no Left.
+    let config = r#"( bindings: [
+        (keys: "F22", action: PressKey("Left"), allow_extra_modifiers: true),
+        (keys: "Ctrl+F22", action: ToggleCapsLock, trigger: Tap(200), block_default: false),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .expect_passed()
+        .down("F22")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .up("F22")
+        .expect_passed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .down("F22")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(500)
+        .repeat("F22")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("F22")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("LCtrl")
+        .expect_passed()
+        .down("F22")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)])
+        .up("F22")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::PressKey(VK_LEFT)]);
+}
+
+#[test]
+fn a_conditional_tap_and_hold_pair_arms_as_one_group_over_an_unconditional_binding() {
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: ToggleCapsLock),
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), when: AppEquals("code.exe")),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200), when: AppEquals("code.exe")),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .foreground("code.exe", "main.rs")
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(80)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(100)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(200)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .foreground("notepad.exe", "Untitled - Notepad")
+        .foreground_changed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_total_fired(&[
+            BindAction::SwitchLanguage,
+            BindAction::PressKey(VK_LSHIFT),
+            BindAction::ToggleCapsLock,
+        ]);
+}
+
+#[test]
+fn a_tap_and_a_hold_with_different_when_conditions_do_not_arm_together() {
+    // A group is the same keys with the same `when:`. In VS Code the Tap
+    // wins (a `when:` beats none) and the Hold does not arm with it.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), when: AppEquals("code.exe")),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .foreground("code.exe", "main.rs")
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(80)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .foreground("notepad.exe", "Untitled - Notepad")
+        .foreground_changed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(300)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired();
+}
+
+#[test]
+fn two_double_taps_on_the_same_keys_fire_only_the_first_on_the_second_press() {
+    // The second DoubleTap of the group is skipped, so it neither consumes
+    // the first one's entry on the first press nor re-arms its own.
+    let config = r#"( bindings: [
+        (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(250)),
+        (keys: "F13", action: SwitchLanguage, trigger: DoubleTap(250)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(60)
+        .up("F13")
+        .expect_suppressed()
+        .advance_ms(100)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn a_more_specific_tap_keeps_a_less_specific_hold_from_arming() {
+    let config = r#"( bindings: [
+        (keys: "F13", action: SwitchLanguage, trigger: Hold(200), allow_extra_modifiers: true),
+        (keys: "Shift+F13", action: ToggleCapsLock, trigger: Tap(200)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LShift")
+        .down("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .down("LShift")
+        .down("F13")
+        .advance_ms(50)
+        .up("F13")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("LShift")
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn a_gesture_armed_by_the_winner_resolves_after_a_reload_adds_a_more_specific_binding() {
+    // A pending gesture keeps its action, and the key-up does not consult
+    // the bindings: the reload changes only the next press.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(50)
+    .reload(SHIFT_CAPS_AND_CAPS_TAP)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .advance_ms(100)
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(50)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_passing_user_binding_does_not_stop_the_auto_blocker() {
+    // Auto-blockers stay outside the election: a user binding that wins
+    // the press and lets it through leaves the blocker's suppression alone.
+    Scenario::with_bindings(with_alt_shift_blocker(
+        r#"( bindings: [ (keys: "LAlt+LShift", action: SwitchLanguageBackward, block_default: false) ] )"#,
+    ))
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguageBackward])
+    .up("LShift")
+    .expect_suppressed()
+    .up("LAlt")
+    .expect_passed();
+}
+
+#[test]
+fn a_group_member_arms_only_if_it_matches_the_press_itself() {
+    // The Tap allows extra modifiers and wins Shift+CapsLock; the exact
+    // Hold is in its group but does not match with Shift held.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LShift")
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(300)
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("LShift")
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn tap_and_hold_on_capslock_still_arm_together_as_one_group() {
+    // The README's Tap(200) + Hold(200) pair, listed above an Immediate
+    // binding on the same key: the pair wins by file order and arms as one
+    // group, and the Immediate binding never fires.
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+        (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+        (keys: "CapsLock", action: ToggleCapsLock),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(199)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(100)
+        .down("CapsLock")
+        .expect_suppressed()
+        .advance_ms(201)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::PressKey(VK_LSHIFT)]);
+}
+
+#[test]
+fn repeats_after_the_modifier_is_released_elect_again_and_follow_the_key_down() {
+    // The election runs on every key-down, auto-repeats included, while a
+    // repeat is suppressed or passed like its key-down (KS-06). Ctrl+J wins
+    // the key-down and lets it through; once Ctrl is released, `J` wins the
+    // repeats and sends Down on each, and the repeats still reach Windows.
+    // Pinned until a winner is locked per press (a follow-up of roadmap
+    // item 1.6).
+    let config = r#"( bindings: [
+        (keys: "J", action: PressKey("Down"), allow_extra_modifiers: true),
+        (keys: "Ctrl+J", action: SwitchLanguage, trigger: Tap(200), block_default: false),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .expect_passed()
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(100)
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(400)
+        .repeat("J")
+        .expect_passed()
+        .expect_fired(&[BindAction::PressKey(VK_DOWN)])
+        .advance_ms(33)
+        .repeat("J")
+        .expect_passed()
+        .expect_fired(&[BindAction::PressKey(VK_DOWN)])
+        .up("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::PressKey(VK_DOWN), BindAction::PressKey(VK_DOWN)]);
 }
 
 // ---- The harness itself ----

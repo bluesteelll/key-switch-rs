@@ -172,6 +172,7 @@ These messages do not reject the file. The loader prints its messages to the dae
 | `[INFO] generated default config at <path>` | `<exe folder>\config.ron` did not exist at startup, so the template was written ([§2.2](structure.md#s2-2)) |
 | `[INFO] loading config from <path>` | the file was read (at startup and on every reload) |
 | `[WARN] config contains no bindings` | `bindings: []` ([§4](structure.md#s4)) |
+| `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them` | the later binding repeats an earlier one: the same kind and keys (in any order for `keys` and `chord`, in order for `sequence` steps), the same trigger whatever its term, the same `when` as written and, for `keys`, the same `allow_extra_modifiers`; the action does not count ([src/config/loader.rs:299-321](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/config/loader.rs#L299-L321)). Of two such `keys` bindings only the first acts ([§11.7](triggers-conditions.md#s11-7), [§16.3](matching.md#s16-3)). If the one you remove sets `block_original_combo: true`, move the flag to the one you keep, or its auto-blocker goes ([§15](matching.md#s15)). Printed at startup and on every reload |
 | `[INFO] SwitchLanguage: registry combination Alt+Shift` / `[INFO] SwitchLanguage: using default combination` | a `block_original_combo` binding asked for its hotkey ([§15.2](matching.md#s15-2)) |
 | `[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys` | a binding of the file uses the hotkey's keys, so no blocker was added ([§15.3](matching.md#s15-3)) |
 | `[WARN] registry value "Hotkey" has type …, expected REG_SZ/REG_EXPAND_SZ` | the registry value is not of a string type |
@@ -199,7 +200,7 @@ The following load without errors or warnings, although they are often mistakes 
 - `Delay(0)` and any `Delay` up to `u64::MAX` (the 1 to 10000 ms range covers triggers, `max_gap_ms` and `window_ms` only);
 - the numeric `msg` code in `PostMessage` (any `u32` is accepted);
 - `Launch(exe: "")`, `OpenUrl("")`, `Sequence([])`, `Text("")`, `And([])`, `Or([])`, `TitleContains("")`;
-- duplicate and conflicting bindings (two `Immediate` or two `Tap` bindings on one key; [roadmap item 1.6](../roadmap.md#16-one-winner-per-event) adds a warning);
+- an `Immediate` binding and a `Tap`, `Hold` or `DoubleTap` binding on the same keys and `when`, of which only the higher one ever acts ([§19](known-issues.md#s19) row 69); exact duplicates are warned about since `feat/one-winner` ([§18.6](#s18-6));
 - `block_original_combo` on actions that have no system combo, and on `sequence`/`chord` (the blocker is added);
 - `block_default` where it is ignored (`sequence`, `chord`);
 - strings with accidentally valid escapes such as `"C:\temp"`.

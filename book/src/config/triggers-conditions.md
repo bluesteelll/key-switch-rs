@@ -38,13 +38,14 @@
 <a id="s11-3"></a>
 ### 11.3 `Immediate`
 
-[src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412). The action fires on key-down and runs on the hook thread, after the decision ([§13.1](actions.md#s13-1)).
+[src/engine/mod.rs:431-438](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/mod.rs#L431-L438). The action fires on key-down and runs on the hook thread, after the decision ([§13.1](actions.md#s13-1)).
 
-- If several `Immediate` bindings match one press, only the first in check order runs: the one with the most keys, and on a tie the first in the file ([§16](matching.md#s16)).
-- The event is suppressed if at least one of the matched `keys` bindings has `block_default: true`: an `Immediate` one that did not run, or a `Tap`, `Hold` or `DoubleTap` one on the same press ([KS-13](../audit.md#ks-13)).
-- An auto-blocker never takes this slot: it fires nothing and only suppresses ([§15](matching.md#s15)).
+- If several `keys` bindings match one press, one wins ([§16.2](matching.md#s16-2)): the one with the most keys, then one with `when` over one without, then the first in the file. An `Immediate` winner runs alone; the losers, whatever their triggers, neither run nor arm.
+- The event is suppressed if the winner has `block_default: true`. A losing binding no longer suppresses it ([KS-13](../audit.md#ks-13), fixed on `feat/one-winner`), but a `sequence`, a `chord` or an auto-blocker that takes the key still can ([§10](kinds.md#s10)).
+- An auto-blocker never wins: it fires nothing and only suppresses ([§15](matching.md#s15)).
 - On an auto-repeat of the key the binding fires again only if it repeats: with `repeat: true`, or by default for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` (owner decision, [KS-10](../audit.md#ks-10)). Every other action fires once per press. The repeats are still suppressed when the key-down was, and passed when it passed ([§10](kinds.md#s10)), whether the action fires or not.
-- The first matching `Immediate` binding takes an auto-repeat even when it does not fire on it, so a later binding on the same key never fires in its place. With `( keys: "F13", action: SwitchLanguage )` above `( keys: "F13", action: PressKey("Left") )`, holding F13 switches the layout once and sends no Left.
+- The election runs on every auto-repeat, so the winner takes an auto-repeat even when it does not fire on it, and a lower binding on the same key never fires in its place. With `( keys: "F13", action: SwitchLanguage )` above `( keys: "F13", action: PressKey("Left") )`, holding F13 switches the layout once and sends no Left.
+- If a modifier is released while the key is held, a repeat can elect another binding, which then fires as it says, while the repeat itself is still suppressed or passed like the key-down ([§19](known-issues.md#s19) row 73).
 - `repeat: true` on a `Tap`, `Hold` or `DoubleTap` binding, a `sequence` or a `chord` is a load error, because those never fire on an auto-repeat: ``binding #0 [F13]: `repeat: true` applies only to `keys` bindings with the `Immediate` trigger``. `repeat: false` is accepted there.
 - A press that the daemon reads as an auto-repeat, because the key's previous release went to the lock screen or another desktop, fires only a binding that repeats; the next press works ([KS-29](../audit.md#ks-29), [§19](known-issues.md#s19) row 63).
 
@@ -56,11 +57,11 @@
 <a id="s11-4"></a>
 ### 11.4 Common to `Tap`, `Hold` and `DoubleTap`
 
-[src/engine/mod.rs:413-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L413-L452), [src/engine/gestures.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs):
+[src/engine/mod.rs:439-484](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/mod.rs#L439-L484), [src/engine/gestures.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs):
 
 - A gesture is armed on a non-repeat key-down that fires the `keys` binding by the rules of [§7](kinds.md#s7): the key just pressed is one of the binding's trigger keys, all its keys are held and the modifiers are exactly its own. The gesture is bound to that key's code, and that key's key-up resolves it. For `keys: "Ctrl+F17"` with `Tap(150)`, press Ctrl, then F17: the time runs from the F17 press to its release. Pressing F17 first, then Ctrl arms nothing.
 - A key pressed while the gesture is pending is not the binding's key: it passes and arms nothing. It does not cancel the gesture either ([§11.8](#s11-8)).
-- Deferred bindings are armed **regardless** of whether an `Immediate` binding ran on the same press: the "`Immediate` already fired" flag does not affect them ([KS-13](../audit.md#ks-13)).
+- A deferred binding arms only if it wins the press or belongs to the winning group ([§16.2](matching.md#s16-2)): an `Immediate` binding that wins keeps it from arming, and so does a more specific binding of any trigger. Before `feat/one-winner` deferred bindings armed regardless of an `Immediate` binding that ran on the same press ([KS-13](../audit.md#ks-13), fixed).
 - `block_default` decides whether the press, the auto-repeats and the release of the trigger key reach the application ([§10](kinds.md#s10)); the gesture is armed and fires either way. Without the field it is `false` for a combination made only of modifiers (`"LShift"`, `"Ctrl+Shift"`, `"Win"`) and `true` otherwise, so `"CapsLock"` with `Tap(200)` still swallows CapsLock and `"LShift"` with `DoubleTap(250)` lets the left Shift type capitals. Combo keys pressed earlier (for example Ctrl) do reach the application. Before `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)) the trigger key was always suppressed, whatever `block_default` said.
 - Auto-repeat does not re-arm the gesture, so `Hold` fires once per press.
 - `Tap` and `DoubleTap` store a deadline and start no thread; the next event of the key checks it. Each `Hold` starts one short-lived `hold-timer` thread ([src/hook/keyboard_hook_callback.rs:197-218](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L197-L218)). If that thread cannot be started, the daemon prints `[WARN] could not start a hold timer, that Hold will not fire: <error>` and the Hold is dropped ([KS-33](../audit.md#ks-33), partly fixed).
@@ -83,7 +84,7 @@
 <a id="s11-6"></a>
 ### 11.6 `Tap` and `Hold` (or `DoubleTap`) on the same key
 
-These are two separate bindings. Both gestures are armed independently and resolve independently. The result depends on how long the key is held, `t`:
+These are two separate bindings. With the same keys and the same `when` they win the press as one group ([§16.2](matching.md#s16-2)), and both gestures are armed independently and resolve independently. With different `when` conditions they compete like any two bindings, and where both conditions hold only the winner arms ([§19](known-issues.md#s19) row 70). The result for a group depends on how long the key is held, `t`:
 
 | Duration `t` | Result |
 |---|---|
@@ -107,14 +108,13 @@ With **equal** values, for example `Tap(200)` and `Hold(200)`, exactly one of th
 <a id="s11-7"></a>
 ### 11.7 Several deferred bindings of the same type on one press
 
-This happens with one key and overlapping `when` conditions, or with a binding that sets `allow_extra_modifiers: true` next to a more specific one, such as `"F13"` with the flag and `"Shift+F13"`. The gesture tables are keyed by the key code only:
+Since `feat/one-winner` this happens only within one group: bindings on the same keys with the same `when` (written the same way), which win the press together ([§16.2](matching.md#s16-2)). Bindings with other keys or another `when` compete, and only the winner arms: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap` with `allow_extra_modifiers: true`, pressing Shift+F13 runs only the first one, because it has more keys.
 
-- `Tap` and `Hold`: only the first matching binding in check order ([§16](matching.md#s16)) is armed; the others are silently dropped ([src/engine/gestures.rs:91-106](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L91-L106), [L125-L137](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L125-L137)). This can be used on purpose: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap` with `allow_extra_modifiers: true`, pressing Shift+F13 runs only the first one.
-- `DoubleTap`: see the warning below.
-- A related problem: a more specific binding does not override less specific deferred ones ([§16.3](matching.md#s16-3), [KS-13](../audit.md#ks-13)).
+- Of several bindings with the same trigger in a group, only the first in the file acts; the others are skipped entirely: they arm nothing and do not ask for suppression ([src/engine/winner.rs:117-140](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/winner.rs#L117-L140)). The loader warns about such a binding, whatever its term ([§18.6](errors.md#s18-6)).
+- A `Tap`, a `Hold` and a `DoubleTap` of one group all act ([§11.6](#s11-6)).
 
-> [!WARNING]
-> **Known issue: several `DoubleTap` bindings.** The second binding takes the first binding's entry, and the first binding's action runs already on the **first** press ([src/engine/gestures.rs:200-219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L200-L219); inferred from the code).
+> [!NOTE]
+> Fixed on `feat/one-winner`: of two `DoubleTap` bindings on the same keys and `when`, only the first acts, and it fires on the second press. The second binding used to take the first binding's entry, so the first binding's action ran already on the **first** press ([src/engine/gestures.rs:200-219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L200-L219)).
 
 <a id="s11-8"></a>
 ### 11.8 Defects
