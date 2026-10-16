@@ -11,7 +11,20 @@ struct RegistryLocation {
     hkey: HKEY,
     subkey: &'static str,
     value_names: &'static [&'static str],
-    parser: fn(&str) -> Option<KeyCombination>,
+    parser: fn(&str) -> HotkeySetting,
+}
+
+/// What a registry value says about a Windows hotkey (KS-17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HotkeySetting {
+    /// The value names this combination.
+    Combo(KeyCombination),
+    /// The value turns the hotkey off: "3", "Not assigned" in Windows'
+    /// settings. It decides like a combination does: there is no hotkey,
+    /// so no auto-blocker and no fallback to the default.
+    Disabled,
+    /// The value is a string this parser does not know.
+    Unknown,
 }
 
 fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
@@ -51,15 +64,53 @@ fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
 
 pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
     if let Some(location) = get_registry_location(function)
-        && let Some(combo) = read_from_registry(&location)
+        && let Some(key) = open_key(&location)
     {
-        println!("[INFO] {:?}: registry combination {}", function, combo);
-        return Some(combo);
+        return hotkey_from_values(
+            function,
+            location
+                .value_names
+                .iter()
+                .map(|name| read_string_value(&key, name)),
+        );
+    }
+    hotkey_from_values(function, std::iter::empty::<Option<String>>())
+}
+
+/// The hotkey of `function`, given the data of its registry values in the
+/// order of the location's `value_names`: `Some(text)` for a value read as
+/// a string, `None` for one that is missing, unreadable or not a string.
+/// The first value whose text is a `Combo` or `Disabled` decides (`Disabled`
+/// gives `None`); the values after it are not read. With no deciding value,
+/// or for a function without a registry location, the built-in default.
+/// Prints the [INFO] line that says where the hotkey came from.
+pub(crate) fn hotkey_from_values<S: AsRef<str>>(
+    function: SystemFunction,
+    values: impl IntoIterator<Item = Option<S>>,
+) -> Option<KeyCombination> {
+    if let Some(location) = get_registry_location(function) {
+        for value in values.into_iter().flatten() {
+            match (location.parser)(value.as_ref()) {
+                HotkeySetting::Combo(combo) => {
+                    println!("[INFO] {function:?}: registry combination {combo}");
+                    return Some(combo);
+                }
+                // KS-17: an Alt+Shift fallback here would swallow Shift
+                // pressed after Alt (KS-05) with no Windows hotkey to block.
+                HotkeySetting::Disabled => {
+                    println!(
+                        "[INFO] {function:?}: hotkey not assigned in Windows, no auto-blocker"
+                    );
+                    return None;
+                }
+                HotkeySetting::Unknown => {}
+            }
+        }
     }
 
     let default = get_default_combination(function);
     if default.is_some() {
-        println!("[INFO] {:?}: using default combination", function);
+        println!("[INFO] {function:?}: using default combination");
     }
     default
 }
@@ -78,8 +129,8 @@ fn get_default_combination(function: SystemFunction) -> Option<KeyCombination> {
     }
 }
 
-/// RAII guard that closes an HKEY on drop. Prevents leaking the key handle if
-/// `read_value_and_parse` ever panics between open and the explicit close.
+/// RAII guard that closes an HKEY on drop, so the key handle is closed on
+/// every path out of `get_system_hotkey`, a panic included.
 struct HKeyGuard(HKEY);
 
 impl Drop for HKeyGuard {
@@ -92,7 +143,9 @@ impl Drop for HKeyGuard {
     }
 }
 
-fn read_from_registry(location: &RegistryLocation) -> Option<KeyCombination> {
+/// `location`'s subkey opened for reading, or `None` if it cannot be opened
+/// (it does not exist, or access is denied).
+fn open_key(location: &RegistryLocation) -> Option<HKeyGuard> {
     let subkey_wide: Vec<u16> = location
         .subkey
         .encode_utf16()
@@ -115,22 +168,13 @@ fn read_from_registry(location: &RegistryLocation) -> Option<KeyCombination> {
     if open_result.is_err() {
         return None;
     }
-    let guard = HKeyGuard(hkey);
-
-    for value_name in location.value_names {
-        if let Some(combo) = read_value_and_parse(guard.0, value_name, location.parser) {
-            return Some(combo);
-        }
-    }
-
-    None
+    Some(HKeyGuard(hkey))
 }
 
-fn read_value_and_parse(
-    hkey: HKEY,
-    value_name: &str,
-    parser: fn(&str) -> Option<KeyCombination>,
-) -> Option<KeyCombination> {
+/// The data of the value `value_name` under `key`, up to its first NUL, if
+/// it is a string (`REG_SZ` or `REG_EXPAND_SZ`). `None` if the value is
+/// missing, does not fit the buffer, or has another type (with a [WARN]).
+fn read_string_value(key: &HKeyGuard, value_name: &str) -> Option<String> {
     let value_name_wide: Vec<u16> = value_name
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -140,11 +184,13 @@ fn read_value_and_parse(
     let mut data_size = std::mem::size_of_val(&data) as u32;
     let mut reg_type = REG_VALUE_TYPE(0);
 
-    // SAFETY: data buffer is sized and writable; data_size carries its capacity
-    // in bytes per RegQueryValueExW's contract.
+    // SAFETY: key.0 is an open key handle (the guard closes it only on drop,
+    // and it is borrowed for this call); value_name_wide is null-terminated
+    // and outlives the call; data buffer is sized and writable; data_size
+    // carries its capacity in bytes per RegQueryValueExW's contract.
     let result = unsafe {
         RegQueryValueExW(
-            hkey,
+            key.0,
             PCWSTR(value_name_wide.as_ptr()),
             None,
             Some(&mut reg_type),
@@ -174,30 +220,29 @@ fn read_value_and_parse(
         .iter()
         .position(|&c| c == 0)
         .unwrap_or(scan_len);
-    let value_str = String::from_utf16_lossy(&data[..str_len]);
-    parser(&value_str)
+    Some(String::from_utf16_lossy(&data[..str_len]))
 }
 
-fn parse_language_hotkey(value: &str) -> Option<KeyCombination> {
+fn parse_language_hotkey(value: &str) -> HotkeySetting {
     match value.trim() {
-        "1" => Some(KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT])),
-        "2" => Some(KeyCombination::from_keys(vec![VK_CONTROL, VK_SHIFT])),
-        "3" => None,
-        "4" => Some(KeyCombination::new(VK_OEM_3)),
-        _ => None,
+        "1" => HotkeySetting::Combo(KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT])),
+        "2" => HotkeySetting::Combo(KeyCombination::from_keys(vec![VK_CONTROL, VK_SHIFT])),
+        "3" => HotkeySetting::Disabled,
+        "4" => HotkeySetting::Combo(KeyCombination::new(VK_OEM_3)),
+        _ => HotkeySetting::Unknown,
     }
 }
 
-fn parse_win_key_combo(value: &str) -> Option<KeyCombination> {
+fn parse_win_key_combo(value: &str) -> HotkeySetting {
     let value = value.trim().to_uppercase();
 
-    if value.len() == 1 {
-        let ch = value.chars().next()?;
-        let vk = char_to_vk(ch)?;
-        return Some(win_with(vk));
+    if value.len() == 1
+        && let Some(vk) = value.chars().next().and_then(char_to_vk)
+    {
+        return HotkeySetting::Combo(win_with(vk));
     }
 
-    None
+    HotkeySetting::Unknown
 }
 
 /// Either Win key with `key`: Windows' Win hotkeys work with both.
@@ -241,22 +286,207 @@ fn char_to_vk(ch: char) -> Option<VIRTUAL_KEY> {
 mod tests {
     use super::*;
 
+    fn alt_shift() -> KeyCombination {
+        KeyCombination::from_keys([VK_MENU, VK_SHIFT])
+    }
+
+    fn ctrl_shift() -> KeyCombination {
+        KeyCombination::from_keys([VK_CONTROL, VK_SHIFT])
+    }
+
+    fn grave_accent() -> KeyCombination {
+        KeyCombination::new(VK_OEM_3)
+    }
+
+    /// The language hotkey that the strings of the values `Hotkey` and
+    /// `Language Hotkey`, in that order, resolve to (`None` for a missing
+    /// value). Both language functions resolve them alike.
+    fn language(values: [Option<&str>; 2]) -> Option<KeyCombination> {
+        let forward = hotkey_from_values(SystemFunction::SwitchLanguage, values);
+        let backward = hotkey_from_values(SystemFunction::SwitchLanguageBackward, values);
+        assert_eq!(forward, backward, "{values:?}");
+        forward
+    }
+
+    /// The data a value can hold, a missing value included.
+    const ANYTHING: [Option<&str>; 7] = [
+        None,
+        Some("1"),
+        Some("2"),
+        Some("3"),
+        Some("4"),
+        Some(""),
+        Some("x"),
+    ];
+
     #[test]
-    fn test_parse_language_hotkey() {
-        assert!(parse_language_hotkey("1").is_some());
-        assert!(parse_language_hotkey("2").is_some());
-        assert!(parse_language_hotkey("3").is_none());
-        assert!(parse_language_hotkey("4").is_some());
-        assert!(parse_language_hotkey("unknown").is_none());
+    fn parse_language_hotkey_is_tri_state() {
+        assert_eq!(
+            parse_language_hotkey("1"),
+            HotkeySetting::Combo(alt_shift())
+        );
+        assert_eq!(
+            parse_language_hotkey("2"),
+            HotkeySetting::Combo(ctrl_shift())
+        );
+        assert_eq!(
+            parse_language_hotkey("4"),
+            HotkeySetting::Combo(grave_accent())
+        );
+        assert_eq!(parse_language_hotkey("3"), HotkeySetting::Disabled);
+        assert_eq!(parse_language_hotkey(" 3 "), HotkeySetting::Disabled);
+        for value in ["", "0", "5", "33", "unknown", "Alt+Shift"] {
+            assert_eq!(
+                parse_language_hotkey(value),
+                HotkeySetting::Unknown,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_language_hotkey_is_read_from_hotkey_then_language_hotkey() {
+        // The resolution tests inject the values by position; this pins
+        // which registry value takes which position, so that `Hotkey`
+        // decides before `Language Hotkey` (roadmap item 1.4).
+        for function in [
+            SystemFunction::SwitchLanguage,
+            SystemFunction::SwitchLanguageBackward,
+        ] {
+            let location = get_registry_location(function)
+                .unwrap_or_else(|| panic!("{function:?} has a registry location"));
+            assert_eq!(location.hkey, HKEY_CURRENT_USER, "{function:?}");
+            assert_eq!(location.subkey, "Keyboard Layout\\Toggle", "{function:?}");
+            assert_eq!(
+                location.value_names,
+                ["Hotkey", "Language Hotkey"],
+                "{function:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hotkey_value_decides_before_the_language_hotkey_value() {
+        for other in ANYTHING {
+            assert_eq!(
+                language([Some("2"), other]),
+                Some(ctrl_shift()),
+                "{other:?}"
+            );
+            assert_eq!(language([Some("1"), other]), Some(alt_shift()), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn no_usable_value_falls_back_to_alt_shift() {
+        for values in [[None, None], [Some(""), Some("x")], [Some("5"), None]] {
+            assert_eq!(language(values), Some(alt_shift()), "{values:?}");
+        }
+        // The key `Keyboard Layout\Toggle` does not exist.
+        assert_eq!(
+            hotkey_from_values(
+                SystemFunction::SwitchLanguage,
+                std::iter::empty::<Option<&str>>()
+            ),
+            Some(alt_shift())
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unknown_hotkey_value_leaves_the_language_hotkey_value_to_decide() {
+        assert_eq!(language([None, Some("2")]), Some(ctrl_shift()));
+        assert_eq!(language([Some("x"), Some("4")]), Some(grave_accent()));
+        assert_eq!(language([None, Some("1")]), Some(alt_shift()));
+    }
+
+    #[test]
+    fn the_values_after_the_deciding_one_are_not_read() {
+        let values =
+            std::iter::once(Some("2")).chain(std::iter::repeat_with(|| -> Option<&'static str> {
+                panic!("a value after the deciding one was read")
+            }));
+        assert_eq!(
+            hotkey_from_values(SystemFunction::SwitchLanguage, values),
+            Some(ctrl_shift())
+        );
+    }
+
+    #[test]
+    fn other_functions_keep_their_rules() {
+        assert_eq!(
+            hotkey_from_values(SystemFunction::ToggleCapsLock, [Some("2")]),
+            None
+        );
+        // No registry location: the values are not looked at.
+        assert_eq!(
+            hotkey_from_values(SystemFunction::TaskManager, [Some("3")]),
+            Some(KeyCombination::from_keys([VK_CONTROL, VK_SHIFT, VK_ESCAPE]))
+        );
+        // "3" is no Win key letter: only the language hotkey can be
+        // disabled.
+        assert_eq!(
+            hotkey_from_values(SystemFunction::LockWorkstation, [Some("3")]),
+            Some(win_with(VK_L))
+        );
+        assert_eq!(
+            hotkey_from_values(SystemFunction::LockWorkstation, [Some("K")]),
+            Some(win_with(VK_K))
+        );
+    }
+
+    #[test]
+    fn a_language_hotkey_not_assigned_in_windows_has_no_combination() {
+        // KS-17: "3" decides like a combination does, so there is no
+        // Alt+Shift fallback and no auto-blocker.
+        for values in [
+            [Some("3"), Some("3")],
+            [Some("3"), None],
+            [None, Some("3")],
+            [Some("3"), Some("2")],
+            [Some("x"), Some("3")],
+            [Some(" 3 "), Some("1")],
+        ] {
+            assert_eq!(language(values), None, "{values:?}");
+        }
+        let values =
+            std::iter::once(Some("3")).chain(std::iter::repeat_with(|| -> Option<&'static str> {
+                panic!("a value after the deciding one was read")
+            }));
+        assert_eq!(
+            hotkey_from_values(SystemFunction::SwitchLanguage, values),
+            None
+        );
     }
 
     #[test]
     fn test_get_system_hotkey_returns_combinations() {
-        assert!(get_system_hotkey(SystemFunction::SwitchLanguage).is_some());
+        // The language hotkey depends on this machine's Windows setting,
+        // which may also be "Not assigned".
+        let language = get_system_hotkey(SystemFunction::SwitchLanguage);
+        assert!(
+            language.as_ref().is_none_or(|combo| [
+                KeyCombination::from_keys([VK_MENU, VK_SHIFT]),
+                KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]),
+                KeyCombination::new(VK_OEM_3),
+            ]
+            .contains(combo)),
+            "not a Windows language hotkey: {language:?}"
+        );
         assert!(get_system_hotkey(SystemFunction::LockWorkstation).is_some());
         assert!(get_system_hotkey(SystemFunction::ShowDesktop).is_some());
         assert!(get_system_hotkey(SystemFunction::TaskManager).is_some());
         assert!(get_system_hotkey(SystemFunction::ToggleCapsLock).is_none());
+    }
+
+    #[test]
+    #[ignore = "manual: set Settings > Time & language > Typing > Advanced keyboard settings > Input language hot keys > Switch Input Language to (Not assigned) first, and restore it afterwards"]
+    fn live_registry_with_the_language_hotkey_not_assigned_has_no_combination() {
+        // Reads HKCU\Keyboard Layout\Toggle only.
+        assert_eq!(get_system_hotkey(SystemFunction::SwitchLanguage), None);
+        assert_eq!(
+            get_system_hotkey(SystemFunction::SwitchLanguageBackward),
+            None
+        );
     }
 
     #[test]
@@ -276,7 +506,9 @@ mod tests {
 
     #[test]
     fn language_hotkeys_are_either_side_modifiers() {
-        let ctrl_shift = parse_language_hotkey("2").unwrap();
+        let HotkeySetting::Combo(ctrl_shift) = parse_language_hotkey("2") else {
+            panic!("\"2\" names a combination");
+        };
         assert_eq!(
             ctrl_shift.keys,
             vec![
@@ -285,10 +517,10 @@ mod tests {
             ]
         );
         assert_eq!(ctrl_shift.to_string(), "Ctrl+Shift");
-        assert_eq!(
-            parse_language_hotkey("4").unwrap().keys,
-            vec![KeySpec::Key(VK_OEM_3)]
-        );
+        let HotkeySetting::Combo(grave_accent) = parse_language_hotkey("4") else {
+            panic!("\"4\" names a combination");
+        };
+        assert_eq!(grave_accent.keys, vec![KeySpec::Key(VK_OEM_3)]);
     }
 
     #[test]
@@ -301,13 +533,25 @@ mod tests {
 
     #[test]
     fn test_parse_win_key_combo() {
-        let combo = parse_win_key_combo("L").unwrap();
+        let HotkeySetting::Combo(combo) = parse_win_key_combo("L") else {
+            panic!("\"L\" names a combination");
+        };
         assert!(combo.keys.contains(&KeySpec::AnySide(Modifier::Win)));
         assert!(combo.keys.contains(&KeySpec::Key(VK_L)));
 
-        let combo2 = parse_win_key_combo("D").unwrap();
+        let HotkeySetting::Combo(combo2) = parse_win_key_combo("D") else {
+            panic!("\"D\" names a combination");
+        };
         assert!(combo2.keys.contains(&KeySpec::AnySide(Modifier::Win)));
         assert!(combo2.keys.contains(&KeySpec::Key(VK_D)));
         assert_eq!(combo2.to_string(), "Win+D");
+
+        for value in ["1", "", "LL"] {
+            assert_eq!(
+                parse_win_key_combo(value),
+                HotkeySetting::Unknown,
+                "{value:?}"
+            );
+        }
     }
 }

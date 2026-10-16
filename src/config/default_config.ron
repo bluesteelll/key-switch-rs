@@ -169,6 +169,9 @@
 //                         keys: "CapsLock" but Windows still ships
 //                         Alt+Shift / Ctrl+Shift as the language hotkey,
 //                         and this flag silences it.
+//                         With the Windows language hotkey set to "Not
+//                         assigned" there is no language hotkey to block,
+//                         and no blocker is added.
 //                         It is not added when a binding in this file
 //                         uses the hotkey's keys itself.
 //                         It acts only on the hotkey pressed on its own:

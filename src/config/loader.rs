@@ -763,6 +763,7 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
+    use crate::system::registry::hotkey_from_values;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
@@ -892,7 +893,7 @@ mod tests {
                 ],
             )
         "#;
-        let bindings = from_ron_str(ron_text).unwrap();
+        let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).unwrap();
         // 2 entries: the user binding + the auto-blocker added because of
         // block_original_combo. Order: user binding first, then the
         // auto-blocker.
@@ -965,7 +966,7 @@ mod tests {
                 ],
             )
         "#;
-        let bindings = from_ron_str(ron_text).unwrap();
+        let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).unwrap();
         // 2 user + 1 auto-blocker = 3, not 4.
         assert_eq!(bindings.len(), 3);
         assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker()).count(), 1);
@@ -1012,6 +1013,61 @@ mod tests {
     }
 
     const ALT_SHIFT: &[VIRTUAL_KEY] = &[VK_MENU, VK_SHIFT];
+
+    /// Stands in for the registry with the `Hotkey` and `Language Hotkey`
+    /// strings of `HKCU\Keyboard Layout\Toggle`, `None` for a missing value,
+    /// resolved as the daemon resolves them.
+    fn toggle_values(
+        values: [Option<&'static str>; 2],
+    ) -> impl Fn(&BindAction) -> Option<KeyCombination> {
+        move |action: &BindAction| {
+            action
+                .to_system_function()
+                .and_then(|function| hotkey_from_values(function, values))
+        }
+    }
+
+    #[test]
+    fn the_registry_values_choose_the_auto_blocker_keys() {
+        let alt_shift = KeyCombination::from_keys(ALT_SHIFT.iter().copied());
+        let cases = [
+            (
+                [Some("2"), None],
+                KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]),
+            ),
+            ([None, None], alt_shift.clone()),
+            ([Some("1"), Some("3")], alt_shift),
+        ];
+        for (values, hotkey) in cases {
+            let bindings = from_ron_str_with_hotkeys(DEFAULT_CONFIG, &toggle_values(values))
+                .unwrap_or_else(|e| panic!("the template loads with {values:?}: {e}"));
+            let blocker_keys: Vec<Option<&KeyCombination>> = bindings
+                .iter()
+                .filter(|b| b.is_auto_blocker())
+                .map(Binding::combination)
+                .collect();
+            assert_eq!(blocker_keys, [Some(&hotkey)], "{values:?}");
+        }
+    }
+
+    #[test]
+    fn a_language_hotkey_not_assigned_in_windows_gives_no_auto_blocker() {
+        // KS-17: the template's CapsLock binding asks for the blocker of a
+        // Windows hotkey that does not exist.
+        let not_assigned = toggle_values([Some("3"), Some("3")]);
+        let bindings =
+            from_ron_str_with_hotkeys(DEFAULT_CONFIG, &not_assigned).expect("the template loads");
+        assert_eq!(blockers(&bindings), 0);
+        assert_eq!(bindings.len(), 2);
+
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+        ] )"#;
+        let parsed = parse_ron_str(text, &not_assigned)
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        assert_eq!(blockers(&parsed.bindings), 0);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
 
     #[test]
     fn auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order() {
