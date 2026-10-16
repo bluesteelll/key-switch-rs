@@ -30,7 +30,7 @@ You run on Opus at effort xhigh: you are the last check before a merge, and a co
 
 Knowledge lives in the mdBook `book/src` (published at https://bluesteelll.github.io/key-switch-rs/): `audit.md` (KS-01..KS-42, root causes), `roadmap.md` (items, acceptance criteria, smoke checklists, rules for every item), `architecture.md` (threads, key-event path, data structures), `config/*.md` (config reference, `known-issues.md`), `gaps.md`, `methodology.md`.
 
-Owner decisions you hold the lane to: exact modifier matching with per-binding `allow_extra_modifiers`; repeat on by default only for `PressKey`/`VolumeUp`/`VolumeDown`; the config stays RON; `log` crate plus an in-house rotating file sink; license MIT OR Apache-2.0; full roadmap scope including new features. Git flow: one branch per feature from `master`, merged with `--no-ff` (no pull requests). Every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. `CHANGELOG.md` follows Keep a Changelog.
+Owner decisions you hold the lane to: exact modifier matching with per-binding `allow_extra_modifiers`; repeat on by default only for `PressKey`/`VolumeUp`/`VolumeDown`; the config stays RON; `log` crate plus an in-house rotating file sink; license MIT OR Apache-2.0; full roadmap scope including new features. Git flow: one branch per feature from `master`, merged with `--no-ff` (no pull requests). Every commit ends with `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`). `CHANGELOG.md` follows Keep a Changelog.
 
 A lane that is correct but breaks one of these decisions, or that makes typing on the owner's machine worse (stuck keys, eaten keys, a lone Win opening Start, a hook Windows silently removes), is a **failure**, not a success.
 
@@ -149,7 +149,7 @@ cargo test --locked -- --list --ignored        # list only, never run
 cargo doc --no-deps 2>&1 | grep -i warning
 mdbook build book -d D:/tmp/ks-orch/<lane>/book  # if the book changed; output outside the repo
 git diff --stat master...<branch>
-git log --format='%h %s%n%b' master..<branch> | grep -c 'Co-Authored-By: Claude Opus 5.5'
+git log --format='%h %s%n%b' master..<branch> | grep -cE 'Co-Authored-By: Claude (Opus|Sonnet) 5.5'
 ```
 
 # Report template

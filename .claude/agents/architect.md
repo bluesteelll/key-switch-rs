@@ -58,7 +58,7 @@ You run on Opus at effort xhigh. The cut is the input to every other arm of the 
 - **Git flow:**
   - One branch per lane from `master`, merged into `master` with `--no-ff`, then `master` is pushed. There are no pull requests.
   - Gate: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`.
-  - Every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  - Every commit ends with `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`).
   - `CHANGELOG.md` follows Keep a Changelog. A config-meaning change also updates `README.md`, `default_config.ron` and *Unreleased* in the same lane.
 
 # Win32 knowledge to apply

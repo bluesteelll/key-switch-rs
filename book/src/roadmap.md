@@ -60,9 +60,9 @@ The audit also names eight causes ([Root causes](audit.md#root-causes)), but it 
 
 ## Rules for every item
 
-- One item, one pull request: first a regression test that fails on the current code, then the fix.
+- One item, one branch merged with `--no-ff`: first a regression test that fails on the current code, then the fix.
 - Logic is tested through `decide()` from Workstream A. Tests substitute the clock, an `Env` (the foreground window, `GetAsyncKeyState`) and the action sink. A test that needs a real hook or `SendInput` is marked `#[ignore]` and gets a line in the smoke checklist.
-- When the meaning of the config changes, the same pull request updates `README.md`, `src/config/default_config.ron` and the *Unreleased* section of `CHANGELOG.md`.
+- When the meaning of the config changes, the same branch updates `README.md`, `src/config/default_config.ron` and the *Unreleased* section of `CHANGELOG.md`.
 - New dependencies are added only where an item names them.
 - Pressed keys are never logged, except with an explicit `--trace-keys`.
 
@@ -167,7 +167,7 @@ Effort M, no dependencies, runs in parallel with A.
 
 ### 0.1 CI
 
-Effort S. This is not a workstream but a separate pull request, preferably merged before A.
+Effort S. This is not a workstream but a separate branch, preferably merged before A.
 
 **What it does.**
 
@@ -175,7 +175,7 @@ Effort S. This is not a workstream but a separate pull request, preferably merge
 - Fixes the lint at [src/hook/keyboard_hook.rs:72](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook.rs#L72).
 - Adds `[[bin]] name = "key-switch-rs", path = "src/main.rs", test = false`, so that `cargo test --release` does not build a test binary with the `requireAdministrator` manifest ([build.rs:21-24](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/build.rs#L21-L24), [KS-38](audit.md#ks-38), unverified).
 
-**Acceptance.** `master` is green; a pull request with a broken test is red.
+**Acceptance.** `master` is green; a push with a broken test is red.
 
 **Status: done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f) (`chore/ci-license`). `.github/workflows/ci.yml` runs `cargo fmt --check`, clippy with `-D warnings`, `cargo test --locked` and a release build on `windows-latest`. It also checks the daemon's UAC manifest, that no test or bench harness is built for the daemon ([KS-38](audit.md#ks-38)), a `cargo check` with Rust 1.88, and a release build for `x86_64-pc-windows-gnu` ([KS-42](audit.md#ks-42)). The lint was fixed in [`091e30e`](https://github.com/bluesteelll/key-switch-rs/commit/091e30e). [Building, running and controlling the daemon](build-and-run.md#continuous-integration) describes the jobs.
 
@@ -577,7 +577,7 @@ The current state of each item is in [Missing project infrastructure](gaps.md#mi
 | --- | --- | --- | --- |
 | CI (item 0.1) | Phase 0 | S | A pull request with a broken test is red. **Done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f) |
 | A LICENSE (usually `MIT OR Apache-2.0`); `Cargo.toml` metadata: `description`, `license`, `repository`, `readme`, `rust-version` | Alongside 0.1 | S | `cargo metadata` shows `license`. **Done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f): `MIT OR Apache-2.0` (owner decision), `rust-version = "1.88"` |
-| `CHANGELOG.md` in the Keep a Changelog format; every pull request adds to *Unreleased*. SemVer: before 1.0, a breaking change to `config.ron` bumps the minor version and is listed under *Breaking*. Tags: v0.2.0 after Phase 2, v0.3.0 after Phase 3, v0.4.0 after Phase 4 | From A and B on | S | By v0.2.0 it describes A, B and Phases 1 and 2. **Started:** `CHANGELOG.md` exists and lists A and B under *Unreleased* |
+| `CHANGELOG.md` in the Keep a Changelog format; every merged branch adds to *Unreleased*. SemVer: before 1.0, a breaking change to `config.ron` bumps the minor version and is listed under *Breaking*. Tags: v0.2.0 after Phase 2, v0.3.0 after Phase 3, v0.4.0 after Phase 4 | From A and B on | S | By v0.2.0 it describes A, B and Phases 1 and 2. **Started:** `CHANGELOG.md` exists and lists A and B under *Unreleased* |
 | Logging: item 1.7 (file, rotation, no pressed keys); `swch logs` in 4.3 | Phase 1 | M | See 1.7 |
 | Version: `VERSIONINFO` through `embed-resource`, the git hash from `build.rs`. `swch --version` reports the daemon's version, because starting the daemon itself with `--version` would raise a UAC prompt. Either embed `app.manifest` through `/MANIFESTINPUT` or delete it | Before the first release | S | The version shows in the file properties |
 | Release on a `v*` tag: check the tag against `Cargo.toml`; a zip with both executables, `config.example.ron`, README, LICENSE and CHANGELOG; `SHA256SUMS.txt`; release notes from the CHANGELOG | After 4.4 | M | On a clean Windows 11 (Windows Sandbox), CapsLock switches the language |

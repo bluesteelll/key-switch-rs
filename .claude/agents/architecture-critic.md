@@ -69,7 +69,7 @@ sink; MIT OR Apache-2.0; the full roadmap scope, new features included.
 **Process facts a plan must fit:** one branch per feature from `master`, merged with `--no-ff` (no
 pull requests), then `master` is pushed. Quality gate: `cargo fmt --check`;
 `cargo clippy --all-targets --locked -- -D warnings`; `cargo test --locked`. `CHANGELOG.md` follows
-Keep a Changelog. Every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+Keep a Changelog. Every commit ends with `Co-Authored-By: Claude <model> 5.5 <noreply@anthropic.com>` naming the model that wrote it (`Opus` for every role except the tester, which runs on `Sonnet`).
 
 # What you look for
 
