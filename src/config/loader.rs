@@ -225,11 +225,33 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
 
 /// [`from_ron_str`] with the system hotkeys taken from `system_combination`
 /// instead of the registry, so a test knows which auto-blockers to expect
-/// whatever hotkey the machine has set.
+/// whatever hotkey the machine has set. Warnings about a config that loads
+/// go to stderr, on the thread that loads it: the main thread at startup,
+/// `config-watcher` on a reload.
 pub(crate) fn from_ron_str_with_hotkeys(
     text: &str,
     system_combination: &SystemCombination,
 ) -> Result<Vec<Binding>, ConfigError> {
+    let parsed = parse_ron_str(text, system_combination)?;
+    for warning in &parsed.warnings {
+        eprintln!("[WARN] {warning}");
+    }
+    Ok(parsed.bindings)
+}
+
+/// A config that loads: its bindings, as [`from_ron_str_with_hotkeys`]
+/// returns them, and the warnings to show about them.
+struct ParsedConfig {
+    bindings: Vec<Binding>,
+    warnings: Vec<String>,
+}
+
+/// [`from_ron_str_with_hotkeys`] without the printing, so that a test can
+/// read the warnings.
+fn parse_ron_str(
+    text: &str,
+    system_combination: &SystemCombination,
+) -> Result<ParsedConfig, ConfigError> {
     // Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
     // `-Encoding UTF8` start the file with U+FEFF, which ron 0.10.1 does not
     // skip (KS-24). Only a leading one goes: inside a string it is text.
@@ -265,7 +287,10 @@ pub(crate) fn from_ron_str_with_hotkeys(
         eprintln!("[WARN] config contains no bindings");
     }
 
-    Ok(expand_with_auto_blockers(user_bindings, system_combination))
+    Ok(ParsedConfig {
+        bindings: expand_with_auto_blockers(user_bindings, system_combination),
+        warnings: Vec::new(),
+    })
 }
 
 /// Appends an auto-blocker for the Windows hotkey of every binding that
