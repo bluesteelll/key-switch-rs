@@ -73,6 +73,11 @@
 // "Ctrl+J" does not fire on Ctrl+Shift+J. Set allow_extra_modifiers: true
 // on a binding to let it fire while other modifiers are held too.
 //
+// When a binding swallows a key pressed while Win or Alt is held ("Win+Q",
+// "Alt+J"), the daemon first sends the key code 0xE8, which types nothing,
+// so that releasing Win or Alt opens neither the Start menu nor the menu
+// bar. Other programs that watch the keyboard see that key.
+//
 // ---- action variants ----
 //
 // SwitchLanguage          — next keyboard layout
@@ -219,6 +224,8 @@
         //     keys: "Ctrl+Shift+L",
         //     action: PressKey("L"),
         // ),
+        // // Close the focused window; the Start menu stays closed when Win
+        // // is released.
         // (
         //     keys: "Win+Q",
         //     action: PostMessage(msg: "WM_CLOSE"),

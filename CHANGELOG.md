@@ -155,7 +155,8 @@ minor version; such entries sit under **Changed** and start with
     lets Windows switch the layout as well, also when that binding sets
     `block_original_combo: true` itself.
   - A `Tap` on `Alt` or `Win` alone lets Windows see the tap, which
-    activates the menu bar or opens Start (until roadmap item 1.2).
+    activates the menu bar or opens Start. The menu mask key (KS-12, under
+    **Fixed**) does not cover it: nothing is swallowed there.
   - `block_default: Some(true)` and `block_default: None` (the default)
     load, as for `keys`.
 - **Breaking:** one binding wins each key press (roadmap item 1.6, KS-13).
@@ -311,6 +312,26 @@ minor version; such entries sit under **Changed** and start with
   press of the same key. Two quick taps fire twice, a Hold no longer fires
   early on the next press, and a quick series of DoubleTaps no longer loses
   fires.
+- KS-12 (roadmap item 1.2): releasing Win or Alt no longer opens the Start
+  menu or activates the menu bar after the daemon swallowed a key pressed
+  with it. When the hook swallows a key event (a key-down, an auto-repeat
+  or a key-up) while Windows has a Win or Alt key down whose key-down it
+  saw, it first sends the menu mask key, the unassigned virtual-key code
+  0xE8, down and up, as AutoHotkey's `#MenuMaskKey` does, so Windows no
+  longer sees a lone Win or Alt press. This covers
+  `( keys: "Win+Q", action: PostMessage(msg: "WM_CLOSE") )`, Alt then Shift
+  with the default config's auto-blocker, and
+  `( keys: "Alt+X", action: DoNothing )`. Applications, games, key-logging
+  tools and other keyboard hooks see the injected 0xE8 events; 0xE8 types
+  nothing. A `Tap`, `Hold` or `DoubleTap` on `Alt` or `Win` alone that lets
+  the key through still activates the menu bar or opens Start: nothing is
+  swallowed there, so nothing is masked. Manual checks (no test injects
+  input): in Notepad, Alt down, Shift down, Shift up, Alt up with the
+  default config activates no menu; with the `Win+Q` binding, Notepad
+  closes and the Start menu stays closed when Win is released. Tests:
+  `engine::scenarios::win_q_post_message_masks_the_swallowed_q_and_its_release`,
+  `alt_then_shift_with_the_template_blocker_masks_the_swallowed_shift`; the
+  engine's property runs check the rule on every generated event.
 - KS-25 (equal terms): with `Tap(n)` and `Hold(n)` on one key, exactly one
   fires: `Tap` when the key is released before `n` ms, `Hold` when it is
   held for `n` ms or more. A Hold whose key is released after its term but

@@ -12,7 +12,8 @@
 //!     - drops negative codes and the daemon's own injected events
 //!     - KBDLLHOOKSTRUCT -> KeyEvent
 //!     - Engine::on_key(event, &bindings, &env) -> Decision
-//!     - starts Decision::timers, runs Decision::fire, then returns
+//!     - sends the menu mask key if Decision::mask, starts
+//!       Decision::timers, runs Decision::fire, then returns
 //!       LRESULT(1) if Decision::suppress, else CallNextHookEx
 //! ```
 //!
