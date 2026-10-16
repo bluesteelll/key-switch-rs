@@ -1,24 +1,24 @@
 # Building, running and controlling the daemon
 
-A build produces two Windows executables. `key-switch-rs.exe` is the daemon that owns the keyboard hook, and `swch.exe` is a small CLI that controls the daemon over a named pipe. This chapter covers building both, running and stopping the daemon, every `swch` command with its output and exit code, autostart, tests, this book, and workarounds for the defects you are most likely to hit.
+A build produces two Windows executables. `key-switch-rs.exe` is the daemon that owns the keyboard hook, and `swch.exe` is a small CLI that controls the daemon over a named pipe. This chapter covers building both, running and stopping the daemon, every `swch` command with its output and exit code, autostart, tests and CI, this book, and workarounds for the problems you are most likely to hit.
 
 > [!NOTE]
-> Facts describe commit [`7cb3521`](https://github.com/bluesteelll/key-switch-rs/commit/7cb3521) (2026-05-20). Build, test and lint results come from the audit run of 2026-10-14 on Windows 11 with rustc and cargo 1.98.1. The audit did not run the daemon against live keyboard input. See [How the audit was done](methodology.md).
+> Facts describe commit [`1dfd80a`](https://github.com/bluesteelll/key-switch-rs/commit/1dfd80a) (2026-10-16), the tip of `master` after roadmap Phase 0. Build times and binary sizes come from the audit run of 2026-10-14 on Windows 11 with rustc and cargo 1.98.1, at `7cb3521`, and were not measured again. Test results come from the merge gate of `1dfd80a`. Nobody has run the daemon against live keyboard input; `swch` behaviour is derived from the code and from `tests/ipc_roundtrip.rs`, which runs the client against test pipes. See [How the audit was done](methodology.md).
 
 ## Prerequisites
 
 | Requirement | Value | Notes |
 |---|---|---|
-| Operating system | Windows 10 or 11, 64-bit | Windows only: the code calls Win32 throughout, through the `windows` crate 0.62 ([Cargo.toml:12](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/Cargo.toml#L12)). Rust's `x86_64-pc-windows-msvc` target itself requires Windows 10 or later. The audit built on Windows 11. |
-| Target | `x86_64-pc-windows-msvc` | This is the only target the audit built. |
-| Linker | MSVC `link.exe` | Install Visual Studio Build Tools with the "Desktop development with C++" workload, which includes MSVC and a Windows SDK. `build.rs` passes MSVC-only linker switches, so the `-gnu` targets are reported to fail to link ([KS-42](audit.md#ks-42), not independently verified). |
-| Edition | 2024 | [Cargo.toml:4](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/Cargo.toml#L4) |
-| Minimum rustc | At least 1.88, a lower bound derived from the code | `Cargo.toml` declares no `rust-version`. The code uses let chains (`if ... && let ...`), for example at [src/config/loader.rs:176-177](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L176-L177), and these became stable for edition 2024 in Rust 1.88. No dependency built on Windows declares a `rust-version` above 1.85 (`notify-types` 2.1.0). Only 1.98.1 was tested. |
+| Operating system | Windows 10 or 11, 64-bit | Windows only: the code calls Win32 throughout, through the `windows` crate 0.62 ([Cargo.toml:41](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/Cargo.toml#L41)). Rust's `x86_64-pc-windows-msvc` target itself requires Windows 10 or later. |
+| Target | `x86_64-pc-windows-msvc` | Only this target embeds the UAC manifest. CI also builds `x86_64-pc-windows-gnu`, which links and warns that no manifest is embedded ([KS-42](audit.md#ks-42), fixed). |
+| Linker | MSVC `link.exe` | Install Visual Studio Build Tools with the "Desktop development with C++" workload, which includes MSVC and a Windows SDK. |
+| Edition | 2024 | [Cargo.toml:4](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/Cargo.toml#L4) |
+| Minimum rustc | 1.88 | Declared as `rust-version` ([Cargo.toml:5-8](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/Cargo.toml#L5-L8)) and checked by the CI job `msrv` with `cargo check --all-targets`. |
 | Network | crates.io on the first build | `Cargo.lock` is committed. Build with `--locked`. |
 
 ```powershell
 rustup default stable-x86_64-pc-windows-msvc
-rustup component add clippy
+rustup component add clippy rustfmt
 rustc --version   # expect 1.88.0 or newer
 ```
 
@@ -36,21 +36,21 @@ In the audit, `cargo build --release` finished in about 39 s with 0 warnings.
 
 ### Debug and release differ in elevation
 
-[build.rs:13-24](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/build.rs#L13-L24) checks two things: `CARGO_CFG_WINDOWS` is set and `PROFILE` is `release`. When both hold, it emits two linker arguments through `cargo:rustc-link-arg-bin=key-switch-rs=...`, which scopes them to the daemon binary:
+[build.rs:21-47](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/build.rs#L21-L47) checks three things: `CARGO_CFG_WINDOWS` is set, `PROFILE` is `release`, and `CARGO_CFG_TARGET_ENV` is `msvc`. When all three hold, it emits two linker arguments through `cargo:rustc-link-arg-bin=key-switch-rs=...`, which scopes them to the daemon binary:
 
 ```text
 /MANIFEST:EMBED
 /MANIFESTUAC:level='requireAdministrator' uiAccess='false'
 ```
 
-Consequences:
+For a release build with another Windows toolchain it prints a cargo warning that no UAC manifest is embedded, and the daemon then does not request administrator rights. Consequences:
 
 - Only `key-switch-rs.exe` gets the elevation request. `swch.exe` keeps the default `asInvoker` level.
-- A debug daemon makes no elevation request, so it runs at the integrity level of whatever starts it. This is the convenient mode for development: started from a normal shell, the daemon and `swch` share an integrity level and the pipe works (compare [KS-02](audit.md#ks-02)).
-- Cargo sets `PROFILE=release` for every profile that inherits from `release`, so `cargo test --release` also links the manifest into the daemon's unit-test harness (see [Release-mode tests](#release-mode-tests)).
+- A debug daemon makes no elevation request, so it runs at the integrity level of whatever starts it. This is the convenient mode for development.
+- The daemon binary is declared with `test = false` and `bench = false` ([Cargo.toml:18-34](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/Cargo.toml#L18-L34)), so `cargo test --release` and `cargo bench` build no test harness from `src/main.rs` that would inherit the manifest (see [Release-mode tests](#release-mode-tests)).
 - `app.manifest` in the repository root is never used. `build.rs` does not reference it (there is no `/MANIFESTINPUT`), so its `supportedOS` block does not ship.
 
-The audit checked the manifest by searching the binaries for the string. To repeat the check:
+CI checks the manifest by searching the binaries for the string. To repeat the check:
 
 ```powershell
 Select-String -Path .\target\release\key-switch-rs.exe -Pattern requireAdministrator -SimpleMatch -Quiet   # True
@@ -58,12 +58,12 @@ Select-String -Path .\target\release\key-switch-rs.exe -Pattern requireAdministr
 
 ### Output binaries
 
-| File | Source | Release size (audit) | Requested level | Role |
+| File | Source | Release size (audit, `7cb3521`) | Requested level | Role |
 |---|---|---|---|---|
 | `key-switch-rs.exe` | `src/main.rs` and the library | 989,696 bytes (about 990 KB) | `requireAdministrator` in release builds | Daemon: keyboard hook, config watcher, IPC server |
 | `swch.exe` | `src/bin/swch.rs` and the library | 215,040 bytes (about 215 KB) | `asInvoker` | CLI driver |
 
-Both binaries link the library crate `key_switch_rs` (`src/lib.rs`). Install them side by side in one folder. `swch open` looks for `key-switch-rs.exe` in its own folder ([src/bin/swch.rs:81-90](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L81-L90)). Started without an argument, the daemon creates `config.ron` in its own folder on first run.
+Both binaries link the library crate `key_switch_rs` (`src/lib.rs`). Install them side by side in one folder. `swch open` looks for `key-switch-rs.exe` in its own folder ([src/bin/swch.rs:96-103](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L96-L103)). Started without an argument, the daemon creates `config.ron` in its own folder on first run.
 
 ## Running the daemon directly
 
@@ -73,35 +73,36 @@ Both binaries link the library crate `key_switch_rs` (`src/lib.rs`). Install the
 key-switch-rs.exe [CONFIG_PATH]
 ```
 
-The daemon parses no options. [src/main.rs:28-31](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/main.rs#L28-L31) resolves the config path like this:
+The daemon parses no options. `ConfigPath::from_arg` ([src/config/loader.rs:110-149](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L110-L149)) resolves the config path once, at startup:
 
-1. If there is an argument, the first one is the config path, used exactly as typed. Any further arguments are ignored.
-2. With no argument, the path is `<exe_dir>\config.ron` ([src/config/loader.rs:83-95](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L83-L95)).
-3. If the file does not exist, the daemon writes the bundled template there, creating missing parent folders, and then loads it ([src/config/loader.rs:101-107](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L101-L107)).
+1. If there is an argument, the first one is the config path, made absolute against the current folder. Any further arguments are ignored. The file must exist: a missing file stops the daemon with `[FATAL] config file <path> does not exist`, and nothing is created.
+2. With no argument, the path is `<exe_dir>\config.ron`. If that file does not exist, the daemon writes the bundled template there, creating the folder if needed, and then loads it ([src/config/loader.rs:151-173](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L151-L173)).
 
-> [!WARNING]
-> Pass an absolute path. A relative path loads, but hot reload never fires for it ([KS-21](audit.md#ks-21)). Also, any first argument counts as a path: `key-switch-rs.exe --help` creates a file named `--help` containing the default template and then runs with it ([KS-41](audit.md#ks-41), not independently verified).
+> [!NOTE]
+> Any first argument still counts as a path: `key-switch-rs.exe --help` stops with `[FATAL] config file <current folder>\--help does not exist`. Until `1dfd80a` it created a file named `--help` with the default template and ran with it ([KS-41](audit.md#ks-41), not independently verified; partly fixed). Roadmap [item 4.2](roadmap.md#42-background-mode) adds argument parsing.
 
-A config error at startup is fatal, and so is any error that `App::run` returns, such as a failed hook install. `main` prints `[FATAL] <error>` and then `Press Enter to exit...`, and waits on stdin so that a double-clicked console window stays open ([src/main.rs:7-21](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/main.rs#L7-L21)). A config error during hot reload is not fatal (see the console lines below). The config format itself is covered in the [configuration reference](config/index.md).
+A config error at startup is fatal, and so is any error that `App::run` returns, such as a failed hook install. `main` prints `[FATAL] <error>` and then `Press Enter to exit...`, and waits on stdin so that a double-clicked console window stays open ([src/main.rs:6-20](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs#L6-L20)). A config error during hot reload is not fatal (see the console lines below). The config format itself is covered in the [configuration reference](config/index.md).
 
 ### Startup and shutdown
 
-On the main thread, `main` resolves and loads the config ([src/main.rs:23-41](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/main.rs#L23-L41)). [`App::run`](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L79-L137) then installs the hooks, starts the IPC listener and the config watcher on their own threads, and runs the message loop. The [architecture chapter](architecture.md) describes the threads involved.
+On the main thread, `main` resolves and loads the config ([src/main.rs:22-38](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs#L22-L38)). [`App::run`](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L121-L192) then installs the hooks, starts the IPC listener and the config watcher on their own threads, and runs the message loop. The [architecture chapter](architecture.md#process-and-thread-model) describes the threads involved.
 
 ```mermaid
 flowchart TD
     A["Start key-switch-rs.exe"] --> B{"First argument given?"}
-    B -->|yes| C["Use the argument as typed"]
+    B -->|yes| C["Make the argument absolute"]
     B -->|no| D["Use config.ron in the exe folder"]
     C --> E{"File exists?"}
-    D --> E
-    E -->|no| F["Write the bundled template"]
+    D --> E2{"File exists?"}
+    E -->|no| X["Print FATAL and wait for Enter"]
     E -->|yes| G["Parse and validate"]
+    E2 -->|no| F["Write the bundled template"]
+    E2 -->|yes| G
     F --> G
-    G -->|error| X["Print FATAL and wait for Enter"]
+    G -->|error| X
     G -->|ok| H["Install keyboard hook and foreground hook"]
     H -->|error| X
-    H -->|ok| I{"Create pipe key-switch-rs.sock"}
+    H -->|ok| I{"Create pipe key-switch-rs.sock with its SDDL"}
     I -->|created| J["Serve IPC on a listener thread"]
     I -->|"failed, usually name taken"| K["Warn and run without IPC"]
     J --> L["Start config watcher"]
@@ -110,34 +111,38 @@ flowchart TD
     M -->|"WM_QUIT from Ctrl+C, console close or swch exit"| N["Remove hooks and exit"]
 ```
 
-The daemon logs only to its console. There is no log file, so when it was started by `swch open` or a Scheduled Task, look for errors in that console window.
+The daemon logs only to its console. There is no log file, so when it was started by `swch open` or a Scheduled Task, look for errors in that console window. Roadmap [item 1.7](roadmap.md#17-file-logging) adds a log file.
 
 | Console line | Printed when | Source |
 |---|---|---|
-| `[INFO] generated default config at <path>` or `[INFO] loading config from <path>` | Config load, at startup and on every reload | [loader.rs:104-106](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L104-L106) |
-| `[INFO] <function>: registry combination <keys>` or `[INFO] <function>: using default combination` | Config load, for each `block_original_combo` binding whose action has an OS hotkey | [registry.rs:60-73](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/system/registry.rs#L60-L73) |
-| `[WARN] config contains no bindings` | The config parsed but has no bindings | [loader.rs:157-159](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L157-L159) |
-| `Key Switch started`, then one line per binding, auto-blockers included | Before the hook is installed | [app.rs:57-70](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L57-L70) |
-| `✓ Hook installed successfully` | The hook is live | [app.rs:92](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L92) |
-| `` ✓ IPC server listening (use `swch on/off/exit`) `` | The pipe was created | [app.rs:95](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L95) |
-| `[WARN] could not create IPC listener at pipe "key-switch-rs.sock": <error>`, then `[INFO] another daemon instance may already be running. ...` | Creating the pipe failed, usually because the name is taken | [ipc_server.rs:49-60](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L49-L60) |
-| `✓ Watching <path> for changes` | The watcher started | [app.rs:109](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L109) |
-| `[WARN] could not start config file watcher for <path>: <error>`, then `[INFO] continuing without hot-reload` | The watcher failed to start; the daemon keeps running | [app.rs:112-119](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L112-L119) |
-| `[INFO] config reloaded (<n> bindings live)` | A save was applied | [config_watcher.rs:104](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L104) |
-| `[ERROR] config reload failed:`, the error, then `[INFO] keeping previous bindings live` | A save did not parse or validate | [config_watcher.rs:107-108](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L107-L108) |
-| `Received shutdown signal...` | Ctrl+C, or the console window was closed | [app.rs:143](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L143) |
-| `Removing keyboard hook...` | The message loop ended | [app.rs:133](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L133) |
+| `[INFO] generated default config at <path>` or `[INFO] loading config from <path>` | Config load, at startup and on every reload | [loader.rs:160-181](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L160-L181) |
+| `[INFO] <function>: registry combination <keys>` or `[INFO] <function>: using default combination` | Config load, for each `block_original_combo` binding whose action has an OS hotkey | [registry.rs:52-65](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L52-L65) |
+| `[INFO] no auto-blocker for <keys>: binding #<n> uses the same keys` | Config load, when a binding uses the hotkey's keys | [loader.rs:303](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L303) |
+| `[WARN] config contains no bindings` | The config has `bindings: []` | [loader.rs:264-266](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L264-L266) |
+| `Key Switch started`, then one line per binding, auto-blockers last | Before the hook is installed | [app.rs:99-112](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L99-L112) |
+| `✓ Hook installed successfully` | The hook is live | [app.rs:132](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L132) |
+| `` ✓ IPC server listening (use `swch on/off/exit`) `` | The pipe was created | [app.rs:140](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L140) |
+| `[WARN] could not create IPC listener at pipe "key-switch-rs.sock": <error>`, then `[INFO] another daemon instance may already be running. ...` | Creating the pipe failed, usually because the name is taken | [app.rs:141-152](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L141-L152) |
+| `✓ Watching <path> for changes` | The watcher started; the path is absolute | [app.rs:164](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L164) |
+| `[WARN] could not start config file watcher for <path>: <error>`, then `[INFO] continuing without hot-reload` | The watcher failed to start; the daemon keeps running | [app.rs:167-174](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L167-L174) |
+| `[INFO] config reloaded (<n> bindings live)` | A save was applied | [config_watcher.rs:163](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L163) |
+| `[ERROR] config reload failed:`, the error, then `[INFO] keeping previous bindings live` | A save did not parse or validate, or the file is gone | [config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L165-L168) |
+| `[WARN] could not start a hold timer, that Hold will not fire: <error>` | A `Hold` timer thread could not be started | [keyboard_hook_callback.rs:214-217](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L214-L217) |
+| `[WARN] IPC read error: <error>` or `[WARN] IPC write error: <error>` | A pipe client hung up without a complete exchange | [ipc_server.rs:139-153](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/ipc_server.rs#L139-L153) |
+| `Received shutdown signal...` | Ctrl+C, or the console window was closed | [app.rs:198](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L198) |
+| `Removing keyboard hook...` | The message loop ended | [app.rs:188](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L188) |
+| `[WARN] could not remove the foreground hook: <error>` | Shutdown could not remove the WinEvent hook | [keyboard_hook.rs:235-237](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook.rs#L235-L237) |
 
-Hot reload collapses a burst of file events into one reload after 250 ms of quiet ([config_watcher.rs:29](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L29), [:92-98](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L92-L98)). It watches the parent folder and keeps only create, modify and remove events whose path equals the configured path exactly ([config_watcher.rs:44-69](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L44-L69)). A reload calls the same loader as startup, so deleting or renaming the config file writes a fresh default and swaps the live bindings for the defaults ([KS-23](audit.md#ks-23)).
+Hot reload collapses a burst of file events into one reload after 250 ms of quiet ([config_watcher.rs:131-154](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L131-L154)). It watches the parent folder and keeps only create, modify and remove events for the config's file name, compared ignoring case ([config_watcher.rs:63-91](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L63-L91)). A reload never writes a file: deleting or renaming the config keeps the live bindings ([KS-23](audit.md#ks-23), fixed). Details are in [File location, reload and top-level structure](config/structure.md#s2-3).
 
 ### Stopping
 
-Each of these posts `WM_QUIT` to the main thread, which leaves its message loop and removes the hooks ([app.rs:125-134](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L125-L134)):
+Each of these posts `WM_QUIT` to the main thread, which leaves its message loop and removes the hooks ([app.rs:180-189](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L180-L189)):
 
-- Ctrl+C in the daemon console, or closing the console window. [app.rs:140-160](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L140-L160) handles `CTRL_C_EVENT` and `CTRL_CLOSE_EVENT`.
+- Ctrl+C in the daemon console, or closing the console window. [app.rs:195-211](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L195-L211) handles `CTRL_C_EVENT` and `CTRL_CLOSE_EVENT`.
 - `swch exit`.
 
-The daemon is a console program with no background or tray mode. Closing its window stops it.
+The daemon is a console program with no background or tray mode. Closing its window stops it. Roadmap items [4.2](roadmap.md#42-background-mode) and [4.6](roadmap.md#46-tray-icon) add both.
 
 ### Running through cargo
 
@@ -146,7 +151,7 @@ The package has two binaries and no `default-run` key, so `cargo run` always nee
 | Command | Effect |
 |---|---|
 | `cargo run --locked --bin key-switch-rs` | Debug daemon at the shell's integrity level. The default config path is `target\debug\config.ron`. |
-| `cargo run --locked --bin key-switch-rs -- C:\path\to\config.ron` | Same, with an explicit config. Use an absolute path. |
+| `cargo run --locked --bin key-switch-rs -- my.ron` | Same, with an explicit config, made absolute against the current folder. The file must exist. |
 | `cargo run --locked --bin swch -- status` | Runs the CLI. |
 | `cargo run --release --bin key-switch-rs` | Fails from a non-elevated shell with `The requested operation requires elevation. (os error 740)`, because cargo starts the process with `CreateProcess`, which refuses a `requireAdministrator` image. Run it from an elevated shell. |
 
@@ -154,10 +159,12 @@ The package has two binaries and no `default-run` key, so `cargo run` always nee
 
 ### Transport and protocol
 
-- **Pipe name.** `PIPE_NAME` is `key-switch-rs.sock` ([src/ipc.rs:16](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/ipc.rs#L16)). The `interprocess` crate's `GenericNamespaced` maps it to `\\.\pipe\key-switch-rs.sock`. Named pipes share one machine-wide namespace, so only the first daemon on the machine gets the pipe, across all sessions and users ([KS-40](audit.md#ks-40), not independently verified).
-- **One command per connection.** The client writes one newline-terminated ASCII line. The daemon answers with one line, `OK: <message>` or `ERR: <message>` ([src/ipc.rs:59-65](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/ipc.rs#L59-L65)), and the connection ends. Every connection gets a new worker thread ([src/hook/ipc_server.rs:72](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L72)).
-- **Daemon-side parsing.** The line is trimmed and matched case-insensitively: `on`, `off`, `exit` or `quit` or `shutdown`, and `status` or `ping`. Anything else gets `ERR: unknown command "<line>"`, with the line trimmed and lowercased ([src/ipc.rs:36-44](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/ipc.rs#L36-L44)).
-- **What swch prints.** `parse_response` strips the `OK:` or `ERR:` prefix ([src/ipc.rs:69-79](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/ipc.rs#L69-L79)). `swch` prints an `OK` message on stdout, and an `ERR` message on stderr after a `swch: ` prefix ([src/bin/swch.rs:149-155](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L149-L155)). The README's [sample session](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L429) shows `OK: running (5 bindings live)`, but with the default config the real output is `running (3 bindings live)`. See [Gaps and documentation drift](gaps.md).
+- **Pipe name.** `PIPE_NAME` is `key-switch-rs.sock` ([src/ipc.rs:31-33](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L31-L33)). The `interprocess` crate's `GenericNamespaced` maps it to `\\.\pipe\key-switch-rs.sock`. Named pipes share one machine-wide namespace, so only the first daemon on the machine gets the pipe, across all sessions and users ([KS-40](audit.md#ks-40), not independently verified).
+- **Who may connect.** The pipe has an explicit security descriptor: full control for SYSTEM and Administrators, read and write for interactive users, and a medium mandatory label ([src/hook/ipc_server.rs:51-77](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/ipc_server.rs#L51-L77); [KS-02](audit.md#ks-02), fixed). A `swch` in a normal console therefore reaches an elevated daemon. So does any other user signed in to the machine, until roadmap [item 4.1](roadmap.md#41-ipc-hardening) gives each session its own pipe.
+- **One command per connection.** The client writes one newline-terminated ASCII line. The daemon answers with one line, `OK: <message>` or `ERR: <message>` ([src/ipc.rs:197-205](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L197-L205)), and the connection ends. Every connection gets a new worker thread ([src/hook/ipc_server.rs:118](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/ipc_server.rs#L118)).
+- **A 5 s deadline.** `swch` connects, sends and reads on a helper thread and gives up after 5 s for the whole exchange ([src/ipc.rs:35-37](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L35-L37), [src/ipc.rs:87-116](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L87-L116)).
+- **Daemon-side parsing.** The line is trimmed and matched case-insensitively: `on`, `off`, `exit` or `quit` or `shutdown`, and `status` or `ping`. Anything else gets `ERR: unknown command "<line>"`, with the line trimmed and lowercased ([src/ipc.rs:173-184](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L173-L184)).
+- **What swch prints.** `parse_response` strips the `OK:` or `ERR:` prefix ([src/ipc.rs:207-219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L207-L219)). `swch` prints an `OK` message on stdout, and an `ERR` message on stderr after a `swch: ` prefix ([src/bin/swch.rs:146-165](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L146-L165)). With the default config, `swch status` prints `running (3 bindings live)`.
 
 ```mermaid
 sequenceDiagram
@@ -165,70 +172,74 @@ sequenceDiagram
     participant L as Listener thread
     participant W as Worker thread
     participant M as Main thread
-    S->>L: connect to key-switch-rs.sock
+    S->>L: connect to key-switch-rs.sock within 5 s
     L->>W: spawn a worker for this connection
     S->>W: one command line
-    alt on, off or status
-        W->>W: enable, disable or read hook state on this thread
+    alt on or off
+        W->>W: flip the enabled flag and reset the engine
+    else status
+        W->>W: read the enabled flag and the binding count
     else exit
         W->>M: PostThreadMessageW with WM_QUIT
     end
     W-->>S: one reply line, OK or ERR prefix
-    Note over S: prints the message, exits 0 or 1
+    Note over S: prints the message, exits 0 or 1, or gives up after 5 s
     Note over M: after WM_QUIT the loop ends and the hooks are removed
 ```
 
 ### Commands
 
-Usage is `swch <command>`. The command name is matched case-insensitively and extra arguments are ignored ([src/bin/swch.rs:26-57](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L26-L57)).
+Usage is `swch <command>`. The command name is matched case-insensitively and extra arguments are ignored ([src/bin/swch.rs:24-55](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L24-L55)).
 
 | Command | Aliases | Line sent | Success: stdout, exit 0 | Failure: stderr, exit 1 |
 |---|---|---|---|---|
-| `swch open` | `start`, `launch` | nothing, only a connect probe | `swch: daemon is already running` or `swch: daemon launched` | `swch: daemon binary not found at <path>`, `swch: ShellExecuteW failed (code <n>) — user may have declined the UAC prompt`, or `swch: could not locate current_exe: <error>` |
-| `swch on` | none | `on` | `enabled` | `swch: enable failed: <error>` |
-| `swch off` | none | `off` | `disabled` | `swch: disable failed: <error>` |
+| `swch open` | `start`, `launch` | `status`, as a probe | `swch: daemon is already running`, `swch: daemon is already running (<reason>)` or `swch: daemon launched` | `swch: daemon binary not found at <path>`, `swch: ShellExecuteW failed (code <n>) — user may have declined the UAC prompt`, `swch: could not locate current_exe: <error>`, or `swch: cannot tell whether a daemon is running (<error>); not starting another` |
+| `swch on` | none | `on` | `enabled` | `swch: could not turn remapping on: <reason>` |
+| `swch off` | none | `off` | `disabled` | `swch: could not turn remapping off: <reason>` |
 | `swch status` | `ping` | `status` | `running (<n> bindings live)` or `disabled (<n> bindings live)` | none from the daemon |
-| `swch exit` | `quit`, `shutdown`, `stop` | `exit` | `shutting down` | `swch: main thread id unknown — cannot post WM_QUIT` |
+| `swch exit` | `quit`, `shutdown`, `stop` | `exit` | `shutting down` | `swch: could not shut down: <reason>` |
 | `swch help` | `--help`, `-h` | nothing | usage text, written to stderr | none |
 
-Sources: [`cmd_open`](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L72-L125) and [`dispatch`](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L113-L147). `on` can also answer `enabled (but reports not installed — investigate)`, a branch that is unreachable in practice. `stop` exists only in `swch`, which sends `exit` for it.
+Sources: [`cmd_open`](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L71-L142) and [`dispatch`](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/ipc_server.rs#L157-L178). `on` and `off` are idempotent: asking for the position remapping already has answers `enabled` or `disabled` and resets nothing. The `on`/`off` failure ("the engine is busy on this thread") cannot happen on an IPC worker, which never decides keys. `stop` exists only in `swch`, which sends `exit` for it.
 
-The usage text ([src/bin/swch.rs:59-68](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L59-L68)) is below. The first line shows the program name as invoked (`argv[0]`), so it may be a full path.
+The usage text ([src/bin/swch.rs:57-67](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L57-L67)) is below. The first line shows the program name as invoked (`argv[0]`), so it may be a full path.
 
 ```text
 usage: swch <command>
 
 Commands:
   open    Launch the daemon (UAC prompt)
-  on      Enable the keyboard hook (daemon must be running)
-  off     Disable the keyboard hook
+  on      Turn remapping on (daemon must be running)
+  off     Turn remapping off (keys pass through)
   status  Show daemon state and binding count
   exit    Shut the daemon down
+  help    Print this text
 ```
+
+What `on` and `off` do in the daemon: the hooks stay installed, and `off` makes them pass every key on untouched. Each real switch drops pending `Tap`, `Hold`, `DoubleTap`, chord and sequence state, so a `Hold` armed just before `swch off` does not fire, and a key still held at `swch on` counts as already pressed ([KS-01](audit.md#ks-01) and [KS-31](audit.md#ks-31), fixed; [How swch off and swch on work](architecture.md#why-swch-on-kills-the-hook-ks-01)). A key swallowed by a binding and released while remapping is off reaches Windows as a lone key-up, and a running macro keeps running after `swch off`.
 
 ### Other swch errors
 
-The first two rows apply to any invocation. The rest apply to `on`, `off`, `status` and `exit`, which talk to the pipe.
+The first two rows apply to any invocation. The rest apply to the commands that talk to the pipe.
 
 | Situation | Output | Exit code |
 |---|---|---|
 | No command | usage text on stderr | 1 |
 | Unknown command | `swch: unknown command "<name>"` with the name lowercased, then usage, on stderr | 1 |
-| Pipe cannot be opened | `` swch: cannot reach daemon (<error>). Use `swch open` to start it. `` on stderr | 1 |
-| Write or read failed | `swch: IPC error: write: <error>` or `swch: IPC error: read: <error>` on stderr | 1 |
+| No pipe exists | ``swch: the daemon is not running. Use `swch open` to start it.`` on stderr | 1 |
+| The pipe refuses this process | `swch: cannot reach daemon (access to the daemon's pipe is denied).` on stderr | 1 |
+| No pipe instance became free within 5 s | `swch: cannot reach daemon (the daemon's pipe is busy).` on stderr | 1 |
+| The daemon did not answer within 5 s | `swch: cannot reach daemon (the daemon did not answer within 5s).` on stderr | 1 |
+| Any other I/O error | `swch: cannot reach daemon (<error>).` on stderr | 1 |
 | Reply has no `OK:`/`ERR:` prefix, including an empty reply | the raw line on stdout | 0 |
 
-Behaviour worth knowing when scripting against `swch`:
+The messages come from `RequestError` ([src/ipc.rs:45-83](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L45-L83)); `tests/ipc_roundtrip.rs` produces each case against a test pipe. Behaviour worth knowing when scripting against `swch`:
 
-- **`status` does not test the hook.** It reports `running` whenever the stored hook handle is non-null ([keyboard_hook.rs:137-139](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook.rs#L137-L139)), so after [KS-01](audit.md#ks-01) it still says `running` while nothing is remapped.
-- **The binding count includes auto-blockers.** `<n>` is the length of the live list ([src/hook/ipc_server.rs:129](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L129)), which includes the auto-blockers that `block_original_combo` adds. The generated default config gives 3: two bindings plus one blocker.
-- **No read timeout.** If the daemon never answers, `swch` waits forever; the code says so itself ([src/bin/swch.rs:171-175](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L171-L175)). Press Ctrl+C.
-- **An empty reply counts as success** ([src/ipc.rs:75-78](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/ipc.rs#L75-L78)). `swch exit` can print an empty line and exit 0 if the daemon exits before its reply is written ([KS-37](audit.md#ks-37), not independently verified).
-- **`open` does not wait for the daemon.** It returns as soon as `ShellExecuteW` does, so `daemon launched` means only that the UAC prompt was accepted and the process started, not that the config loaded. It passes no arguments ([src/bin/swch.rs:105-114](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L105-L114)), so a daemon started this way always uses `<exe_dir>\config.ron`. It always uses the `runas` verb, even for a debug build, so it always elevates.
-- **`open` checks only whether a connect succeeds** ([src/bin/swch.rs:75-78](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L75-L78)). Any connect error, including "Access is denied", reads as "not running", and `open` then starts a second daemon ([KS-20](audit.md#ks-20)). The probe also leaves a `[WARN] IPC read error` or `[WARN] IPC write error` line in the daemon console ([KS-39](audit.md#ks-39), not independently verified).
-
-> [!WARNING]
-> Two defects make `swch` unreliable at commit 7cb3521. With an elevated daemon, `swch` works only from an elevated shell ([KS-02](audit.md#ks-02)). And `swch on` after `swch off` leaves remapping dead ([KS-01](audit.md#ks-01)): to pause remapping, use `swch exit`, and to resume, use `swch open`. See [Troubleshooting](#troubleshooting).
+- **`status` does not test the hook.** It reports whether remapping is switched on ([src/core/app.rs:40-45](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L40-L45)). If Windows removed the hook after a slow callback, `status` still says `running` ([KS-08](audit.md#ks-08); roadmap [item 2.4](roadmap.md#24-hook-watchdog)).
+- **The binding count includes auto-blockers.** `<n>` is the length of the live list, which includes the auto-blockers that `block_original_combo` adds. The generated default config gives 3: two bindings plus one blocker.
+- **An empty reply counts as success** ([src/ipc.rs:215-218](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/ipc.rs#L215-L218)). `swch exit` can print an empty line and exit 0 if the daemon exits before its reply is written ([KS-37](audit.md#ks-37), not independently verified).
+- **`open` does not wait for the daemon.** It returns as soon as `ShellExecuteW` does, so `daemon launched` means only that the UAC prompt was accepted and the process started, not that the config loaded. It passes no arguments ([src/bin/swch.rs:122-131](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L122-L131)), so a daemon started this way always uses `<exe_dir>\config.ron`. It always uses the `runas` verb, even for a debug build, so it always elevates.
+- **`open` starts a daemon only when no pipe exists** ([src/bin/swch.rs:71-94](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/bin/swch.rs#L71-L94)). A pipe that refuses this console, a busy pipe and a daemon that does not answer count as a running daemon, so `open` no longer starts a second one for those ([KS-20](audit.md#ks-20), partly fixed). Its probe is a `status` request, so it leaves no IPC warning in the daemon console ([KS-39](audit.md#ks-39), fixed).
 
 ## UAC and integrity levels
 
@@ -237,26 +248,26 @@ User Interface Privilege Isolation (UIPI) stops a `WH_KEYBOARD_LL` hook in a med
 | How the daemon is started | Build | Daemon integrity | UAC prompt | `swch` from a normal shell |
 |---|---|---|---|---|
 | `cargo run`, or the exe started from a normal shell or Explorer | debug | medium | no | works |
-| Double-click or "Run as administrator" | release | high | on every launch | fails ([KS-02](audit.md#ks-02)) |
-| `swch open` | debug or release | high | on every launch | fails ([KS-02](audit.md#ks-02)) |
-| From an elevated shell | either | high | no | fails; an elevated `swch` works |
-| Scheduled Task with `/RL HIGHEST` | release | high | no | fails ([KS-02](audit.md#ks-02)) |
+| Double-click or "Run as administrator" | release | high | on every launch | works |
+| `swch open` | debug or release | high | on every launch | works |
+| From an elevated shell | either | high | no | works |
+| Scheduled Task with `/RL HIGHEST` | release | high | no | works |
 
-The README says `swch open` "Triggers UAC the first time" ([README.md:439](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L439)). In fact the prompt appears on every launch: `swch open` always uses the `runas` verb ([src/bin/swch.rs:102](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/bin/swch.rs#L102)), and a release daemon requests elevation each time it starts.
+The "works" in the last column is derived from the pipe's security descriptor and its tests; the run against an elevated daemon is a manual check that has not been done ([Manual checks after Phase 0](roadmap.md#manual-checks-after-phase-0)). Until `1dfd80a` a non-elevated `swch` failed with "Access is denied" against every elevated daemon ([KS-02](audit.md#ks-02)).
 
 Running elevated has side effects beyond the hook:
 
-- **The pipe refuses non-elevated clients.** The pipe gets the default DACL, which blocks a non-elevated `swch` ([KS-02](audit.md#ks-02)).
-- **Launched programs run elevated.** `Launch` children inherit the daemon's elevated token, `OpenUrl` can start its handler elevated, and console programs started with `Launch` share the daemon's console ([KS-09](audit.md#ks-09)).
+- **Launched programs run elevated.** `Launch` children inherit the daemon's elevated token, `OpenUrl` can start its handler elevated, and console programs started with `Launch` share the daemon's console ([KS-09](audit.md#ks-09); roadmap [item 3.3](roadmap.md#33-launch-and-openurl-without-elevation)).
 - **Config write access is admin access.** The elevated daemon hot-reloads `config.ron` from its own folder, and a `Launch` binding runs with the daemon's token. If normal processes can write to that folder, they can get code run as administrator without a UAC prompt ([KS-09](audit.md#ks-09)). Install into a folder only administrators can write, such as `C:\Program Files\key-switch-rs\`, and accept that editing the config then needs an elevated editor.
-- **The prompt-free alternative was not pursued.** That alternative is `uiAccess="true"`, which needs a signed binary installed under `Program Files` ([app.manifest:16-18](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/app.manifest#L16-L18)).
+- **Other users can control the daemon.** The pipe admits every interactive user ([KS-40](audit.md#ks-40)).
+- **The prompt-free alternative was not pursued.** That alternative is `uiAccess="true"`, which needs a signed binary installed under `Program Files` ([app.manifest:16-18](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/app.manifest#L16-L18)).
 
 ## Autostart with a Scheduled Task
 
-The README suggests a logon task with "Run with highest privileges" ([README.md:456-460](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L456-L460)), but nothing in the code creates one. Such a task starts the daemon elevated at logon without a UAC prompt.
+The README suggests a logon task with "Run with highest privileges" ([README.md:616-620](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/README.md?plain=1#L616-L620)), but nothing in the code creates one; roadmap [item 4.5](roadmap.md#45-swch-autostart) plans `swch autostart`. Such a task starts the daemon elevated at logon without a UAC prompt.
 
 > [!NOTE]
-> These flags were checked against Microsoft's [schtasks create reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create) and [task settings documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit). The commands were not run during the audit.
+> These flags were checked against Microsoft's [schtasks create reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create) and [task settings documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit) during the audit. The commands were not run.
 
 1. Copy `key-switch-rs.exe` and `swch.exe` into a fixed folder that only administrators can write (see [UAC and integrity levels](#uac-and-integrity-levels)), for example `C:\Program Files\key-switch-rs\`.
 2. Open an elevated shell (creating a `HIGHEST` task needs administrator rights) and create the task. A path with spaces is quoted with `\"` inside the `/TR` value:
@@ -286,7 +297,7 @@ The README suggests a logon task with "Run with highest privileges" ([README.md:
 | `/F` | Suppress the warning if the task already exists | Lets you re-run the command |
 | `/DELAY mmmm:ss` (optional) | Wait after the trigger; valid for `ONLOGON` | For example `/DELAY 0000:15` to let the shell settle |
 
-The task runs as the account that created it. To use a non-default config, append an absolute path to `/TR`. A task's working folder is not the executable's folder, so a relative path would resolve somewhere else and also disable hot reload ([KS-21](audit.md#ks-21)):
+The task runs as the account that created it. To use a non-default config, append a path to `/TR`. A relative path is resolved against the task's "Start in" folder, so an absolute path is clearer:
 
 ```bat
 schtasks /Create /TN "key-switch-rs" /TR "\"C:\Program Files\key-switch-rs\key-switch-rs.exe\" \"D:\config\keys.ron\"" /SC ONLOGON /RL HIGHEST /IT /F
@@ -295,51 +306,67 @@ schtasks /Create /TN "key-switch-rs" /TR "\"C:\Program Files\key-switch-rs\key-s
 At logon the daemon opens a console window, and closing that window stops the daemon.
 
 > [!WARNING]
-> While the task's daemon is running, a non-elevated `swch` cannot reach it ([KS-02](audit.md#ks-02)). A non-elevated `swch open` will not detect it either, and starts a second elevated daemon ([KS-20](audit.md#ks-20)). Run `swch` from an elevated shell, and do not combine the task with `swch open` or double-click launches.
+> There is still no single-instance guard ([KS-20](audit.md#ks-20); roadmap [item 1.5](roadmap.md#15-single-instance)). `swch open` from a normal shell now sees the task's daemon and starts no second one, but a double-click on `key-switch-rs.exe` does start a second daemon. Use one start method only.
 
-## Tests and lints
+<a id="tests-and-lints"></a>
+## Tests, lints and CI
 
-### Unit tests
+<a id="unit-tests"></a>
+### Unit and integration tests
 
 ```powershell
 cargo test --locked
 ```
 
-The audit got 120 passed and 0 failed. All 120 are library unit tests. The two binary harnesses and the doc tests ran 0 tests, and there is no `tests/` directory. The counts below come from the audit's test log; [Tests per file](overview.md#tests-per-file) breaks them down by file, with what each file's tests cover.
+The merge gate of `1dfd80a` got 362 passed, 0 failed and 1 ignored library tests, and 6 passed integration tests in `tests/ipc_roundtrip.rs`; the `swch` binary and the doc tests have none. The ignored test, `data::condition::tests::foreground_context_names_the_focused_notepad`, is a manual check: run it with `--ignored` and focus a Notepad window within 5 s. The counts below come from `cargo test --locked -- --list` at `1dfd80a`.
 
 | Module | Tests |
 |---|---|
-| `config::loader` | 41 |
+| `engine::scenarios` | 108 |
+| `config::loader` | 67 |
+| `engine::gestures` | 18 |
+| `engine::keys` | 17 |
 | `data::vk_name` | 14 |
-| `config::parsing` | 10 |
-| `hook::tap_state` | 8 |
-| `ipc` | 7 |
-| `data::condition` | 6 |
-| `system::registry`, `hook::chord_state`, `data::sequence` | 5 each |
-| `hook::sequence_state`, `hook::keyboard_hook_callback`, `hook::keyboard_hook` | 4 each |
-| `system::system_function`, `data::key_combination` | 3 each |
-| `data::trigger` | 1 |
+| `data::condition` (1 ignored), `config::parsing` | 13 each |
+| `ipc`, `data::key_spec` | 11 each |
+| `hook::keyboard_hook`, `engine::matching` | 10 each |
+| `hook::config_watcher`, `build_script` (the logic of `build.rs`) | 9 each |
+| `engine::chords` | 8 |
+| `hook::ipc_server`, `engine::sequences` | 7 each |
+| `system::registry` | 6 |
+| `data::sequence`, `data::key_combination` | 5 each |
+| `hook::keyboard_hook_callback` | 4 |
+| `system::system_function` | 3 |
+| `engine` (module tests), `engine::properties`, `core::app` | 2 each |
+| `data::trigger`, `data::binding` | 1 each |
+| **Library total** | **363** |
+| `tests/ipc_roundtrip.rs` | 6 |
 
-The tests install no hooks, inject no input and write no files; their only registry access is reading the system hotkeys. Several areas have no tests ([What no test exercises](gaps.md#what-no-test-exercises) has the full list):
-
-- The key-down and key-up decisions in `keyboard_hook_callback.rs` (only its helpers are tested).
-- The IPC server, `swch` and the config watcher.
-- The Win32 side of conditions and actions.
+No test installs a hook, injects input or writes the registry: tests that would need any of that are `#[ignore]`d manual checks. The scenario tests drive the decision core with a fake clock and key state. The watcher tests run a real `notify` watcher on a temporary folder, and the IPC tests use pipes with unique names, never the daemon's. Some tests read the live `HKCU` registry and capture the real foreground window. Areas without tests: the Win32 side of actions, the `swch` binary itself, and anything that needs a live hook ([What no test exercises](gaps.md#what-no-test-exercises)).
 
 ### Release-mode tests
 
-> [!WARNING]
-> In a non-elevated shell, `cargo test --release` stops with os error 740 after the library tests. `rustc-link-arg-bin` also applies to the unit-test harness built from `src/main.rs`, so that harness carries the `requireAdministrator` manifest ([KS-38](audit.md#ks-38): one reviewer reproduced it with a probe crate, but it was not independently verified). Run it from an elevated shell, or restrict it to the library with `cargo test --release --lib` (the audit did not try this).
+`cargo test --release` builds no test harness for the daemon binary, so it runs in a non-elevated shell ([KS-38](audit.md#ks-38), fixed). An explicit target selection brings the harness back: `cargo test --release` or `cargo bench` together with `--all-targets`, `--bins` or `--bin key-switch-rs` builds a harness from `src/main.rs` that inherits the `requireAdministrator` manifest and fails with "The requested operation requires elevation" (os error 740). Run them without those flags. Debug builds embed no manifest, so `cargo test --all-targets` works.
 
-### Clippy
+<a id="clippy"></a>
+### Clippy and rustfmt
 
 ```powershell
-cargo clippy --all-targets --locked
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
 ```
 
-The audit got one warning, `clippy::unnecessary_sort_by`, at [src/hook/keyboard_hook.rs:72](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook.rs#L72). It is reported for the library and again for the library test target, and it is style only: clippy suggests `sort_by_key(|a| std::cmp::Reverse(a.kind.key_count()))`. Adding `-- -D warnings` therefore fails until it is fixed. Lint sets change between toolchains; this result is for 1.98.1.
+Both pass at `1dfd80a` (merge gate). The audit's one warning, `clippy::unnecessary_sort_by`, was fixed in [`091e30e`](https://github.com/bluesteelll/key-switch-rs/commit/091e30e). These two commands and `cargo test --locked` are the project's quality gate.
 
-No CI workflow builds, tests or lints the Rust code. The only workflow publishes this book.
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request, on `windows-latest` ([.github/workflows/ci.yml](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/.github/workflows/ci.yml)). No job runs `key-switch-rs.exe`.
+
+| Job | Steps |
+|---|---|
+| `check` | `cargo fmt --check`; clippy with `-D warnings`; `cargo test --locked`; `cargo build --release --locked`; a check that `key-switch-rs.exe`, and not `swch.exe`, embeds `requireAdministrator`; a check of cargo's JSON messages that `cargo test --release --no-run` and `cargo bench --no-run` build no harness for the daemon ([KS-38](audit.md#ks-38)) |
+| `msrv` | `cargo check --all-targets --locked` with Rust 1.88 |
+| `windows-gnu` | `cargo build --release --locked --target x86_64-pc-windows-gnu`, which must link and warn that no UAC manifest is embedded ([KS-42](audit.md#ks-42)) |
 
 ## Building this book
 
@@ -367,63 +394,43 @@ From the repository root:
 
 One-time setup: in the repository, go to **Settings -> Pages -> Build and deployment -> Source** and select **GitHub Actions**. The book is then served at `https://bluesteelll.github.io/key-switch-rs/`, which matches `site-url = "/key-switch-rs/"` in `book.toml`.
 
-> [!NOTE]
-> The book sources and the workflow are not part of commit 7cb3521. They were added with this documentation.
-
 ## Troubleshooting
 
-All six issues below are verified defects at commit 7cb3521. The [audit chapter](audit.md) has the full analysis of each one, and the [roadmap](roadmap.md) has the planned fixes.
+The [audit chapter](audit.md) has the full analysis of each issue, and the [roadmap](roadmap.md) has the planned fixes. The table lists what can still go wrong at `1dfd80a`.
 
 ```mermaid
 flowchart TD
     A["swch fails or has no effect"] --> B{"What does swch print?"}
-    B -->|"Access is denied, os error 5"| C["Daemon is elevated, shell is not. Use an elevated shell. KS-02"]
-    B -->|"cannot reach daemon, typically os error 2"| D["No daemon owns the pipe. Run swch open"]
-    B -->|"enabled or running, yet keys are not remapped"| E{"Was swch off used before swch on?"}
-    E -->|yes| F["Hook died with the IPC worker thread. swch exit, then swch open. KS-01"]
-    E -->|no| G{"Does another console show the IPC WARN lines?"}
+    B -->|"the daemon is not running"| D["No daemon owns the pipe. Run swch open"]
+    B -->|"did not answer within 5s"| E["The daemon is hung or very busy. Check its console"]
+    B -->|"access to the pipe is denied"| F["The caller runs below medium integrity or outside an interactive logon"]
+    B -->|"running, yet keys are not remapped"| G{"Does another console show the IPC WARN lines?"}
     G -->|yes| H["Two daemons are running. Close the extra one. KS-20"]
     G -->|no| I["Check the bindings and the known configuration pitfalls"]
 ```
 
 | Symptom | Issue | Short workaround |
 |---|---|---|
-| `swch` says `Access is denied. (os error 5)` | [KS-02](audit.md#ks-02) | Run `swch` from an elevated shell |
-| Remapping is dead after `swch off` then `swch on` | [KS-01](audit.md#ks-01) | `swch exit`, then `swch open` |
 | Keys remapped twice, or `swch off` has no effect | [KS-20](audit.md#ks-20) | Close the extra daemon |
-| Saving the config changes nothing | [KS-21](audit.md#ks-21) | Pass an absolute config path |
 | Start menu or menu bar opens after a binding fires | [KS-12](audit.md#ks-12) | Press Esc; keep Win and Alt out of such combos |
-| A key stays logically held down | [KS-06](audit.md#ks-06) | Stop the daemon, tap the key, restart |
+| Alt, Shift, X arrives as Alt+X, or Shift, Alt, X as Shift+X | [KS-05](audit.md#ks-05), rest | Set `block_original_combo: false` on the CapsLock binding |
+| A binding stopped firing while a modifier is held | exact modifiers ([§7](config/kinds.md#s7)) | Add `allow_extra_modifiers: true` to that binding |
+| The left Shift no longer types capitals | `keys: "LShift"` with a deferred trigger ([§11.8](config/triggers-conditions.md#s11-8)) | Remove the binding until roadmap item 1.3 |
+| Saving the config changes nothing | a rejected reload | Read the `[ERROR] config reload failed:` lines in the daemon console |
+| Remapping stops working while `swch status` says `running` | [KS-08](audit.md#ks-08): Windows removed a slow hook | `swch exit`, then `swch open`; wrap `Launch` and `OpenUrl` in `Sequence([...])` |
 
-### swch says "Access is denied" (KS-02)
+<a id="swch-says-access-is-denied-ks-02"></a>
+<a id="swch-on-does-nothing-after-swch-off-ks-01"></a>
+<a id="hot-reload-never-fires-ks-21"></a>
+<a id="a-key-stays-stuck-down-ks-06"></a>
+### Fixed since the audit
 
-**Symptom.** You start the daemon with `swch open`, a double-click or a Scheduled Task. After that, `swch status`, `on`, `off` and `exit` from a normal shell all print the following and exit with 1:
+These problems had their own sections in the audit version of this chapter. They are fixed at `1dfd80a`:
 
-```text
-swch: cannot reach daemon (Access is denied. (os error 5)). Use `swch open` to start it.
-```
-
-**Cause.** [src/hook/ipc_server.rs:47](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L47) creates the pipe without a security descriptor, so it gets the default named-pipe DACL. That DACL gives full access to SYSTEM, Administrators and the creator's owner, and only read access to Everyone. An elevated creator's owner is Administrators, which is deny-only in a non-elevated token, so the read-write open that `swch` makes is refused. A probe on the audit machine confirmed this.
-
-**Workaround.**
-
-1. Run `swch` from an elevated shell, for example a terminal opened with "Run as administrator".
-2. During development, run a debug daemon from a normal shell (`cargo run --bin key-switch-rs`). The daemon and `swch` then share an integrity level.
-3. Do not answer the error with `swch open` from the same normal shell. That starts a second daemon ([KS-20](audit.md#ks-20)).
-
-### swch on does nothing after swch off (KS-01)
-
-**Symptom.** `swch off` prints `disabled`, `swch on` prints `enabled`, and `swch status` says `running (<n> bindings live)`, but no key is remapped. A further `swch off` prints `swch: disable failed: <error>`. You can only reach this path when `swch` can talk to the daemon: an elevated `swch`, or a debug daemon started from a normal shell.
-
-**Cause.** `swch on` runs `enable()` on the short-lived IPC worker thread ([ipc_server.rs:72](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L72), [:115](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/ipc_server.rs#L115)). `enable()` calls `SetWindowsHookExW` and `SetWinEventHook` on whatever thread calls it ([keyboard_hook.rs:143-157](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook.rs#L143-L157)). A low-level hook is serviced by its installing thread's message loop. This worker has no message loop and exits right after replying, so Windows removes its hooks. The stale handle keeps `status` reporting `running`.
-
-**Workaround.**
-
-- Do not use `off` and `on`. To pause remapping, use `swch exit`. To resume, use `swch open`.
-- If it has already happened:
-  1. Run `swch exit`. The client prints `shutting down`.
-  2. The daemon's own shutdown then fails. It prints a `[FATAL]` line about an invalid hook handle and waits at `Press Enter to exit...`. Until you press Enter or close its window, the daemon still serves the pipe: `swch open` says it is already running and `swch status` answers `disabled`.
-  3. Run `swch open`.
+- **`swch` said "Access is denied"** against an elevated daemon: the pipe had the default DACL ([KS-02](audit.md#ks-02)).
+- **`swch on` did nothing after `swch off`**: the hooks died with the IPC worker thread ([KS-01](audit.md#ks-01)).
+- **Hot reload never fired** for a relative config path or a path in a different letter case ([KS-21](audit.md#ks-21)).
+- **A key stayed stuck down** after a gesture, chord or sequence key was held past the repeat delay ([KS-06](audit.md#ks-06)). What remains is a lone key-up after a foreground change ([§10](config/kinds.md#s10)).
 
 ### Two daemons are running (KS-20)
 
@@ -434,11 +441,12 @@ swch: cannot reach daemon (Access is denied. (os error 5)). Use `swch open` to s
 [INFO] another daemon instance may already be running. `swch` commands will not reach this process.
 ```
 
-**Cause.** There is no single-instance guard. The hook is installed ([app.rs:91](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L91)) before the pipe is created ([app.rs:94](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/app.rs#L94)), and failing to create the pipe only produces a warning. `swch` reaches only the instance that owns the pipe, while the instance started later has its hook called first. The sentinel that marks injected keys includes the process ID ([src/core/constants.rs:15-28](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/core/constants.rs#L15-L28)), so each daemon treats the other's synthesized keys as physical input. Common ways to get a second instance:
+**Cause.** There is no single-instance guard. The hook is installed ([app.rs:131](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L131)) before the pipe is created ([app.rs:139](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L139)), and failing to create the pipe only produces a warning. `swch` reaches only the instance that owns the pipe, while the instance started later has its hook called first. The sentinel that marks injected keys includes the process ID ([src/core/constants.rs:15-28](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/constants.rs#L15-L28)), so each daemon treats the other's synthesized keys as physical input. Common ways to get a second instance:
 
 - Double-clicking the daemon twice.
-- A Scheduled Task combined with `swch open` or a double-click.
-- `swch open` from a normal shell while an elevated daemon runs, because [KS-02](audit.md#ks-02) makes its probe fail.
+- A Scheduled Task combined with a double-click.
+
+`swch open` no longer causes it: it treats a pipe that refuses it, a busy pipe and a silent daemon as running.
 
 **Workaround.**
 
@@ -446,58 +454,25 @@ swch: cannot reach daemon (Access is denied. (os error 5)). Use `swch open` to s
 2. If it is unclear which window belongs to which process, open an elevated shell, list the daemons with `tasklist /FI "IMAGENAME eq key-switch-rs.exe"`, end all of them with `taskkill /IM key-switch-rs.exe /F`, and start one with `swch open`.
 3. Use one start method only.
 
-### Hot reload never fires (KS-21)
-
-**Symptom.** Startup prints `✓ Watching my.ron for changes`, but saving the file never prints `[INFO] config reloaded`.
-
-**Cause.** The watcher keeps only events whose path equals the configured path ([config_watcher.rs:47](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L47)). `notify` reports absolute paths, and the CLI argument is used as typed ([main.rs:28-31](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/main.rs#L28-L31)), so a relative path never matches. Because the comparison is case-sensitive, a file name typed in a different letter case from the one on disk may also fail to match; only the relative-path part was verified.
-
-**Workaround.** Start without an argument, which gives the absolute `<exe_dir>\config.ron`, or pass an absolute path. Type the file name in the same letter case as on disk.
-
-```powershell
-.\key-switch-rs.exe $((Resolve-Path .\my.ron).Path)
-```
-
-```bat
-key-switch-rs.exe "%CD%\my.ron"
-```
-
 ### The Start menu or a menu bar opens (KS-12)
 
 **Symptom.** After a `Win+<key>` binding fires, releasing Win opens the Start menu. After an `Alt+<key>` binding, releasing Alt activates the foreground app's menu bar, and the next keystrokes go to the menu. With the default config and the default Alt+Shift language hotkey, pressing Alt and then Shift does the same, because the auto-blocker swallows Shift ([KS-05](audit.md#ks-05)).
 
-**Cause.** Only the payload key is suppressed ([keyboard_hook_callback.rs:294-296](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L294-L296)). The OS sees Win or Alt go down and up with nothing in between, and no mask key is injected. Actions that synthesize a keystroke (`PressKey`, `Media`, `ToggleCapsLock`) mask the release by accident. `PostMessage`, `SwitchLanguage`, `SwitchLanguageBackward`, `Launch`, `OpenUrl` and `DoNothing` do not.
+**Cause.** Only the payload key is suppressed. The OS sees Win or Alt go down and up with nothing in between, and no mask key is injected ([src/engine/mod.rs:255-258](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L255-L258)). Actions that synthesize a keystroke (`PressKey`, `Media`, `ToggleCapsLock`) mask the release by accident. `PostMessage`, `SwitchLanguage`, `SwitchLanguageBackward`, `Launch`, `OpenUrl` and `DoNothing` do not.
 
 **Workaround.**
 
 - Press Esc to close the Start menu or leave menu mode.
 - Bind actions that inject no keystroke to combos without Win or Alt, for example a Ctrl-based combo or a spare key such as `F13`. The defect only concerns a lone Win or Alt release.
-- For the Alt-then-Shift case with the default config, set `block_original_combo: false` on the CapsLock binding. The OS Alt+Shift hotkey then switches the language again, and this also avoids [KS-05](audit.md#ks-05). See [Known configuration pitfalls](config/known-issues.md).
-
-### A key stays stuck down (KS-06)
-
-**Symptom.** Suppose a key is bound with `Tap`, `Hold`, `DoubleTap`, a chord or a sequence, and you hold it past the keyboard repeat delay (about 500 ms by default). From then on its auto-repeat reaches the OS, so repeated characters appear. After you release it, the OS still treats the key as held. With the README's CapsLock `Tap(200)` and `Hold(200)` example, CapsLock turns on and stays logically held. Pressing the key again does not help.
-
-**Cause.** Auto-repeat key-downs skip the gesture, chord and sequence branches (`if was_repeat { continue; }` at [keyboard_hook_callback.rs:239](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L239), 244, 249, 256 and 274), so they reach the OS. The key-up, however, is swallowed by the blocked bit set on the first press ([keyboard_hook_callback.rs:294-297](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L294-L297) and [:324](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L324)). Every later press of the bound key is suppressed again, so the key cannot release itself.
-
-**Workaround.**
-
-1. Stop the daemon. Press Ctrl+C in its console, close the window, or run `swch exit` from an elevated shell. `swch off` does not help, because `swch on` is broken ([KS-01](audit.md#ks-01)).
-2. Press and release the stuck key once, so the OS sees its key-up. For CapsLock, press it again if the toggle state is now wrong.
-3. Start the daemon again with `swch open`.
-
-To avoid it, do not hold gesture, chord or sequence keys longer than the repeat delay. A longer repeat delay (Control Panel -> Keyboard -> Repeat delay) widens the margin. An `Immediate` combo can also stick when a modifier is released first, for example releasing Ctrl and Alt while still holding the L of `Ctrl+Alt+L`. Pressing and releasing L again clears that case.
+- For the Alt-then-Shift case with the default config, set `block_original_combo: false` on the CapsLock binding. The OS Alt+Shift hotkey then switches the language again. See [Known configuration pitfalls](config/known-issues.md).
 
 ### Other symptoms
 
 | Symptom | Cause | What to do |
 |---|---|---|
 | `cargo run --release` fails with os error 740 | The release daemon requires elevation and cargo uses `CreateProcess` | Use an elevated shell |
-| `cargo test --release` fails with os error 740 | The daemon's test harness gets the manifest ([KS-38](audit.md#ks-38), not independently verified) | Use an elevated shell, or `cargo test --release --lib` |
+| `cargo test --release --all-targets` fails with os error 740 | An explicit target selection builds the daemon's test harness, which gets the manifest ([KS-38](audit.md#ks-38)) | Run `cargo test --release` without target flags |
 | `cargo run` could not determine which binary to run | There are two binaries and no `default-run` | Add `--bin key-switch-rs` or `--bin swch` |
-| `swch` hangs | There is no read timeout | Press Ctrl+C and check the daemon console |
-| `swch exit` prints an empty line | The reply races teardown, and an empty reply counts as success ([KS-37](audit.md#ks-37), not independently verified) | `swch status` should now fail to connect |
-| `[WARN] IPC read error` or `[WARN] IPC write error` after `swch open` | The connect probe sends no command ([KS-39](audit.md#ks-39), not independently verified) | Harmless |
-| A file named after a flag appears and the default bindings load | Any first argument is a config path ([KS-41](audit.md#ks-41), not independently verified) | Pass only an absolute config path |
+| `[FATAL] config file … does not exist` at startup | The command-line path is wrong, or a flag was taken as a path ([KS-41](audit.md#ks-41)) | Pass the path of an existing file, or no argument |
+| `swch exit` prints an empty line | The reply races teardown, and an empty reply counts as success ([KS-37](audit.md#ks-37), not independently verified) | `swch status` should now say that the daemon is not running |
 | The daemon in a second user session prints the IPC `[WARN]` lines | The pipe name is machine-wide ([KS-40](audit.md#ks-40), not independently verified) | Only one daemon per machine can be controlled |
-| A link error mentions `/MANIFEST:EMBED` | A `-gnu` target receives MSVC-only switches ([KS-42](audit.md#ks-42), not independently verified) | Build for `x86_64-pc-windows-msvc` |

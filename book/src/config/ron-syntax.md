@@ -3,17 +3,17 @@
 <a id="s3"></a>
 ## 3. RON syntax essentials
 
-The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:135-136](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L135-L136)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:109](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L109)). Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
+The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:242-243](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L242-L243)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:187-197](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L187-L197)). Facts describe commit `1dfd80a`. Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
 
 <a id="s3-1"></a>
 ### 3.1 Encoding, whitespace and line breaks
 
-**UTF-8 only, without a BOM.**
+**UTF-8 only, with or without a BOM.**
 - A file in UTF-16 ("Unicode" in the old Notepad) gives `config I/O error (<path>): stream did not contain valid UTF-8`.
 - A file in cp1251 gives the same error only if it contains non-ASCII bytes (for example, Cyrillic in comments). A cp1251 file made only of ASCII characters is byte-for-byte identical to UTF-8 and loads normally.
 
-> [!WARNING]
-> Known issue ([KS-24](../audit.md#ks-24)): UTF-8 with a BOM gives the obscure error ``1:1: Expected opening `(` for struct `RawConfig` `` ([src/config/loader.rs:109](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L109)). Save the file as "UTF-8", not "UTF-8 with BOM".
+> [!NOTE]
+> A byte-order mark at the start of the file is skipped ([src/config/loader.rs:233-236](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L233-L236)), so Notepad's "UTF-8 with BOM" and `Set-Content -Encoding UTF8` in Windows PowerShell 5.1 work. Until `1dfd80a` such a file failed with ``1:1: Expected opening `(` for struct `RawConfig` `` ([KS-24](../audit.md#ks-24), fixed). Only the leading mark is skipped: a U+FEFF inside a string stays part of the text.
 
 **Whitespace.** Any number of spaces, tabs and line breaks may appear between tokens. The exception is the **non-breaking space U+00A0**: RON does not treat it as whitespace. The one-line file `( bindings: [ ( keys: "F13",<NBSP>action: DoNothing ) ] )` gives `1:29: Expected identifier`. This is a common trap when copying examples from a browser or from Word: in an editor the character looks like an ordinary space. U+2028 (line separator) between tokens, on the other hand, is accepted. **Inside strings** that hold key names and `WM_*` names, U+00A0 and all other whitespace characters are silently removed ([§6.3](keys.md#s6-3), [§13.4](actions.md#s13-4)), so `"Ctrl+<NBSP>F13"` loads as `Ctrl+F13`.
 
@@ -59,7 +59,7 @@ The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` (
 <a id="s3-4"></a>
 ### 3.4 Case, struct names, raw identifiers
 
-- Field and variant names are **case-sensitive**. `action: switchlanguage` gives ``Unexpected variant named `switchlanguage` in enum `RawAction`, expected one of …``. `Keys:` instead of `keys:` counts as an unknown field and is silently skipped ([§5.3](structure.md#s5-3), [KS-22](../audit.md#ks-22)). Key names **inside strings** are case-insensitive: `"ctrl+a"` = `"Ctrl+A"`.
+- Field and variant names are **case-sensitive**. `action: switchlanguage` gives ``Unexpected variant named `switchlanguage` in enum `RawAction`, expected one of …``. `Keys:` instead of `keys:` is an unknown field and a load error: ``Unexpected field named `Keys` in `RawBinding`, expected one of `keys`, …`` ([§5.3](structure.md#s5-3)). Key names **inside strings** are case-insensitive: `"ctrl+a"` = `"Ctrl+A"`.
 - A struct's internal name may be written before its parentheses: `RawConfig( bindings: [ RawBinding( ... ) ] )`, `sequence: SequenceSpec(...)`, `chord: ChordSpec(...)`. This is not needed, but it is allowed. Any other name is an error: ``Expected struct `RawConfig` but found `Config` `` (for a binding, ``Expected struct `RawBinding` but found `Binding` ``; for a sequence, ``Expected struct `SequenceSpec` but found `Foo` ``).
 - RON raw identifiers are allowed: `r#keys: "F13"` and `action: r#DoNothing` load the same as the plain forms.
 
@@ -135,7 +135,7 @@ Rejected forms:
 <a id="s3-8"></a>
 ### 3.8 Time values
 
-All times are given as an integer number of milliseconds. The loader does not check the range: `Tap(0)`, `window_ms: 0`, `Delay(0)` and any large values up to `u64::MAX` are accepted without warnings ([KS-27](../audit.md#ks-27)). What happens then is described for each field ([§8](kinds.md#s8), [§9](kinds.md#s9), [§11](triggers-conditions.md#s11), [§14](actions.md#s14)).
+All times are given as an integer number of milliseconds. The `Tap`, `Hold` and `DoubleTap` terms, `max_gap_ms` and `window_ms` must be 1 to 10000; another value is a load error that names the binding ([src/config/loader.rs:34-37](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L34-L37); [KS-27](../audit.md#ks-27), fixed in `1dfd80a`). `Delay(…)` in a macro is not checked: `Delay(0)` and any value up to `u64::MAX` are accepted. Each field is described in ([§8](kinds.md#s8), [§9](kinds.md#s9), [§11](triggers-conditions.md#s11), [§14](actions.md#s14)).
 
 <a id="s3-9"></a>
 ### 3.9 Strings and escapes

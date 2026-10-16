@@ -1,8 +1,8 @@
 # Introduction
 
-This book documents key-switch-rs as it stands at commit `7cb3521`: how it is built, how it is configured, what is broken and what to fix first.
+This book documents key-switch-rs: how it is built, how it is configured, what is broken and what to fix next. It started as the audit of commit `7cb3521` and now describes `master` at commit `1dfd80a`, after roadmap Phase 0, while keeping the audit's findings as the baseline.
 
-key-switch-rs is a Windows-only keyboard remapper written in Rust. An elevated daemon, `key-switch-rs.exe`, intercepts key events with a low-level `WH_KEYBOARD_LL` hook, matches them against bindings from a hot-reloaded `config.ron` and runs actions such as switching the input language, pressing keys or launching programs. A small CLI, `swch.exe`, controls the daemon over a named pipe.
+key-switch-rs is a Windows-only keyboard remapper written in Rust. An elevated daemon, `key-switch-rs.exe`, intercepts key events with a low-level `WH_KEYBOARD_LL` hook, lets a pure decision core match them against bindings from a hot-reloaded `config.ron`, and runs actions such as switching the input language, pressing keys or launching programs. A small CLI, `swch.exe`, controls the daemon over a named pipe.
 
 ## Who this book is for
 
@@ -10,15 +10,15 @@ The book is written for the project owner and for future contributors who need t
 
 ## Current state
 
-The code builds cleanly: `cargo build --release` gives no warnings, all 120 unit tests pass, and clippy reports one style lint. The audit nevertheless verified 26 issues, and six high-severity defects block daily use: two break the default configuration during normal typing, two break the `swch` control path, one disables every `AppEquals` condition, and one leaves keys stuck down with the README's Tap/Hold example. They are [KS-01 to KS-06](audit.md#summary) in [Audit results](audit.md).
+The audit of 2026-10-14 verified 26 issues at `7cb3521`, six of them high severity: two broke the default configuration during normal typing, two broke the `swch` control path, one disabled every `AppEquals` condition, and one left keys stuck down. Roadmap Phase 0 then added CI, a pure decision core with scenario tests, and fixes for 13 of the 26 issues, all of the high-severity ones except the rest of [KS-05](audit.md#ks-05). At `1dfd80a` the quality gate passes: `cargo fmt --check`, clippy with `-D warnings`, and 368 passing tests with 1 manual test ignored ([Overview and current state](overview.md#build-test-and-lint-status)). [Audit results](audit.md#summary) gives the status of every issue.
 
 > [!WARNING]
-> Do not rely on the daemon for daily use until KS-01 to KS-06 are fixed. Workarounds for the defects you are most likely to hit are in [Troubleshooting](build-and-run.md#troubleshooting).
+> The Phase 0 fixes are pinned by tests, but nobody has yet run the daemon against live keyboard input to confirm them; [Manual checks after Phase 0](roadmap.md#manual-checks-after-phase-0) lists what to try. Phase 0 also changed how bindings match, which can break an existing `config.ron`: see [Known configuration pitfalls](config/known-issues.md#s19-9). Workarounds for the problems you are most likely to hit are in [Troubleshooting](build-and-run.md#troubleshooting).
 
 ## How this book is organised
 
-- [Overview and current state](overview.md): what the program does, its features and default bindings, and its overall health.
-- [Architecture](architecture.md): processes, threads, hooks, shared state and the key-down path, and where the structure causes defects.
+- [Overview and current state](overview.md): what the program does, its features and default bindings, what changed since the audit, and the audit's snapshot.
+- [Architecture](architecture.md): processes, threads, hooks, the decision core, shared state and the key-event path, and which defects the structure explains.
 - [Building, running and controlling the daemon](build-and-run.md): build, elevation, `swch` commands, autostart, tests and workarounds.
 - [Configuration reference](config/index.md): entry point to the `config.ron` format.
   - [File location, reload and top-level structure](config/structure.md): where the file lives, how it is created on first run and hot-reloaded, the top-level layout of the file and the fields of a binding.
@@ -30,17 +30,17 @@ The code builds cleanly: `cargo build --release` gives no warnings, all 120 unit
   - [Auto-blockers and matching order](config/matching.md): the auto-blockers that `block_original_combo` adds and the order and priority in which bindings are checked.
   - [Complete example](config/example.md): a full `config.ron` that loads without errors.
   - [Error messages](config/errors.md): what the loader reports and what causes each message.
-  - [Known configuration pitfalls](config/known-issues.md): settings that load but misbehave because of verified defects.
-- [Audit results](audit.md): the 26 verified issues KS-01 to KS-26, their root causes, and the unverified low-severity reports.
+  - [Known configuration pitfalls](config/known-issues.md): settings that load but misbehave, with the status of each.
+- [Audit results](audit.md): the 26 verified issues KS-01 to KS-26, their root causes, the unverified low-severity reports, and the status of each.
 - [Gaps and documentation drift](gaps.md): missing features, README claims the code does not meet, missing infrastructure and untested code.
-- [Roadmap](roadmap.md): the proposed order of fixes and features.
+- [Roadmap](roadmap.md): the order of fixes and features, with the status of each item.
 - [How the audit was done](methodology.md): the build check, the multi-agent review, the probes and the limits of each.
 - [Glossary](glossary.md): Win32, Rust and project terms used in this book.
 
 ## Dates and scope
 
 > [!NOTE]
-> Facts describe commit [`7cb3521`](https://github.com/bluesteelll/key-switch-rs/commit/7cb3521) (2026-05-20), the tip of `master` on the audit date. Build, test and audit runs were done on 2026-10-14. Code references are permalinks to that commit, so their line numbers can differ on later commits. The daemon was not run against live keyboard input; findings come from code reading, Win32 documentation, probe programs and a scratch test crate, as described in [How the audit was done](methodology.md).
+> The pages that describe the program as it is (the overview, architecture, building and running, the configuration reference and the glossary) describe commit [`1dfd80a`](https://github.com/bluesteelll/key-switch-rs/commit/1dfd80a) (2026-10-16), and their code references are permalinks to it. The findings pages (the audit, gaps and drift, the roadmap and the methodology) describe the audit commit [`7cb3521`](https://github.com/bluesteelll/key-switch-rs/commit/7cb3521) (2026-05-20), the tip of `master` on the audit date of 2026-10-14, and carry status notes for `1dfd80a`. Each page says which commit it describes. The daemon was not run against live keyboard input; findings come from code reading, Win32 documentation, probe programs, a scratch test crate and the project's own tests, as described in [How the audit was done](methodology.md).
 
 ## Reporting problems
 

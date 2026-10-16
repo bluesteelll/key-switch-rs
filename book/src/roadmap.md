@@ -5,6 +5,9 @@ This chapter sets out the order of work that would make key-switch-rs at commit 
 > [!NOTE]
 > The plan was synthesized from three independent drafts, written with a stability, an architecture and a product lens ([How the roadmap drafts were judged](methodology.md#how-the-roadmap-drafts-were-judged)). It is based on commit `7cb3521` and the verified audit of that commit. Effort: **S** is under half a day, **M** one to two days, **L** three days or more.
 
+> [!IMPORTANT]
+> **Progress at [`1dfd80a`](https://github.com/bluesteelll/key-switch-rs/commit/1dfd80a)** (2026-10-16). Phase 0 is done: [0.1 CI](#01-ci), [Workstream A](#workstream-a--critical-hook-and-ipc-fixes) and [Workstream B](#workstream-b--config-edge-cases-and-docs-drift) are merged into `master`, each item with a status block below. Phases 1 to 4 have not started. The item texts keep the plan as written against `7cb3521`, so their "Why" links show the old code. The owner has decided open questions [1, 2, 4 and 8](#open-questions-for-the-owner). The [issue coverage](#issue-coverage) table shows where each KS issue stands.
+
 > [!NOTE]
 > **Issue counts.** The drafts counted 27 confirmed bugs, 7 of them high severity. This chapter uses the audit's numbers and IDs: 26 verified issues, 6 high, 16 medium and 4 low ([KS-01](audit.md#ks-01) to [KS-26](audit.md#ks-26)), plus 16 unverified low-severity reports ([KS-27](audit.md#ks-27) to [KS-42](audit.md#ks-42)). The difference is one high-severity bug counted twice. The drafts listed the two paths of superset matching as separate bugs. On the Immediate path, rollover eats the next key. On the deferred path, a Tap, Hold or DoubleTap trigger arms on an unrelated key. Both come from the same subset test in `KeyCombination::matches`. The audit's [deduplication rules](methodology.md#deduplication-into-ks-ids) make one mechanism in the same code a single issue, so it merged them into [KS-04](audit.md#ks-04). The medium and low counts are the same in both.
 
@@ -66,7 +69,7 @@ The audit also names eight causes ([Root causes](audit.md#root-causes)), but it 
 ## Phase 0 — scoped workstreams
 
 > [!NOTE]
-> Workstreams A and B are scoped but not yet started. The later phases build on them, and "A" and "B" in the dependency columns refer to them.
+> Workstreams A and B and item 0.1 are merged; their status blocks below give the commits. The later phases build on them, and "A" and "B" in the dependency columns refer to them.
 
 ### Workstream A — critical hook and IPC fixes
 
@@ -97,6 +100,40 @@ Effort L, no dependencies.
 - `AppEquals` matches the test's own process.
 - `decide()` tests: with CapsLock held, `a` passes through. A repeat of a suppressed key is suppressed, and its key-up is suppressed exactly once. `LShift` and `RWin` in `keys`, and `Shift` in `chord`, fire.
 
+**Status: done.** Workstream A was merged as six lanes:
+
+| Lane | Merge commit | Branch | What it delivered | Issues |
+| --- | --- | --- | --- | --- |
+| Decision core | [`16a0461`](https://github.com/bluesteelll/key-switch-rs/commit/16a0461) | `refactor/engine` | `src/engine`: `Engine::on_key`, `Engine::on_timer`, the `Env` trait and `Decision`; the scenario harness; the hook callback becomes an adapter | [KS-11](audit.md#ks-11); [KS-25](audit.md#ks-25) and [KS-33](audit.md#ks-33) partly |
+| Matching | [`82f542f`](https://github.com/bluesteelll/key-switch-rs/commit/82f542f) | `fix/matching` | Trigger-key rule, exact modifiers with `allow_extra_modifiers`, sided keys through `KeySpec`, exact auto-blockers, auto-repeats that follow their key-down | [KS-04](audit.md#ks-04), [KS-06](audit.md#ks-06), [KS-07](audit.md#ks-07); [KS-32](audit.md#ks-32) partly |
+| Suppression | [`44f79ac`](https://github.com/bluesteelll/key-switch-rs/commit/44f79ac) | `fix/suppression-symmetry` | The modifier resync skips swallowed modifiers; a key-down that reached Windows keeps its key-up; repeats stay swallowed across a foreground change | [KS-14](audit.md#ks-14), the rest of [KS-06](audit.md#ks-06), [KS-30](audit.md#ks-30), [KS-32](audit.md#ks-32) |
+| Auto-blockers | [`b056b72`](https://github.com/bluesteelll/key-switch-rs/commit/b056b72) | `fix/auto-blockers` | Dedup over the whole file; a blocker acts only on the hotkey pressed on its own and fires nothing | [KS-18](audit.md#ks-18); [KS-05](audit.md#ks-05) partly |
+| IPC | [`a1b5a27`](https://github.com/bluesteelll/key-switch-rs/commit/a1b5a27) | `fix/ipc-control` | `on` and `off` flip an enabled flag and reset the engine; an explicit pipe SDDL; a 5 s deadline in `swch`; `swch open` probes with `status` | [KS-01](audit.md#ks-01), [KS-02](audit.md#ks-02), [KS-31](audit.md#ks-31) for `on`/`off`, [KS-39](audit.md#ks-39); [KS-20](audit.md#ks-20) partly |
+| AppEquals | [`4177540`](https://github.com/bluesteelll/key-switch-rs/commit/4177540) | `fix/app-equals` | `QueryFullProcessImageNameW`; Unicode case folding for `TitleEquals` and `AppEquals` | [KS-03](audit.md#ks-03), [KS-28](audit.md#ks-28) |
+
+The scope additions as built:
+
+1. The decision core lives in `src/engine/`, with `#![forbid(unsafe_code)]`.
+2. `decide()` is `Engine::on_key`. It returns `Decision { suppress, fire, timers, mask }`: `timers` plays the role of `arm`, and `mask` is reserved for item 1.2 and never set.
+3. All Win32 access goes through the `Env` trait: the clock, the OS key state and the foreground app and title.
+4. Tests are scenarios in `engine::scenarios` on the `engine::testing::Scenario` harness: a RON config, a script of key events and a fake clock.
+
+One departure from the target design: until item 2.2 the engine sits behind one `Mutex` in `KeyboardHook`, because Hold timers still run on their own threads. The [architecture chapter](architecture.md#threads-and-locking) describes the lock.
+
+How each acceptance line is met:
+
+| Acceptance | Evidence |
+| --- | --- |
+| After `swch off; swch on` the bindings work | `hook::keyboard_hook::tests::toggling_reports_changes_and_never_installs_a_hook`, `hook::keyboard_hook_callback::tests::extern_callback_swallows_a_bound_key_only_while_remapping_is_on`. The run against a live daemon is a manual check |
+| A non-elevated `swch status` gets an answer from an elevated daemon | `hook::ipc_server::tests::pipe_sddl_grants_exactly_system_admins_and_interactive_users_and_labels_medium`. The cross-integrity run is a manual check |
+| With a hung daemon, `swch` exits within 5 s | `request_times_out_against_a_server_that_never_replies` in `tests/ipc_roundtrip.rs` |
+| `AppEquals` matches the test's own process | `data::condition::tests::app_equals_matches_the_current_process` |
+| With CapsLock held, `a` passes through | `engine::scenarios::key_pressed_while_an_immediate_binding_key_is_held_passes` |
+| A repeat of a suppressed key is suppressed, and its key-up is suppressed exactly once | `engine::scenarios::repeat_of_a_suppressed_key_is_suppressed_after_its_hold_fired`, `engine::scenarios::immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once` |
+| `LShift` and `RWin` in `keys`, and `Shift` in `chord`, fire | `engine::scenarios::lshift_in_keys_fires_only_for_the_left_shift`, `engine::scenarios::rwin_and_lwin_in_keys_fire_only_for_their_side`, `engine::scenarios::unsided_shift_in_a_chord_fires_for_either_side` |
+
+[Manual checks after Phase 0](#manual-checks-after-phase-0) lists the checks that need a live hook.
+
 > [!WARNING]
 > The exact blocker from Workstream A still swallows the second modifier. With Ctrl+Shift as the Windows language hotkey, pressing Ctrl, Shift, T reaches the application as Ctrl+T. Item 1.2 fixes this rest of [KS-05](audit.md#ks-05).
 
@@ -115,6 +152,19 @@ Effort M, no dependencies, runs in parallel with A.
 
 **Acceptance.** Tests for a relative path, a deleted file, the typo `bindngs:` (an error that names the field), a BOM, and `Tap(0)` (an error that names the binding number).
 
+**Status: done** in [`1dfd80a`](https://github.com/bluesteelll/key-switch-rs/commit/1dfd80a) (`fix/config-edge-cases`). Two points differ from the plan:
+
+- A config path given on the command line must now exist: a missing one is an error, and nothing is created for it. Only `<exe_dir>\config.ron` is still written from the template, and only at startup. This also closes part of [KS-41](audit.md#ks-41).
+- The documentation drift was fixed in [`13ce323`](https://github.com/bluesteelll/key-switch-rs/commit/13ce323). The template marks the `LShift` + `DoubleTap` example as swallowing every left Shift until item 1.3, because Workstream A made it fire.
+
+| Acceptance | Test |
+| --- | --- |
+| Relative path | `config::loader::tests::a_relative_config_argument_is_made_absolute`, `hook::config_watcher::tests::an_event_for_a_relative_config_path_matches` |
+| Deleted file | `hook::config_watcher::tests::a_deleted_config_keeps_the_live_bindings`, `config::loader::tests::reload_of_a_missing_config_is_an_error_and_writes_nothing` |
+| The typo `bindngs:` | `config::loader::tests::a_misspelled_bindings_field_is_an_error_that_names_it` |
+| BOM | `config::loader::tests::a_utf8_bom_before_the_config_is_ignored` |
+| `Tap(0)` | `config::loader::tests::a_zero_tap_term_is_an_error_that_names_the_binding`, `config::loader::tests::timing_values_outside_1_to_10000_ms_are_errors_that_name_the_binding` |
+
 ### 0.1 CI
 
 Effort S. This is not a workstream but a separate pull request, preferably merged before A.
@@ -127,9 +177,35 @@ Effort S. This is not a workstream but a separate pull request, preferably merge
 
 **Acceptance.** `master` is green; a pull request with a broken test is red.
 
+**Status: done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f) (`chore/ci-license`). `.github/workflows/ci.yml` runs `cargo fmt --check`, clippy with `-D warnings`, `cargo test --locked` and a release build on `windows-latest`. It also checks the daemon's UAC manifest, that no test or bench harness is built for the daemon ([KS-38](audit.md#ks-38)), a `cargo check` with Rust 1.88, and a release build for `x86_64-pc-windows-gnu` ([KS-42](audit.md#ks-42)). The lint was fixed in [`091e30e`](https://github.com/bluesteelll/key-switch-rs/commit/091e30e). [Building, running and controlling the daemon](build-and-run.md#continuous-integration) describes the jobs.
+
 ### Merge order
 
 A and B both touch `src/config/loader.rs` (different functions), the README and the template. A merges first, B rebases onto it, and the README edits go into the last commit.
+
+As merged: the six lanes of A went in first, then B, each with `git merge --no-ff` into `master` ([commit history](overview.md#changes-since-the-audit)).
+
+### Manual checks after Phase 0
+
+Every acceptance line of Phase 0 has an automated test, but these checks need a live hook, injected keys or a second integrity level, and nobody has run them yet. Use a release build started with `swch open` from a normal console and the default config unless the row says otherwise. `osk.exe` shows which modifiers Windows holds.
+
+| # | Setup | Steps | Expected | Lane |
+| --- | --- | --- | --- | --- |
+| 1 | Default config | `swch status`; CapsLock; `swch off`; CapsLock; `swch on`; CapsLock | `running`, the layout switches; after `off` CapsLock reaches Windows; after `on` the layout switches again | IPC |
+| 2 | Daemon started elevated by `swch open` | From the same normal console: `swch status`, `swch off`, `swch on`, `swch exit` | Every command gets an answer; after `exit` the window closes without `[FATAL]` | IPC |
+| 3 | Daemon running elevated | A second `swch open` from a normal console | `swch: daemon is already running`, no UAC prompt, one process | IPC |
+| 4 | Default config, Notepad | Hold CapsLock and type `abc` within 0.4 s | `abc` appears, and the layout switched once | Matching |
+| 5 | Add `( keys: "Ctrl+J", action: DoNothing )`, a Chromium browser | Ctrl+J, then Ctrl+Shift+J | Ctrl+J is swallowed; Ctrl+Shift+J opens the DevTools console | Matching |
+| 6 | Uncomment the `keys: "LShift"` `DoubleTap(250)` example | Double-tap the left Shift, then the right Shift | The left one toggles CapsLock; the right one does not | Matching |
+| 7 | README Tap/Hold pair on CapsLock | Tap CapsLock 20 times quickly; then hold it 2 s and release | 20 switches; after the hold nothing is stuck in `osk.exe` | Decision core, Suppression |
+| 8 | Default config + `( keys: "Alt+Shift+X", action: ToggleCapsLock )` | Alt, Shift, X; release all; then Shift, Alt, X | CapsLock toggles once per round, no `x` is typed, nothing is stuck | Suppression |
+| 9 | Default config, three windows | Hold Alt, hold Tab, press Shift while Tab is still held | The Alt+Tab switcher steps backward; nothing is stuck | Auto-blockers |
+| 10 | Flagged `CapsLock` plus `( keys: "Alt+Shift", action: SwitchLanguageBackward )` | Read the startup lines; press Alt+Shift twice | `[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys`; each Alt+Shift switches backward | Auto-blockers |
+| 11 | `( keys: "F9", action: PressKey("A"), when: AppEquals("notepad.exe") )` | F9 in Notepad, then in a browser address bar | The A key is pressed in Notepad only | AppEquals |
+| 12 | Default config | Delete `config.ron`, wait 2 s, press CapsLock, restore the file | `[ERROR] config reload failed:` with `config file … does not exist`; CapsLock still switches; no new file appears; the restore reloads | Config |
+| 13 | A config named `my.ron` in a folder, elevated console there | `key-switch-rs.exe my.ron`; add a binding and save | `Watching <full path>\my.ron for changes`, then `[INFO] config reloaded` | Config |
+
+Results of these runs belong in the [audit](audit.md) status lines.
 
 ## Phase 1 — default configuration fit for daily use
 
@@ -204,7 +280,7 @@ About 5 to 7 days. Items 1.1 to 1.3 and 1.6 change `decide()`; once A has merged
 
 ### 1.6 One winner per event
 
-**What.** Among the candidates that pass the trigger-key rule, exactly one wins: the one with more keys, then one with a `when:`, then the one earlier in the file. `Tap`, `Hold` and `DoubleTap` bindings with the same combo and condition form one group. Only the winner decides execution and suppression. The loader warns about duplicates. [Open question 2](#open-questions-for-the-owner) is decided as part of this item.
+**What.** Among the candidates that pass the trigger-key rule, exactly one wins: the one with more keys, then one with a `when:`, then the one earlier in the file. `Tap`, `Hold` and `DoubleTap` bindings with the same combo and condition form one group. Only the winner decides execution and suppression. The loader warns about duplicates. The owner decided [open question 2](#open-questions-for-the-owner): modifiers match exactly, with a per-binding `allow_extra_modifiers`. That rule already shipped with Workstream A ([`82f542f`](https://github.com/bluesteelll/key-switch-rs/commit/82f542f)), so this item covers only the choice of one winner.
 
 **Why.** Specificity applies only between Immediate bindings ([src/hook/keyboard_hook_callback.rs:213-238](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L213-L238), [KS-13](audit.md#ks-13)), so a losing binding with `block_default: true` still swallows the key.
 
@@ -214,7 +290,7 @@ About 5 to 7 days. Items 1.1 to 1.3 and 1.6 change `decide()`; once A has merged
 
 ### 1.7 File logging
 
-**What.** Either `log` with a custom sink, or `tracing` with `tracing-appender`. The log goes to `%LOCALAPPDATA%\key-switch-rs\daemon.log`, with timestamps and rotation at 1 MB with three files. The hook callback only updates counters.
+**What.** The `log` crate with an in-house rotating file sink (owner decision; [open question 8](#open-questions-for-the-owner)). The log goes to `%LOCALAPPDATA%\key-switch-rs\daemon.log`, with timestamps and rotation at 1 MB with three files. The hook callback only updates counters.
 
 **Why.** When Task Scheduler starts the daemon, nobody sees reload errors ([src/hook/config_watcher.rs:107](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L107)) or `Launch` errors. The change is mechanical but spread over many files, so done later it would conflict with every branch.
 
@@ -273,6 +349,8 @@ About 7 to 9 days, ending with tag v0.2.0.
 
 **Acceptance.** `rg "\.execute\(\)" src/hook` finds nothing. 100 `Sequence` runs in a row create no threads. `Delay(10000)` stops within 100 ms of `swch off`. With 20 `OpenUrl` calls against a cold browser, the callback stays under 5 ms.
 
+**Status after Phase 0.** The three gesture files are gone: Workstream A moved their state into `src/engine/gestures.rs`, `chords.rs` and `sequences.rs` ([`16a0461`](https://github.com/bluesteelll/key-switch-rs/commit/16a0461)), which decide but execute nothing. Every action now runs from one place, `carry_out` in the hook adapter ([src/hook/keyboard_hook_callback.rs:185-195](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L185-L195)), on the hook thread or, for a Hold, on its `hold-timer` thread. That is where the executor plugs in; the acceptance above is unchanged.
+
 ### 2.2 Timers on the main thread
 
 **What.**
@@ -285,7 +363,9 @@ About 7 to 9 days, ending with tag v0.2.0.
 
 **Why.** A stale timer removes or fires the entry of the next press ([src/hook/tap_state.rs:61-66](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L61-L66), [src/hook/tap_state.rs:103-119](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L103-L119), [src/hook/tap_state.rs:156-167](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L156-L167), [KS-11](audit.md#ks-11)). Tap and Hold are not mutually exclusive ([KS-25](audit.md#ks-25)). Every press spawns a thread, and `.expect` on a failed spawn aborts the daemon ([KS-33](audit.md#ks-33), unverified).
 
-**Files.** `src/hook/tap_state.rs` becomes `src/engine/gestures.rs`; new `src/platform/timers.rs`; `src/core/app.rs`.
+**Files.** `src/engine/gestures.rs`, which Workstream A created in place of `src/hook/tap_state.rs`; `src/hook/keyboard_hook_callback.rs` and `src/hook/keyboard_hook.rs`, which still start a `hold-timer` thread per Hold and keep the engine behind a `Mutex`; new `src/platform/timers.rs`; `src/core/app.rs`.
+
+**Status after Phase 0.** Hold timers already carry a generation token and Tap and DoubleTap expire by deadline ([`16a0461`](https://github.com/bluesteelll/key-switch-rs/commit/16a0461)), so [KS-11](audit.md#ks-11) is fixed and equal Tap and Hold terms are exclusive. What remains is moving the timers onto the main thread, removing the engine lock, and arbitrating different terms on one key.
 
 **Acceptance.** The tests `stale_tap_gc_eats_second_quick_tap` and `stale_hold_timer_fires_new_press_early` from the [gesture repro crate](methodology.md#gesture-repro-crate) are ported with their assertions inverted and pass; at `7cb3521` the inverted tests fail. With `Tap(200)` and `Hold(200)`, a release at 199 ms fires only Tap, and one at 201 ms only Hold. The thread count does not grow over 1000 presses.
 
@@ -295,6 +375,8 @@ About 7 to 9 days, ending with tag v0.2.0.
 
 - A hidden top-level control window. It is not a message-only (`HWND_MESSAGE`) window, because those do not receive `TaskbarCreated`, which the tray (4.6) needs. `WTSRegisterSessionNotification`, `WM_QUERYENDSESSION`, `WM_ENDSESSION` and the `WM_APP_*` messages go through it.
 - `reset_transient_state()` clears gestures, cancels macros and resyncs all 256 keys, except blocked ones. It runs on `swch off` and `swch on`, after a reload, on `WTS_SESSION_UNLOCK` and on `EVENT_SYSTEM_DESKTOPSWITCH`.
+
+**Status after Phase 0.** `swch off` and `swch on` already reset the engine ([`a1b5a27`](https://github.com/bluesteelll/key-switch-rs/commit/a1b5a27), [`Engine::reset`](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L342-L363)): pending gestures are dropped and every held key is taken from Windows as passed, with no blocked record kept. "Except blocked ones" therefore applies only to the reset after a reload and on unlock. Still open: cancelling macros, the reset on reload and unlock, and the foreground change itself. It forgets which key-ups are due to be swallowed, so the release of a key whose key-down was swallowed reaches Windows as a lone key-up unless a `Tap` or `Hold` of that press is still pending; the key's repeats stay swallowed ([KS-06](audit.md#ks-06) status). Whether a key acts on such a lone key-up (PrintScreen is a candidate) has not been checked; the acceptance of this item should pin the case.
 - In an elevated daemon, `foreground_changed` no longer clears every blocked bit.
 
 **Why.** A reload does not reset gestures, and pending entries keep actions from the old config ([src/hook/tap_state.rs:54](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L54), [src/hook/chord_state.rs:114](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/chord_state.rs#L114); see also [KS-31](audit.md#ks-31), unverified). Win+L does not resync the keys ([KS-29](audit.md#ks-29), unverified). Clearing the blocked bits on every focus change ([src/hook/keyboard_hook_callback.rs:176-181](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L176-L181)) lets the trigger key's auto-repeat into a window that `Launch` just opened (compare step 5 of [KS-06](audit.md#ks-06)).
@@ -327,7 +409,7 @@ About 10 to 13 days.
 | 3.2 | Sequence and Chord matching | M | A, 2.2 | [KS-15](audit.md#ks-15), [KS-16](audit.md#ks-16); unverified: [KS-30](audit.md#ks-30), [KS-32](audit.md#ks-32) |
 | 3.3 | `Launch` and `OpenUrl` without elevation | M, risk of L | 2.1 | [KS-09](audit.md#ks-09); unverified: [KS-34](audit.md#ks-34) |
 | 3.4 | Core consolidation | L | 1.6, 2.2, 3.2 | RC1, RC2 and RC5 by construction |
-| 3.5 | Hot-path budget | M | 3.4 | unverified: [KS-28](audit.md#ks-28) |
+| 3.5 | Hot-path budget | M | 3.4 | none; unverified [KS-28](audit.md#ks-28) was fixed in Workstream A |
 
 ### 3.1 Single input module
 
@@ -349,6 +431,8 @@ About 10 to 13 days.
 
 **Acceptance.** `sequence_completes_on_rollover_of_unrelated_key`, `sequence_modifier_press_aborts_pending` and `chord_with_unsided_modifier_never_matches_raw_sided_vk` from the gesture repro crate are ported, inverted, and pass. `["F13", "Ctrl+S"]` fires, and Ctrl's key-up reaches the OS.
 
+**Status after Phase 0.** The state machines now live in `src/engine/sequences.rs` and `src/engine/chords.rs`. Part of this item is done: completion marks only keys still held whose key-down did not reach Windows ([KS-30](audit.md#ks-30), [KS-32](audit.md#ks-32), fixed in [`44f79ac`](https://github.com/bluesteelll/key-switch-rs/commit/44f79ac)), and an unsided modifier completes a chord ([KS-07](audit.md#ks-07), fixed in [`82f542f`](https://github.com/bluesteelll/key-switch-rs/commit/82f542f)). The trigger-key rule and the modifier handling for sequence steps ([KS-15](audit.md#ks-15), [KS-16](audit.md#ks-16)) remain.
+
 ### 3.3 `Launch` and `OpenUrl` without elevation
 
 **What.** Programs start through Explorer: `IShellWindows::FindWindowSW(SWC_DESKTOP)`, then `IShellBrowser`, `IShellView`, `IShellFolderViewDual` and finally `IShellDispatch2::ShellExecute`, called on the executor's STA thread. New fields `cwd:` and `elevated: true`, the second an explicit opt-in. If Explorer is not running, the action is refused and logged.
@@ -367,6 +451,8 @@ About 10 to 13 days.
 - `CompiledBindings` in an `ArcSwap` holds a generation number, `KeySpec` values, a `by_vk[256]` index and `os_guards` (the auto-blockers) kept apart from user bindings. It also produces diagnostics for duplicates and for the suppression trap.
 - Gesture state becomes fields of an `Engine` held in a `thread_local!` on the main thread. On re-entry, `try_borrow_mut` fails; the event is skipped and a counter is incremented.
 - `#![forbid(unsafe_code)]` in `src/engine`.
+
+**Status after Phase 0.** Part of this exists: Workstream A created `src/engine` with `#![forbid(unsafe_code)]`, an `Engine` that owns all gesture state, and a per-key table that replaces `active_keys` and `blocked_keys` ([`16a0461`](https://github.com/bluesteelll/key-switch-rs/commit/16a0461), [`82f542f`](https://github.com/bluesteelll/key-switch-rs/commit/82f542f)). The engine is still reached through a `Mutex` in `KeyboardHook`, not a `thread_local!`, and `CompiledBindings` does not exist yet.
 
 **Why.** RC1, RC2 and RC5 disappear by construction. [README.md:92](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L92) ("lock-free") and [README.md:497](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L497) ("Hot-path allocations: none") become true ([Documentation drift](gaps.md#documentation-drift)).
 
@@ -406,6 +492,8 @@ About 8 to 10 days.
 **Files.** `src/hook/ipc_server.rs`, `src/ipc.rs`, `src/bin/swch.rs`, `tests/`.
 
 **Acceptance.** `tests/ipc_roundtrip.rs` (`on`, `off`, `on`, `status`, `exit`) passes in CI without elevation. 50 silent clients do not block a command. A `config_watcher` test exists.
+
+**Status after Phase 0.** Workstream A added `tests/ipc_roundtrip.rs`, which runs the `swch` client against test pipes, and the daemon's pipe server through `status`, `off`, `on`, `status` with a stand-in for the daemon and no hook. Workstream B added `config_watcher` tests. `exit`, the read deadline and the single handler are still to do.
 
 ### 4.2 Background mode
 
@@ -487,9 +575,9 @@ The current state of each item is in [Missing project infrastructure](gaps.md#mi
 
 | What | When | Effort | Acceptance |
 | --- | --- | --- | --- |
-| CI (item 0.1) | Phase 0 | S | A pull request with a broken test is red |
-| A LICENSE (usually `MIT OR Apache-2.0`); `Cargo.toml` metadata: `description`, `license`, `repository`, `readme`, `rust-version` | Alongside 0.1 | S | `cargo metadata` shows `license` |
-| `CHANGELOG.md` in the Keep a Changelog format; every pull request adds to *Unreleased*. SemVer: before 1.0, a breaking change to `config.ron` bumps the minor version and is listed under *Breaking*. Tags: v0.2.0 after Phase 2, v0.3.0 after Phase 3, v0.4.0 after Phase 4 | From A and B on | S | By v0.2.0 it describes A, B and Phases 1 and 2 |
+| CI (item 0.1) | Phase 0 | S | A pull request with a broken test is red. **Done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f) |
+| A LICENSE (usually `MIT OR Apache-2.0`); `Cargo.toml` metadata: `description`, `license`, `repository`, `readme`, `rust-version` | Alongside 0.1 | S | `cargo metadata` shows `license`. **Done** in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f): `MIT OR Apache-2.0` (owner decision), `rust-version = "1.88"` |
+| `CHANGELOG.md` in the Keep a Changelog format; every pull request adds to *Unreleased*. SemVer: before 1.0, a breaking change to `config.ron` bumps the minor version and is listed under *Breaking*. Tags: v0.2.0 after Phase 2, v0.3.0 after Phase 3, v0.4.0 after Phase 4 | From A and B on | S | By v0.2.0 it describes A, B and Phases 1 and 2. **Started:** `CHANGELOG.md` exists and lists A and B under *Unreleased* |
 | Logging: item 1.7 (file, rotation, no pressed keys); `swch logs` in 4.3 | Phase 1 | M | See 1.7 |
 | Version: `VERSIONINFO` through `embed-resource`, the git hash from `build.rs`. `swch --version` reports the daemon's version, because starting the daemon itself with `--version` would raise a UAC prompt. Either embed `app.manifest` through `/MANIFESTINPUT` or delete it | Before the first release | S | The version shows in the file properties |
 | Release on a `v*` tag: check the tag against `Cargo.toml`; a zip with both executables, `config.example.ron`, README, LICENSE and CHANGELOG; `SHA256SUMS.txt`; release notes from the CHANGELOG | After 4.4 | M | On a clean Windows 11 (Windows Sandbox), CapsLock switches the language |
@@ -500,11 +588,11 @@ The current state of each item is in [Missing project infrastructure](gaps.md#mi
 
 | Item | Change | Compatibility |
 | --- | --- | --- |
-| A | A combo fires only if the last key pressed belongs to it; an auto-blocker fires only on an exact match; `LShift`, `RCtrl` and `RWin` work everywhere, and `Shift`, `Ctrl` and `Alt` work in `chord` too | Breaking in behaviour |
-| B | An unknown field is an error; a BOM is accepted; terms must be 1..=10000 ms | Breaking for configs with typos |
+| A | A combo fires only on the key-down of one of its own keys; an auto-blocker acts only when Windows would see its hotkey alone; `LShift`, `RCtrl` and `RWin` work everywhere, and `Shift`, `Ctrl` and `Alt` work in `chord` too; overlapping chord keys are a load error. **Shipped** | Breaking in behaviour |
+| B | An unknown field is an error; `bindings` is required; a BOM is accepted; terms must be 1..=10000 ms; a command-line config path must exist. **Shipped** | Breaking for configs with typos |
 | 1.1 | `repeat: bool` | Optional field |
 | 1.3 | `block_default` applies to `Tap`, `Hold` and `DoubleTap`, and defaults to `false` for combos made only of modifiers | `Option<bool>` |
-| 1.6 | If accepted: exact modifier matching, plus `allow_extra_modifiers: true` | Breaking |
+| A (owner decision, planned under 1.6) | Exact modifier matching, plus `allow_extra_modifiers: true`. **Shipped** in Workstream A | Breaking |
 | 3.3 | `Launch(exe: ..., args: [...], cwd: "...", elevated: true)` | `elevated: false` by default, which is breaking |
 | New features 1 to 6 | `LockWorkstation`, `ShowDesktop`, `TaskManager`, `SwitchLanguageTo("en-US")`, `HoldModifier("LCtrl")`, `replay: true`, the key names `Apps`, `OEM102` and `VK(0xNN)` | New variants |
 
@@ -512,55 +600,55 @@ The current state of each item is in [Missing project infrastructure](gaps.md#mi
 
 Where each audit issue is fixed. RC is the roadmap's root cause from the [table above](#root-causes).
 
-| Issue | Severity | RC | Fixed by |
-| --- | --- | --- | --- |
-| [KS-01](audit.md#ks-01) | High | RC6 | A |
-| [KS-02](audit.md#ks-02) | High | RC6 | A |
-| [KS-03](audit.md#ks-03) | High | RC7 | A; 3.5 adds caching |
-| [KS-04](audit.md#ks-04) | High | RC1 | A; 1.6 and 3.4 complete it |
-| [KS-05](audit.md#ks-05) | High | RC1 | A (exact auto-blockers); 1.2 removes the rest |
-| [KS-06](audit.md#ks-06) | High | RC2 | A |
-| [KS-07](audit.md#ks-07) | Medium | RC4 | A; 3.2 ports the chord repro test |
-| [KS-08](audit.md#ks-08) | Medium | RC5 | 2.1, 2.4 |
-| [KS-09](audit.md#ks-09) | Medium | RC6 | 3.3 |
-| [KS-10](audit.md#ks-10) | Medium | RC2 | 1.1 |
-| [KS-11](audit.md#ks-11) | Medium | RC5 | 2.2 |
-| [KS-12](audit.md#ks-12) | Medium | RC3 | 1.2 |
-| [KS-13](audit.md#ks-13) | Medium | RC1 | 1.6 |
-| [KS-14](audit.md#ks-14) | Medium | RC2 | A; 3.4 |
-| [KS-15](audit.md#ks-15) | Medium | RC1 | 3.2 |
-| [KS-16](audit.md#ks-16) | Medium | RC1 | 3.2 |
-| [KS-17](audit.md#ks-17) | Medium | RC7 | 1.4 |
-| [KS-18](audit.md#ks-18) | Medium | RC1 | A (dedup) |
-| [KS-19](audit.md#ks-19) | Medium | RC3 | 3.1 |
-| [KS-20](audit.md#ks-20) | Medium | RC6 | 1.5 |
-| [KS-21](audit.md#ks-21) | Medium | RC8 | B |
-| [KS-22](audit.md#ks-22) | Medium | RC8 | B |
-| [KS-23](audit.md#ks-23) | Low | RC8 | B |
-| [KS-24](audit.md#ks-24) | Low | RC8 | B |
-| [KS-25](audit.md#ks-25) | Low | RC5 | 2.2 |
-| [KS-26](audit.md#ks-26) | Low | RC6 | 4.1 |
+| Issue | Severity | RC | Fixed by | Status at `1dfd80a` |
+| --- | --- | --- | --- | --- |
+| [KS-01](audit.md#ks-01) | High | RC6 | A | Fixed (A) |
+| [KS-02](audit.md#ks-02) | High | RC6 | A | Fixed (A) |
+| [KS-03](audit.md#ks-03) | High | RC7 | A; 3.5 adds caching | Fixed (A) |
+| [KS-04](audit.md#ks-04) | High | RC1 | A; 1.6 and 3.4 complete it | Fixed (A) |
+| [KS-05](audit.md#ks-05) | High | RC1 | A (exact auto-blockers); 1.2 removes the rest | Partly fixed (A) |
+| [KS-06](audit.md#ks-06) | High | RC2 | A | Fixed (A); lone key-up after a focus change open (2.3) |
+| [KS-07](audit.md#ks-07) | Medium | RC4 | A; 3.2 ports the chord repro test | Fixed (A) |
+| [KS-08](audit.md#ks-08) | Medium | RC5 | 2.1, 2.4 | Open |
+| [KS-09](audit.md#ks-09) | Medium | RC6 | 3.3 | Open |
+| [KS-10](audit.md#ks-10) | Medium | RC2 | 1.1 | Open |
+| [KS-11](audit.md#ks-11) | Medium | RC5 | 2.2 | Fixed (A) |
+| [KS-12](audit.md#ks-12) | Medium | RC3 | 1.2 | Open |
+| [KS-13](audit.md#ks-13) | Medium | RC1 | 1.6 | Open |
+| [KS-14](audit.md#ks-14) | Medium | RC2 | A; 3.4 | Fixed (A) |
+| [KS-15](audit.md#ks-15) | Medium | RC1 | 3.2 | Open |
+| [KS-16](audit.md#ks-16) | Medium | RC1 | 3.2 | Open |
+| [KS-17](audit.md#ks-17) | Medium | RC7 | 1.4 | Open |
+| [KS-18](audit.md#ks-18) | Medium | RC1 | A (dedup) | Fixed (A) |
+| [KS-19](audit.md#ks-19) | Medium | RC3 | 3.1 | Open |
+| [KS-20](audit.md#ks-20) | Medium | RC6 | 1.5 | Partly fixed (A) |
+| [KS-21](audit.md#ks-21) | Medium | RC8 | B | Fixed (B) |
+| [KS-22](audit.md#ks-22) | Medium | RC8 | B | Fixed (B) |
+| [KS-23](audit.md#ks-23) | Low | RC8 | B | Fixed (B) |
+| [KS-24](audit.md#ks-24) | Low | RC8 | B | Fixed (B) |
+| [KS-25](audit.md#ks-25) | Low | RC5 | 2.2 | Partly fixed (A) |
+| [KS-26](audit.md#ks-26) | Low | RC6 | 4.1 | Open |
 
 The unverified reports were not part of the drafts' count, but several items fix them along the way:
 
-| Issue | Fixed by |
-| --- | --- |
-| [KS-27](audit.md#ks-27) | B (range check) |
-| [KS-28](audit.md#ks-28) | 3.5 |
-| [KS-29](audit.md#ks-29) | 2.3 |
-| [KS-30](audit.md#ks-30) | 3.2 |
-| [KS-31](audit.md#ks-31) | A (the hook is no longer reinstalled), 2.3 (state reset on `off` and `on`) |
-| [KS-32](audit.md#ks-32) | 3.2 |
-| [KS-33](audit.md#ks-33) | 2.2 |
-| [KS-34](audit.md#ks-34) | 3.3 |
-| [KS-35](audit.md#ks-35) | 1.2 |
-| [KS-36](audit.md#ks-36) | 3.1 |
-| [KS-37](audit.md#ks-37) | 4.1 |
-| [KS-38](audit.md#ks-38) | 0.1 |
-| [KS-39](audit.md#ks-39) | Not scheduled |
-| [KS-40](audit.md#ks-40) | 4.1 |
-| [KS-41](audit.md#ks-41) | 4.2 |
-| [KS-42](audit.md#ks-42) | Not scheduled |
+| Issue | Fixed by | Status at `1dfd80a` |
+| --- | --- | --- |
+| [KS-27](audit.md#ks-27) | B (range check) | Fixed (B) |
+| [KS-28](audit.md#ks-28) | 3.5 | Fixed (A) |
+| [KS-29](audit.md#ks-29) | 2.3 | Partly addressed (A) |
+| [KS-30](audit.md#ks-30) | 3.2 | Fixed (A) |
+| [KS-31](audit.md#ks-31) | A (the hook is no longer reinstalled), 2.3 (state reset on `off` and `on`) | Fixed for on/off (A) |
+| [KS-32](audit.md#ks-32) | 3.2 | Fixed (A) |
+| [KS-33](audit.md#ks-33) | 2.2 | Partly fixed (A) |
+| [KS-34](audit.md#ks-34) | 3.3 | Open |
+| [KS-35](audit.md#ks-35) | 1.2 | Open |
+| [KS-36](audit.md#ks-36) | 3.1 | Open |
+| [KS-37](audit.md#ks-37) | 4.1 | Open |
+| [KS-38](audit.md#ks-38) | 0.1 | Fixed (0.1) |
+| [KS-39](audit.md#ks-39) | Not scheduled | Fixed (A) |
+| [KS-40](audit.md#ks-40) | 4.1 | Open |
+| [KS-41](audit.md#ks-41) | 4.2 | Partly fixed (B) |
+| [KS-42](audit.md#ks-42) | Not scheduled | Fixed alongside 0.1 |
 
 ## Deliberately out of scope
 
@@ -574,14 +662,14 @@ The unverified reports were not part of the drafts' count, but several items fix
 
 ## Open questions for the owner
 
-1. **Default auto-repeat (1.1).** Recommendation: `true` only for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)`. Otherwise a held `PlayPause` toggles about 30 times per second. The audit's suggestion for [KS-10](audit.md#ks-10) also enables it for the other `Media` keys.
-2. **Exact or superset modifier matching (1.6).** Recommendation: exact by default, as AutoHotkey hotkeys without `*` behave, plus `allow_extra_modifiers: true`. Without it, `Ctrl+J` intercepts the browser's `Ctrl+Shift+J`. The cost is a breaking change: `"CapsLock"` no longer fires while Shift is held.
+1. **Default auto-repeat (1.1).** *Decided by the owner:* auto-repeat on by default only for `PressKey`, `VolumeUp` and `VolumeDown`. Recommendation was: `true` only for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)`. Otherwise a held `PlayPause` toggles about 30 times per second. The audit's suggestion for [KS-10](audit.md#ks-10) also enables it for the other `Media` keys.
+2. **Exact or superset modifier matching (1.6).** *Decided by the owner and implemented* in Workstream A ([`82f542f`](https://github.com/bluesteelll/key-switch-rs/commit/82f542f)): exact matching with a per-binding `allow_extra_modifiers`. Recommendation was: exact by default, as AutoHotkey hotkeys without `*` behave, plus `allow_extra_modifiers: true`. Without it, `Ctrl+J` intercepts the browser's `Ctrl+Shift+J`. The cost is a breaking change: `"CapsLock"` no longer fires while Shift is held.
 3. **Deployment with `uiAccess="true"`** ([README.md:518-521](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L518-L521)). A signed executable under Program Files runs without administrator rights and still sees input in elevated windows. 3.3 and the UAC prompt at autostart then become almost unnecessary, but a code-signing certificate is required. Decide before 3.3 and 4.5.
-4. **Keep RON.** Recommendation: yes. Action and condition enums map naturally onto RON, the parser and its tests exist, and B and `swch check` fix the quality of the error messages. A move to TOML or KDL would be a breaking change with no gain for users.
+4. **Keep RON.** *Decided by the owner:* the config stays RON. Recommendation was: yes. Action and condition enums map naturally onto RON, the parser and its tests exist, and B and `swch check` fix the quality of the error messages. A move to TOML or KDL would be a breaking change with no gain for users.
 5. **Tap and DoubleTap on one key (2.2).** Recommendation: delay Tap until the DoubleTap window closes, but only when the key has both gestures ([Tap versus DoubleTap disambiguation](gaps.md#tap-versus-doubletap-disambiguation)).
 6. **The mask hypothesis for Alt+Shift (1.2).** Check it by hand before implementing blocker v2.
 7. **Timer resolution.** `SetTimer` has a granularity of about 15.6 ms, which is enough for terms from 100 ms up. If it is not enough, only `src/platform/timers.rs` needs replacing.
-8. **Licence and logger.** The licence (the infrastructure table suggests `MIT OR Apache-2.0`), and `log` with a custom sink or `tracing`.
+8. **Licence and logger.** *Decided by the owner:* `MIT OR Apache-2.0` (shipped in [`da58f5f`](https://github.com/bluesteelll/key-switch-rs/commit/da58f5f)), and the `log` crate with an in-house rotating file sink (item 1.7). The question was: the licence (the infrastructure table suggests `MIT OR Apache-2.0`), and `log` with a custom sink or `tracing`.
 
 ## Dependency graph
 

@@ -509,6 +509,15 @@ It then had to synthesize one roadmap: take the best ordering, graft in the stro
 
 The overview, architecture, build-and-run, audit, gaps and methodology chapters were each drafted by one agent and then fact-checked by a second. The checker's brief was to open every permalink and confirm that the line shows what the text claims, to check names, defaults, command strings and KS references against the code, to check the mermaid syntax, and to remove statements the code does not support. The glossary and the introduction were written after the checks; the glossary agent read the finished chapters first. The configuration and roadmap pages were written separately, from the validated reference and the judged roadmap described above.
 
+### The book sync after Phase 0
+
+When roadmap Phase 0 had merged, one agent updated the book to commit `1dfd80a` from the merged code, `git log` and `git diff` since `7cb3521`, and the lane reports. The pages that describe the program were re-described and re-pinned to `1dfd80a`; the audit, gaps and roadmap kept their findings and gained status lines. The checks:
+
+- Every `ron` block of the configuration reference and the README ran through a `cfgcheck` built against `1dfd80a`, which calls `config::reload`. A `--missing <file>` mode of that harness calls `reload` on a path that does not exist, which only shows the error, because `reload` never writes. Every error message the reference quotes for unknown fields, timings, chord keys and auto-blockers came from such a run.
+- A script resolved every permalink: the commit, the path at that commit and the line range. For the `1dfd80a` links it printed the first cited line next to the link, and each was read against the sentence.
+- A script checked every internal link and anchor, and the book was built with `mdbook build`.
+- Run-time behaviour was taken from the engine's code and its scenario tests. The daemon was not run.
+
 ## Limitations
 
 - **No live keyboard input.** The daemon was never run with its hook installed, and no keystrokes were typed or injected against it. Behaviour that depends on Windows delivering events is inferred from the code and the Win32 documentation. This covers the dead hook after `swch on` ([KS-01](audit.md#ks-01)), stuck keys ([KS-06](audit.md#ks-06)), the `LowLevelHooksTimeout` risk ([KS-08](audit.md#ks-08)), auto-repeat ([KS-10](audit.md#ks-10)) and the Start menu opening ([KS-12](audit.md#ks-12)). The repro crate calls the state machines directly instead of through hook events.
@@ -532,6 +541,8 @@ These checks would turn three of the high-severity code-reading findings into ob
 | [KS-03](audit.md#ks-03) | Load a config whose only binding is `( keys: "F9", action: PressKey("A"), when: AppEquals("notepad.exe") )`, focus Notepad and press F9 | Nothing is typed. With `when: TitleContains("Notepad")` instead, F9 types `a` |
 
 Both test configs for KS-03 load with `OK` in the harness.
+
+KS-01, KS-02 and KS-03 are fixed at `1dfd80a` ([Audit results](audit.md)); the same steps now check the fixes, with the opposite expected result. [Manual checks after Phase 0](roadmap.md#manual-checks-after-phase-0) lists further checks for the merged work.
 
 ## Re-running the checks
 

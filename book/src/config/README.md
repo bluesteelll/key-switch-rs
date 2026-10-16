@@ -2,9 +2,9 @@
 
 `config.ron` is the only settings file of the `key-switch-rs.exe` daemon, a keyboard remapper for Windows. It lists the bindings: which key, combination, sequence or chord runs which action, on which gesture (`Tap`, `Hold`, `DoubleTap`) and in which window (`when`). The file is written in RON (Rusty Object Notation). The daemon creates it on first run and re-reads it every time it is saved.
 
-This reference describes what the code actually does at commit [`7cb3521`](https://github.com/bluesteelll/key-switch-rs/commit/7cb3521), not what the [README](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md) and the comments in the [default config template](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/default_config.ron) promise: where they disagree, the code is right. Every example in a `ron` block was run through the real loader ([`config::load`](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L101-L122)), and the complete example in [§17](example.md#s17) loads without errors. Statements about how the hook behaves at run time are derived from reading the code, and the text always says so. Code references are permalinks to that commit: paths under `src/` are source files, and `README.md` and `build.rs` sit at the repository root.
+This reference describes what the code actually does at commit [`1dfd80a`](https://github.com/bluesteelll/key-switch-rs/commit/1dfd80a) (2026-10-16), the tip of `master` after roadmap Phase 0, not what the [README](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/README.md) and the comments in the [default config template](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/default_config.ron) promise: where they disagree, the code is right. Every example in a `ron` block was run through the real loader ([`config::reload`](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L175-L182), which parses a file without writing anything), and the complete example in [§17](example.md#s17) loads without errors. Statements about how the hook behaves at run time are derived from reading the code and the engine's scenario tests, not from a live daemon, and the text says so. Code references are permalinks to that commit: paths under `src/` are source files, and `README.md` and `build.rs` sit at the repository root. The reference was first written for the audit commit `7cb3521`; the [audit](../audit.md) keeps the defects of that version.
 
-Known problems are flagged as warnings: defects confirmed by the audit, traps, and places where the documentation disagrees with the code. In the cheat sheet below they are marked `(!)`. All of them are collected in [§19](known-issues.md#s19), and issue IDs such as [KS-03](../audit.md#ks-03) link to the [audit results](../audit.md).
+Known problems are flagged as warnings: open defects from the audit, traps, and places where the documentation disagrees with the code. All of them are collected in [§19](known-issues.md#s19), together with the pitfalls that Phase 0 fixed, and issue IDs such as [KS-13](../audit.md#ks-13) link to the [audit results](../audit.md).
 
 ## Pages in this reference
 
@@ -22,24 +22,25 @@ Known problems are flagged as warnings: defects confirmed by the audit, traps, a
 <a id="s1"></a>
 ## 1. Cheat sheet
 
-The sketch below is not a ready-made file but an overview of the whole shape on one screen. `|` means "one of", `= x` is the default value, and `(!)` marks a variant that does not work at the moment. A real file that loads without errors is in [§17](example.md#s17).
+The sketch below is not a ready-made file but an overview of the whole shape on one screen. `|` means "one of", and `= x` is the default value. A real file that loads without errors is in [§17](example.md#s17).
 
 ```text
-// config.ron: UTF-8 without BOM; comments // … and /* … */; trailing commas allowed everywhere
+// config.ron: UTF-8, with or without a BOM; comments // … and /* … */; trailing commas allowed everywhere
 (
-    bindings: [                                   // list of bindings; no field or [] → 0 bindings (§4)
+    bindings: [                                   // required; [] → 0 bindings and a warning (§4)
         (
             // KIND: exactly one of the three fields (§5.2)
             keys:     "Ctrl+Alt+L",                                // combo (§7)
-            sequence: (steps: ["F13", "Ctrl+F14"], max_gap_ms: 500), // ≥ 2 steps; max_gap_ms = 500 (§8)
-            chord:    (keys: ["F15", "F16"], window_ms: 50),         // ≥ 2 distinct keys; window_ms = 50 (§9)
+            sequence: (steps: ["F13", "Ctrl+F14"], max_gap_ms: 500), // ≥ 2 steps; max_gap_ms = 500, 1…10000 (§8)
+            chord:    (keys: ["F15", "F16"], window_ms: 50),         // ≥ 2 keys, none overlapping; window_ms = 50, 1…10000 (§9)
 
             action: ACTION,                        // required (§13)
 
-            trigger: Immediate | Tap(ms) | Hold(ms) | DoubleTap(ms),  // = Immediate; deferred ones only with keys (§11)
+            trigger: Immediate | Tap(ms) | Hold(ms) | DoubleTap(ms),  // = Immediate; ms 1…10000; deferred ones only with keys (§11)
             when: COND,                            // = Always (§12)
             block_default: true | false,           // = true; honoured only for keys + Immediate (§10)
             block_original_combo: true | false,    // = false; has an effect only for SwitchLanguage* (§15)
+            allow_extra_modifiers: true | false,   // = false; keys only: fire with other modifiers held too (§7)
         ),
     ],
 )
@@ -56,27 +57,29 @@ STEP   := Window(Minimize | Maximize | Restore | Close) | Delay(ms)
         | Text("any text") | Key("key") | Combo("combo")
         | Launch(exe: …, args: […]) | OpenUrl("…") | Media(…)
 
-COND   := Always | TitleContains("…") | TitleEquals("…") | AppEquals("x.exe") (!)
+COND   := Always | TitleContains("…") | TitleEquals("…") | AppEquals("x.exe")
         | Not(COND) | And([COND, …]) | Or([COND, …])
 
 combo   := key ( "+" key )*                  // case and spaces do not matter; order does not matter
 key     := A…Z | 0…9 | F1…F24 | Num0…Num9 | Shift | Ctrl | Alt | Win | CapsLock | Esc
          | Enter | Space | Tab | Up | PageUp | ` - = , . ; / [ ] \ ' | VolumeUp | …   (§6.4)
-         // (!) LShift, RCtrl, LAlt, RAlt, RWin do not fire in keys/sequence;
-         //     in chord, the other way round, Shift, Ctrl, Alt do not fire (§6.7)
+         // Shift, Ctrl, Alt, Win = either side; LShift, RCtrl, RWin … = that side only (§6.7)
+         // modifiers match exactly: "CapsLock" does not fire while Shift is held (§7)
 ms, u64 := 200 | 0xC8 | 0b11001000 | 0o310 | 1_000                                (§3.7)
 string  := "…" (with escapes \\ \" \n \u{…}) | r"…" | r#"…"#                    (§3.9)
 ```
 
 Sections referenced in the sketch: [§3.7](ron-syntax.md#s3-7) integers, [§3.9](ron-syntax.md#s3-9) strings and escapes, [§4](structure.md#s4) top level, [§5.2](structure.md#s5-2) exactly one kind, [§6.4](keys.md#s6-4) full list of key names, [§6.7](keys.md#s6-7) left and right modifiers, [§7](kinds.md#s7) `keys`, [§8](kinds.md#s8) `sequence`, [§9](kinds.md#s9) `chord`, [§10](kinds.md#s10) suppression and `block_default`, [§11](triggers-conditions.md#s11) triggers, [§12](triggers-conditions.md#s12) conditions, [§13](actions.md#s13) actions, [§14](actions.md#s14) the `Sequence` macro, [§15](matching.md#s15) auto-blockers.
 
-> [!WARNING]
-> The `(!)` marks in the sketch are audit findings: `AppEquals` never matches ([KS-03](../audit.md#ks-03)), and sided modifier names such as `LShift` or `RWin` do not fire in `keys` and `sequence`, while the unsided `Shift`, `Ctrl` and `Alt` do not fire in `chord` ([KS-07](../audit.md#ks-07)). The first line of the sketch asks for UTF-8 without BOM because a file saved with a BOM does not parse ([KS-24](../audit.md#ks-24)).
+> [!NOTE]
+> Phase 0 removed the traps the audit version of this sketch marked: `AppEquals` matches ([KS-03](../audit.md#ks-03)), sided names such as `LShift` and `RWin` work in `keys`, `sequence` and `chord` ([KS-07](../audit.md#ks-07)), and a file saved with a BOM loads ([KS-24](../audit.md#ks-24)). [§19](known-issues.md#s19) lists what is still open.
 
 The rules that are broken most often:
 
 - RON field and variant names (`keys`, `action`, `SwitchLanguage`, `Tap`, `TitleContains`) are case-sensitive. Key names inside strings are not.
-- Unknown fields are silently ignored: a typo in an optional field gives no error and leaves the default value in place ([§5.3](structure.md#s5-3), [KS-22](../audit.md#ks-22)).
+- An unknown or misspelled field is a load error that names the field ([§5.3](structure.md#s5-3)).
+- Modifiers match exactly: `"CapsLock"` does not fire while Shift, Ctrl, Alt or Win is held, and `"Ctrl+J"` does not fire on Ctrl+Shift+J. Add `allow_extra_modifiers: true` to relax this for one binding ([§7](kinds.md#s7)).
+- A binding fires only on the key-down of one of its own keys: Shift, then CapsLock fires `"Shift+CapsLock"`, CapsLock, then Shift does not ([§7](kinds.md#s7)).
 - A single `\` in a normal string starts an escape: write `"C:\\dir"` or `r"C:\dir"` ([§3.10](ron-syntax.md#s3-10)).
 - One invalid binding rejects the whole file. At startup this is fatal; on reload the previous bindings stay live ([§2.3](structure.md#s2-3)).
 - Keys that arm `Tap`/`Hold`/`DoubleTap`, and the keys of a `sequence` or `chord`, are suppressed and do not reach applications. There is no replay buffer ([§10](kinds.md#s10)).
