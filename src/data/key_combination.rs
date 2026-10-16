@@ -66,6 +66,15 @@ impl KeyCombination {
             .filter_map(|key| key.modifier())
             .fold(ModifierSet::EMPTY, ModifierSet::with)
     }
+
+    /// Whether every key is a modifier (`"LShift"`, `"Alt+Shift"`, `"Win"`),
+    /// so that the combination has no payload key. Such a combination arms
+    /// on any of its keys, and a deferred binding on it lets its keys reach
+    /// Windows unless it sets `block_default`. The parser never yields an
+    /// empty combination.
+    pub fn is_modifier_only(&self) -> bool {
+        self.keys.iter().all(|key| key.modifier().is_some())
+    }
 }
 
 impl fmt::Display for KeyCombination {
@@ -138,6 +147,31 @@ mod tests {
         assert_eq!(
             KeyCombination::new(VK_CAPITAL).modifiers(),
             ModifierSet::EMPTY
+        );
+    }
+
+    #[test]
+    fn is_modifier_only_needs_every_key_to_be_a_modifier() {
+        let shift = KeySpec::AnySide(Modifier::Shift);
+        let alt = KeySpec::AnySide(Modifier::Alt);
+        let ctrl = KeySpec::AnySide(Modifier::Ctrl);
+        let win = KeySpec::AnySide(Modifier::Win);
+
+        assert!(KeyCombination::new(VK_LSHIFT).is_modifier_only());
+        assert!(KeyCombination::new(alt).with(shift).is_modifier_only());
+        assert!(KeyCombination::new(win).is_modifier_only());
+        assert!(KeyCombination::new(ctrl).with(VK_RWIN).is_modifier_only());
+
+        assert!(
+            !KeyCombination::new(shift)
+                .with(VK_CAPITAL)
+                .is_modifier_only()
+        );
+        assert!(!KeyCombination::new(VK_CAPITAL).is_modifier_only());
+        assert!(
+            !KeyCombination::new(VK_LSHIFT)
+                .with(VK_F13)
+                .is_modifier_only()
         );
     }
 
