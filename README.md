@@ -150,10 +150,15 @@ bricks the daemon. Fix the file and save again to apply.
 Resolution order:
 
 1. **Explicit path** as the first CLI argument:
-   `key-switch-rs.exe C:\path\to\my-config.ron`
+   `key-switch-rs.exe C:\path\to\my-config.ron`. A relative path is resolved
+   once at startup against the daemon's current folder (for a Scheduled
+   Task, its "Start in" folder); the console shows the full path.
 2. **`<exe_dir>\config.ron`** (portable default — drop the .exe anywhere and
    its config lives beside it)
 3. **If missing** — the default template is written there and used.
+
+Hot reload watches the file's folder and reacts to the file's name in any
+letter case.
 
 ### Schema
 
@@ -593,6 +598,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - Rust 2024 edition
 - Windows API via official `windows` crate v0.62 with feature flags:
   - `Win32_Foundation`
+  - `Win32_Globalization` (`CompareStringOrdinal`: the config watcher compares file names the way the file system does)
   - `Win32_UI_WindowsAndMessaging`
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)

@@ -97,7 +97,8 @@ pub fn default_config_path() -> Result<PathBuf, ConfigError> {
 /// Where the config file is, decided once at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigPath {
-    /// The first command-line argument.
+    /// The first command-line argument, made absolute against the current
+    /// directory.
     CommandLine(PathBuf),
     /// `<exe_dir>\config.ron`.
     BesideExe(PathBuf),
@@ -106,9 +107,17 @@ pub enum ConfigPath {
 impl ConfigPath {
     /// The first command-line argument if there is one, else
     /// `<exe_dir>\config.ron`.
+    ///
+    /// A relative argument is resolved here, once, against the current
+    /// directory, so the startup load, the console and the watcher all use
+    /// the same absolute path (KS-21).
     pub fn from_arg(arg: Option<OsString>) -> Result<Self, ConfigError> {
         match arg {
-            Some(arg) => Ok(ConfigPath::CommandLine(PathBuf::from(arg))),
+            Some(arg) => std::path::absolute(&arg)
+                .map(ConfigPath::CommandLine)
+                .map_err(|e| {
+                    ConfigError::Other(format!("config path {arg:?} cannot be used: {e}"))
+                }),
             None => default_config_path().map(ConfigPath::BesideExe),
         }
     }

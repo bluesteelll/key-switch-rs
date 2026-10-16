@@ -227,6 +227,13 @@ minor version; such entries sit under **Changed** and start with
   binding of yours that matches the same press: with `LAlt+LShift` bound,
   that binding fires, and the `Alt+Shift` blocker still swallows Shift
   pressed with the right Alt.
+- KS-21: hot reload works when the config path given on the command line
+  is relative (`key-switch-rs.exe my.ron`, or a Scheduled Task with a
+  relative argument and a "Start in" folder) or differs in letter case
+  from the file on disk (`MY.RON` for `my.ron`). The daemon makes the path
+  absolute once at startup, so the console shows the full path, and the
+  watcher compares file names the way Windows does, ignoring case. It used
+  to print `Watching my.ron for changes` and then never reload.
 - KS-28 (an unverified report): `TitleEquals` and `AppEquals` ignore case
   in every alphabet, with the same Unicode lowercasing as `TitleContains`:
   `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор". They
