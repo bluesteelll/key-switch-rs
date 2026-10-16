@@ -171,20 +171,36 @@ Save ${SP}triage_r${round - 1}.md. confirmed = the number of CONFIRMED items.`)
 }
 
 phase('Results')
-const results = await run('results', 'Results', 'results-analyst', S(['ACCEPT', 'REWORK', 'RETHINK']),
+let results = await run('results', 'Results', 'results-analyst', S(['ACCEPT', 'REWORK', 'RETHINK']),
   `ROLE: results-analyst. Read the spec, ${SP}cut.md, the critique report(s), ${SP}impl.md and every test_r*/review_r*/triage_r*/fix_r* report in ${SP}; then read the actual diff git diff ${BASE}...${BR}.
 Verdicts:
 - ACCEPT: every acceptance criterion is proven by a test or listed as a manual check, the last tester round is GREEN, and no CONFIRMED Critical/Important item is open.
 - REWORK: say exactly what is wrong and which stage it goes back to.
 - RETHINK: the design is wrong.
 Save ${SP}results.md.`)
+// A narrow REWORK goes back to the stage the analyst names (the tester for test-only gaps, else the developer)
+// and is re-judged, at most twice, so one missing test does not stop a whole phase. RETHINK still stops the lane.
+let resultsFile = `${SP}results.md`
+for (let rw = 1; rw <= 2 && results && results.verdict === 'REWORK'; rw++) {
+  phase('Fix')
+  const who = /(->|→|to)\s*(the\s+)?tester\b/i.test(`${results.summary || ''} ${results.report || ''}`) ? 'tester' : 'developer'
+  const rework = await run(`rework-${rw}`, 'Fix', who, S(['DONE', 'STOPPED']),
+    `ROLE: ${who} - REWORK ${rw}. Read ${resultsFile} and do exactly the rework it asks for, nothing else; read ${SP}rulings.md first if it exists (orchestrator rulings on the lane's open questions).
+In ${WT}: git checkout ${BR}. Red-first where the rework is a missing or weak test: show it fails under the mutation or on the old code, then commit.${who === 'tester' ? ' Commit only test code, as Tests: commits.' : ''}
+Run the gates your change touches, commit on ${BR} (follow-up commits, never amend) with the trailer naming your model, and leave the tree clean. Save ${SP}rework_${rw}.md.`)
+  if (!rework || rework.verdict !== 'DONE') break
+  const prevFile = resultsFile
+  resultsFile = `${SP}results_v${rw + 1}.md`
+  results = await run(`results-v${rw + 1}`, 'Results', 'results-analyst', S(['ACCEPT', 'REWORK', 'RETHINK']),
+    `ROLE: results-analyst - re-check after rework ${rw}. Your previous verdict is ${prevFile}; the rework report is ${SP}rework_${rw}.md. On ${BR} HEAD verify that every problem of the previous verdict is resolved (re-run any mutation it named), that the full quality gate is green on a clean export with its own CARGO_TARGET_DIR, and that the tree is clean. Same verdict rules as before. Save ${resultsFile}.`)
+}
 if (!results || results.verdict !== 'ACCEPT' || A.stopAfter === 'results' || A.merge === false) {
   return out('results', { cut: brief(cut), crit: brief(crit), impl: brief(impl), rounds, results: brief(results) })
 }
 
 phase('Merge')
 const merge = await run('merge', 'Merge', 'developer', S(['MERGED', 'NOT_MERGED']),
-  `ROLE: developer - MERGE STEP. In ${WT}:
+  `ROLE: developer - MERGE STEP. The latest results-analyst verdict is ${resultsFile}: ACCEPT. In ${WT}:
 1. Confirm ${BR} is clean, and run the full quality gate on it.
 2. git checkout ${BASE}, then git merge --no-ff ${BR} with the message "Merge branch '${BR}': ${TITLE}", a blank line, and the Co-Authored-By trailer. Resolve any conflicts; for CHANGELOG/README keep both sides.
 3. Run the full quality gate on ${BASE}.
