@@ -252,7 +252,18 @@ mod tests {
 
     #[test]
     fn test_get_system_hotkey_returns_combinations() {
-        assert!(get_system_hotkey(SystemFunction::SwitchLanguage).is_some());
+        // The language hotkey depends on this machine's Windows setting,
+        // which may also be "Not assigned".
+        let language = get_system_hotkey(SystemFunction::SwitchLanguage);
+        assert!(
+            language.as_ref().is_none_or(|combo| [
+                KeyCombination::from_keys([VK_MENU, VK_SHIFT]),
+                KeyCombination::from_keys([VK_CONTROL, VK_SHIFT]),
+                KeyCombination::new(VK_OEM_3),
+            ]
+            .contains(combo)),
+            "not a Windows language hotkey: {language:?}"
+        );
         assert!(get_system_hotkey(SystemFunction::LockWorkstation).is_some());
         assert!(get_system_hotkey(SystemFunction::ShowDesktop).is_some());
         assert!(get_system_hotkey(SystemFunction::TaskManager).is_some());

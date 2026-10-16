@@ -892,7 +892,7 @@ mod tests {
                 ],
             )
         "#;
-        let bindings = from_ron_str(ron_text).unwrap();
+        let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).unwrap();
         // 2 entries: the user binding + the auto-blocker added because of
         // block_original_combo. Order: user binding first, then the
         // auto-blocker.
@@ -965,7 +965,7 @@ mod tests {
                 ],
             )
         "#;
-        let bindings = from_ron_str(ron_text).unwrap();
+        let bindings = from_ron_str_with_hotkeys(ron_text, &language_hotkey(ALT_SHIFT)).unwrap();
         // 2 user + 1 auto-blocker = 3, not 4.
         assert_eq!(bindings.len(), 3);
         assert_eq!(bindings.iter().filter(|b| b.is_auto_blocker()).count(), 1);
