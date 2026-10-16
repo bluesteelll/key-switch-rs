@@ -53,7 +53,7 @@ fn parse_segments<T>(s: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Vec<T
 
 /// Resolves a symbolic WM_* name to its numeric value. Only the constants
 /// most likely to appear in user configs are mapped; anything else should be
-/// written as a numeric literal in TOML.
+/// written as a numeric literal in the config.
 pub(crate) fn parse_wm_name(name: &str) -> Option<u32> {
     let normalized: String = name
         .chars()

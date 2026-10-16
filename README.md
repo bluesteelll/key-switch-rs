@@ -25,7 +25,6 @@ key-switch-rs/
     ├── ipc.rs              - IPC protocol and the swch client (bounded connect, 5 s reply deadline)
     ├── bin/
     │   └── swch.rs         - swch CLI driver binary
-    └──
     ├── config/
     │   ├── mod.rs              - public API: load(), default_config_path()
     │   ├── schema.rs           - serde structs for the on-disk shape
@@ -38,9 +37,11 @@ key-switch-rs/
     │   └── windows_actions.rs  - BindAction enum for binding actions
     ├── data/
     │   ├── binding.rs          - Binding struct (key combo -> action)
+    │   ├── condition.rs        - when: conditions and the foreground app and title
     │   ├── key_combination.rs  - key combinations (key + modifiers)
     │   ├── key_spec.rs         - trigger keys: one key on its side, or a modifier on either side
     │   ├── sequence.rs         - macro engine: SequenceStep, type_text, press_combo, window ops
+    │   ├── trigger.rs          - Immediate, Tap, Hold, DoubleTap
     │   └── vk_name.rs          - VIRTUAL_KEY <-> human-readable name (both directions)
     ├── engine/
     │   ├── mod.rs              - pure decision core: Engine::on_key / on_timer -> Decision
@@ -51,7 +52,8 @@ key-switch-rs/
     │   ├── chords.rs           - pending simultaneous chords
     │   ├── sequences.rs        - pending leader-key sequences
     │   ├── testing.rs          - test-only scenario harness (RON + key script + fake clock)
-    │   └── scenarios.rs        - scenario tests for every binding kind and trigger
+    │   ├── scenarios.rs        - scenario tests for every binding kind and trigger
+    │   └── properties.rs       - test-only property tests of the suppression invariant
     ├── hook/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, engine lock
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
@@ -82,16 +84,24 @@ key-switch-rs/
 - `ToggleCapsLock` - toggle CapsLock state
 - `PressKey(VIRTUAL_KEY)` - emulate key press
 - `PostMessage { ... }` - send message to active window
+- `Sequence(Arc<Vec<SequenceStep>>)` - macro steps, run on a worker thread
+- `Launch { exe, args }` - start a process
+- `OpenUrl(String)` - open a URL, file or program with its default handler
+- `Media(MediaKey)` - emulate a media or volume key press
 - `DoNothing` - no action (for auto-blockers)
 
 #### `binding.rs`
 
-`Binding` struct - links key combination with action:
+`Binding` struct - links a trigger with an action:
 
-- Key combination (`KeyCombination`)
-- Action (`BindAction`)
-- Block default behavior flag
-- Auto-block original system combination flag
+- `kind` (`BindingKind`: `Combo` / `Sequence` / `Chord`)
+- `action` (`BindAction`)
+- `block_default`: block default behavior flag
+- `block_original_combo`: auto-block original system combination flag
+- `condition` (`Condition`, the `when:` field)
+- `trigger` (`Trigger`: `Immediate` / `Tap` / `Hold` / `DoubleTap`)
+- `allow_extra_modifiers`
+- crate-private `is_auto_blocker`, set only on the auto-blockers the loader adds
 
 #### `keyboard_hook.rs`
 
@@ -186,7 +196,8 @@ is case-insensitive (`"Ctrl + shift + esc"` parses identically to `"Ctrl+Shift+E
 | Digits      | `0`–`9`                                                                                                |
 | Function    | `F1`–`F24`                                                                                             |
 | Numpad      | `Num0`–`Num9` (also `Numpad0`–`Numpad9`)                                                               |
-| Named       | `CapsLock`, `Tab`, `Esc`/`Escape`, `Enter`/`Return`, `Space`, `Backspace`, `Delete`/`Del`, `Insert`/`Ins`, `Home`, `End`, `PageUp`/`PgUp`, `PageDown`/`PgDn`, `Up`, `Down`, `Left`, `Right`, `NumLock`, `ScrollLock`, `Pause`, `PrintScreen` |
+| Named       | `CapsLock`/`Caps`, `Tab`, `Esc`/`Escape`, `Enter`/`Return`, `Space`/`Spacebar`, `Backspace`/`Back`, `Delete`/`Del`, `Insert`/`Ins`, `Home`, `End`, `PageUp`/`PgUp`, `PageDown`/`PgDn`, `Up`/`UpArrow`, `Down`/`DownArrow`, `Left`/`LeftArrow`, `Right`/`RightArrow`, `NumLock`, `ScrollLock`/`Scroll`, `Pause`/`Break`, `PrintScreen`/`PrtSc`/`PrtScn` |
+| Media       | `MediaPlayPause`/`PlayPause`, `MediaStop`, `MediaNext`/`NextTrack`, `MediaPrev`/`MediaPrevious`/`PrevTrack`, `VolumeUp`/`VolUp`, `VolumeDown`/`VolDown`, `VolumeMute`/`VolMute`/`Mute` |
 | OEM punct   | `` ` ``, `-`, `=`, `,`, `.`, `;`, `/`, `[`, `]`, `\`, `'`                                                |
 
 **Sided modifiers.** `Shift`, `Ctrl`, `Alt` and `Win` (`Super`) match either
@@ -240,7 +251,7 @@ does not fire on AltGr: write `Ctrl+RAlt` or set `allow_extra_modifiers: true`.
 | `ToggleCapsLock`                     | Toggle CapsLock state                                                    |
 | `PressKey("<name>")`                 | Synthesize a key press via `SendInput`                                   |
 | `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window                      |
-| `Launch(exe: "<path>", args: [...])` | Spawn a process detached. `args` defaults to `[]`.                       |
+| `Launch(exe: "<path>", args: [...])` | Spawn a process. `args` defaults to `[]`. Until roadmap item 3.3 the program gets the daemon's administrator rights (release build) and, for a console program, its console (KS-09, KS-34). |
 | `OpenUrl("<url-or-path>")`           | Hand to OS default handler via `ShellExecuteW`. Works for URLs, `mailto:`, file paths, even .exe. |
 | `Media(<key>)`                       | Synthesize a media/volume key. `<key>` is one of `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute`. |
 | `Sequence([...])`                    | Chain multiple steps (text, key presses, delays, window ops) — see below |
@@ -302,11 +313,11 @@ of every binding before triggers existed). Deferred triggers — `Tap`,
 `Hold`, `DoubleTap` — defer to an asynchronous gesture state machine.
 
 **The whole point**: two bindings on the same combo with different
-triggers coexist as independent entries. Tap and Hold both arm on key-down
-and resolve independently.
+triggers coexist as independent entries. Tap and Hold both arm on key-down;
+with equal terms exactly one of them fires (see below).
 
 ```ron
-// CapsLock — quick press switches language, holding sends LShift
+// CapsLock — quick press switches language, holding sends one LShift press
 ( keys: "CapsLock", action: SwitchLanguage,   trigger: Tap(200), block_original_combo: true ),
 ( keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200) ),
 
@@ -395,7 +406,7 @@ multi-second delays never block input system-wide.
 )
 ```
 
-Five step variants:
+Eight step variants:
 
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -521,8 +532,8 @@ Release builds ship two binaries:
 - **`key-switch-rs.exe`** — the daemon. Manifest-marked `requireAdministrator`,
   so launching it triggers a UAC consent prompt. After consent the process
   runs at high integrity, required for the low-level keyboard hook to observe
-  events in elevated windows (Task Manager, regedit, UAC consent UI, anything
-  "Run as administrator").
+  events in elevated windows (Task Manager, regedit, anything "Run as
+  administrator").
 
 - **`swch.exe`** — CLI driver that talks to the running daemon via a named
   pipe. Runs as normal user — **no UAC prompt** — also against the elevated
@@ -532,7 +543,7 @@ Release builds ship two binaries:
 ### Typical session
 
 ```text
-> swch open      # launches daemon (UAC prompt — accept once)
+> swch open      # launches daemon (UAC prompt on every launch)
 > swch status    # OK: running (5 bindings live)
 > swch off       # OK: disabled       (remapping off; every key reaches Windows)
 > swch on        # OK: enabled        (remapping on again)
@@ -549,6 +560,9 @@ Release builds ship two binaries:
 | `swch status` | Print "running" or "disabled" (remapping on or off) and the live binding count. |
 | `swch exit`   | Cleanly shut down the daemon (`PostThreadMessageW(WM_QUIT)`). |
 | `swch help`   | Print usage.                                                |
+
+Aliases: `open` = `start` = `launch`; `exit` = `quit` = `shutdown` = `stop`;
+`status` = `ping`; `help` = `--help` = `-h`.
 
 All commands except `open` connect to the daemon's named pipe
 (`\\.\pipe\key-switch-rs.sock`). If the daemon isn't running, they print a
@@ -581,6 +595,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_UI_WindowsAndMessaging`
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
+  - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`)
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
@@ -598,13 +613,13 @@ elevated without a prompt; `swch` then talks to it normally.
 
 ## Implementation Features
 
-- **Not macros**: application calls native Windows API functions, not emulating action sequences
+- **Native APIs first**: language switching, window operations and messages use Win32 calls; key output (`ToggleCapsLock`, `PressKey`, `Media`, macro `Text`/`Key`/`Combo`) is synthesized with `SendInput`
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
 - **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). Parse errors keep the previous config live — never bricks the daemon.
-- **Priority bindings**: more specific combinations (more keys) checked first
+- **Priority bindings**: among the `Immediate` bindings that match one press, the one with more keys fires; a matching deferred binding still arms until roadmap item 1.6 (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
 - **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition
 - **Per-process sentinel**: injected-event marker is mixed with the process ID so this daemon does not collide with other input-synthesizing apps (AHK, PowerToys)

@@ -513,6 +513,28 @@ mod tests {
     }
 
     #[test]
+    fn default_config_commented_examples_load() {
+        // Users enable the template's examples by removing the `// `, so
+        // they must load as written.
+        let mut lines = DEFAULT_CONFIG.lines();
+        lines
+            .by_ref()
+            .find(|line| line.contains("// ---- examples (uncomment to enable) ----"))
+            .expect("the template has an examples section");
+        let examples: Vec<&str> = lines
+            .take_while(|line| line.trim() != "],")
+            .map(|line| match line.trim_start() {
+                "//" => "",
+                line => line.strip_prefix("// ").unwrap_or(line),
+            })
+            .collect();
+        let ron = format!("( bindings: [\n{}\n] )", examples.join("\n"));
+        let bindings = from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"));
+        assert!(!bindings.is_empty(), "the template's examples are empty");
+    }
+
+    #[test]
     fn parse_simple_binding() {
         let ron_text = r#"
             (

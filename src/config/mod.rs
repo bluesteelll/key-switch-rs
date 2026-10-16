@@ -1,4 +1,4 @@
-//! Configuration: `config.toml` loading, parsing, and conversion into the
+//! Configuration: `config.ron` loading, parsing, and conversion into the
 //! runtime `Binding` representation.
 //!
 //! Layout:

@@ -63,6 +63,7 @@ fn print_usage(prog: &str) {
     eprintln!("  off     Turn remapping off (keys pass through)");
     eprintln!("  status  Show daemon state and binding count");
     eprintln!("  exit    Shut the daemon down");
+    eprintln!("  help    Print this text");
 }
 
 // ---- `open` ----

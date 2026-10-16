@@ -256,6 +256,19 @@ minor version; such entries sit under **Changed** and start with
   `/MANIFESTUAC` only when the target environment is `msvc`. A release build
   for `x86_64-pc-windows-gnu` now links, and warns that no UAC manifest is
   embedded.
+- Documentation drift (roadmap Workstream B): the generated `config.ron` no
+  longer says that changes need a restart; its `sequence` and `chord`
+  examples use F13 and F14 instead of `g`, `j` and `k`, which such bindings
+  swallow while you type (KS-15); it lists all eight macro steps, as the
+  README now does (it said five). The README lists the key names it left
+  out (`Caps`, `Break`, `PrtSc`, `Scroll`, the media keys and more), the
+  `swch` command aliases, every `BindAction` variant and `Binding` field,
+  and the `windows` features in use. `Launch` is no longer called
+  detached: until roadmap item 3.3 the program it starts gets the daemon's
+  administrator rights and console (KS-09, KS-34). The README no longer
+  says that the elevated daemon sees keys in the UAC consent prompt, which
+  runs on the Secure Desktop, or that the UAC prompt appears only once.
+  `swch help` is listed in the usage text.
 
 ## [0.1.0] - 2026-05-20
 

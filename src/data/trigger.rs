@@ -31,8 +31,9 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    /// True for the simple "execute now" path. Used by the hot path to
-    /// skip the deferred-gesture machinery entirely when no binding needs it.
+    /// True for the default trigger. The loader uses it to reject deferred
+    /// triggers on `sequence` and `chord`, and `Binding`'s `Display` to omit
+    /// it.
     pub fn is_immediate(self) -> bool {
         matches!(self, Trigger::Immediate)
     }

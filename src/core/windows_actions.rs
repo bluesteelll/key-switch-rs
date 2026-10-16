@@ -13,7 +13,6 @@ use crate::data::key_combination::KeyCombination;
 use crate::data::sequence::{SequenceStep, spawn_sequence};
 use crate::system::system_function::SystemFunction;
 
-#[allow(dead_code)] // Variants are part of the public surface; not every binary uses them all.
 #[derive(Debug, Clone)]
 pub enum BindAction {
     SwitchLanguage,
@@ -32,8 +31,10 @@ pub enum BindAction {
     /// `Arc` makes cloning the binding (and therefore freezing the binding
     /// list at install) cheap regardless of sequence length.
     Sequence(Arc<Vec<SequenceStep>>),
-    /// Spawn a new process. Detached: child outlives the daemon, no console
-    /// window is attached to ours. Use absolute path or rely on PATH lookup.
+    /// Spawn a process with `Command::spawn`. The child outlives the daemon
+    /// but inherits its console and, in a release build, its administrator
+    /// token (KS-09, KS-34; roadmap item 3.3). Use absolute path or rely on
+    /// PATH lookup.
     Launch {
         exe: String,
         args: Vec<String>,
