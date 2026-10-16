@@ -172,7 +172,7 @@ letter case.
 ### Schema
 
 ```ron
-// Equivalent to the auto-generated default.
+// The first two bindings are the auto-generated default.
 (
     bindings: [
         (
@@ -522,10 +522,12 @@ every problem in one pass. Common cases:
 - `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`
   — a `Tap`, `Hold` or `DoubleTap` term, `max_gap_ms` or `window_ms`
   outside 1 to 10000 ms.
+- ``Unexpected variant named `FlyToMars` in enum `RawAction`, expected one of `SwitchLanguage`, …``
+  — an action, trigger, condition or step name is misspelled; names are
+  case-sensitive.
 
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
-- `unknown variant 'FlyToMars'` — variant name is misspelled.
 
 ## Build
 
@@ -575,11 +577,11 @@ Release builds ship two binaries:
 ### Typical session
 
 ```text
-> swch open      # launches daemon (UAC prompt on every launch)
-> swch status    # OK: running (5 bindings live)
-> swch off       # OK: disabled       (remapping off; every key reaches Windows)
-> swch on        # OK: enabled        (remapping on again)
-> swch exit      # OK: shutting down  (daemon process terminates)
+> swch open      # swch: daemon launched (UAC prompt on every launch)
+> swch status    # running (3 bindings live) with the default config
+> swch off       # disabled       (remapping off; every key reaches Windows)
+> swch on        # enabled        (remapping on again)
+> swch exit      # shutting down  (daemon process terminates)
 ```
 
 ### swch commands
@@ -596,9 +598,11 @@ Release builds ship two binaries:
 Aliases: `open` = `start` = `launch`; `exit` = `quit` = `shutdown` = `stop`;
 `status` = `ping`; `help` = `--help` = `-h`.
 
-All commands except `open` connect to the daemon's named pipe
-(`\\.\pipe\key-switch-rs.sock`). If the daemon isn't running, they print a
-hint and exit 1. If it does not answer within 5 s, they print
+Every command except `help` connects to the daemon's named pipe
+(`\\.\pipe\key-switch-rs.sock`); `open` sends `status` to find out whether a
+daemon runs. If the daemon isn't running, the other commands print a hint and
+exit 1, and `open` starts it. If it does not answer within 5 s, `open`
+treats it as running, and the other commands print
 `swch: cannot reach daemon (the daemon did not answer within 5s).` and exit 1.
 The pipe admits interactive users at medium integrity or
 above, so a normal console can control an elevated daemon. That includes
