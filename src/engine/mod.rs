@@ -173,6 +173,15 @@
 //! a key-up passes unless a Tap or Hold of its press is pending (roadmap
 //! item 2.3).
 //!
+//! On every key event, once its record is updated, the decision asks for
+//! the menu mask key (`Decision::mask`, roadmap item 1.2, KS-12) if the
+//! event is suppressed while an Alt or Win key is held whose key-down
+//! Windows saw: one on record as passed, or one the resync found held with
+//! no record. Windows then has a lone Alt or Win press so far, whose release
+//! would activate the menu bar or open the Start menu; the mask key comes
+//! between. An Alt or Win whose key-down was swallowed, this event's
+//! included, does not count. A timer never asks for the mask.
+//!
 //! The known defects of these rules are listed in the audit and are fixed in
 //! later roadmap items, each with a scenario test: the sequence matching
 //! rules (KS-15, KS-16).
@@ -273,9 +282,10 @@ pub struct Decision {
     pub fire: Vec<BindAction>,
     /// Timers to start.
     pub timers: Vec<TimerRequest>,
-    /// Reserved for the menu mask key (roadmap item 1.2): send a mask key
-    /// before the event so the OS does not see a lone Win or Alt tap. The
-    /// engine does not set it yet.
+    /// Send the menu mask key before the hook returns (roadmap item 1.2,
+    /// KS-12), so that Windows does not see a lone Win or Alt press. Set on
+    /// a key event that is suppressed while Windows has an Alt or Win key
+    /// down whose key-down it saw. Always `false` for a timer.
     pub mask: bool,
 }
 
@@ -566,6 +576,7 @@ impl Engine {
             // key reads as one the OS saw go down.
             self.keys.mark_passed(vk.0);
         }
+        self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
 
@@ -594,7 +605,18 @@ impl Engine {
         let was_blocked = self.keys.take_blocked(vk.0);
         let gesture_bound = tap_fired || hold != HoldRelease::NotPending;
         decision.suppress = was_blocked || (gesture_bound && !was_passed);
+        self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
+    }
+
+    /// Asks for the menu mask key if `decision` swallows its event while
+    /// Windows has an Alt or Win key down whose key-down it saw (KS-12).
+    /// Call it after the event's record update, so that an Alt or Win
+    /// key-down swallowed by this very event does not count.
+    fn mask_if_swallowed_under_alt_or_win(&self, decision: &mut Decision) {
+        if decision.suppress && self.keys.alt_or_win_down_in_windows() {
+            decision.mask = true;
+        }
     }
 }
 
