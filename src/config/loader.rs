@@ -593,7 +593,7 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::testing::TempDir;
+    use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
@@ -1070,6 +1070,23 @@ mod tests {
         let err = from_ron_str("()").expect_err("a config without `bindings` must be an error");
         assert!(matches!(err, ConfigError::Parse { .. }), "{err}");
         assert!(err.to_string().contains("`bindings`"), "{err}");
+    }
+
+    #[test]
+    fn a_utf8_bom_before_the_config_is_ignored() {
+        // KS-24: Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+        // `-Encoding UTF8` start the file with U+FEFF.
+        let bindings =
+            from_ron_str("\u{feff}( bindings: [ ( keys: \"F13\", action: DoNothing ) ] )")
+                .unwrap_or_else(|e| panic!("a UTF-8 BOM must be ignored: {e}"));
+        assert_eq!(bindings.len(), 1);
+
+        let err = from_ron_str("\u{feff}( bindings: [ ( keys: \"F13\", action: DoNothing ) ]")
+            .expect_err("a config without its closing parenthesis must be an error");
+        assert!(
+            err.to_string().contains("1:51:"),
+            "positions count from the first character after the BOM: {err}"
+        );
     }
 
     #[test]
@@ -1777,6 +1794,17 @@ mod tests {
             "reloading a missing config must not create it"
         );
         assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn reload_reads_a_file_saved_with_a_bom() {
+        let dir = TempDir::new("bom");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, [b"\xEF\xBB\xBF".as_slice(), ONE.as_bytes()].concat())
+            .expect("write the config");
+        let bindings =
+            reload(&path).unwrap_or_else(|e| panic!("a file saved with a BOM must load: {e}"));
+        assert_eq!(bindings.len(), 1);
     }
 
     #[test]
