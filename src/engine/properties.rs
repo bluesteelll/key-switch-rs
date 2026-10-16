@@ -1,7 +1,10 @@
 //! Property tests of the suppression invariant: generated scripts of
 //! key-downs, auto-repeats, key-ups, clock steps and focus changes, run
 //! through the scenario harness against configs that cover every binding
-//! kind and trigger.
+//! kind and trigger. Their `Tap`, `Hold` and `DoubleTap` bindings include
+//! ones that swallow their key and ones that let it through
+//! (`block_default`, roadmap item 1.3), so a press is checked on both
+//! paths.
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
@@ -98,8 +101,9 @@ const CONFIGS: [Config; 6] = [
             (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
             (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
             (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(600)),
-            (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)),
+            (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000), block_default: true),
             (keys: "RShift", action: SwitchLanguage, trigger: Tap(300)),
+            (keys: "F15", action: SwitchLanguage, trigger: Tap(200), block_default: false),
         ] )"#,
     },
     Config {
@@ -126,7 +130,7 @@ const CONFIGS: [Config; 6] = [
         ron: r#"( bindings: [
             (keys: "CapsLock", action: SwitchLanguage),
             (keys: "Shift+CapsLock", action: ToggleCapsLock),
-            (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(600)),
+            (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(600), block_default: true),
             (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)),
             (chord: (keys: ["J", "K"], window_ms: 50), action: ToggleCapsLock),
             (sequence: (steps: ["F13", "F14"]), action: SwitchLanguage),
