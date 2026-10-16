@@ -6,10 +6,12 @@
 //! (default) or one of the deferred-gesture paths (`Tap`, `Hold`,
 //! `DoubleTap`) handled by the decision core in `crate::engine`.
 //!
-//! Multiple bindings on the same combo with different triggers coexist:
-//! e.g. one `Tap(200)` binding and one `Hold(200)` binding on `CapsLock`
-//! arm both gestures on key-down and the appropriate one resolves on
-//! key-up or timer expiry.
+//! Multiple bindings on the same combo with different triggers coexist on
+//! the same keys with the same `when:`: e.g. one `Tap(200)` binding and one
+//! `Hold(200)` binding on `CapsLock` arm both gestures on key-down and the
+//! appropriate one resolves on key-up or timer expiry. An `Immediate`
+//! binding on those keys competes with them: one of the two wins each key
+//! press (roadmap item 1.6).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Trigger {

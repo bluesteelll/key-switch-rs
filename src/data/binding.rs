@@ -32,11 +32,12 @@ pub enum BindingKind {
 }
 
 impl BindingKind {
-    /// Specificity ranking used by `KeyboardHook` to sort combo bindings —
-    /// longer combos win the matching loop first. For Sequence/Chord it
-    /// returns step/key count so they sort alongside multi-key combos
-    /// sensibly, even though sequence/chord resolution doesn't go through
-    /// the combo-match loop.
+    /// Specificity ranking used by `KeyboardHook` to sort the bindings, and
+    /// the first part of a `keys` binding's precedence when several match
+    /// one key press (`engine::winner`, roadmap item 1.6): more keys win.
+    /// For Sequence/Chord it returns step/key count so they sort alongside
+    /// multi-key combos sensibly, even though sequences and chords take no
+    /// part in that election.
     pub fn key_count(&self) -> usize {
         match self {
             BindingKind::Combo(c) => c.keys.len(),

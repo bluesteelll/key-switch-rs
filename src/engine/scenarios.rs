@@ -255,7 +255,7 @@ fn when_title_contains_and_not_conditions() {
 }
 
 #[test]
-fn first_binding_whose_condition_holds_wins_on_a_shared_key() {
+fn a_binding_whose_condition_holds_wins_on_a_shared_key() {
     let config = r#"( bindings: [
         (keys: "F13", action: PressKey("F5"), when: AppEquals("code.exe")),
         (keys: "F13", action: SwitchLanguage),
@@ -3236,9 +3236,9 @@ fn deferred_binding_on_the_language_hotkey_keys_lets_the_hotkey_through_by_defau
 
 #[test]
 fn passing_and_blocking_deferred_bindings_on_one_key_keep_its_press_whole() {
-    // Every matching binding that asks for suppression gets it, so the
-    // Hold's default swallows F13 although the Tap lets it through. The OR
-    // rule holds until roadmap item 1.6 picks one binding per press (KS-13).
+    // Tap and Hold on the same keys and `when:` are one group, which
+    // swallows the key if either asks (roadmap item 1.6): the Hold's default
+    // swallows F13 although the Tap lets it through.
     let config = r#"( bindings: [
         (keys: "F13", action: SwitchLanguage, trigger: Tap(200), block_default: false),
         (keys: "F13", action: ToggleCapsLock, trigger: Hold(200)),
@@ -3837,6 +3837,43 @@ fn tap_and_hold_on_capslock_still_arm_together_as_one_group() {
         .expect_suppressed()
         .expect_nothing_fired()
         .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::PressKey(VK_LSHIFT)]);
+}
+
+#[test]
+fn repeats_after_the_modifier_is_released_elect_again_and_follow_the_key_down() {
+    // The election runs on every key-down, auto-repeats included, while a
+    // repeat is suppressed or passed like its key-down (KS-06). Ctrl+J wins
+    // the key-down and lets it through; once Ctrl is released, `J` wins the
+    // repeats and sends Down on each, and the repeats still reach Windows.
+    // Pinned until a winner is locked per press (a follow-up of roadmap
+    // item 1.6).
+    let config = r#"( bindings: [
+        (keys: "J", action: PressKey("Down"), allow_extra_modifiers: true),
+        (keys: "Ctrl+J", action: SwitchLanguage, trigger: Tap(200), block_default: false),
+    ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .expect_passed()
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(100)
+        .up("LCtrl")
+        .expect_passed()
+        .advance_ms(400)
+        .repeat("J")
+        .expect_passed()
+        .expect_fired(&[BindAction::PressKey(VK_DOWN)])
+        .advance_ms(33)
+        .repeat("J")
+        .expect_passed()
+        .expect_fired(&[BindAction::PressKey(VK_DOWN)])
+        .up("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::PressKey(VK_DOWN), BindAction::PressKey(VK_DOWN)]);
 }
 
 // ---- The harness itself ----
