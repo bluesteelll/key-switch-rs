@@ -88,6 +88,14 @@ minor version; such entries sit under **Changed** and start with
   while another key is down in Windows (KS-05): with the `` ` `` hotkey
   (registry value 4), a `` ` `` typed while another key is held now reaches
   Windows and may switch the layout.
+- **Breaking:** a config path given on the command line must exist. With
+  a missing file the daemon stops with `[FATAL] config file <path> does
+  not exist` instead of writing the default template there (creating its
+  folders) and starting with it; `key-switch-rs.exe --help` no longer
+  creates a file named `--help` (KS-41, an unverified report, partly;
+  roadmap item 4.2 adds argument parsing). Without an argument nothing
+  changes: a missing `config.ron` next to `key-switch-rs.exe` is still
+  created from the template at startup.
 
 ### Fixed
 
@@ -234,6 +242,12 @@ minor version; such entries sit under **Changed** and start with
   absolute once at startup, so the console shows the full path, and the
   watcher compares file names the way Windows does, ignoring case. It used
   to print `Watching my.ron for changes` and then never reload.
+- KS-23: deleting or renaming `config.ron` while the daemon runs keeps the
+  live bindings. The daemon used to write the default template in its
+  place about 250 ms later and switch to it, so CapsLock switched the
+  language again. The console shows `[ERROR] config reload failed:` with
+  `config file <path> does not exist`, and putting the file back reloads
+  it. The template is written only at startup.
 - KS-28 (an unverified report): `TitleEquals` and `AppEquals` ignore case
   in every alphabet, with the same Unicode lowercasing as `TitleContains`:
   `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор". They

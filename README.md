@@ -141,9 +141,10 @@ executable, then loads it. **Bindings are hot-reloaded automatically** — edit
 `config.ron` in any editor, save, and the new bindings go live within ~250 ms
 without a restart.
 
-If the file is broken (parse error, unknown key, etc.), the error is logged
-and the **previously-running bindings stay live** — a malformed save never
-bricks the daemon. Fix the file and save again to apply.
+If the file does not load (a syntax error, an unknown key name, ...) or is
+deleted or renamed, the error is printed and the **previously-running
+bindings stay live** — a malformed save never bricks the daemon. Fix the
+file and save again to apply.
 
 ### Where the file lives
 
@@ -152,10 +153,16 @@ Resolution order:
 1. **Explicit path** as the first CLI argument:
    `key-switch-rs.exe C:\path\to\my-config.ron`. A relative path is resolved
    once at startup against the daemon's current folder (for a Scheduled
-   Task, its "Start in" folder); the console shows the full path.
+   Task, its "Start in" folder); the console shows the full path. The file
+   must exist: a missing file stops the daemon with
+   `config file <path> does not exist`, and nothing is created.
 2. **`<exe_dir>\config.ron`** (portable default — drop the .exe anywhere and
    its config lives beside it)
-3. **If missing** — the default template is written there and used.
+3. **If `<exe_dir>\config.ron` is missing at startup**, the default template
+   is written there and used.
+
+A file deleted or renamed while the daemon runs is not recreated: the
+bindings loaded last stay live, and putting the file back reloads it.
 
 Hot reload watches the file's folder and reacts to the file's name in any
 letter case.
@@ -499,6 +506,8 @@ every problem in one pass. Common cases:
 - `unknown key "Foo" in combo "Ctrl+Foo"` — typo in a key name; see the table above.
 - `PressKey: unknown key "Foo"` — same, but inside a `PressKey` action.
 - `PostMessage: unknown WM_* name "WM_FOO"` — not in the built-in table; use a numeric code.
+- `config file <path> does not exist` — the file named on the command line,
+  or the config at a reload, is missing; nothing is created.
 - `unknown variant 'FlyToMars'` — variant name is misspelled.
 
 ## Build

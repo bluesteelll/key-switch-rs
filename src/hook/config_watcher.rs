@@ -15,8 +15,10 @@
 //!   3. A worker thread debounces those events (editors fire several per
 //!      save) and reloads the config, atomically swapping the binding list
 //!      via `KeyboardHook::update_bindings`.
-//!   4. Parse errors during reload are logged; the previously-running
+//!   4. Errors during reload are logged and the previously-running
 //!      binding list stays live, so a broken save never bricks the daemon.
+//!      That includes a deleted or renamed file: a reload never writes the
+//!      file, so it is not recreated from the template (KS-23).
 
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};

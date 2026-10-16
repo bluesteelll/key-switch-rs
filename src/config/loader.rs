@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,12 +26,16 @@ use super::schema::{
     RawTrigger, RawWindowKind, SequenceSpec,
 };
 
-/// Bundled default `config.ron`. Written to disk the first time the program
-/// runs without an existing config.
+/// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
+/// daemon starts without one.
 const DEFAULT_CONFIG: &str = include_str!("default_config.ron");
 
 #[derive(Debug)]
 pub enum ConfigError {
+    /// The config file, or a folder on its path, does not exist.
+    Missing {
+        path: PathBuf,
+    },
     Io {
         path: PathBuf,
         source: io::Error,
@@ -54,6 +58,9 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ConfigError::Missing { path } => {
+                write!(f, "config file {} does not exist", path.display())
+            }
             ConfigError::Io { path, source } => {
                 write!(f, "config I/O error ({}): {}", path.display(), source)
             }
@@ -135,37 +142,57 @@ impl ConfigPath {
     }
 }
 
-/// Loads the bindings at startup, generating the default file if it does
-/// not yet exist.
+/// Loads the bindings at startup.
+///
+/// A missing `<exe_dir>\config.ron` is first written from the bundled
+/// template, so the first run produces a working setup without a
+/// hand-written config. A missing command-line path is
+/// [`ConfigError::Missing`] and nothing is created for it: a typo must not
+/// start the daemon with the defaults (KS-23).
 pub fn load(config: &ConfigPath) -> Result<Vec<Binding>, ConfigError> {
-    load_or_generate(config.path())
+    let path = config.path();
+    let text = match (config, read_config(path)) {
+        (ConfigPath::BesideExe(_), Err(ConfigError::Missing { .. })) => {
+            write_default(path)?;
+            println!("[INFO] generated default config at {}", path.display());
+            read_config(path)?
+        }
+        (_, read) => {
+            let text = read?;
+            println!("[INFO] loading config from {}", path.display());
+            text
+        }
+    };
+    parse_config(path, &text)
 }
 
-/// Loads the bindings again after the file at `path` changed. For now it
-/// also writes the default file to a missing `path`, like a first start
-/// (KS-23).
+/// Loads the bindings again after the file at `path` changed. Never writes:
+/// a deleted or renamed file is [`ConfigError::Missing`], and the caller
+/// keeps the bindings it has (KS-23).
 pub fn reload(path: &Path) -> Result<Vec<Binding>, ConfigError> {
-    load_or_generate(path)
+    let text = read_config(path)?;
+    println!("[INFO] loading config from {}", path.display());
+    parse_config(path, &text)
 }
 
-/// Loads bindings from `path`, generating the default file there if it does
-/// not yet exist. The "missing → write default" branch is by design: the
-/// first run of the binary should produce a working setup without forcing
-/// the user to author a config by hand.
-fn load_or_generate(path: &Path) -> Result<Vec<Binding>, ConfigError> {
-    if !path.exists() {
-        write_default(path)?;
-        println!("[INFO] generated default config at {}", path.display());
-    } else {
-        println!("[INFO] loading config from {}", path.display());
-    }
+/// The text of the config file. A missing file, or a missing folder on its
+/// path, is [`ConfigError::Missing`]. There is no `exists()` check first:
+/// the file could come or go between the check and the read.
+fn read_config(path: &Path) -> Result<String, ConfigError> {
+    fs::read_to_string(path).map_err(|source| match source.kind() {
+        io::ErrorKind::NotFound => ConfigError::Missing {
+            path: path.to_path_buf(),
+        },
+        _ => ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+    })
+}
 
-    let text = fs::read_to_string(path).map_err(|e| ConfigError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-
-    from_ron_str(&text).map_err(|e| match e {
+/// [`from_ron_str`] with `path` in a parse error.
+fn parse_config(path: &Path, text: &str) -> Result<Vec<Binding>, ConfigError> {
+    from_ron_str(text).map_err(|e| match e {
         // Attach the path for I/O-less variants so error messages are useful.
         ConfigError::Parse { source, .. } => ConfigError::Parse {
             path: path.to_path_buf(),
@@ -273,6 +300,9 @@ fn expand_with_auto_blockers(
     result
 }
 
+/// Writes the bundled template to `path`, creating its folder; only for
+/// `<exe_dir>\config.ron` at startup. A file that appeared after the read
+/// is left as it is and loaded.
 fn write_default(path: &Path) -> Result<(), ConfigError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -282,10 +312,19 @@ fn write_default(path: &Path) -> Result<(), ConfigError> {
             source: e,
         })?;
     }
-    fs::write(path, DEFAULT_CONFIG).map_err(|e| ConfigError::Io {
+    let io_error = |source| ConfigError::Io {
         path: path.to_path_buf(),
-        source: e,
-    })
+        source,
+    };
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(DEFAULT_CONFIG.as_bytes()).map_err(io_error),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(io_error(e)),
+    }
 }
 
 fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, String> {

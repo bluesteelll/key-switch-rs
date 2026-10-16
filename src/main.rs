@@ -21,9 +21,10 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Resolution order for the config path:
-    //   1. First positional CLI argument, if provided.
+    //   1. First positional CLI argument, if provided, made absolute against
+    //      the current folder. The file must exist; nothing is created.
     //   2. <exe_dir>/config.ron (portable layout: drop the .exe anywhere and
-    //      its config lives beside it).
+    //      its config lives beside it), written from the template if missing.
     let config = config::ConfigPath::from_arg(std::env::args_os().nth(1))?;
 
     let bindings = config::load(&config)?;
