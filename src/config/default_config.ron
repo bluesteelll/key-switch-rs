@@ -185,8 +185,9 @@
 //                         must not switch the layout; if it does, use true.
 //                         MaskOnly needs a hotkey made only of modifiers;
 //                         with the ` hotkey it acts as true, with a warning.
-//                         Until roadmap item 1.2 it ignores the binding's
-//                         when: and acts in every window (KS-35).
+//                         The blocker acts only where the binding's when:
+//                         holds; with several bindings asking for it, where
+//                         any of their when: holds.
 // allow_extra_modifiers: true (default false)
 //                       - keys bindings only: also fire while modifiers
 //                         the binding does not name are held. A load

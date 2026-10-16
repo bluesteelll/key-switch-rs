@@ -330,13 +330,19 @@ fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
 /// flagged one included, whatever its trigger or `when:`: that binding takes
 /// the hotkey over, and its own `block_default` and `when:` decide whether
 /// Windows sees the hotkey (KS-18).
+///
+/// A blocker acts where the `when:` of a binding that asked for it holds
+/// (KS-35): its condition is the conditions of those bindings OR'ed, each
+/// once, or `Always` if one of them has none. The bindings' triggers are
+/// not inherited: the blocker acts on the hotkey's own press.
 fn expand_with_auto_blockers(
     user_bindings: Vec<Binding>,
     system_combination: &SystemCombination,
     warnings: &mut Vec<String>,
 ) -> Vec<Binding> {
-    // What the file asks for, in file order.
-    let mut requests: Vec<(KeyCombination, BlockerMode)> = Vec::new();
+    // What the file asks for, in file order, with the asking binding's
+    // condition.
+    let mut requests: Vec<(KeyCombination, BlockerMode, &Condition)> = Vec::new();
     for (index, binding) in user_bindings.iter().enumerate() {
         let Some(requested) = binding.block_original_combo else {
             continue;
@@ -352,12 +358,12 @@ fn expand_with_auto_blockers(
         } else {
             requested
         };
-        requests.push((hotkey, mode));
+        requests.push((hotkey, mode, &binding.condition));
     }
 
     let mut blockers = Vec::new();
     let mut hotkeys_seen: Vec<&KeyCombination> = Vec::new();
-    for (hotkey, _) in &requests {
+    for (hotkey, _, _) in &requests {
         if hotkeys_seen.contains(&hotkey) {
             continue;
         }
@@ -372,19 +378,47 @@ fn expand_with_auto_blockers(
             continue;
         }
         let mut modes: Vec<BlockerMode> = Vec::new();
-        for (other, mode) in &requests {
+        for (other, mode, _) in &requests {
             if other == hotkey && !modes.contains(mode) {
                 modes.push(*mode);
             }
         }
         for mode in modes {
-            blockers.push(Binding::new_auto_blocker(hotkey.clone(), mode));
+            let owners = requests
+                .iter()
+                .filter(|(other, other_mode, _)| other == hotkey && *other_mode == mode)
+                .map(|&(_, _, condition)| condition);
+            blockers.push(
+                Binding::new_auto_blocker(hotkey.clone(), mode)
+                    .with_condition(any_of_conditions(owners)),
+            );
         }
     }
 
     let mut result = user_bindings;
     result.extend(blockers);
     result
+}
+
+/// The condition that holds where any of `conditions` holds: `Always` if
+/// one of them is `Always`, else each distinct condition once, in the
+/// order given, as written (`Condition`'s equality), OR'ed if there are
+/// several. `Always` for none.
+fn any_of_conditions<'a>(conditions: impl IntoIterator<Item = &'a Condition>) -> Condition {
+    let mut distinct: Vec<&Condition> = Vec::new();
+    for condition in conditions {
+        if condition.is_always() {
+            return Condition::Always;
+        }
+        if !distinct.contains(&condition) {
+            distinct.push(condition);
+        }
+    }
+    match distinct.as_slice() {
+        [] => Condition::Always,
+        [one] => (*one).clone(),
+        several => Condition::Or(several.iter().map(|&condition| condition.clone()).collect()),
+    }
 }
 
 /// Writes the bundled template to `path`, creating its folder; only for

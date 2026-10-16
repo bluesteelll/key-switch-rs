@@ -219,6 +219,22 @@ minor version; such entries sit under **Changed** and start with
     holding Ctrl+J and then releasing Ctrl now lets `j` repeat in the
     application next to one Down per repeat; the losing `J` binding used to
     swallow the press and its repeats.
+- **Breaking:** an auto-blocker acts only where the `when:` of a binding
+  that asked for it holds (roadmap item 1.2, KS-35); it used to act in every
+  window. With `when: Not(AppEquals("game.exe"))` added to the default
+  config's CapsLock binding, the Windows hotkey (`Alt+Shift` by default) now
+  reaches the game and switches the layout there, while CapsLock reaches it
+  as CapsLock; the hotkey used to stay blocked in the game too. Bindings that
+  ask for a blocker of the same hotkey and mode share one, which acts where
+  any of their `when:` holds, and everywhere if one of them has no `when:`.
+  The startup list shows the blocker's condition as for any binding:
+  `[AUTO-BLOCK] Alt + Shift              -> (blocked)  [Not(AppEquals("game.exe"))]`.
+  The bindings' triggers are not inherited: the blocker acts on the
+  hotkey's own press. Its condition is asked only once the hotkey matches,
+  so it costs the hook no foreground lookup on other keys. Manual check:
+  with `( keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("notepad.exe") )`,
+  Alt+Shift in Notepad neither switches the layout nor activates the menu
+  bar, and in another window Windows switches the layout.
 
 ### Fixed
 
@@ -266,12 +282,11 @@ minor version; such entries sit under **Changed** and start with
   `QueryFullProcessImageNameW` and compares the executable's file name:
   `notepad.exe` for `C:\Windows\System32\notepad.exe`. A binding with
   `when: Not(AppEquals("game.exe"))` now stays silent in that game. The
-  auto-blocker of a `block_original_combo` binding still ignores the
-  binding's `when:` and acts in every window until roadmap item 1.2
-  (KS-35). With `when: Not(AppEquals("game.exe"))` added to the default
-  config's CapsLock binding, CapsLock now reaches the game as CapsLock
-  while the Windows hotkey (`Alt+Shift` by default) stays blocked there,
-  so neither switches the layout in the game. Windows of UWP apps such as
+  auto-blocker of a `block_original_combo` binding follows that binding's
+  `when:` too (KS-35, under **Changed**): with
+  `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock
+  binding, CapsLock reaches the game as CapsLock and the Windows hotkey
+  (`Alt+Shift` by default) switches the layout there. Windows of UWP apps such as
   Calculator and Settings belong to `ApplicationFrameHost.exe`; match
   those by title. Manual check (no automated test can focus a window):
   with `( keys: "F9", action: PressKey("A"), when: AppEquals("notepad.exe") )`

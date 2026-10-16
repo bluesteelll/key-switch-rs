@@ -150,7 +150,9 @@
 //!      (KS-18). It matches when the key just pressed is one of the
 //!      hotkey's, all of them are held, and every other key held is one
 //!      that [`Env::os_key_down`] reports up: Windows would see the hotkey
-//!      and nothing else (KS-05). A `Swallow` blocker (`true`) then asks for
+//!      and nothing else (KS-05), and its `when:`, the `when:` of the
+//!      bindings that asked for it OR'ed (KS-35), holds; that is asked only
+//!      once the hotkey matches. A `Swallow` blocker (`true`) then asks for
 //!      suppression. A `MaskOnly` blocker (experimental) lets the key-down
 //!      through and, on a first key-down, asks for the menu mask key on
 //!      this event and on the next key event, whatever its key.
@@ -435,20 +437,19 @@ impl Engine {
             match &binding.kind {
                 BindingKind::Combo(combo) => {
                     if let Some(mode) = binding.auto_blocker {
-                        // `Always` returns true without asking the Env, so a
-                        // config without `when:` never looks at the
-                        // foreground window.
-                        if !binding.condition.evaluate(&foreground) {
-                            continue;
-                        }
                         // A blocker only keeps a Windows hotkey from
                         // Windows. It fires nothing and is no candidate for
                         // the election, so a user binding matching the same
                         // key-down fires wherever the blocker sits in the
-                        // list (KS-18).
+                        // list (KS-18). Its `when:`, taken from the bindings
+                        // that asked for it (KS-35), is asked only once the
+                        // hotkey matches: on the hook thread it may capture
+                        // the foreground window (KS-08). `Always` asks the
+                        // Env nothing.
                         if matching::blocker_matches(combo, vk, &self.keys, |key| {
                             env.os_key_down(key)
-                        }) {
+                        }) && binding.condition.evaluate(&foreground)
+                        {
                             match mode {
                                 BlockerMode::Swallow => decision.suppress = true,
                                 // The hotkey reaches Windows with the mask
