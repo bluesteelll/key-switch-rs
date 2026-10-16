@@ -62,6 +62,7 @@ key-switch-rs/
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
+    │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
     │   └── system_function.rs  - Windows system functions
     └── main.rs                 - entry point: loads config, builds App
 ```
@@ -744,6 +745,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
+  - `Win32_Security` (`CreateMutexW` for the single-instance guard)
 - `serde` + `ron` for `config.ron` parsing — native Rust enum-variant literal syntax
 - `arc-swap` for lock-free, hot-reloadable binding list
 - `notify` for filesystem-driven config reload
