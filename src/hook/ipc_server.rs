@@ -1,7 +1,9 @@
 //! Daemon-side IPC listener. [`bind`] creates the named pipe and starts
 //! nothing; [`IpcListener::serve`] then spawns the background thread that
 //! accepts connections on it, hands each command to a [`DaemonControl`]
-//! and writes the formatted response back.
+//! and writes the formatted response back. `App::run` binds before it
+//! installs the hooks and serves once they are installed, so a pipe the
+//! daemon cannot create stops it before any hook is live (KS-20).
 //!
 //! The server knows nothing of the keyboard hook: the daemon passes its own
 //! `DaemonControl` (`core::app`), and the tests pass a stand-in on a pipe
@@ -359,5 +361,19 @@ mod tests {
             Some(5),
             "FILE_FLAG_FIRST_PIPE_INSTANCE refuses a taken name with ERROR_ACCESS_DENIED: {error}"
         );
+    }
+
+    #[test]
+    #[ignore = "manual: holds the daemon's pipe for 60 s; meanwhile start the release daemon and check that it stops with [FATAL] could not create the IPC pipe and that CapsLock is not remapped"]
+    fn hold_the_daemon_pipe_name_for_a_manual_start() {
+        let path = crate::ipc::pipe_path(crate::ipc::PIPE_NAME);
+        let _listener = match bind(crate::ipc::PIPE_NAME) {
+            Ok(listener) => listener,
+            Err(error) => panic!("a daemon owns the pipe; stop it first: {error}"),
+        };
+        eprintln!(
+            "holding {path} for 60 s: start the release daemon now, press CapsLock in Notepad, then Enter in the daemon's console"
+        );
+        thread::sleep(Duration::from_secs(60));
     }
 }

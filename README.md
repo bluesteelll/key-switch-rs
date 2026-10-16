@@ -130,6 +130,7 @@ Main application:
 
 - Manage bindings via builder pattern
 - Install keyboard + foreground-change hooks
+- Creates the IPC pipe before it installs the hooks; a pipe it cannot create stops the daemon (KS-20)
 - Ctrl+C handler for correct shutdown
 - Windows message loop
 
@@ -719,6 +720,10 @@ every user signed in to the machine: under fast user switching or Remote
 Desktop another user can switch your remapping on or off, stop your daemon,
 or answer `swch` in its place, until roadmap item 4.1 gives each session its
 own pipe.
+Until then only one daemon on the machine can own the pipe: a daemon that
+cannot create it, for example a second signed-in user's, stops with
+`[FATAL] could not create the IPC pipe \\.\pipe\key-switch-rs.sock: ...`
+before it installs any hook.
 
 ### Direct launch (without swch)
 
@@ -730,7 +735,8 @@ Only one daemon runs per Windows session. A second start, by double-click,
 from a console or from a Scheduled Task, prints
 ``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
 and exits with code 2 before it reads the config, without waiting for Enter.
-The check covers the Windows session the daemon starts in.
+The check covers the Windows session the daemon starts in; a second
+signed-in user's daemon stops at the pipe instead (see above).
 
 ### Avoiding the UAC prompt at every boot
 

@@ -235,6 +235,19 @@ minor version; such entries sit under **Changed** and start with
   with `( keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("notepad.exe") )`,
   Alt+Shift in Notepad neither switches the layout nor activates the menu
   bar, and in another window Windows switches the layout.
+- A pipe the daemon cannot create now stops it (roadmap item 1.5, KS-20,
+  KS-40). The daemon creates `\\.\pipe\key-switch-rs.sock` before it
+  installs the hooks, and when that fails it prints
+  `[FATAL] could not create the IPC pipe \\.\pipe\key-switch-rs.sock: ...`
+  and exits with no hook installed; it used to warn and keep remapping
+  with no `swch` control. Pipe names are shared by every session (KS-40),
+  so under fast user switching or Remote Desktop a second signed-in
+  user's daemon now stops this way while the first user's daemon runs; it
+  used to remap that user's keys without `swch` control. Roadmap item 4.1
+  gives each session its own pipe. Manual check: while
+  `cargo test --locked -- --ignored --nocapture hold_the_daemon_pipe_name_for_a_manual_start`
+  holds the pipe, the release daemon stops with that line and CapsLock
+  stays CapsLock.
 
 ### Fixed
 
