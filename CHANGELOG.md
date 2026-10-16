@@ -239,8 +239,7 @@ minor version; such entries sit under **Changed** and start with
   macro runs once. The repeats are still swallowed when the key-down was.
   A press that the daemon reads as an auto-repeat, because the key's
   previous release went to the lock screen or another desktop (KS-29), now
-  fires nothing for such a binding; its release passes and the next press
-  works. For a key whose key-down the daemon swallowed, which is the usual
+  fires nothing for such a binding; the next press works. For a key whose key-down the daemon swallowed, which is the usual
   trigger key, no roadmap item repairs that record yet: the key resync of
   roadmap item 2.3 leaves such keys alone.
 - KS-11: a timer left over from an earlier press no longer acts on a newer

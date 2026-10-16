@@ -1,6 +1,6 @@
 # Actions and macro steps
 
-`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `1dfd80a`; how actions behave in Windows is inferred from the code and was not observed on a live daemon.
+`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; how actions behave in Windows is inferred from the code and was not observed on a live daemon.
 
 <a id="s13"></a>
 ## 13. Actions (`action`)
@@ -39,7 +39,7 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 
 | How the binding fired | Thread | Moment | Decided at |
 |---|---|---|---|
-| `keys` + `Immediate` | hook thread | key press, **including every auto-repeat** | [src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412) |
+| `keys` + `Immediate` | hook thread | key press; on auto-repeat only with `repeat` | [src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412) |
 | `trigger: Tap(ms)` | hook thread | key released before `ms` | [src/engine/mod.rs:547-552](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L547-L552) |
 | `trigger: Hold(ms)` | separate `hold-timer` thread | `ms` after the press, when the timer thread wakes | [src/hook/keyboard_hook_callback.rs:204-218](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L204-L218) |
 | `trigger: DoubleTap(ms)` | hook thread | second press | [src/engine/mod.rs:439-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L439-L452) |
@@ -48,13 +48,13 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 
 The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` ([src/core/app.rs:121-192](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L121-L192)). While an action runs, keyboard input stalls system-wide. Only `Sequence` moves its work to a separate thread; all other actions run synchronously on the thread that invoked them. When one key-down fires several actions, they run in order.
 
-Four known issues cut across several actions:
+> [!NOTE]
+> **Auto-repeat ([KS-10](../audit.md#ks-10), fixed in `feat/repeat-flag`).** While the trigger of a `keys` + `Immediate` binding is held, the keyboard repeats its key-down, about 30 times per second after the initial delay. By default only `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` fire again on each repeat (owner decision); every other action fires once per press, so `trigger: Tap(…)` is no longer needed to make an action one-shot. `repeat: true` on a binding makes it fire on every repeat, and `repeat: false` once per press ([§11.3](triggers-conditions.md#s11-3)). Each repeat of a `PressKey` sends a new press and release: for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`, or a held trigger toggles the key at the repeat rate or taps the modifier ([§13.5](#s13-5)).
+
+Three known issues cut across several actions:
 
 > [!WARNING]
 > **Known issue ([KS-08](../audit.md#ks-08)).** `Launch` and `OpenUrl` run synchronously inside the hook callback ([src/core/windows_actions.rs:137-138](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L137-L138)). The exception is `trigger: Hold(ms)`, where the action is called from the `hold-timer` thread. `CreateProcessW` and `ShellExecuteW` can take hundreds of milliseconds. If the callback runs longer than `LowLevelHooksTimeout` (at most 1000 ms on Windows 10 1709 and later), Windows silently removes the hook, while the daemon goes on considering itself running. **Workaround:** `Sequence([Launch(...)])` or `Sequence([OpenUrl(...)])`: macro steps run on a worker thread. Roadmap [item 2.1](../roadmap.md#21-action-executor) moves actions off the hook thread.
-
-> [!WARNING]
-> **Known issue ([KS-10](../audit.md#ks-10)).** `Immediate` actions repeat on auto-repeat ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). While the trigger is held, the action fires at the auto-repeat rate, about 30 times per second after the initial delay. For `PressKey` this is what you want: the remap "holds" like an ordinary key. But `SwitchLanguage` will cycle through the layouts, `ToggleCapsLock` will flicker, `Launch` and `OpenUrl` will open dozens of windows, and `Sequence` will start dozens of parallel macros. Deferred triggers, as well as `chord` and `sequence`, skip auto-repeat, so `trigger: Tap(…)` is convenient for "one-shot" actions. Roadmap [item 1.1](../roadmap.md#11-per-binding-repeat-flag) will keep repeat on by default only for `PressKey`, `VolumeUp` and `VolumeDown` (owner decision).
 
 > [!WARNING]
 > **Known issue ([KS-19](../audit.md#ks-19)).** Synthesized keys combine with physically held modifiers ([src/core/windows_actions.rs:163](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163), [src/data/sequence.rs:202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L202)). The trigger's modifier presses have already reached the OS; only the key that completed the combination is suppressed. Example: with `keys: "Ctrl+J", action: PressKey("Down")` the application receives Ctrl+Down. Workaround: triggers without modifiers (`F13`–`F24`, `CapsLock`, `Pause`), and in a macro a first step `Delay(150…300)` so that the user has time to release the keys.
@@ -164,7 +164,7 @@ In practice:
 - The argument is **one** key name, following the rules of [§6](keys.md#s6): case and all whitespace characters are ignored. An empty string is an error: `PressKey: unknown key ""`.
 - Combinations are not accepted: `PressKey("Ctrl+C")` → `PressKey: unknown key "Ctrl+C"`. A combination is sent like this: `Sequence([Combo("Ctrl+C")])`.
 - Code: [src/core/windows_actions.rs:163-202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163-L202). One `SendInput` call with two events: the press and the release of the VK; `wScan = 0`, and neither `KEYEVENTF_EXTENDEDKEY` nor `KEYEVENTF_SCANCODE` is set ([§6.8](keys.md#s6-8), [KS-36](../audit.md#ks-36)). If some of the events are lost, the console shows `SendInput dropped events for vk ...`.
-- It is a **tap**, not a hold. With `Immediate`, a held trigger produces a series of taps at the auto-repeat rate. `PressKey("LShift")` is one short Shift press, not a held Shift.
+- It is a **tap**, not a hold. With `Immediate`, a held trigger produces a series of taps at the auto-repeat rate, unless the binding sets `repeat: false`. `PressKey("LShift")` is one short Shift press, not a held Shift, and a held trigger of `PressKey("CapsLock")` toggles CapsLock on every repeat: write `repeat: false` for a toggle key or a modifier.
 - Output goes by VK, so the character depends on the current layout and on the held modifiers. `PressKey("Q")` in the Russian layout types "й". For layout-independent text use `Sequence([Text("...")])`.
 - Names with a side (`LShift`, `RAlt`, `RWin` …) are allowed here and send their own VK.
 
@@ -235,7 +235,7 @@ Media(PlayPause | Stop | Next | Previous | VolumeUp | VolumeDown | VolumeMute)
 
 The argument is an identifier without quotes, and case matters. `Media("PlayPause")` and `Media()` → `Expected identifier`, `Media(Play)` and `Media(playpause)` → ``Unexpected variant named `Play` in enum `MediaKeyRef` ``, `Media` without parentheses → ``Expected opening `(` ``. How the variants map to VK codes and key names is shown in the media and volume table in [§6.4](keys.md#s6-4).
 
-The mechanism is the same as for `PressKey`: one VK tap ([src/core/windows_actions.rs:66-78](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L66-L78), [src/core/windows_actions.rs:139](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L139)). Windows handles these keys globally: volume with the on-screen indicator, and control of the current media session. One tap of `VolumeUp` or `VolumeDown` is one system volume step. With `Immediate`, holding the trigger changes the volume continuously. `PressKey("VolumeMute")` is equivalent to `Media(VolumeMute)`, while `PressKey("Stop")`, `PressKey("Next")` and `PressKey("Previous")` are `unknown key` errors.
+The mechanism is the same as for `PressKey`: one VK tap ([src/core/windows_actions.rs:66-78](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L66-L78), [src/core/windows_actions.rs:139](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L139)). Windows handles these keys globally: volume with the on-screen indicator, and control of the current media session. One tap of `VolumeUp` or `VolumeDown` is one system volume step. With `Immediate`, holding the trigger changes the volume continuously; the other media keys fire once per press unless the binding sets `repeat: true` ([§11.3](triggers-conditions.md#s11-3)). `PressKey("VolumeMute")` is equivalent to `Media(VolumeMute)`, while `PressKey("Stop")`, `PressKey("Next")` and `PressKey("Previous")` are `unknown key` errors.
 
 <a id="s13-9"></a>
 ### 13.9 `DoNothing`
@@ -290,7 +290,7 @@ action: Sequence([ <step>, <step>, ... ])
 - `Launch` and `OpenUrl` inside `Sequence` run on the worker thread and **do not block the hook**. This is the recommended way to run them.
 
 > [!WARNING]
-> **Known issue.** Macros have neither a limit nor cancellation ([src/data/sequence.rs:116](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L116)). Every firing creates a new independent thread; with `Immediate` auto-repeat that means dozens of parallel macros with interleaved output ([KS-10](../audit.md#ks-10)). `swch off`, a hot reload and a new key press do not stop a running macro, and a `Delay` cannot be interrupted.
+> **Known issue.** Macros have neither a limit nor cancellation ([src/data/sequence.rs:116](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L116)). Every firing creates a new independent thread. A held `Immediate` macro starts once per press; with `repeat: true` it starts once per auto-repeat, dozens of parallel macros with interleaved output ([KS-10](../audit.md#ks-10)). `swch off`, a hot reload and a new key press do not stop a running macro, and a `Delay` cannot be interrupted.
 
 <a id="s14-2"></a>
 ### 14.2 `Window(<operation>)`

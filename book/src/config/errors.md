@@ -1,6 +1,6 @@
 # Error messages
 
-A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `1dfd80a`, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
+A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
 
 <a id="s18"></a>
 ## 18. Error messages
@@ -133,7 +133,7 @@ Code: [src/config/loader.rs:250-262](https://github.com/bluesteelll/key-switch-r
 config has <K> invalid binding(s):
   - binding #<N> [<label>]: <message>
 ```
-- **All** bindings are checked, and the errors are collected into one list. For each binding only the **first** error is printed, in this order: the kind (`keys`/`sequence`/`chord`, including the step count, the chord keys and the `max_gap_ms` or `window_ms` range), the action, the trigger and its range, a deferred trigger on `sequence`/`chord`, and `allow_extra_modifiers` on `sequence`/`chord` ([src/config/loader.rs:341-382](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L341-L382)). Within a kind, a combo or a macro, checking stops at the first bad segment or step. For example, `( keys: "Foo", action: PressKey("Bar") )` gives only `unknown key "Foo" in combo "Foo"`.
+- **All** bindings are checked, and the errors are collected into one list. For each binding only the **first** error is printed, in this order: the kind (`keys`/`sequence`/`chord`, including the step count, the chord keys and the `max_gap_ms` or `window_ms` range), the action, the trigger and its range, a deferred trigger on `sequence`/`chord`, `allow_extra_modifiers` on `sequence`/`chord`, and `repeat: true` outside `keys` + `Immediate` ([src/config/loader.rs:341-382](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L341-L382)). Within a kind, a combo or a macro, checking stops at the first bad segment or step. For example, `( keys: "Foo", action: PressKey("Bar") )` gives only `unknown key "Foo" in combo "Foo"`.
 - `N` is the index in the `bindings` list, **counting from 0**, in file order. Commented-out bindings and auto-blockers are not counted. The numbers in `step #M`, `Sequence step #M` and `Chord key #M` also count from 0.
 - `<label>` is the value of `keys` as written (spaces included), `Sequence[F13 → F14]` for a sequence, `Chord[F15+F16]` for a chord, or `<unset>`. If several kind fields are set, the first of `keys`, `sequence`, `chord` is used. A chord label is built by simply joining the original strings with `+` ([src/config/loader.rs:460-471](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L460-L471)), so with empty or `+` names it is confusing: `["", "k"]` → `[Chord[+k]]`, `["+", "k"]` → `[Chord[++k]]`, `keys: []` → `[Chord[]]`.
 - Strings after the colon are printed in Rust's Debug format: in quotes, with `\` as `\\`, `"` as `\"`, a tab as `\t` and U+00A0 as `\u{a0}`. For example, `keys: "Ctrl+\\+Foo"` gives `binding #0 [Ctrl+\+Foo]: unknown key "Foo" in combo "Ctrl+\\+Foo"`.
@@ -157,6 +157,7 @@ config has <K> invalid binding(s):
 | 15 | A `Tap`, `Hold` or `DoubleTap` term is 1 to 10000 | `Tap(0) is out of range: timings are 1 to 10000 ms` |
 | 16 | A deferred trigger only together with `keys` | ``Sequence/Chord cannot use a deferred trigger (Tap(200)); only `Immediate` (the default) is valid for these kinds`` |
 | 17 | `allow_extra_modifiers: true` only together with `keys` | `` `allow_extra_modifiers` applies only to `keys` bindings `` |
+| 18 | `repeat: true` only together with `keys` and `Immediate` | `` `repeat: true` applies only to `keys` bindings with the `Immediate` trigger `` |
 
 > [!NOTE]
 > The code also has a `Combo {:?}: empty` branch ([src/config/loader.rs:600-602](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L600-L602)), but it is unreachable: the combo parser never returns an empty list without an error, so a user never sees this message.

@@ -1,6 +1,6 @@
 # Binding kinds and key suppression
 
-A binding has exactly one kind: `keys` (a combination held together), `sequence` (steps pressed in order) or `chord` (keys pressed almost at once). This page says when each kind fires and which key events it hides from applications. Facts describe commit `1dfd80a`; the run-time behaviour is derived from the code of the decision core ([src/engine](https://github.com/bluesteelll/key-switch-rs/tree/1dfd80a/src/engine)) and its scenario tests, not observed on a live daemon.
+A binding has exactly one kind: `keys` (a combination held together), `sequence` (steps pressed in order) or `chord` (keys pressed almost at once). This page says when each kind fires and which key events it hides from applications. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; the run-time behaviour is derived from the code of the decision core ([src/engine](https://github.com/bluesteelll/key-switch-rs/tree/1dfd80a/src/engine)) and its scenario tests, not observed on a live daemon.
 
 <a id="s7"></a>
 ## 7. The `keys` kind: combination
@@ -23,15 +23,15 @@ What follows from these rules:
 - **A key typed while a binding's key is held is not that binding's key.** With CapsLock held, typing `abc` delivers `abc` and does not fire `"CapsLock"` again.
 - **Extra modifiers block the match.** `"CapsLock"` does not fire while Shift, Ctrl, Alt or Win is held: CapsLock then reaches Windows. `"Ctrl+J"` does not fire on Ctrl+Shift+J, so that shortcut reaches the application. `"A"` does not fire on Ctrl+A.
 - With the bindings `"Ctrl+A"` and `"A"`, pressing Ctrl+A matches only `"Ctrl+A"`, and pressing A alone matches only `"A"`.
-- Matching is checked on every key-down, auto-repeats included ([src/engine/mod.rs:365-500](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L365-L500)). Releasing keys does not fire a binding (except `Tap`, [§11](triggers-conditions.md#s11)).
+- Matching is checked on every key-down, auto-repeats included ([src/engine/mod.rs:365-500](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L365-L500)); an `Immediate` binding fires on an auto-repeat only with `repeat` ([§11.3](triggers-conditions.md#s11-3)). Releasing keys does not fire a binding (except `Tap`, [§11](triggers-conditions.md#s11)).
 - Only the trigger key's event is suppressed. The OS has already received the modifiers pressed before it ([§10](#s10)).
 - `allow_extra_modifiers` is a load error on `sequence` and `chord` bindings: ``binding #0 [Chord[F13+F14]]: `allow_extra_modifiers` applies only to `keys` bindings``.
 
 > [!NOTE]
 > Until `1dfd80a` a combination matched any superset of the keys held, with no trigger-key rule ([KS-04](../audit.md#ks-04)): holding CapsLock and typing re-fired the binding and swallowed the typed keys. Exact modifier matching is an owner decision that came with the same change. A config written for the old behaviour may need `allow_extra_modifiers: true` on bindings that should fire with other modifiers held.
 
-> [!WARNING]
-> Known issue ([KS-10](../audit.md#ks-10)): an `Immediate` action repeats on **every** auto-repeat of the held key while the binding matches ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412); details in [§13.1](actions.md#s13-1)). Roadmap [item 1.1](../roadmap.md#11-per-binding-repeat-flag) adds a per-binding `repeat` flag.
+> [!NOTE]
+> Until `feat/repeat-flag` an `Immediate` action repeated on **every** auto-repeat of the held key while the binding matched ([KS-10](../audit.md#ks-10)). Now only `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` repeat by default, and every other action fires once per press ([§11.3](triggers-conditions.md#s11-3), [§13.1](actions.md#s13-1)). `repeat: true` on a binding restores the old behaviour.
 
 ---
 
@@ -62,7 +62,7 @@ A sequence fires when its steps are pressed one after another, leader-key style 
 - an unknown field such as `max_gap: 300`: ``Unexpected field named `max_gap` in `SequenceSpec`, expected either `steps` or `max_gap_ms` instead``;
 - `sequence` is written as a list instead of a struct (`sequence: ["F13", "F14"]`): ``Expected opening `(` for struct `SequenceSpec` ``;
 - a string instead of a list (`steps: "F13 F14"`) or a tuple: ``Expected opening `[` ``; unquoted names (`steps: [F13, F14]`): `Expected string`;
-- a `trigger` other than `Immediate`, or `allow_extra_modifiers: true`: an error ([§11.2](triggers-conditions.md#s11-2), [§7](#s7));
+- a `trigger` other than `Immediate`, `allow_extra_modifiers: true` or `repeat: true`: an error ([§11.2](triggers-conditions.md#s11-2), [§7](#s7), [§11.3](triggers-conditions.md#s11-3));
 - repeated keys within a step collapse (`"Ctrl+Ctrl+F14"` equals `Ctrl+F14`). Identical consecutive steps are allowed: `["F13", "F13", "F14"]`.
 
 <a id="s8-2"></a>
@@ -129,7 +129,7 @@ A chord fires when all of its keys are pressed almost simultaneously, in any ord
 - two keys that one press could satisfy: `Chord key #<i>: duplicate "<name>" (overlaps key #<j>)`. That covers repeats and synonyms (`["F13","f13"]`, `["Ctrl","Control"]`) and also an unsided key with a sided one of the same family (`["Shift","LShift"]`, `["Win","RWin"]`, `["Win","LWin"]`) ([src/data/key_spec.rs:150-160](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs#L150-L160)). `["LShift","RShift"]` is allowed;
 - `window_ms` outside 1 to 10000: `window_ms: 20000 is out of range: timings are 1 to 10000 ms`;
 - the `keys` field is missing: ``Unexpected missing field named `keys` in `ChordSpec` ``;
-- a `trigger` other than `Immediate`, or `allow_extra_modifiers: true`: an error ([§11.2](triggers-conditions.md#s11-2), [§7](#s7)).
+- a `trigger` other than `Immediate`, `allow_extra_modifiers: true` or `repeat: true`: an error ([§11.2](triggers-conditions.md#s11-2), [§7](#s7), [§11.3](triggers-conditions.md#s11-3)).
 
 <a id="s9-2"></a>
 ### 9.2 How it works

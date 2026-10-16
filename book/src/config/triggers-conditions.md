@@ -1,6 +1,6 @@
 # Triggers and conditions
 
-`trigger` decides when a `keys` binding fires: at once (`Immediate`), on a short press (`Tap`), on a long press (`Hold`) or on a double press (`DoubleTap`). `when` restricts a binding to the windows whose application or title matches. Facts describe commit `1dfd80a`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
+`trigger` decides when a `keys` binding fires: at once (`Immediate`), on a short press (`Tap`), on a long press (`Hold`) or on a double press (`DoubleTap`). `when` restricts a binding to the windows whose application or title matches. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
 
 <a id="s11"></a>
 ## 11. Triggers (`trigger`)
@@ -10,7 +10,7 @@
 
 | Value | RON | Fires |
 |---|---|---|
-| `Immediate` (default) | `trigger: Immediate`, or the field omitted | on key-down, including every auto-repeat |
+| `Immediate` (default) | `trigger: Immediate`, or the field omitted | on key-down; on an auto-repeat again only with `repeat` ([§11.3](#s11-3)) |
 | `Tap(ms)` | `trigger: Tap(200)` | on key-up, if the key is released less than `ms` after it was pressed |
 | `Hold(ms)` | `trigger: Hold(300)` | `ms` after the press, if the key was not released before that |
 | `DoubleTap(ms)` | `trigger: DoubleTap(250)` | on the second key-down of the same key less than `ms` after the first key-down |
@@ -43,9 +43,15 @@
 - If several `Immediate` bindings match one press, only the first in check order runs: the one with the most keys, and on a tie the first in the file ([§16](matching.md#s16)).
 - The event is suppressed if at least one of the matched `Immediate` bindings has `block_default: true`, even one that did not run ([KS-13](../audit.md#ks-13)).
 - An auto-blocker never takes this slot: it fires nothing and only suppresses ([§15](matching.md#s15)).
+- On an auto-repeat of the key the binding fires again only if it repeats: with `repeat: true`, or by default for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` (owner decision, [KS-10](../audit.md#ks-10)). Every other action fires once per press. The repeats are still suppressed when the key-down was, and passed when it passed ([§10](kinds.md#s10)), whether the action fires or not.
+- The first matching `Immediate` binding takes an auto-repeat even when it does not fire on it, so a later binding on the same key never fires in its place. With `( keys: "F13", action: SwitchLanguage )` above `( keys: "F13", action: PressKey("Left") )`, holding F13 switches the layout once and sends no Left.
+- `repeat: true` on a `Tap`, `Hold` or `DoubleTap` binding, a `sequence` or a `chord` is a load error, because those never fire on an auto-repeat: ``binding #0 [F13]: `repeat: true` applies only to `keys` bindings with the `Immediate` trigger``. `repeat: false` is accepted there.
+- A press that the daemon reads as an auto-repeat, because the key's previous release went to the lock screen or another desktop, fires only a binding that repeats; the next press works ([KS-29](../audit.md#ks-29), [§19](known-issues.md#s19) row 63).
 
-> [!WARNING]
-> **Known issue ([KS-10](../audit.md#ks-10)).** The action repeats on every auto-repeat while the binding matches ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). `SwitchLanguage`, `Launch` and similar actions repeat at the auto-repeat rate ([§13.1](actions.md#s13-1)). Roadmap [item 1.1](../roadmap.md#11-per-binding-repeat-flag) adds a `repeat` flag.
+```ron
+( keys: "CapsLock", action: SwitchLanguage ),           // one switch per press, however long CapsLock is held
+( keys: "F13", action: Media(Next), repeat: true ),     // skips tracks while F13 is held
+```
 
 <a id="s11-4"></a>
 ### 11.4 Common to `Tap`, `Hold` and `DoubleTap`

@@ -5,7 +5,7 @@ The daemon reads one file: the first command-line argument, or `config.ron` next
 <a id="s2"></a>
 ## 2. File location, creation and reload
 
-Main files: [src/main.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs), [src/hook/config_watcher.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs). Facts describe commit `1dfd80a`.
+Main files: [src/main.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs), [src/hook/config_watcher.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs). Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`.
 
 <a id="s2-1"></a>
 ### 2.1 Where the file is
@@ -149,6 +149,7 @@ Each element of `bindings` is a struct `( … )` (`RawBinding`, [src/config/sche
 | `block_default` | `true` / `false` | `true` | Whether to hide the pressed key from the OS. Honoured **only** for `keys` with `trigger: Immediate`; in all other cases the key is always hidden ([§10](kinds.md#s10)) |
 | `block_original_combo` | `true` / `false` | `false` | Add an auto-blocker for the system hotkey that does the same thing as `action` ([§15](matching.md#s15)). Works only for `SwitchLanguage` and `SwitchLanguageBackward`; for other actions the flag is silently ignored |
 | `allow_extra_modifiers` | `true` / `false` | `false` | `keys` only: also fire while modifiers the binding does not name are held ([§7](kinds.md#s7)). `true` on a `sequence` or `chord` is a load error |
+| `repeat` | `true` / `false` | `true` for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)`; `false` for every other action | `keys` with `trigger: Immediate` only: fire again on every auto-repeat while the key is held ([§11.3](triggers-conditions.md#s11-3)). With `false` the action fires once per press; the repeats and the release are still hidden when the press was. `true` on a `Tap`, `Hold` or `DoubleTap` trigger, a `sequence` or a `chord` is a load error; `false` is accepted there. The startup list marks a value that differs from the default with `[repeat]` or `[no repeat]` |
 
 Example with all fields:
 
@@ -161,6 +162,7 @@ Example with all fields:
     when: TitleContains("Visual Studio Code"),
     trigger: Immediate,
     allow_extra_modifiers: false,
+    repeat: false,
 ),
 ```
 
@@ -181,6 +183,7 @@ The chosen kind determines which other fields have an effect:
 | `block_original_combo` | works | works (the auto-blocker is still a combo) | works |
 | `when` | works | works | works |
 | `allow_extra_modifiers` | works | `true` is an error | `true` is an error |
+| `repeat` | honoured with `Immediate`; `true` is an error with `Tap`/`Hold`/`DoubleTap` | `true` is an error | `true` is an error |
 
 <a id="s5-3"></a>
 ### 5.3 Unknown fields and typos
@@ -189,7 +192,7 @@ Every struct of the schema rejects fields it does not know: the root, a binding,
 
 | Written | Error |
 |---|---|
-| `tigger: Tap(200)` in a binding | ``Unexpected field named `tigger` in `RawBinding`, expected one of `keys`, `sequence`, `chord`, `action`, `block_default`, `block_original_combo`, `when`, `trigger`, or `allow_extra_modifiers` instead`` |
+| `tigger: Tap(200)` in a binding | ``Unexpected field named `tigger` in `RawBinding`, expected one of `keys`, `sequence`, `chord`, `action`, `block_default`, `block_original_combo`, `when`, `trigger`, `allow_extra_modifiers`, or `repeat` instead`` |
 | `Keys:` (different case) | the same message for `` `Keys` `` |
 | `acton: DoNothing` | the same message for `` `acton` ``; the misspelling is reported before the missing `action` |
 | `max_gap: 300` in `sequence` | ``Unexpected field named `max_gap` in `SequenceSpec`, expected either `steps` or `max_gap_ms` instead`` |

@@ -3,19 +3,20 @@
 <a id="s17"></a>
 ## 17. Complete `config.ron` example
 
-The example uses every binding kind, every trigger, every action, every macro step, every condition variant and `allow_extra_modifiers`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no Win/Alt combinations with actions that inject no keystrokes ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`.
+The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no Win/Alt combinations with actions that inject no keystrokes ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`.
 
 Checked with the validator (the real loader) on a machine where the `Hotkey`/`Language Hotkey` values did not yield a combination, so the fallback `Alt+Shift` was used:
 
 ```text
 [INFO] SwitchLanguage: using default combination
-OK: 25 bindings (after auto-blocker expansion)
+OK: 26 bindings (after auto-blocker expansion)
 ```
 
-That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the loader appends after them. On a machine whose registry sets another language hotkey the blocker has other keys, and the count is the same.
+That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the loader appends after them. On a machine whose registry sets another language hotkey the blocker has other keys, and the count is the same.
 
 ```ron
-// config.ron — complete example for key-switch-rs (behaviour of commit 1dfd80a).
+// config.ron — complete example for key-switch-rs (behaviour of commit 1dfd80a
+// with the repeat field of the branch feat/repeat-flag).
 //
 // Save the file as UTF-8, with or without a BOM. After a save, the bindings
 // reload on their own after about 250 ms. A file that does not load (for
@@ -43,8 +44,8 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
         // appends an auto-blocker for the system language-switch hotkey
         // (taken from the registry: Alt+Shift, Ctrl+Shift or `, Alt+Shift by
         // default). The blocker acts only on the hotkey pressed on its own.
-        // Known issue: Immediate repeats on auto-repeat: while you hold
-        //   CapsLock, the layouts keep cycling.
+        // Holding CapsLock switches once: only PressKey and the volume keys
+        // fire again on auto-repeat unless a binding sets repeat: true.
         (
             keys: "CapsLock",
             action: SwitchLanguage,
@@ -72,11 +73,15 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
         // Windows sends VK_CANCEL instead of Pause).
         ( keys: "Pause", action: Media(PlayPause), allow_extra_modifiers: true ),
 
-        // Ctrl+Alt+= / Ctrl+Alt+-: volume. Immediate is handy here:
-        // while the keys are held, the volume changes continuously. OEM keys
+        // Ctrl+Alt+= / Ctrl+Alt+-: volume. VolumeUp and VolumeDown repeat
+        // while held by default, so the volume changes continuously. OEM keys
         // are named by their US-layout character ("=" is the =/+ key).
         ( keys: "Ctrl+Alt+=", action: Media(VolumeUp) ),
         ( keys: "Ctrl+Alt+-", action: Media(VolumeDown) ),
+
+        // Ctrl+Alt+]: next track. Media(Next) fires once per press by
+        // default; repeat: true skips track after track while the keys are held.
+        ( keys: "Ctrl+Alt+]", action: Media(Next), repeat: true ),
 
         // ───────────────────────── 3. Tap / Hold / DoubleTap ──────────────────
 
@@ -97,9 +102,9 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
         // ───────────────────────── 4. PostMessage ─────────────────────────────
 
-        // All three F22 bindings are Tap(300): with Immediate, auto-repeat
-        // would minimize or close windows one after another. Modifiers match
-        // exactly, so each press arms exactly one of them.
+        // All three F22 bindings are Tap(300): a short press only, so a held
+        // F22 does nothing. Modifiers match exactly, so each press arms
+        // exactly one of them.
 
         // F22: minimize the active window: WM_SYSCOMMAND + SC_MINIMIZE (0xF020).
         ( keys: "F22", action: PostMessage(msg: "WM_SYSCOMMAND", wparam: 0xF020), trigger: Tap(300) ),
@@ -119,8 +124,9 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
         // The binding with a condition sits ABOVE the general binding on the same
         // key: with equal key counts, file order decides. In VS Code F24 sends
-        // Ctrl+Shift+F5, in all other windows F5. Immediate: when held,
-        // F24 repeats like an ordinary key.
+        // Ctrl+Shift+F5 (restart debugging) once per press: a Sequence does not
+        // repeat by default. In all other windows it sends F5, and a held F24
+        // repeats F5 like an ordinary key.
         (
             keys: "F24",
             action: Sequence([ Combo("Ctrl+Shift+F5") ]),
@@ -178,8 +184,8 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
         // Ctrl+Alt+N: a note. The first Delay leaves time to release Ctrl+Alt:
         // synthesized input combines with physically held
-        // modifiers. Tap protects against auto-repeat (every firing
-        // starts a separate macro thread, which cannot be cancelled).
+        // modifiers. Tap(400): the macro starts on a short press only (every
+        // firing starts a separate macro thread, which cannot be cancelled).
         (
             keys: "Ctrl+Alt+N",
             trigger: Tap(400),
@@ -226,14 +232,13 @@ That is 24 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 > The comments in the example mark or work around these known defects, all still open at `1dfd80a`:
 > - Win/Alt combinations with an action that injects no keystrokes open the Start menu or the menu bar: [KS-12](../audit.md#ks-12);
 > - the `CapsLock` auto-blocker swallows the second modifier of Alt, Shift, X (or Shift, Alt, X), so the application gets Alt+X (or Shift+X): the rest of [KS-05](../audit.md#ks-05);
-> - `Immediate` actions repeat on auto-repeat (`CapsLock`, and the reason the `F22` bindings and the `Ctrl+Alt+N` macro use `Tap`): [KS-10](../audit.md#ks-10);
 > - programs started by `Launch` run with the daemon's administrator rights (`F21`, and `wt.exe` in the `F20` macro): [KS-09](../audit.md#ks-09);
 > - most actions run on the hook thread, which is why `Launch` and `OpenUrl` are placed under `Hold` or inside `Sequence` (`F21`, `F20`, `F23`): [KS-08](../audit.md#ks-08);
 > - synthesized input combines with physically held modifiers (the first `Delay` of `Ctrl+Alt+N`): [KS-19](../audit.md#ks-19).
 >
-> The audit version of this example also worked around sided names, `AppEquals`, unequal Tap and Hold terms, stuck keys, ASCII-only `TitleEquals`, relative config paths and the BOM ([KS-07](../audit.md#ks-07), [KS-03](../audit.md#ks-03), [KS-25](../audit.md#ks-25), [KS-06](../audit.md#ks-06), [KS-28](../audit.md#ks-28), [KS-21](../audit.md#ks-21), [KS-24](../audit.md#ks-24)). Phase 0 fixed those.
+> The audit version of this example also worked around sided names, `AppEquals`, unequal Tap and Hold terms, stuck keys, ASCII-only `TitleEquals`, relative config paths and the BOM ([KS-07](../audit.md#ks-07), [KS-03](../audit.md#ks-03), [KS-25](../audit.md#ks-25), [KS-06](../audit.md#ks-06), [KS-28](../audit.md#ks-28), [KS-21](../audit.md#ks-21), [KS-24](../audit.md#ks-24)). Phase 0 fixed those. Its `Tap` on the `F22` bindings and on the `Ctrl+Alt+N` macro also guarded against auto-repeat, which fired every `Immediate` action again ([KS-10](../audit.md#ks-10)); since `feat/repeat-flag` those actions fire once per press without it, and the `Tap` stays to make them short-press only.
 
-Checking order after sorting ([§16](matching.md#s16)): first the three-key bindings (`Ctrl+Alt+=`, `Ctrl+Alt+-`, `Ctrl+Alt+N`), then the two-key ones in load order (`Ctrl+CapsLock`, `Shift+CapsLock`, `Shift+F22`, `Ctrl+F22`, the sequence `F17 → F18`, the chord `F15+F16`, and last the `Alt+Shift` auto-blocker), then the single-key ones. What follows from this:
+Checking order after sorting ([§16](matching.md#s16)): first the three-key bindings (`Ctrl+Alt+=`, `Ctrl+Alt+-`, `Ctrl+Alt+]`, `Ctrl+Alt+N`), then the two-key ones in load order (`Ctrl+CapsLock`, `Shift+CapsLock`, `Shift+F22`, `Ctrl+F22`, the sequence `F17 → F18`, the chord `F15+F16`, and last the `Alt+Shift` auto-blocker), then the single-key ones. What follows from this:
 
 - with Ctrl held, CapsLock matches only `Ctrl+CapsLock`, and with Shift held only `Shift+CapsLock`: modifiers match exactly, so the order does not matter here;
 - on Shift+F22 and Ctrl+F22 only the two-key `Tap` is armed: the `Tap` on bare `F22` does not match while a modifier is held;

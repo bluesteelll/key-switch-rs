@@ -1,6 +1,6 @@
 # Auto-blockers and matching order
 
-`block_original_combo: true` silences the Windows hotkey that does the same job as a binding's action, such as Alt+Shift for `SwitchLanguage`. The second half of this page gives the order in which the daemon checks bindings and what it means when several match. Facts describe commit `1dfd80a`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
+`block_original_combo: true` silences the Windows hotkey that does the same job as a binding's action, such as Alt+Shift for `SwitchLanguage`. The second half of this page gives the order in which the daemon checks bindings and what it means when several match. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
 
 <a id="s15"></a>
 ## 15. `block_original_combo`: auto-blockers
@@ -129,4 +129,4 @@ On every key-down ([src/engine/mod.rs:365-500](https://github.com/bluesteelll/ke
 > [!WARNING]
 > More specific bindings do not override less specific deferred ones ([src/engine/mod.rs:403-453](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L403-L453)). For example, with `"Shift+F13"` as `Immediate` and `"F13"` as `Tap(200)` with `allow_extra_modifiers: true`, pressing Shift+F13 runs the first binding and **arms** the second. The reverse also holds: if the more specific binding is deferred (`"Ctrl+F22"` with `Tap`) and the less specific one is `Immediate` with `allow_extra_modifiers: true` (`"F22"`), pressing Ctrl+F22 runs `"F22"` at once. Make overlapping bindings on one key the same type: all `Immediate` or all `Tap`. See [KS-13](../audit.md#ks-13), open until roadmap [item 1.6](../roadmap.md#16-one-winner-per-event).
 
-- The other matching issues are described with their binding kinds: firing on auto-repeat ([§7](kinds.md#s7); [KS-10](../audit.md#ks-10)), `block_default: false` when another binding also matches ([§10](kinds.md#s10); [KS-13](../audit.md#ks-13)), and two `DoubleTap` bindings on one press ([§11.7](triggers-conditions.md#s11-7)).
+- The other matching rules and issues are described with their binding kinds: which bindings fire on an auto-repeat, the `repeat` flag ([§11.3](triggers-conditions.md#s11-3)), `block_default: false` when another binding also matches ([§10](kinds.md#s10); [KS-13](../audit.md#ks-13)), and two `DoubleTap` bindings on one press ([§11.7](triggers-conditions.md#s11-7)).
