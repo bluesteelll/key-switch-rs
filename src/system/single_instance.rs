@@ -246,6 +246,25 @@ mod tests {
     }
 
     #[test]
+    fn the_os_error_is_the_source_of_an_instance_error_and_already_running_has_none() {
+        use std::error::Error;
+
+        let os = InstanceError::Os(ERROR_INVALID_HANDLE.into());
+        let source = os
+            .source()
+            .expect("an OS failure keeps the system error as its source");
+        assert_eq!(
+            source.to_string(),
+            windows::core::Error::from(ERROR_INVALID_HANDLE).to_string(),
+            "the source is the error CreateMutexW reported"
+        );
+        assert!(
+            InstanceError::AlreadyRunning.source().is_none(),
+            "AlreadyRunning has no underlying error"
+        );
+    }
+
+    #[test]
     fn already_running_names_the_swch_commands() {
         assert_eq!(
             InstanceError::AlreadyRunning.to_string(),
