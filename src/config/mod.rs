@@ -12,7 +12,7 @@ mod loader;
 mod parsing;
 mod schema;
 
-pub use loader::{default_config_path, load};
+pub use loader::{ConfigPath, load, reload};
 
 /// RON text to bindings without touching the disk, for the engine's
 /// scenario tests; `from_ron_str_with_hotkeys` without the registry either.

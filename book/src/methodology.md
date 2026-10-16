@@ -427,6 +427,8 @@ The existence check matters because `load` writes the default config to any path
 | 2 | The file does not exist; nothing was written |
 | 101 | No argument given (panic from `expect`) |
 
+A `cfgcheck` built against a tree after roadmap Workstream B calls `key_switch_rs::config::reload(&path)` in place of `config::load(&path)`: there `load` takes a `config::ConfigPath`, and `reload` is the loader that takes a path. The rest of the harness is unchanged.
+
 Output for the shipped `src/config/default_config.ron` on the audit machine:
 
 ```text

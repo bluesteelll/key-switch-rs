@@ -2,6 +2,7 @@
 //! ready for `App`. Default-config generation lives here so first run is
 //! zero-touch.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -93,11 +94,56 @@ pub fn default_config_path() -> Result<PathBuf, ConfigError> {
     Ok(dir.join("config.ron"))
 }
 
+/// Where the config file is, decided once at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigPath {
+    /// The first command-line argument.
+    CommandLine(PathBuf),
+    /// `<exe_dir>\config.ron`.
+    BesideExe(PathBuf),
+}
+
+impl ConfigPath {
+    /// The first command-line argument if there is one, else
+    /// `<exe_dir>\config.ron`.
+    pub fn from_arg(arg: Option<OsString>) -> Result<Self, ConfigError> {
+        match arg {
+            Some(arg) => Ok(ConfigPath::CommandLine(PathBuf::from(arg))),
+            None => default_config_path().map(ConfigPath::BesideExe),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            ConfigPath::CommandLine(path) | ConfigPath::BesideExe(path) => path,
+        }
+    }
+
+    pub fn into_path(self) -> PathBuf {
+        match self {
+            ConfigPath::CommandLine(path) | ConfigPath::BesideExe(path) => path,
+        }
+    }
+}
+
+/// Loads the bindings at startup, generating the default file if it does
+/// not yet exist.
+pub fn load(config: &ConfigPath) -> Result<Vec<Binding>, ConfigError> {
+    load_or_generate(config.path())
+}
+
+/// Loads the bindings again after the file at `path` changed. For now it
+/// also writes the default file to a missing `path`, like a first start
+/// (KS-23).
+pub fn reload(path: &Path) -> Result<Vec<Binding>, ConfigError> {
+    load_or_generate(path)
+}
+
 /// Loads bindings from `path`, generating the default file there if it does
 /// not yet exist. The "missing → write default" branch is by design: the
 /// first run of the binary should produce a working setup without forcing
 /// the user to author a config by hand.
-pub fn load(path: &Path) -> Result<Vec<Binding>, ConfigError> {
+fn load_or_generate(path: &Path) -> Result<Vec<Binding>, ConfigError> {
     if !path.exists() {
         write_default(path)?;
         println!("[INFO] generated default config at {}", path.display());

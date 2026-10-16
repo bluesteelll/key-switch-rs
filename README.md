@@ -26,7 +26,7 @@ key-switch-rs/
     ├── bin/
     │   └── swch.rs         - swch CLI driver binary
     ├── config/
-    │   ├── mod.rs              - public API: load(), default_config_path()
+    │   ├── mod.rs              - public API: ConfigPath, load(), reload()
     │   ├── schema.rs           - serde structs for the on-disk shape
     │   ├── parsing.rs          - combo string and WM_* name parsers
     │   ├── loader.rs           - file I/O, default-config generation, conversion to Vec<Binding>
