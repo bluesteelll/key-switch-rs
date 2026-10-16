@@ -1,6 +1,6 @@
 # Binding kinds and key suppression
 
-A binding has exactly one kind: `keys` (a combination held together), `sequence` (steps pressed in order) or `chord` (keys pressed almost at once). This page says when each kind fires and which key events it hides from applications. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; the run-time behaviour is derived from the code of the decision core ([src/engine](https://github.com/bluesteelll/key-switch-rs/tree/1dfd80a/src/engine)) and its scenario tests, not observed on a live daemon.
+A binding has exactly one kind: `keys` (a combination held together), `sequence` (steps pressed in order) or `chord` (keys pressed almost at once). This page says when each kind fires and which key events it hides from applications. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`; the run-time behaviour is derived from the code of the decision core ([src/engine](https://github.com/bluesteelll/key-switch-rs/tree/1dfd80a/src/engine)) and its scenario tests, not observed on a live daemon.
 
 <a id="s7"></a>
 ## 7. The `keys` kind: combination
@@ -166,20 +166,20 @@ To "suppress" means not to pass the key event on to the OS and the applications.
 
 | Mechanism | What is suppressed | `block_default` |
 |---|---|---|
-| `keys` + `Immediate` | the trigger key's key-down, if at least one matching `Immediate` binding has `block_default: true` | honoured (default `true`) |
-| `keys` + `Tap`/`Hold`/`DoubleTap` | the trigger key's key-down, **always** ([src/engine/mod.rs:413-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L413-L452)) | ignored until roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap) |
+| `keys` + `Immediate` | the trigger key's key-down, if at least one matching `keys` binding has `block_default: true` (see the warning below) | honoured (default `true`) |
+| `keys` + `Tap`/`Hold`/`DoubleTap` | the trigger key's key-down, if at least one matching `keys` binding has `block_default: true`; the gesture is armed either way | honoured since `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)): default `false` for a combination made only of modifiers (`"LShift"`, `"Ctrl+Shift"`, `"Win"`), `true` otherwise. It used to be ignored: the key-down was **always** suppressed ([src/engine/mod.rs:413-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L413-L452)) |
 | `sequence` | the key-downs that start or advance the sequence | ignored |
 | `chord` | every key-down of any chord key, while `when` is true | ignored |
 
 In every row the auto-repeats and the key-up follow the key-down.
 
 - Only the key that caused the match is suppressed. The OS has already received the modifiers pressed earlier: for `keys: "Ctrl+W", action: DoNothing` the application sees Ctrl go down and up.
-- With `block_default: false` the original key reaches the application **in addition** to the action.
+- With `block_default: false` the original key reaches the application **in addition** to the action. A `Tap`, `Hold` or `DoubleTap` binding still detects its gesture: the press, its auto-repeats and its release reach the application, and the action fires when the gesture completes. Another key pressed meanwhile does not cancel the gesture ([§11.8](triggers-conditions.md#s11-8)).
 - After a foreground change the engine forgets which key-ups were due to be suppressed: a held key's auto-repeats stay suppressed, but its release reaches Windows, unless a `Tap` or `Hold` of that press is still pending ([src/engine/mod.rs:325-340](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L325-L340)). Windows then sees a key-up without a key-down. Roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset) revisits this.
 - `swch off` and `swch on` drop every pending gesture and take the keys Windows holds as already pressed ([Controlling the daemon with swch](../build-and-run.md#controlling-the-daemon-with-swch)).
 
 > [!WARNING]
-> Known issue ([KS-13](../audit.md#ks-13), open until roadmap [item 1.6](../roadmap.md#16-one-winner-per-event)): `block_default: false` on the binding that fired does not help if another `Immediate` binding with `block_default: true` also matched (for example a binding with `allow_extra_modifiers: true` further down the list): the key is suppressed anyway ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)).
+> Known issue ([KS-13](../audit.md#ks-13), open until roadmap [item 1.6](../roadmap.md#16-one-winner-per-event)): `block_default: false` on the binding that fired does not help if another matching `keys` binding with `block_default: true` also matched, whatever its trigger: the key is suppressed anyway ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). The other binding can be an `Immediate` one, for example a binding with `allow_extra_modifiers: true` further down the list, or, since `feat/deferred-block-default`, a `Tap`, `Hold` or `DoubleTap` one: with `( keys: "F13", action: SwitchLanguage, trigger: Tap(200), block_default: false )` and `( keys: "F13", action: ToggleCapsLock, trigger: Hold(200) )`, F13 is suppressed on every press.
 
 > [!NOTE]
 > Before `1dfd80a` the auto-repeats of a key suppressed by `Tap`/`Hold`/`DoubleTap`, `sequence` or `chord` reached the OS while its key-up stayed suppressed, so the key stuck ([KS-06](../audit.md#ks-06)). The modifier resync also erased modifiers whose key-down was suppressed ([KS-14](../audit.md#ks-14)). Both are fixed.
@@ -190,9 +190,10 @@ In every row the auto-repeats and the key-up follow the key-down.
 |---|---|
 | `chord` | always, when the chord is not completed. A chord key pressed on its own **never types** |
 | `sequence` | when the sequence did not complete: the timeout expired or another key was pressed |
-| `Tap` / `Hold` / `DoubleTap` | the trigger key never reaches the application, whatever the outcome of the gesture |
+| `Tap` / `Hold` / `DoubleTap` | with `block_default: true`, the default unless the combination is made only of modifiers, the trigger key never reaches the application, whatever the outcome of the gesture. With `block_default: false` nothing is lost |
 
 Practical rules:
 
-- Assign `chord`, `sequence` and deferred triggers to F13–F24 or to rarely used keys. A binding on letters, such as a chord on `["j","k"]`, makes every typed j and k disappear.
+- Assign `chord`, `sequence` and deferred triggers that suppress their key to F13–F24 or to rarely used keys. A binding on letters, such as a chord on `["j","k"]`, makes every typed j and k disappear.
+- A `Tap`, `Hold` or `DoubleTap` on a key you also type with needs `block_default: false`, which a combination made only of modifiers has by default. Another key pressed while its gesture is pending does not cancel it ([§11.8](triggers-conditions.md#s11-8)).
 - Limit the damage with a `when: TitleContains("...")` or `when: AppEquals("...")` condition. In other windows the binding is skipped and the keys pass through as usual.

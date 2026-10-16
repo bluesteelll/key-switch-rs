@@ -5,7 +5,7 @@ The daemon reads one file: the first command-line argument, or `config.ron` next
 <a id="s2"></a>
 ## 2. File location, creation and reload
 
-Main files: [src/main.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs), [src/hook/config_watcher.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs). Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`.
+Main files: [src/main.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs), [src/hook/config_watcher.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs). Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`.
 
 <a id="s2-1"></a>
 ### 2.1 Where the file is
@@ -60,7 +60,7 @@ The template's header describes hot reload, field checking and the BOM correctly
 
 > [!WARNING]
 > - The `Ctrl+Pause` example ([src/config/default_config.ron:214](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/default_config.ron#L214)) most likely does not fire: for Ctrl+Pause, Windows sends the code `VK_CANCEL` ([§6.6](keys.md#s6-6)).
-> - The `keys: "LShift"` example with `DoubleTap(250)` ([src/config/default_config.ron:251-258](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/default_config.ron#L251-L258)) fires, but a deferred trigger swallows every press of its key, so the left Shift stops typing capitals until roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap). The template says so.
+> - The `keys: "LShift"` example with `DoubleTap(250)` ([src/config/default_config.ron:251-258](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/default_config.ron#L251-L258)) fires, and since `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)) every left-Shift press still reaches applications, so the left Shift keeps typing capitals. Pressing the left Shift twice within 250 ms for two capitals, as in `<T>`, toggles CapsLock too ([§11.8](triggers-conditions.md#s11-8)). The template says both.
 
 <a id="s2-3"></a>
 ### 2.3 Hot reload
@@ -146,7 +146,7 @@ Each element of `bindings` is a struct `( … )` (`RawBinding`, [src/config/sche
 | `action` | a `RawAction` variant: `SwitchLanguage`, `PressKey("L")`, `Launch(exe: "…")`, … | **required** | What to do when the binding fires ([§13](actions.md#s13), [§14](actions.md#s14)) |
 | `trigger` | `Immediate`, `Tap(ms)`, `Hold(ms)`, `DoubleTap(ms)` | `Immediate` | When the action fires ([§11](triggers-conditions.md#s11)). Deferred triggers are allowed only together with `keys` |
 | `when` | a `RawCondition` variant: `Always`, `TitleContains("…")`, `TitleEquals("…")`, `AppEquals("x.exe")`, `Not(…)`, `And([…])`, `Or([…])` | `Always` | Condition on the active window ([§12](triggers-conditions.md#s12)). If the condition is false, the binding is skipped entirely: it does not fire and suppresses nothing |
-| `block_default` | `true` / `false` | `true` | Whether to hide the pressed key from the OS. Honoured **only** for `keys` with `trigger: Immediate`; in all other cases the key is always hidden ([§10](kinds.md#s10)) |
+| `block_default` | `true` / `false` (`Some(..)` and `None` too, [§3.6](ron-syntax.md#s3-6)) | `true`; `false` for a `Tap`, `Hold` or `DoubleTap` binding whose combination is made only of modifiers (`"LShift"`, `"Ctrl+Shift"`, `"Win"`) | Whether to hide the pressed key from the OS: its press, its auto-repeats and its release. Honoured for `keys` with every trigger, for `Tap`, `Hold` and `DoubleTap` since `feat/deferred-block-default`; a gesture is detected either way. `sequence` and `chord` ignore it and always hide their keys ([§10](kinds.md#s10)) |
 | `block_original_combo` | `true` / `false` | `false` | Add an auto-blocker for the system hotkey that does the same thing as `action` ([§15](matching.md#s15)). Works only for `SwitchLanguage` and `SwitchLanguageBackward`; for other actions the flag is silently ignored |
 | `allow_extra_modifiers` | `true` / `false` | `false` | `keys` only: also fire while modifiers the binding does not name are held ([§7](kinds.md#s7)). `true` on a `sequence` or `chord` is a load error |
 | `repeat` | `true` / `false` | `true` for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)`; `false` for every other action | `keys` with `trigger: Immediate` only: fire again on every auto-repeat while the key is held ([§11.3](triggers-conditions.md#s11-3)). With `false` the action fires once per press; the repeats and the release are still hidden when the press was. `true` on a `Tap`, `Hold` or `DoubleTap` trigger, a `sequence` or a `chord` is a load error; `false` is accepted there. The startup list marks a value that differs from the default with `[repeat]` or `[no repeat]` |
@@ -179,7 +179,7 @@ The chosen kind determines which other fields have an effect:
 | | `keys` | `sequence` | `chord` |
 |---|---|---|---|
 | `trigger` | any | only `Immediate` (anything else is an error) | only `Immediate` (anything else is an error) |
-| `block_default` | honoured with `Immediate` | ignored: the keys are always hidden | ignored: the keys are always hidden |
+| `block_default` | honoured with every trigger | ignored: the keys are always hidden | ignored: the keys are always hidden |
 | `block_original_combo` | works | works (the auto-blocker is still a combo) | works |
 | `when` | works | works | works |
 | `allow_extra_modifiers` | works | `true` is an error | `true` is an error |

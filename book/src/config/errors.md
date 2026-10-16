@@ -1,6 +1,6 @@
 # Error messages
 
-A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
+A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag` and those about `block_default` the branch `feat/deferred-block-default`, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
 
 <a id="s18"></a>
 ## 18. Error messages
@@ -201,8 +201,7 @@ The following load without errors or warnings, although they are often mistakes 
 - `Launch(exe: "")`, `OpenUrl("")`, `Sequence([])`, `Text("")`, `And([])`, `Or([])`, `TitleContains("")`;
 - duplicate and conflicting bindings (two `Immediate` or two `Tap` bindings on one key; [roadmap item 1.6](../roadmap.md#16-one-winner-per-event) adds a warning);
 - `block_original_combo` on actions that have no system combo, and on `sequence`/`chord` (the blocker is added);
-- `block_default` where it is ignored (`sequence`, `chord`, deferred triggers);
-- a deferred trigger on a modifier, which swallows that modifier ([§11.8](triggers-conditions.md#s11-8));
+- `block_default` where it is ignored (`sequence`, `chord`);
 - strings with accidentally valid escapes such as `"C:\temp"`.
 
 Unknown fields and timing values out of range used to load silently; since `1dfd80a` they are errors ([KS-22](../audit.md#ks-22), [KS-27](../audit.md#ks-27)).

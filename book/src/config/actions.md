@@ -1,6 +1,6 @@
 # Actions and macro steps
 
-`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; how actions behave in Windows is inferred from the code and was not observed on a live daemon.
+`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`; how actions behave in Windows is inferred from the code and was not observed on a live daemon.
 
 <a id="s13"></a>
 ## 13. Actions (`action`)
@@ -245,7 +245,7 @@ The mechanism is the same as for `PressKey`: one VK tap ([src/core/windows_actio
 ( keys: "Ctrl+W", action: DoNothing ),   // forbid Ctrl+W
 ```
 
-It executes nothing ([src/core/windows_actions.rs:140](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L140)). It is used together with `block_default: true` (the default) to swallow a key or a combination. Auto-blockers use `DoNothing` too ([src/data/binding.rs:98-109](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/binding.rs#L98-L109)), although the engine never fires their action ([§15.1](matching.md#s15-1)).
+It executes nothing ([src/core/windows_actions.rs:140](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L140)). It is used together with `block_default: true` (the default for every `Immediate` binding) to swallow a key or a combination. Auto-blockers use `DoNothing` too ([src/data/binding.rs:98-109](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/binding.rs#L98-L109)), although the engine never fires their action ([§15.1](matching.md#s15-1)).
 
 - Only the key that completed the combination is suppressed. For `Ctrl+W` the application sees just a press and a release of Ctrl.
 
@@ -257,7 +257,7 @@ It executes nothing ([src/core/windows_actions.rs:140](https://github.com/bluest
 - With `block_default: false` the action visibly does nothing, but as an `Immediate` binding it "takes the slot": less specific `Immediate` bindings (those with fewer keys) do not run their action on this press ([src/engine/mod.rs:261-267](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L261-L267), [src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). With exact modifiers such a binding competes only with bindings that set `allow_extra_modifiers: true` or have the same keys.
 
 > [!WARNING]
-> **Known issue ([KS-13](../audit.md#ks-13)).** In that case the key is still suppressed if the less specific binding has `block_default: true` ([src/engine/mod.rs:409-411](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L409-L411); [§10](kinds.md#s10)).
+> **Known issue ([KS-13](../audit.md#ks-13)).** In that case the key is still suppressed if the less specific binding has `block_default: true` ([src/engine/mod.rs:409-411](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L409-L411); [§10](kinds.md#s10)), and so it is if a matching `Tap`, `Hold` or `DoubleTap` binding on the same key has it, since such bindings honour the flag (`feat/deferred-block-default`).
 
 <a id="s14"></a>
 ## 14. The `Sequence([...])` macro and its steps

@@ -1,6 +1,6 @@
 # Auto-blockers and matching order
 
-`block_original_combo: true` silences the Windows hotkey that does the same job as a binding's action, such as Alt+Shift for `SwitchLanguage`. The second half of this page gives the order in which the daemon checks bindings and what it means when several match. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
+`block_original_combo: true` silences the Windows hotkey that does the same job as a binding's action, such as Alt+Shift for `SwitchLanguage`. The second half of this page gives the order in which the daemon checks bindings and what it means when several match. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
 
 <a id="s15"></a>
 ## 15. `block_original_combo`: auto-blockers
@@ -73,7 +73,7 @@ OK: 2 bindings (after auto-blocker expansion)
 - `#N` is the first such binding in the file, counting from 0.
 - Only `keys` bindings count (not `sequence` and not `chord`).
 - The key set must match exactly, side for side: `Ctrl+Alt+Shift` or `LAlt+LShift` does not cancel an `Alt+Shift` blocker. With `LAlt+LShift` bound, that binding fires on the left keys, and the blocker still covers the presses that use a right Alt or Shift.
-- The `when`, `trigger`, `block_default` and action of that binding play no role in the decision. That binding takes the hotkey over: where its `when` is false, the hotkey reaches Windows.
+- The `when`, `trigger`, `block_default` and action of that binding play no role in the decision. That binding takes the hotkey over, and its own `when` and `block_default` decide whether Windows sees the hotkey: where its `when` is false, the hotkey reaches Windows, and so it does with `block_default: false`. Since `feat/deferred-block-default` that is the default of a `Tap`, `Hold` or `DoubleTap` binding made only of modifiers, as a binding on a modifier hotkey is: `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )` lets Windows switch the layout forward while it switches it back, also when it sets `block_original_combo: true` itself. Write `block_default: true` on it to keep the hotkey from Windows.
 - Two flagged bindings with the same hotkey produce one blocker.
 
 `( keys: "Alt+Shift", action: SwitchLanguageBackward, block_original_combo: true )` on its own therefore gets no blocker either, and its action runs.
@@ -114,7 +114,7 @@ On every key-down ([src/engine/mod.rs:365-500](https://github.com/bluesteelll/ke
 
 - `when` is checked first. If the condition is false, the binding is skipped entirely. The active window is queried only when a condition other than `Always` is evaluated ([§12.4](triggers-conditions.md#s12-4)).
 - `keys` + `Immediate`: a binding matches by the rules of [§7](kinds.md#s7). **Only the first** matching binding runs. The other matching `Immediate` bindings do not run, but if they have `block_default: true`, the key is still suppressed.
-- `keys` + `Tap`/`Hold`/`DoubleTap`: these arm regardless of whether an `Immediate` binding has run. Of several matching `Tap` bindings (or several `Hold` bindings), only the first is armed ([§11.7](triggers-conditions.md#s11-7)). A `Tap` and a `Hold` on the same key are both armed.
+- `keys` + `Tap`/`Hold`/`DoubleTap`: these arm regardless of whether an `Immediate` binding has run, and ask for suppression if they have `block_default: true` (always before `feat/deferred-block-default`; [§11.4](triggers-conditions.md#s11-4)). Of several matching `Tap` bindings (or several `Hold` bindings), only the first is armed ([§11.7](triggers-conditions.md#s11-7)). A `Tap` and a `Hold` on the same key are both armed.
 - An auto-blocker only suppresses, by its own rule ([§15.1](#s15-1)).
 - `sequence` and `chord` bindings are each processed independently, with no link to combinations.
 - The key is suppressed if at least one binding requested it ([§10](kinds.md#s10)).
