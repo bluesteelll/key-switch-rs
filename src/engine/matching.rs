@@ -56,10 +56,10 @@ pub(super) fn keys_down<H: HeldKeys + ?Sized>(combo: &KeyCombination, held: &H) 
 /// with a payload key never trigger it, so Shift pressed while CapsLock is
 /// held does not fire `"Shift+CapsLock"`.
 pub(super) fn is_trigger_key(combo: &KeyCombination, pressed: VIRTUAL_KEY) -> bool {
-    combo.keys.iter().any(|key| {
-        key.accepts(pressed)
-            && (key.modifier().is_none() || combo.keys.iter().all(|k| k.modifier().is_some()))
-    })
+    combo
+        .keys
+        .iter()
+        .any(|key| key.accepts(pressed) && (key.modifier().is_none() || combo.is_modifier_only()))
 }
 
 /// Whether the key-down of `pressed`, with `held` the keys held after it,

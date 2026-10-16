@@ -22,10 +22,11 @@
 //! thread that wakes late.
 //!
 //! The `expect_*` methods check the most recent step: a key event, or an
-//! `advance_ms` together with the timers that fired during it. A failing
-//! expectation panics with the whole transcript of the scenario, and with
-//! the context set by [`Scenario::with_context`], such as the seed of a
-//! generated script.
+//! `advance_ms` together with the timers that fired during it.
+//! [`Scenario::expect_down_in_windows`] checks the modelled OS key state
+//! after it. A failing expectation panics with the whole transcript of the
+//! scenario, and with the context set by [`Scenario::with_context`], such
+//! as the seed of a generated script.
 //!
 //! Three checks can also run on every later step:
 //! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
@@ -468,6 +469,17 @@ impl Scenario {
     #[track_caller]
     pub(crate) fn expect_nothing_stuck(self) -> Self {
         self.fail_if_stuck();
+        self
+    }
+
+    /// The modelled OS has `key` down now, as when a modifier the engine let
+    /// through is still held while another key goes down.
+    #[track_caller]
+    pub(crate) fn expect_down_in_windows(self, key: &str) -> Self {
+        if !self.env.os_down(physical_key(key)) {
+            let label = &self.last_step().label;
+            self.fail(&format!("{label}: {key} is not down in Windows"));
+        }
         self
     }
 

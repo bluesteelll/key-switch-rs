@@ -3,7 +3,7 @@
 <a id="s3"></a>
 ## 3. RON syntax essentials
 
-The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:242-243](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L242-L243)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:187-197](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L187-L197)). Facts describe commit `1dfd80a`. Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
+The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:242-243](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L242-L243)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:187-197](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L187-L197)). Facts describe commit `1dfd80a`, and those about `Some` and `None` in `repeat` and `block_default` the branches `feat/repeat-flag` and `feat/deferred-block-default`. Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
 
 <a id="s3-1"></a>
 ### 3.1 Encoding, whitespace and line breaks
@@ -80,15 +80,17 @@ Several extensions are separated by commas: `#![enable(implicit_some, unwrap_new
 <a id="s3-6"></a>
 ### 3.6 `IMPLICIT_SOME`: `Some` and `None`
 
-The fields `keys`, `sequence` and `chord` have the type `Option<…>`. Thanks to the extension, you do not need to wrap the value in `Some(...)`:
+The fields `keys`, `sequence`, `chord`, `repeat` and `block_default` have the type `Option<…>`. Thanks to the extension, you do not need to wrap the value in `Some(...)`:
 ```ron
 ( keys: "F13", action: DoNothing ),                                   // usual form
 ( keys: Some("F14"), action: DoNothing ),                             // also allowed
 ( keys: None, sequence: (steps: ["F15", "F15"]), action: DoNothing ), // None = field not set
+( keys: "F16", action: DoNothing, block_default: Some(false) ),      // same as block_default: false
+( keys: "F17", action: DoNothing, block_default: None ),             // None = the default
 ```
-The other fields are not of an `Option` type, so `Some(...)` and `None` are not allowed in them:
+`None` in `repeat` or `block_default` means the field's default, which depends on the binding ([§5.1](structure.md#s5-1)). The other fields are not of an `Option` type, so `Some(...)` and `None` are not allowed in them:
 - `bindings: None` and `bindings: Some([])` give ``Expected opening `[` ``;
-- `block_default: Some(true)` gives `Expected boolean`;
+- `block_original_combo: Some(true)` gives `Expected boolean`;
 - `max_gap_ms: Some(300)` gives `Expected integer`;
 - `when: None` gives ``Unexpected variant named `None` in enum `RawCondition` ``, and `action: None` gives the same for `RawAction`;
 - `trigger: Some(Tap(200))` gives ``Unexpected variant named `Some` in enum `RawTrigger` ``.

@@ -129,6 +129,26 @@ minor version; such entries sit under **Changed** and start with
   held `Media(Next)` key. A `PressKey` still repeats, one press and release
   per auto-repeat: for a toggle key or a modifier, `repeat: false` keeps
   it to one press.
+- **Breaking:** `block_default` applies to `Tap`, `Hold` and `DoubleTap`
+  bindings (roadmap item 1.3); it was ignored there, and their key was
+  always swallowed. With `block_default: false` the press, the auto-repeats
+  and the release of the key reach applications, and the gesture still
+  fires. Without the field, a `Tap`, `Hold` or `DoubleTap` binding made only
+  of modifiers (`"LShift"`, `"Ctrl+Shift"`, `"Win"`) now lets its keys
+  through. Every other binding, every `Immediate` binding included, still
+  swallows its key. Write `block_default: true` for the old behaviour.
+  - A key pressed while such a gesture is pending does not cancel it: an
+    `LShift` `DoubleTap` also fires when the left Shift is pressed twice
+    quickly for two capitals (typing `<T>`), and an `LCtrl` `Tap` also
+    fires on a quick Ctrl+C.
+  - A deferred binding on exactly the keys of the Windows language hotkey,
+    such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
+    lets Windows switch the layout as well, also when that binding sets
+    `block_original_combo: true` itself.
+  - A `Tap` on `Alt` or `Win` alone lets Windows see the tap, which
+    activates the menu bar or opens Start (until roadmap item 1.2).
+  - `block_default: Some(true)` and `block_default: None` (the default)
+    load, as for `keys`.
 
 ### Fixed
 
@@ -230,8 +250,8 @@ minor version; such entries sit under **Changed** and start with
   of the press does too, even when a binding starts matching it.
 - KS-07: sided names in `keys` and `sequence` steps fire, and `Shift`,
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
-  `DoubleTap(250)` example works; until roadmap item 1.3 it swallows every
-  left-Shift press.
+  `DoubleTap(250)` example works, and the left Shift keeps typing capitals
+  (roadmap item 1.3).
 - KS-10: holding a key no longer re-runs a one-shot action at the
   auto-repeat rate. With the default config, holding CapsLock switches the
   layout once and holding Shift+CapsLock toggles CapsLock once. A held
@@ -339,6 +359,13 @@ minor version; such entries sit under **Changed** and start with
   says that the elevated daemon sees keys in the UAC consent prompt, which
   runs on the Secure Desktop, or that the UAC prompt appears only once.
   `swch help` is listed in the usage text.
+- A `Tap`, `Hold` or `DoubleTap` on a modifier no longer swallows that
+  modifier (roadmap item 1.3). With the README and template example
+  `( keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250) )`, a
+  double press of the left Shift toggles CapsLock, and the left Shift types
+  capitals again. Pressing it twice within 250 ms for two capitals toggles
+  CapsLock too (see the **Breaking** entry for `block_default` under
+  **Changed**).
 
 ## [0.1.0] - 2026-05-20
 

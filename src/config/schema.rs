@@ -40,8 +40,14 @@ pub(crate) struct RawBinding {
     pub chord: Option<ChordSpec>,
     pub action: RawAction,
 
-    #[serde(default = "default_true")]
-    pub block_default: bool,
+    /// Whether the key events that fire or arm a `keys` binding are kept
+    /// from Windows, for every trigger. Missing: `false` for a `Tap`, `Hold`
+    /// or `DoubleTap` binding made only of modifiers (`"LShift"`), so that
+    /// the modifier keeps working, and `true` for every other binding
+    /// (`Binding::blocks_by_default`), which an `Option` is needed to tell
+    /// from an explicit value. `sequence` and `chord` bindings ignore it.
+    #[serde(default)]
+    pub block_default: Option<bool>,
 
     #[serde(default)]
     pub block_original_combo: bool,
@@ -224,8 +230,4 @@ pub(crate) enum RawWindowKind {
     Maximize,
     Restore,
     Close,
-}
-
-fn default_true() -> bool {
-    true
 }

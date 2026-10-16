@@ -337,14 +337,18 @@ with equal terms exactly one of them fires (see below).
 ( keys: "CapsLock", action: SwitchLanguage,   trigger: Tap(200), block_original_combo: true ),
 ( keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200) ),
 
-// LShift — double tap toggles CapsLock; single tap unbound
+// LShift — double tap toggles CapsLock; the left Shift still types capitals
 ( keys: "LShift",   action: ToggleCapsLock,   trigger: DoubleTap(250) ),
 ```
 
-A deferred trigger swallows every press of its key (see the behaviour rules
-below), so until roadmap item 1.3 the `LShift` example also stops the left
-Shift from reaching applications: it no longer types capitals. The right
-Shift is unaffected.
+A deferred binding made only of modifiers, such as the `LShift` one, lets
+its key through by default (`block_default`, see the behaviour rules
+below): every left-Shift press still reaches applications, and the double
+tap still toggles CapsLock. The `CapsLock` pair, whose key is not a
+modifier, swallows CapsLock. Another key pressed in between does not
+cancel the double tap, so typing `<T>` with the left Shift pressed again
+quickly for the `T` toggles CapsLock as well. Write `block_default: true`
+to keep the left Shift for the gesture alone.
 
 | Variant            | When the action fires                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------- |
@@ -378,9 +382,32 @@ Shift is unaffected.
 
 **Behaviour rules:**
 
-- Deferred triggers force the key to be suppressed from the foreground
-  while the gesture is pending — `block_default` is implicitly true for
-  `Tap`/`Hold`/`DoubleTap` regardless of config.
+- `block_default` applies to deferred triggers too (roadmap item 1.3).
+  With `true` the key's press, auto-repeats and release are swallowed while
+  the gesture is detected; with `false` they all reach Windows, and the
+  gesture still arms and fires. Without the field, a `Tap`, `Hold` or
+  `DoubleTap` binding made only of modifiers (`"LShift"`, `"Ctrl+Shift"`,
+  `"Win"`) lets its keys through, and every other binding, every
+  `Immediate` one included, swallows them. When several bindings match one
+  press, the key is swallowed if any of them swallows it (KS-13, until
+  roadmap item 1.6).
+- A key pressed while a gesture whose key passes is pending does not cancel
+  it. An `LShift` `Tap` also fires when Shift+A is released within its
+  term, an `LShift` `DoubleTap` fires when the left Shift is pressed twice
+  within its term for two capitals (`<T>`), and an `LCtrl` `Tap` fires on a
+  quick Ctrl+C. Whether such a key should cancel the gesture is an open
+  follow-up of roadmap item 1.3.
+- A deferred binding on exactly the keys of the Windows language hotkey,
+  such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
+  takes the hotkey over from the auto-blocker, also when it sets
+  `block_original_combo: true` itself. Made only of modifiers, it lets
+  Windows see the hotkey by default, so Windows switches the layout forward
+  while the binding switches it back. Write `block_default: true` on it.
+- A `Tap`, `Hold` or `DoubleTap` on `Alt` or `Win` alone lets the press
+  reach Windows by default, so a tap also activates the menu bar or opens
+  Start (until roadmap item 1.2). With `block_default: true` Windows never
+  sees that key while the binding matches it, so the key's own shortcuts
+  (`Win+E`) stop working.
 - Auto-repeat key-down events from a stuck/held key do not stack new
   pending entries; the first gesture wins until resolved.
 - An `Immediate` binding fires on an auto-repeat only if its `repeat` is
@@ -460,7 +487,7 @@ as `binding #N [keys]: step #M: ...` so the failing step is unambiguous.
 
 | Field                  | Default  | Meaning                                                                                                                                                                              |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `block_default`        | `true`   | Suppress the original OS key event so the foreground app does not also see it. Set to `false` to let the keystroke pass through after the binding fires.                             |
+| `block_default`        | `true`; `false` for a `Tap`, `Hold` or `DoubleTap` binding made only of modifiers | Suppress the original OS key events (the press, its auto-repeats and its release) so the foreground app does not also see them. Set to `false` to let the keystroke pass through: an `Immediate` binding still fires, and a `Tap`, `Hold` or `DoubleTap` binding still detects its gesture. `Some(..)` and `None` (the default) load too. `sequence` and `chord` bindings ignore it. |
 | `block_original_combo` | `false`  | Auto-install a blocker for the OS's default hotkey for this action's underlying function. Use when remapping language switching so Windows' own `Alt+Shift`/`Ctrl+Shift` go silent. The blocker acts only when Windows would see the hotkey's keys and no other key held: Alt, then Shift is blocked, while Alt, Tab, then Shift (Tab still held) reaches Windows. It is not added when any `keys` binding in the file, the flagged one included, uses exactly the hotkey's keys: that binding gets the hotkey, and where its `when:` does not match, the hotkey is not blocked. An auto-blocker that is added ignores the flagged binding's `when:` and acts in every window until roadmap item 1.2 (KS-35): with `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey (`Alt+Shift` by default) stays blocked there, so neither switches the layout in the game. The blocker never fires anything and never keeps a binding of yours that matches the same press from firing. Auto-blockers are listed last at startup. Until roadmap item 1.2 the blocker swallows the hotkey's second modifier (Shift pressed after Alt with no other key held, also when stepping back in the Alt+Tab switcher after releasing Tab) for that key's whole press, auto-repeats and release included, even after Alt is released; it still counts as held, so `Alt+Shift+X` bindings fire. |
 | `allow_extra_modifiers` | `false` | `keys` bindings only: also fire while modifiers the binding does not name are held. By default the held modifiers must be exactly the binding's own (see [Exact modifiers](#combo-syntax-the-keys-field)). A load error on `sequence` and `chord`. |
 | `repeat`               | `true` for `PressKey`, `Media(VolumeUp)`, `Media(VolumeDown)`; `false` otherwise | `keys` bindings with the `Immediate` trigger: fire again on every auto-repeat while the key is held. With `false` the action fires once per press; the repeats and the release are still swallowed when the press was. `repeat: true` is a load error on `Tap`, `Hold`, `DoubleTap`, `sequence` and `chord` bindings, which never fire on an auto-repeat; `repeat: false` is accepted there. The startup list marks a value that differs from the default with `[repeat]` or `[no repeat]`. Each repeat of a `PressKey` sends a new press and release, so for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`: otherwise holding the trigger toggles the key at the repeat rate, or taps the modifier, where the real key held down toggles once or stays down. |
@@ -663,7 +690,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Native APIs first**: language switching, window operations and messages use Win32 calls; key output (`ToggleCapsLock`, `PressKey`, `Media`, macro `Text`/`Key`/`Combo`) is synthesized with `SendInput`
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
 - **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
-- **Block default behavior**: configurable blocking of standard key actions
+- **Block default behavior**: configurable blocking of standard key actions, for every trigger; a `Tap`, `Hold` or `DoubleTap` on modifiers alone lets them through by default
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.

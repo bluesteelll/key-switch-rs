@@ -382,8 +382,11 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         ));
     }
 
+    let block_default = raw
+        .block_default
+        .unwrap_or_else(|| Binding::blocks_by_default(&kind, trigger));
     let binding = Binding::with_kind(kind, action)
-        .with_block_default(raw.block_default)
+        .with_block_default(block_default)
         .with_block_original_combo(raw.block_original_combo)
         .with_condition(raw_condition_to_condition(&raw.when))
         .with_trigger(trigger)
@@ -654,10 +657,9 @@ mod tests {
         assert!(!bindings.is_empty(), "default config must have bindings");
     }
 
-    #[test]
-    fn default_config_commented_examples_load() {
-        // Users enable the template's examples by removing the `// `, so
-        // they must load as written.
+    /// The template's commented examples, uncommented and loaded as a user
+    /// who removes the `// ` would load them, with no system hotkey.
+    fn template_examples() -> Vec<Binding> {
         let mut lines = DEFAULT_CONFIG.lines();
         lines
             .by_ref()
@@ -671,9 +673,86 @@ mod tests {
             })
             .collect();
         let ron = format!("( bindings: [\n{}\n] )", examples.join("\n"));
-        let bindings = from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
-            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"));
-        assert!(!bindings.is_empty(), "the template's examples are empty");
+        from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"))
+    }
+
+    #[test]
+    fn default_config_commented_examples_load() {
+        // Users enable the template's examples by removing the `// `, so
+        // they must load as written.
+        assert!(
+            !template_examples().is_empty(),
+            "the template's examples are empty"
+        );
+    }
+
+    #[test]
+    fn the_template_lshift_double_tap_example_lets_the_left_shift_through() {
+        // Roadmap item 1.3: the example is made only of modifiers, so the
+        // left Shift keeps typing capitals.
+        let examples = template_examples();
+        let example = examples
+            .iter()
+            .find(|b| {
+                b.combination() == Some(&KeyCombination::new(VK_LSHIFT))
+                    && b.trigger == Trigger::DoubleTap(250)
+            })
+            .expect("the template has the LShift DoubleTap example");
+        assert!(!example.block_default);
+    }
+
+    #[test]
+    fn block_default_defaults_to_false_only_for_deferred_bindings_made_only_of_modifiers() {
+        let ron_text = r#"( bindings: [
+            (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250)),
+            (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)),
+            (keys: "Win", action: ToggleCapsLock, trigger: Tap(200)),
+            (keys: "RShift", action: ToggleCapsLock, trigger: Tap(300)),
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "Shift+CapsLock", action: ToggleCapsLock, trigger: Hold(200)),
+            (keys: "LShift", action: ToggleCapsLock),
+            (keys: "Alt+Shift", action: SwitchLanguageBackward),
+            (sequence: (steps: ["F13", "F14"]), action: SwitchLanguage),
+            (chord: (keys: ["F13", "F14"]), action: ToggleCapsLock),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &|_: &BindAction| None).expect("config loads");
+        let block_default: Vec<bool> = bindings.iter().map(|b| b.block_default).collect();
+        assert_eq!(
+            block_default,
+            [
+                false, false, false, false, true, true, true, true, true, true
+            ]
+        );
+    }
+
+    #[test]
+    fn an_explicit_block_default_wins_over_its_default() {
+        let ron_text = r#"( bindings: [
+            (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250), block_default: true),
+            (keys: "F13", action: SwitchLanguage, trigger: Tap(200), block_default: false),
+            (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000), block_default: false),
+            (keys: "LShift", action: ToggleCapsLock, block_default: false),
+            (keys: "F14", action: SwitchLanguage, trigger: Hold(200), block_default: true),
+        ] )"#;
+        let bindings =
+            from_ron_str_with_hotkeys(ron_text, &|_: &BindAction| None).expect("config loads");
+        let block_default: Vec<bool> = bindings.iter().map(|b| b.block_default).collect();
+        assert_eq!(block_default, [true, false, false, false, true]);
+    }
+
+    #[test]
+    fn block_default_takes_some_and_none_like_the_other_optional_fields() {
+        let ron_text = r#"( bindings: [
+            (keys: "F13", action: DoNothing, block_default: Some(false)),
+            (keys: "LShift", action: DoNothing, trigger: DoubleTap(250), block_default: None),
+            (keys: "F14", action: DoNothing, block_default: None),
+        ] )"#;
+        let bindings = from_ron_str_with_hotkeys(ron_text, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("block_default takes Some and None: {e}"));
+        let block_default: Vec<bool> = bindings.iter().map(|b| b.block_default).collect();
+        assert_eq!(block_default, [false, false, true]);
     }
 
     #[test]

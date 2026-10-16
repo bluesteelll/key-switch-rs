@@ -3,7 +3,7 @@
 <a id="s17"></a>
 ## 17. Complete `config.ron` example
 
-The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no Win/Alt combinations with actions that inject no keystrokes ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, and those about the `repeat` field the branch `feat/repeat-flag`.
+The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no Win/Alt combinations with actions that inject no keystrokes ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`.
 
 Checked with the validator (the real loader) on a machine where the `Hotkey`/`Language Hotkey` values did not yield a combination, so the fallback `Alt+Shift` was used:
 
@@ -16,7 +16,8 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
 ```ron
 // config.ron — complete example for key-switch-rs (behaviour of commit 1dfd80a
-// with the repeat field of the branch feat/repeat-flag).
+// with the repeat field of the branch feat/repeat-flag and block_default on
+// deferred triggers of the branch feat/deferred-block-default).
 //
 // Save the file as UTF-8, with or without a BOM. After a save, the bindings
 // reload on their own after about 250 ms. A file that does not load (for
@@ -148,7 +149,7 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
         ),
 
         // Esc in Calculator: the ordinary Esc passes through to the application
-        // (block_default: false, which works only for keys + Immediate),
+        // (block_default: false),
         // and then the window is minimized. Calculator belongs to
         // ApplicationFrameHost.exe, so it is matched by its title.
         (
