@@ -5,7 +5,7 @@
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
-//! (`Scenario::with_context`) above the transcript. Two properties:
+//! (`Scenario::with_context`) above the transcript. Three properties:
 //!
 //! - Strict mode, with no focus change and no lost key-up: every press is
 //!   suppressed or passed as a whole, its key-down, auto-repeats and key-up
@@ -15,9 +15,20 @@
 //!   sees: no key is left down in Windows. A focus change makes the engine
 //!   let through the key-up of a press whose key-down it swallowed (roadmap
 //!   item 2.3), so whole-press symmetry is not checked there.
+//! - Focus mode again: an auto-repeat fires only an action that repeats
+//!   (`check_repeats_fire_only`, KS-10). `PressKey("Left")` is the only
+//!   `Immediate` action of the configs that repeats by default; deferred
+//!   triggers, chords and sequences fire nothing on a repeat. A `repeat`
+//!   step is always an auto-repeat for the engine too: the scripts never
+//!   press a key the hook does not see, a held key stays held for the
+//!   engine until a key-up it sees, and the modifier resync skips a
+//!   swallowed modifier and finds a passed one down in Windows.
+
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
 
 use super::scenarios::with_alt_shift_blocker;
 use super::testing::Scenario;
+use crate::core::windows_actions::BindAction;
 
 /// SplitMix64 (Steele, Lea and Flood, 2014): a tiny generator whose output
 /// is fixed by its seed, which is all a script generator needs.
@@ -187,8 +198,9 @@ fn step(
 }
 
 /// Runs one generated script: `STEPS` steps, then every held key released
-/// and every timer run, with the checks of `mode` on throughout.
-fn run(index: usize, config: &Config, seed: u64, mode: Mode) {
+/// and every timer run, with the checks of `mode` on throughout, and the
+/// auto-repeat check too with `repeat_check`.
+fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool) {
     let mut rng = SplitMix64(seed.wrapping_mul(0x100) + index as u64);
     let scenario = if config.blocker {
         Scenario::with_bindings(with_alt_shift_blocker(config.ron))
@@ -204,6 +216,9 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode) {
     if mode == Mode::Strict {
         scenario = scenario.check_press_symmetry();
     }
+    if repeat_check {
+        scenario = scenario.check_repeats_fire_only(&[BindAction::PressKey(VK_LEFT)]);
+    }
 
     let mut held = [false; KEYS.len()];
     for _ in 0..STEPS {
@@ -217,20 +232,25 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode) {
     scenario.advance_ms(2000).expect_nothing_stuck();
 }
 
-fn run_all(mode: Mode) {
+fn run_all(mode: Mode, repeat_check: bool) {
     for (index, config) in CONFIGS.iter().enumerate() {
         for seed in 0..SEEDS {
-            run(index, config, seed, mode);
+            run(index, config, seed, mode, repeat_check);
         }
     }
 }
 
 #[test]
 fn every_press_is_suppressed_or_passed_as_a_whole() {
-    run_all(Mode::Strict);
+    run_all(Mode::Strict, false);
 }
 
 #[test]
 fn nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups() {
-    run_all(Mode::Focus);
+    run_all(Mode::Focus, false);
+}
+
+#[test]
+fn auto_repeats_fire_only_actions_that_repeat() {
+    run_all(Mode::Focus, true);
 }

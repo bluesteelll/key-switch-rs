@@ -7,7 +7,7 @@
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::testing::Scenario;
-use crate::core::windows_actions::BindAction;
+use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::Binding;
 use crate::data::key_combination::KeyCombination;
 
@@ -1308,7 +1308,8 @@ fn repeat_of_a_key_whose_down_passed_is_passed_and_so_is_its_key_up() {
     // Ctrl+CapsLock reaches Windows (exact modifiers). Once Ctrl is
     // released, CapsLock's repeats match "CapsLock" exactly, but the OS saw
     // the key-down, so neither a repeat nor the key-up may be swallowed.
-    // Whether such a repeat fires the action is KS-10 (roadmap 1.1).
+    // A binding that does not repeat fires nothing on a repeat, even once
+    // it starts matching (KS-10).
     Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
         .down("LCtrl")
         .expect_passed()
@@ -1318,14 +1319,17 @@ fn repeat_of_a_key_whose_down_passed_is_passed_and_so_is_its_key_up() {
         .advance_ms(500)
         .repeat("CapsLock")
         .expect_passed()
+        .expect_nothing_fired()
         .up("LCtrl")
         .expect_passed()
         .advance_ms(33)
         .repeat("CapsLock")
         .expect_passed()
+        .expect_nothing_fired()
         .advance_ms(33)
         .repeat("CapsLock")
         .expect_passed()
+        .expect_nothing_fired()
         .up("CapsLock")
         .expect_passed();
 }
@@ -1509,11 +1513,15 @@ fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
 }
 
 #[test]
-fn press_after_a_lost_key_up_and_a_focus_change_follows_its_binding() {
+fn press_after_a_lost_key_up_reads_as_a_repeat_and_fires_only_a_repeating_binding() {
     // F13's key-up went to another desktop, so the engine still holds F13
     // and reads the next press as a repeat (KS-29). Its key-down was
-    // swallowed, so the repeat is swallowed too; the binding fires on it
-    // (KS-10), so the press is never fired and passed in one decision.
+    // swallowed, so the repeat is swallowed too. A binding that does not
+    // repeat fires nothing on it (KS-10); its release passes, and the press
+    // after it fires again. A binding that repeats fires on it. Windows
+    // never saw F13 go down, so its key state cannot repair the record:
+    // roadmap item 2.3's resync leaves such keys alone, and no roadmap item
+    // repairs them yet.
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
         .down("F13")
         .expect_suppressed()
@@ -1523,7 +1531,23 @@ fn press_after_a_lost_key_up_and_a_focus_change_follows_its_binding() {
         .advance_ms(1000)
         .down("F13")
         .expect_suppressed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_passed()
+        .down("F13")
+        .expect_suppressed()
         .expect_fired(&[BindAction::SwitchLanguage]);
+
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)])
+        .up_unseen("F13")
+        .foreground_changed()
+        .advance_ms(1000)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::PressKey(VK_LEFT)]);
 }
 
 #[test]
@@ -1594,6 +1618,315 @@ fn repeat_true_on_switch_language_fires_on_every_repeat() {
     .check_nothing_stuck();
     hold_with_repeats(scenario, "CapsLock", 10, &[BindAction::SwitchLanguage])
         .expect_total_fired(&vec![BindAction::SwitchLanguage; 11]);
+}
+
+/// The shipped template, so that the KS-10 scenarios run on what users get.
+const TEMPLATE: &str = include_str!("../config/default_config.ron");
+
+/// [`TEMPLATE`] with `Alt+Shift` standing in for the Windows language
+/// hotkey that its `block_original_combo` reads from the registry.
+fn template() -> Scenario {
+    Scenario::from_ron_with_language_hotkey(TEMPLATE, &[VK_MENU, VK_SHIFT])
+}
+
+#[test]
+fn default_capslock_held_with_ten_repeats_switches_the_language_once() {
+    // Roadmap item 1.1's acceptance: one switch, every event suppressed.
+    let scenario = template().check_press_symmetry().check_nothing_stuck();
+    hold_with_repeats(scenario, "CapsLock", 10, &[])
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn press_key_backspace_held_with_ten_repeats_fires_eleven_times() {
+    let scenario =
+        Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Backspace")) ] )"#)
+            .check_press_symmetry()
+            .check_nothing_stuck();
+    hold_with_repeats(scenario, "F13", 10, &[BindAction::PressKey(VK_BACK)])
+        .expect_total_fired(&vec![BindAction::PressKey(VK_BACK); 11]);
+}
+
+#[test]
+fn volume_up_and_volume_down_repeat_by_default_and_play_pause_does_not() {
+    for (key, repeats) in [
+        (MediaKey::VolumeUp, true),
+        (MediaKey::VolumeDown, true),
+        (MediaKey::PlayPause, false),
+    ] {
+        let action = BindAction::Media(key);
+        let on_repeat: &[BindAction] = if repeats {
+            std::slice::from_ref(&action)
+        } else {
+            &[]
+        };
+        let total = if repeats { 4 } else { 1 };
+        let scenario = Scenario::from_ron(&format!(
+            r#"( bindings: [ (keys: "F13", action: Media({key:?})) ] )"#
+        ))
+        .with_context(format!("Media({key:?})"));
+        hold_with_repeats(scenario, "F13", 3, on_repeat)
+            .expect_total_fired(&vec![action.clone(); total]);
+    }
+}
+
+#[test]
+fn only_press_key_volume_up_and_volume_down_fire_again_on_auto_repeat_by_default() {
+    // The engine never executes an action, so no process, URL or message
+    // is started here.
+    for (action, on_repeat) in [
+        ("SwitchLanguage", None),
+        ("SwitchLanguageBackward", None),
+        ("ToggleCapsLock", None),
+        (
+            r#"PressKey("Backspace")"#,
+            Some(BindAction::PressKey(VK_BACK)),
+        ),
+        (r#"PostMessage(msg: "WM_CLOSE")"#, None),
+        (r#"Sequence([Text("x")])"#, None),
+        (r#"Launch(exe: "wt.exe")"#, None),
+        (r#"OpenUrl("https://example.com")"#, None),
+        ("Media(PlayPause)", None),
+        ("Media(Stop)", None),
+        ("Media(Next)", None),
+        ("Media(Previous)", None),
+        ("Media(VolumeMute)", None),
+        (
+            "Media(VolumeUp)",
+            Some(BindAction::Media(MediaKey::VolumeUp)),
+        ),
+        (
+            "Media(VolumeDown)",
+            Some(BindAction::Media(MediaKey::VolumeDown)),
+        ),
+        ("DoNothing", None),
+    ] {
+        Scenario::from_ron(&format!(
+            r#"( bindings: [ (keys: "F13", action: {action}) ] )"#
+        ))
+        .with_context(action)
+        .down("F13")
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_fired(on_repeat.as_slice());
+    }
+}
+
+#[test]
+fn repeat_false_on_press_key_fires_once_per_press() {
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: PressKey("Left"), repeat: false) ] )"#,
+    );
+    hold_with_repeats(scenario, "F13", 10, &[])
+        .expect_total_fired(&[BindAction::PressKey(VK_LEFT)]);
+}
+
+#[test]
+fn held_shift_capslock_toggles_capslock_once() {
+    // KS-10: CapsLock flickered at the repeat rate, where the native key
+    // toggles once per press.
+    let scenario = template().down("LShift").expect_passed();
+    hold_with_repeats(scenario, "CapsLock", 10, &[])
+        .up("LShift")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn held_launch_and_sequence_hotkeys_fire_once_per_press() {
+    // KS-10: a held Launch hotkey started a process per repeat, and a held
+    // Sequence macro a worker thread per repeat.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Alt+T", action: Launch(exe: "wt.exe")) ] )"#,
+    )
+    .down("LCtrl")
+    .expect_passed()
+    .down("LAlt")
+    .expect_passed();
+    hold_with_repeats(scenario, "T", 5, &[]).expect_total_fired(&[launch("wt.exe")]);
+
+    // `Sequence` actions compare by `Arc` pointer, so only the repeats are
+    // checked.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Alt+N", action: Sequence([Text("note")])) ] )"#,
+    )
+    .down("LCtrl")
+    .expect_passed()
+    .down("LAlt")
+    .expect_passed();
+    hold_with_repeats(scenario, "N", 5, &[]);
+}
+
+#[test]
+fn non_repeating_winner_keeps_the_immediate_slot_on_a_repeat() {
+    // The first matching Immediate binding takes a repeat even though it
+    // does not fire on it, so the binding after it never fires in its
+    // place: no Left at the repeat rate after one switch.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage),
+            (keys: "F13", action: PressKey("Left")),
+        ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .advance_ms(500)
+    .repeat("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("F13")
+    .expect_suppressed();
+}
+
+#[test]
+fn capslock_held_across_a_focus_change_switches_the_language_once() {
+    // The repeats stay swallowed after the focus change and fire nothing;
+    // the release passes (foreground_change_forgets_pending_key_up_suppression).
+    let scenario = template()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .foreground_changed()
+        .advance_ms(500);
+    repeats(scenario, "CapsLock", 3, &[])
+        .up("CapsLock")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn capslock_held_through_remapping_off_and_on_switches_the_language_once() {
+    // The repeat sent while remapping is off reaches Windows, so the reset
+    // of `swch on` takes CapsLock as held and passed: its later repeats
+    // pass and, as repeats, fire nothing.
+    template()
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .remapping_off()
+        .advance_ms(500)
+        .repeat("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired()
+        .remapping_on()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("CapsLock")
+        .expect_passed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn reload_mid_hold_applies_the_new_repeat_flag_from_the_next_repeat() {
+    // A hot reload leaves the engine alone, so the press goes on and the
+    // next repeat reads the new binding's flag.
+    Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(500)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .reload(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, repeat: true) ] )"#)
+        .advance_ms(33)
+        .repeat("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("CapsLock")
+        .expect_suppressed();
+}
+
+#[test]
+fn deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat() {
+    // Every binding presses Backspace, which repeats by default: the flag
+    // must not reach the deferred, sequence and chord arms.
+    let back = BindAction::PressKey(VK_BACK);
+
+    // Tap: held past its term, it fires nothing at all.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: PressKey("Backspace"), trigger: Tap(200)) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(500);
+    repeats(scenario, "F13", 3, &[])
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[]);
+
+    // Hold: fires once at its term, not again on the repeats.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: PressKey("Backspace"), trigger: Hold(200)) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(500)
+    .expect_fired(std::slice::from_ref(&back));
+    repeats(scenario, "F13", 3, &[])
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(std::slice::from_ref(&back));
+
+    // DoubleTap: a repeat inside the term is not a second press.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: PressKey("Backspace"), trigger: DoubleTap(600)) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(300);
+    repeats(scenario, "F13", 3, &[])
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_total_fired(&[]);
+
+    // Sequence: the repeats of neither step advance or complete it again.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["F13", "F14"], max_gap_ms: 2000), action: PressKey("Backspace")) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(500);
+    let scenario = repeats(scenario, "F13", 3, &[])
+        .up("F13")
+        .expect_suppressed()
+        .down("F14")
+        .expect_suppressed()
+        .expect_fired(std::slice::from_ref(&back))
+        .advance_ms(500);
+    repeats(scenario, "F14", 3, &[])
+        .up("F14")
+        .expect_suppressed()
+        .expect_total_fired(std::slice::from_ref(&back));
+
+    // Chord: the repeats of its last key fire nothing after it completed.
+    let scenario = Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["F13", "F14"], window_ms: 50), action: PressKey("Backspace")) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(20)
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(std::slice::from_ref(&back))
+    .advance_ms(500);
+    repeats(scenario, "F14", 3, &[])
+        .up("F14")
+        .expect_suppressed()
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(std::slice::from_ref(&back));
 }
 
 // ---- Suppression symmetry (KS-06, KS-14) ----
@@ -2541,6 +2874,15 @@ fn press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down() {
         .down_unseen("LShift")
         .up("A")
         .repeat("LShift");
+}
+
+#[test]
+#[should_panic(expected = "on an auto-repeat")]
+fn repeat_check_reports_an_action_fired_on_an_auto_repeat() {
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
+        .check_repeats_fire_only(&[])
+        .down("F13")
+        .repeat("F13");
 }
 
 #[test]
