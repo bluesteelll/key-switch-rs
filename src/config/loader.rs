@@ -1673,6 +1673,79 @@ mod tests {
         }
     }
 
+    // ---- timing values (KS-27) ----
+
+    /// `row` as binding #1, after a valid binding #0, so that a message
+    /// names the binding by its own number.
+    fn after_binding_0(row: &str) -> String {
+        format!(r#"( bindings: [ ( keys: "F20", action: DoNothing ), {row} ] )"#)
+    }
+
+    #[test]
+    fn a_zero_tap_term_is_an_error_that_names_the_binding() {
+        let err = from_ron_str(&after_binding_0(
+            r#"( keys: "CapsLock", action: SwitchLanguage, trigger: Tap(0) )"#,
+        ))
+        .expect_err("Tap(0) must be an error");
+        match err {
+            ConfigError::Bindings(errs) => assert_eq!(
+                errs,
+                ["binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms"]
+            ),
+            other => panic!("expected Bindings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timing_values_outside_1_to_10000_ms_are_errors_that_name_the_binding() {
+        let deferred = |trigger: &str| {
+            format!(r#"( keys: "CapsLock", action: SwitchLanguage, trigger: {trigger} )"#)
+        };
+        let sequence = |gap: &str| {
+            format!(
+                r#"( sequence: (steps: ["F13", "F14"], max_gap_ms: {gap}), action: DoNothing )"#
+            )
+        };
+        let chord = |window: &str| {
+            format!(r#"( chord: (keys: ["F13", "F14"], window_ms: {window}), action: DoNothing )"#)
+        };
+        for (written, row) in [
+            ("Hold(0)", deferred("Hold(0)")),
+            ("DoubleTap(0)", deferred("DoubleTap(0)")),
+            ("Tap(10001)", deferred("Tap(10001)")),
+            ("Hold(3600000)", deferred("Hold(3600000)")),
+            ("max_gap_ms: 0", sequence("0")),
+            ("max_gap_ms: 10001", sequence("10001")),
+            ("window_ms: 0", chord("0")),
+            ("window_ms: 10001", chord("10001")),
+        ] {
+            let err = from_ron_str(&after_binding_0(&row))
+                .expect_err(&format!("{written} must be an error"));
+            match err {
+                ConfigError::Bindings(errs) => {
+                    assert_eq!(errs.len(), 1, "{written}: {errs:?}");
+                    assert!(errs[0].starts_with("binding #1 "), "{written}: {errs:?}");
+                    assert!(errs[0].contains(written), "{written}: {errs:?}");
+                    assert!(errs[0].contains("1 to 10000 ms"), "{written}: {errs:?}");
+                }
+                other => panic!("{written}: expected Bindings, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn timing_values_at_the_bounds_load() {
+        let ron = r#"( bindings: [
+            (keys: "F13", action: DoNothing, trigger: Tap(1)),
+            (keys: "F14", action: DoNothing, trigger: Hold(10000)),
+            (keys: "F15", action: DoNothing, trigger: DoubleTap(10000)),
+            (sequence: (steps: ["F16", "F17"], max_gap_ms: 1), action: DoNothing),
+            (chord: (keys: ["F18", "F19"], window_ms: 10000), action: DoNothing),
+        ] )"#;
+        let bindings = from_ron_str(ron).unwrap_or_else(|e| panic!("the bounds must load: {e}"));
+        assert_eq!(bindings.len(), 5);
+    }
+
     #[test]
     fn allow_extra_modifiers_defaults_to_false() {
         let bindings =
