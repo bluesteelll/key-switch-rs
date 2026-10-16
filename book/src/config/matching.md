@@ -45,13 +45,14 @@ Further points:
 
 [src/system/registry.rs:17-79](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L17-L79), [src/system/registry.rs:181-189](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L181-L189):
 
-- The key `HKCU\Keyboard Layout\Toggle` is read: first the value `Hotkey`, and, if it is absent or yields no combination, the value `Language Hotkey`. `REG_SZ` and `REG_EXPAND_SZ` strings are accepted (leading and trailing whitespace is trimmed from the value); a value of any other type is skipped with the warning `[WARN] registry value "Hotkey" has type …, expected REG_SZ/REG_EXPAND_SZ`. Values:
+- The key `HKCU\Keyboard Layout\Toggle` is read: first the value `Hotkey`, and, if it is missing, unreadable or holds an unknown value, the value `Language Hotkey`. A value that names a combination or says `"3"` stops the lookup. `REG_SZ` and `REG_EXPAND_SZ` strings are accepted (leading and trailing whitespace is trimmed from the value); a value of any other type is skipped with the warning `[WARN] registry value "Hotkey" has type …, expected REG_SZ/REG_EXPAND_SZ`. Values:
   - `"1"` → `Alt+Shift`;
   - `"2"` → `Ctrl+Shift`;
   - `"4"` → `` ` `` (`VK_OEM_3`; on the Russian layout this is the `Ё` key). The blocker swallows that key when it is pressed with no other key down in Windows, so `` ` `` typed on its own does nothing, while Shift+`` ` `` and a `` ` `` typed while another key is held reach Windows (and may switch the layout);
-  - `"3"` ("not assigned") and any other value yield no combination. If neither of the two values yields a combination, or the key does not exist, the **fallback `Alt+Shift`** is used.
+  - `"3"` ("Not assigned" in Windows' settings) means that Windows has no language hotkey: no blocker is added, and there is no fallback. The first value that names a combination or says `"3"` decides, so this holds for `"3"` in `Hotkey`, and for `"3"` in `Language Hotkey` when `Hotkey` is missing or unknown;
+  - any other text, a missing value and a value of another type are skipped. If no value decides, or the key does not exist, the **fallback `Alt+Shift`** is used.
 - The modifiers of these hotkeys mean either side: the `Alt+Shift` blocker covers both Alt keys and both Shift keys.
-- The console shows `[INFO] SwitchLanguage: registry combination Alt+Shift` (the keys by name) or `[INFO] SwitchLanguage: using default combination`. For `SwitchLanguageBackward` the line starts with that name instead. The line is printed for every binding that has the flag.
+- The console shows `[INFO] SwitchLanguage: registry combination Alt+Shift` (the keys by name), `[INFO] SwitchLanguage: hotkey not assigned in Windows, no auto-blocker` or `[INFO] SwitchLanguage: using default combination`. For `SwitchLanguageBackward` the line starts with that name instead. The line is printed for every binding that has the flag.
 - The registry is read on every load of the file: at startup and on every reload.
 - The value `Layout Hotkey` (switching layouts within one language) is not read, and Win+Space is not blocked ([`Layout Hotkey` and Win+Space](../gaps.md#layout-hotkey-and-winspace)).
 
@@ -108,8 +109,8 @@ The blocker acts in `a.exe` and in `b.exe`; in every other window Windows gets i
 > [!WARNING]
 > **The mask key in the Alt+Tab switcher.** With `true`, Alt held, Tab tapped, then Shift: Shift is swallowed and the menu mask key reaches Windows while the switcher is on screen. Whether the switcher reacts to that key is not verified; it is one of the manual checks of roadmap [item 1.2](../roadmap.md#12-mask-key-and-auto-blocker-v2).
 
-> [!WARNING]
-> The value `"3"` (hotkey disabled in Windows) still produces an `Alt+Shift` blocker ([src/system/registry.rs:185](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L185), [src/system/registry.rs:60-64](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L60-L64)). See [KS-17](../audit.md#ks-17), open until roadmap [item 1.4](../roadmap.md#14-tri-state-language-hotkey).
+> [!NOTE]
+> Fixed on `fix/language-hotkey-tristate` ([KS-17](../audit.md#ks-17), roadmap [item 1.4](../roadmap.md#14-tri-state-language-hotkey)): the value `"3"` (hotkey disabled in Windows) gives no blocker ([§15.2](#s15-2)); it used to give an `Alt+Shift` blocker.
 
 > [!NOTE]
 > Fixed on `feat/mask-key` ([KS-35](../audit.md#ks-35)): the blocker takes the `when` of the bindings that asked for it ([§15.3](#s15-3)); it used to act in every window. It still does not take their `trigger`, by design: it acts on the hotkey's own press whatever gesture its binding uses. With `when: Not(AppEquals("game.exe"))` on the default config's CapsLock binding, the Windows hotkey now reaches the game and switches the layout there, while CapsLock reaches it as CapsLock.

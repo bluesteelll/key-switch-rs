@@ -5,7 +5,7 @@
 
 The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no `Tap`, `Hold` or `DoubleTap` on Win or Alt alone ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag`, and those about `block_default` on `Tap`, `Hold` and `DoubleTap` the branch `feat/deferred-block-default`.
 
-Checked with the validator (the real loader) on a machine where the `Hotkey`/`Language Hotkey` values did not yield a combination, so the fallback `Alt+Shift` was used:
+Checked with the validator (the real loader) on a machine with no values under `HKCU\Keyboard Layout\Toggle`, so the fallback `Alt+Shift` was used:
 
 ```text
 [INFO] SwitchLanguage: using default combination
