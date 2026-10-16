@@ -408,6 +408,18 @@ minor version; such entries sit under **Changed** and start with
   after Alt is released; its repeats used to reach Windows from the first
   one on. `block_original_combo: MaskOnly` (under **Added**) lets that
   Shift through instead.
+- KS-17 (roadmap item 1.4): with the Windows language hotkey set to
+  "Not assigned" (value `"3"` under `HKCU\Keyboard Layout\Toggle`),
+  `block_original_combo` adds no auto-blocker. It used to fall back to an
+  `Alt+Shift` blocker, which swallowed Shift pressed after Alt (KS-05)
+  with no Windows language hotkey to protect. The values `Hotkey` and then
+  `Language Hotkey` are read in that order, and the first one that names
+  a hotkey (`"1"`, `"2"`, `"4"`) or says `"3"` decides; `Alt+Shift` is
+  assumed only when neither does (a missing, unreadable or unknown
+  value). The console says
+  `[INFO] SwitchLanguage: hotkey not assigned in Windows, no auto-blocker`,
+  and the startup list has no `[AUTO-BLOCK]` line. The registry is only
+  read.
 - KS-18: `block_original_combo` no longer adds an auto-blocker when a
   `keys` binding anywhere in the file uses the same keys as the Windows
   hotkey, in any order and with any trigger or `when:`, the flagged binding

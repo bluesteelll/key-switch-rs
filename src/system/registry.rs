@@ -20,7 +20,8 @@ enum HotkeySetting {
     /// The value names this combination.
     Combo(KeyCombination),
     /// The value turns the hotkey off: "3", "Not assigned" in Windows'
-    /// settings.
+    /// settings. It decides like a combination does: there is no hotkey,
+    /// so no auto-blocker and no fallback to the default.
     Disabled,
     /// The value is a string this parser does not know.
     Unknown,
@@ -79,10 +80,10 @@ pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
 /// The hotkey of `function`, given the data of its registry values in the
 /// order of the location's `value_names`: `Some(text)` for a value read as
 /// a string, `None` for one that is missing, unreadable or not a string.
-/// The first value whose text is a `Combo` decides; the values after it are
-/// not read. With no deciding value, or for a function without a registry
-/// location, the built-in default. Prints the [INFO] line that says where
-/// the hotkey came from.
+/// The first value whose text is a `Combo` or `Disabled` decides (`Disabled`
+/// gives `None`); the values after it are not read. With no deciding value,
+/// or for a function without a registry location, the built-in default.
+/// Prints the [INFO] line that says where the hotkey came from.
 pub(crate) fn hotkey_from_values<S: AsRef<str>>(
     function: SystemFunction,
     values: impl IntoIterator<Item = Option<S>>,
@@ -94,9 +95,15 @@ pub(crate) fn hotkey_from_values<S: AsRef<str>>(
                     println!("[INFO] {function:?}: registry combination {combo}");
                     return Some(combo);
                 }
-                // KS-17: "3" is still read past like an unknown value;
-                // roadmap item 1.4 makes it decide.
-                HotkeySetting::Disabled | HotkeySetting::Unknown => {}
+                // KS-17: an Alt+Shift fallback here would swallow Shift
+                // pressed after Alt (KS-05) with no Windows hotkey to block.
+                HotkeySetting::Disabled => {
+                    println!(
+                        "[INFO] {function:?}: hotkey not assigned in Windows, no auto-blocker"
+                    );
+                    return None;
+                }
+                HotkeySetting::Unknown => {}
             }
         }
     }
@@ -469,6 +476,17 @@ mod tests {
         assert!(get_system_hotkey(SystemFunction::ShowDesktop).is_some());
         assert!(get_system_hotkey(SystemFunction::TaskManager).is_some());
         assert!(get_system_hotkey(SystemFunction::ToggleCapsLock).is_none());
+    }
+
+    #[test]
+    #[ignore = "manual: set Settings > Time & language > Typing > Advanced keyboard settings > Input language hot keys > Switch Input Language to (Not assigned) first, and restore it afterwards"]
+    fn live_registry_with_the_language_hotkey_not_assigned_has_no_combination() {
+        // Reads HKCU\Keyboard Layout\Toggle only.
+        assert_eq!(get_system_hotkey(SystemFunction::SwitchLanguage), None);
+        assert_eq!(
+            get_system_hotkey(SystemFunction::SwitchLanguageBackward),
+            None
+        );
     }
 
     #[test]
