@@ -50,6 +50,10 @@ impl BindingKind {
 pub struct Binding {
     pub kind: BindingKind,
     pub action: BindAction,
+    /// Whether the key events that fire or arm a `Combo` binding are
+    /// suppressed, for every trigger. The constructors set `true`; the
+    /// loader resolves a config without the field with
+    /// [`Binding::blocks_by_default`]. Sequences and chords ignore it.
     pub block_default: bool,
     pub block_original_combo: bool,
     /// Foreground-context guard. `Condition::Always` (the default) makes the
@@ -115,6 +119,18 @@ impl Binding {
             allow_extra_modifiers: false,
             repeat: false,
             is_auto_blocker: true,
+        }
+    }
+
+    /// The `block_default` of a binding whose config does not set it:
+    /// `false` for a `Tap`, `Hold` or `DoubleTap` combo made only of
+    /// modifiers (`"LShift"`, `"Ctrl+Shift"`), which would otherwise take the
+    /// modifier away from everything else it is used for; `true` for every
+    /// other binding, every `Immediate` one included (roadmap item 1.3).
+    pub fn blocks_by_default(kind: &BindingKind, trigger: Trigger) -> bool {
+        match kind {
+            BindingKind::Combo(combo) => trigger.is_immediate() || !combo.is_modifier_only(),
+            BindingKind::Sequence { .. } | BindingKind::Chord { .. } => true,
         }
     }
 
@@ -233,6 +249,7 @@ fn format_kind(kind: &BindingKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     #[test]
@@ -264,5 +281,53 @@ mod tests {
         assert!(switch.with_repeat(true).repeat);
 
         assert!(!Binding::new_auto_blocker(KeyCombination::new(VK_F13)).repeat);
+    }
+
+    #[test]
+    fn blocks_by_default_is_false_only_for_a_deferred_combo_made_of_modifiers() {
+        let combo =
+            |keys: &[VIRTUAL_KEY]| BindingKind::Combo(KeyCombination::from_keys(keys.to_vec()));
+        let deferred = [
+            Trigger::Tap(200),
+            Trigger::Hold(200),
+            Trigger::DoubleTap(250),
+        ];
+
+        for trigger in deferred {
+            assert!(!Binding::blocks_by_default(&combo(&[VK_LSHIFT]), trigger));
+            assert!(!Binding::blocks_by_default(
+                &combo(&[VK_CONTROL, VK_SHIFT]),
+                trigger
+            ));
+            let win = BindingKind::Combo(KeyCombination::new(KeySpec::AnySide(Modifier::Win)));
+            assert!(!Binding::blocks_by_default(&win, trigger));
+
+            assert!(Binding::blocks_by_default(&combo(&[VK_CAPITAL]), trigger));
+            assert!(Binding::blocks_by_default(
+                &combo(&[VK_SHIFT, VK_CAPITAL]),
+                trigger
+            ));
+        }
+
+        assert!(Binding::blocks_by_default(
+            &combo(&[VK_LSHIFT]),
+            Trigger::Immediate
+        ));
+        assert!(Binding::blocks_by_default(
+            &combo(&[VK_MENU, VK_SHIFT]),
+            Trigger::Immediate
+        ));
+
+        let steps = vec![KeyCombination::new(VK_F13), KeyCombination::new(VK_F14)];
+        let sequence = BindingKind::Sequence {
+            steps,
+            max_gap: Duration::from_millis(500),
+        };
+        assert!(Binding::blocks_by_default(&sequence, Trigger::Immediate));
+        let chord = BindingKind::Chord {
+            keys: vec![KeySpec::Key(VK_F13), KeySpec::Key(VK_F14)],
+            window: Duration::from_millis(50),
+        };
+        assert!(Binding::blocks_by_default(&chord, Trigger::Immediate));
     }
 }

@@ -382,8 +382,11 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         ));
     }
 
+    let block_default = raw
+        .block_default
+        .unwrap_or_else(|| Binding::blocks_by_default(&kind, trigger));
     let binding = Binding::with_kind(kind, action)
-        .with_block_default(raw.block_default)
+        .with_block_default(block_default)
         .with_block_original_combo(raw.block_original_combo)
         .with_condition(raw_condition_to_condition(&raw.when))
         .with_trigger(trigger)

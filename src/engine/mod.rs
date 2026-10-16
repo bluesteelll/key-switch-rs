@@ -122,10 +122,13 @@
 //!      it sets `repeat` (by default `PressKey`, `Media(VolumeUp)` and
 //!      `Media(VolumeDown)`; owner decision, KS-10). A binding that does not
 //!      repeat still takes the auto-repeat, so a later binding never fires
-//!      in its place. Every matching Immediate binding with `block_default`
-//!      asks for suppression. `Tap`, `Hold` and `DoubleTap` ignore
-//!      repeats, arm under the key just pressed (so under a key of the
-//!      combo, whose key-up resolves them) and always suppress.
+//!      in its place. `Tap`, `Hold` and `DoubleTap` ignore repeats and arm
+//!      under the key just pressed (so under a key of the combo, whose
+//!      key-up resolves them). Every matching binding with `block_default`
+//!      asks for suppression, whatever its trigger; one without it lets the
+//!      key-down through, and a gesture is armed and fires all the same
+//!      (roadmap item 1.3). The loader resolves a missing `block_default`
+//!      to `false` only for a deferred combo made only of modifiers.
 //!    - An auto-blocker (`block_original_combo`) is a `Combo` of the
 //!      Windows hotkey that only suppresses: it fires nothing, so its place
 //!      in the list never keeps a user binding from firing (KS-18). It
@@ -428,7 +431,9 @@ impl Engine {
                                 Duration::from_millis(term_ms),
                                 now,
                             );
-                            decision.suppress = true;
+                            if binding.block_default {
+                                decision.suppress = true;
+                            }
                         }
                         Trigger::Hold(term_ms) => {
                             if was_repeat {
@@ -442,7 +447,9 @@ impl Engine {
                             ) {
                                 decision.timers.push(timer);
                             }
-                            decision.suppress = true;
+                            if binding.block_default {
+                                decision.suppress = true;
+                            }
                         }
                         Trigger::DoubleTap(term_ms) => {
                             if was_repeat {
@@ -456,7 +463,9 @@ impl Engine {
                             ) {
                                 decision.fire.push(action);
                             }
-                            decision.suppress = true;
+                            if binding.block_default {
+                                decision.suppress = true;
+                            }
                         }
                     }
                 }
@@ -621,12 +630,13 @@ mod tests {
 
     #[test]
     fn key_up_of_a_key_whose_down_passed_passes_even_with_a_tap_pending() {
-        // No event sequence reaches this state today: a Tap is armed only
-        // under a key-down that is swallowed, and its press stays on record
-        // as swallowed until its key-up. Roadmap item 1.3 (block_default on
-        // deferred triggers) arms one under a key-down that passes. Windows
-        // then has the key down, so the key-up must reach it whatever the
-        // gesture does; the state is set directly here.
+        // A Tap with `block_default: false` arms under a key-down that
+        // passes (roadmap item 1.3; scenario
+        // explicit_block_default_false_on_a_tap_passes_every_event_and_still_fires).
+        // Windows then has the key down, so the key-up must reach it
+        // whatever the gesture does. Here the Tap swallows its key-down and
+        // the record is set to passed directly, so the key-up rule is
+        // pinned on its own: it follows the record, not the binding.
         let t0 = Instant::now();
         let mut bindings = crate::config::from_ron_str(
             r#"( bindings: [ (keys: "F13", action: SwitchLanguage, trigger: Tap(200)) ] )"#,
