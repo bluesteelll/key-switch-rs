@@ -260,6 +260,11 @@ minor version; such entries sit under **Changed** and start with
   language again. The console shows `[ERROR] config reload failed:` with
   `config file <path> does not exist`, and putting the file back reloads
   it. The template is written only at startup.
+- KS-24: a `config.ron` saved as UTF-8 with a byte-order mark (Notepad's
+  "UTF-8 with BOM", or `Set-Content -Encoding UTF8` in Windows PowerShell
+  5.1) loads. It used to stop the daemon at startup with
+  ``1:1: Expected opening `(` for struct `RawConfig` `` and was rejected
+  on every reload.
 - KS-28 (an unverified report): `TitleEquals` and `AppEquals` ignore case
   in every alphabet, with the same Unicode lowercasing as `TitleContains`:
   `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор". They

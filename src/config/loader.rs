@@ -224,6 +224,11 @@ pub(crate) fn from_ron_str_with_hotkeys(
     text: &str,
     system_combination: &SystemCombination,
 ) -> Result<Vec<Binding>, ConfigError> {
+    // Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+    // `-Encoding UTF8` start the file with U+FEFF, which ron 0.10.1 does not
+    // skip (KS-24). Only a leading one goes: inside a string it is text.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+
     // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a

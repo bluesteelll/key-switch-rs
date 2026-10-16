@@ -144,7 +144,8 @@ without a restart.
 If the file does not load (a syntax error, an unknown or misspelled field,
 an unknown key name, ...) or is deleted or renamed, the error is printed and
 the **previously-running bindings stay live** — a malformed save never
-bricks the daemon. Fix the file and save again to apply.
+bricks the daemon. Fix the file and save again to apply. The file is UTF-8,
+with or without a BOM.
 
 ### Where the file lives
 

@@ -7,6 +7,7 @@
 // writes this template only when it starts and finds no config.ron next to
 // key-switch-rs.exe; a config path given on the command line must exist.
 // Field names are checked: an unknown or misspelled field is an error.
+// Save as UTF-8, with or without a BOM.
 //
 // ---- binding kinds ----
 //
