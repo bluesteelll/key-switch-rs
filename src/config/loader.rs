@@ -685,6 +685,14 @@ mod tests {
     /// The template's commented examples, uncommented and loaded as a user
     /// who removes the `// ` would load them, with no system hotkey.
     fn template_examples() -> Vec<Binding> {
+        let ron = template_examples_ron();
+        from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"))
+    }
+
+    /// The text of [`template_examples`]: the template's commented examples
+    /// with the `// ` removed, as a config of their own.
+    fn template_examples_ron() -> String {
         let mut lines = DEFAULT_CONFIG.lines();
         lines
             .by_ref()
@@ -697,9 +705,7 @@ mod tests {
                 line => line.strip_prefix("// ").unwrap_or(line),
             })
             .collect();
-        let ron = format!("( bindings: [\n{}\n] )", examples.join("\n"));
-        from_ron_str_with_hotkeys(&ron, &|_: &BindAction| None)
-            .unwrap_or_else(|e| panic!("the template's examples do not load: {e}\n{ron}"))
+        format!("( bindings: [\n{}\n] )", examples.join("\n"))
     }
 
     #[test]
@@ -2158,6 +2164,83 @@ mod tests {
             fs::read_to_string(&path).expect("the template was written"),
             DEFAULT_CONFIG
         );
+    }
+
+    // ---- Duplicate bindings (roadmap item 1.6) ----
+
+    /// The warnings of `text`, loaded with no system hotkey.
+    fn warnings_of(text: &str) -> Vec<String> {
+        parse_ron_str(text, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("config does not load: {e}\n{text}"))
+            .warnings
+    }
+
+    #[test]
+    fn a_binding_that_duplicates_an_earlier_one_is_warned_about() {
+        // The later CapsLock Tap never acts: the first one of its group
+        // takes the press. The file still loads, every binding included.
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "Shift+CapsLock", action: ToggleCapsLock),
+            (keys: "capslock", action: ToggleCapsLock, trigger: Tap(300), block_default: false),
+        ] )"#;
+        let parsed = parse_ron_str(text, &|_: &BindAction| None).expect("config loads");
+        assert_eq!(parsed.bindings.len(), 3);
+        assert_eq!(
+            parsed.warnings,
+            ["binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them"]
+        );
+    }
+
+    #[test]
+    fn bindings_that_differ_in_kind_keys_trigger_when_or_allow_extra_modifiers_are_not_duplicates()
+    {
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Hold(200)),
+            (keys: "CapsLock", action: SwitchLanguage, trigger: DoubleTap(250)),
+            (keys: "CapsLock", action: SwitchLanguage),
+            (keys: "CapsLock", action: SwitchLanguage, when: AppEquals("code.exe")),
+            (keys: "CapsLock", action: SwitchLanguage, allow_extra_modifiers: true),
+            (keys: "LShift+CapsLock", action: SwitchLanguage),
+            (keys: "Shift+CapsLock", action: SwitchLanguage),
+            (sequence: (steps: ["F13", "F14"]), action: SwitchLanguage),
+            (sequence: (steps: ["F14", "F13"]), action: SwitchLanguage),
+            (chord: (keys: ["F13", "F14"]), action: SwitchLanguage),
+            (chord: (keys: ["F13", "F15"]), action: SwitchLanguage),
+        ] )"#;
+        assert_eq!(warnings_of(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn duplicates_are_found_across_key_order_terms_timings_and_binding_kinds() {
+        let text = r#"( bindings: [
+            (keys: "Ctrl+Alt+L", action: PressKey("L")),
+            (keys: "alt + ctrl + l", action: Launch(exe: "wt.exe")),
+            (keys: "F13", action: SwitchLanguage, trigger: Hold(200), when: AppEquals("code.exe")),
+            (keys: "F13", action: ToggleCapsLock, trigger: Hold(500), when: AppEquals("code.exe")),
+            (sequence: (steps: ["F14", "F15"]), action: SwitchLanguage),
+            (sequence: (steps: ["F14", "F15"], max_gap_ms: 900), action: ToggleCapsLock),
+            (chord: (keys: ["F16", "F17"]), action: SwitchLanguage),
+            (chord: (keys: ["F17", "F16"], window_ms: 80), action: ToggleCapsLock),
+            (keys: "Ctrl+Alt+L", action: DoNothing),
+        ] )"#;
+        assert_eq!(
+            warnings_of(text),
+            [
+                "binding #1 [alt + ctrl + l] duplicates binding #0 [Ctrl+Alt+L]; remove one of them",
+                "binding #3 [F13] duplicates binding #2 [F13]; remove one of them",
+                "binding #5 [Sequence[F14 \u{2192} F15]] duplicates binding #4 [Sequence[F14 \u{2192} F15]]; remove one of them",
+                "binding #7 [Chord[F17+F16]] duplicates binding #6 [Chord[F16+F17]]; remove one of them",
+                "binding #8 [Ctrl+Alt+L] duplicates binding #0 [Ctrl+Alt+L]; remove one of them",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_template_and_its_examples_have_no_duplicate_bindings() {
+        assert_eq!(warnings_of(DEFAULT_CONFIG), Vec::<String>::new());
+        assert_eq!(warnings_of(&template_examples_ron()), Vec::<String>::new());
     }
 
     // ---- existing test, kept at the bottom ----
