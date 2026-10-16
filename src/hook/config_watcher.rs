@@ -173,9 +173,11 @@ mod tests {
     use std::time::Instant;
 
     use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind, RenameMode};
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
 
     use super::*;
     use crate::config::testing::{ONE, TWO, TempDir};
+    use crate::data::key_spec::KeySpec;
 
     fn cwd() -> PathBuf {
         std::env::current_dir().expect("the test has a current folder")
@@ -292,6 +294,57 @@ mod tests {
         assert!(
             reloaded,
             "no reload within 10 s: the watcher of CONFIG.RON never swapped in the 2 bindings of config.ron"
+        );
+    }
+
+    #[test]
+    fn a_deleted_config_keeps_the_live_bindings() {
+        let dir = TempDir::new("deleted");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, ONE).expect("write the config");
+        let hook = KeyboardHook::new();
+        hook.update_bindings(config::reload(&path).expect("the config loads"));
+
+        fs::remove_file(&path).expect("delete the config");
+        reload_into(&path, &hook);
+
+        assert!(!path.exists(), "a deleted config must not be recreated");
+        let bindings = hook.bindings();
+        assert_eq!(
+            bindings.len(),
+            1,
+            "the bindings of the deleted file stay live"
+        );
+        assert_eq!(
+            bindings[0].combination().expect("a keys binding").keys,
+            vec![KeySpec::Key(VK_F13)]
+        );
+    }
+
+    #[test]
+    fn a_spawned_watcher_keeps_the_bindings_when_the_file_is_deleted() {
+        let dir = TempDir::new("deleted-live");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, ONE).expect("write the config");
+        let hook = leaked_hook();
+        hook.update_bindings(config::reload(&path).expect("the config loads"));
+        // Declared after `dir`, so the watch stops before the folder goes.
+        let _watcher = spawn_watcher(path.clone(), hook).expect("watcher starts");
+        // A watcher that never reloads would keep the bindings too.
+        assert!(
+            rewrite_until_live(&path, TWO, hook, 2),
+            "the watcher never reloaded"
+        );
+
+        fs::remove_file(&path).expect("delete the config");
+        // Six times the debounce: the reload after the delete has run.
+        thread::sleep(Duration::from_millis(6 * DEBOUNCE_MS));
+
+        assert!(!path.exists(), "a deleted config must not be recreated");
+        assert_eq!(
+            hook.bindings().len(),
+            2,
+            "the bindings of the deleted file stay live"
         );
     }
 }

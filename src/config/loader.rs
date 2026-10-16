@@ -554,6 +554,7 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::testing::TempDir;
     use crate::data::key_spec::Modifier;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
@@ -1618,6 +1619,56 @@ mod tests {
     fn an_empty_config_argument_is_an_error() {
         ConfigPath::from_arg(Some(OsString::new()))
             .expect_err("an empty config path must be an error");
+    }
+
+    #[test]
+    fn a_missing_command_line_config_is_an_error_and_is_not_created() {
+        let dir = TempDir::new("missing-cli");
+        let path = dir.path().join("my.ron");
+        let err = load(&ConfigPath::CommandLine(path.clone()))
+            .expect_err("a missing command-line config must be an error");
+        assert!(
+            !path.exists(),
+            "a missing command-line config must not be created"
+        );
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_folder_of_a_command_line_config_is_not_created() {
+        let dir = TempDir::new("missing-folder");
+        let path = dir.path().join("nope").join("my.ron");
+        load(&ConfigPath::CommandLine(path))
+            .expect_err("a command-line config in a missing folder must be an error");
+        assert!(
+            !dir.path().join("nope").exists(),
+            "the folder of a missing command-line config must not be created"
+        );
+    }
+
+    #[test]
+    fn reload_of_a_missing_config_is_an_error_and_writes_nothing() {
+        let dir = TempDir::new("missing-reload");
+        let path = dir.path().join("config.ron");
+        let err = reload(&path).expect_err("reloading a missing config must be an error");
+        assert!(
+            !path.exists(),
+            "reloading a missing config must not create it"
+        );
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_config_beside_the_exe_is_generated_and_loaded() {
+        let dir = TempDir::new("beside-exe");
+        let path = dir.path().join("config.ron");
+        let bindings = load(&ConfigPath::BesideExe(path.clone()))
+            .expect("the template is generated and loads");
+        assert!(!bindings.is_empty(), "the template has bindings");
+        assert_eq!(
+            fs::read_to_string(&path).expect("the template was written"),
+            DEFAULT_CONFIG
+        );
     }
 
     // ---- existing test, kept at the bottom ----
