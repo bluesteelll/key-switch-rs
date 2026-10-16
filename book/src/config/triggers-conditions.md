@@ -1,5 +1,7 @@
 # Triggers and conditions
 
+`trigger` decides when a `keys` binding fires: at once (`Immediate`), on a short press (`Tap`), on a long press (`Hold`) or on a double press (`DoubleTap`). `when` restricts a binding to the windows whose application or title matches. Facts describe commit `1dfd80a`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
+
 <a id="s11"></a>
 ## 11. Triggers (`trigger`)
 
@@ -10,15 +12,15 @@
 |---|---|---|
 | `Immediate` (default) | `trigger: Immediate`, or the field omitted | on key-down, including every auto-repeat |
 | `Tap(ms)` | `trigger: Tap(200)` | on key-up, if the key is released less than `ms` after it was pressed |
-| `Hold(ms)` | `trigger: Hold(300)` | `ms` after the press, if the key is still held |
-| `DoubleTap(ms)` | `trigger: DoubleTap(250)` | on the second key-down of the same key within `ms` of the first key-down |
+| `Hold(ms)` | `trigger: Hold(300)` | `ms` after the press, if the key was not released before that |
+| `DoubleTap(ms)` | `trigger: DoubleTap(250)` | on the second key-down of the same key less than `ms` after the first key-down |
 
 <a id="s11-2"></a>
 ### 11.2 Restrictions and parse errors
 
-[src/config/loader.rs:224-230](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L224-L230), [src/config/schema.rs:61-68](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/schema.rs#L61-L68):
+[src/config/loader.rs:353-362](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L353-L362), [src/config/loader.rs:473-497](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L473-L497), [src/config/schema.rs:70-80](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/schema.rs#L70-L80):
 
-- Deferred triggers (`Tap`, `Hold`, `DoubleTap`) work only with `keys`. For `sequence` and `chord` the loader reports ``Sequence/Chord cannot use a deferred trigger (Tap(200)); only `Immediate` (the default) is valid for these kinds``. The same holds for `Hold(…)`, `DoubleTap(…)` and even `Tap(0)`. An explicit `trigger: Immediate` is allowed for these kinds. This error is checked last: if the kind or the action of the same binding is invalid, only that error is reported. For example, `sequence: (steps: ["F13"])` with `Tap(100)` gives the error about the number of steps.
+- Deferred triggers (`Tap`, `Hold`, `DoubleTap`) work only with `keys`. For `sequence` and `chord` the loader reports ``Sequence/Chord cannot use a deferred trigger (Tap(200)); only `Immediate` (the default) is valid for these kinds``. The same holds for `Hold(…)` and `DoubleTap(…)`. An explicit `trigger: Immediate` is allowed for these kinds. This error is checked after the kind, the action and the range of the trigger: if one of those is invalid, only that error is reported. For example, `sequence: (steps: ["F13"])` with `Tap(100)` gives the error about the number of steps.
 - The argument is required. It is a `u64` integer in milliseconds (for the accepted notations, see [§3.7](ron-syntax.md#s3-7)):
 
   | Written as | Error |
@@ -31,98 +33,100 @@
   | `Immediate(0)` | `Expected comma` |
   | `tap(200)` or any other unknown variant (the message names the variant as written; shown here for `LongPress(200)`) | ``Unexpected variant named `LongPress` in enum `RawTrigger`, expected one of `Immediate`, `Tap`, `Hold`, or `DoubleTap` instead`` |
 
-- The range is not checked: `0` and any large value are accepted ([KS-27](../audit.md#ks-27)). With `0` the key is still swallowed, and the gestures behave as follows: `Tap(0)` almost never fires (the timer gets there before the release); `Hold(0)` fires almost immediately after the press; `DoubleTap(0)` practically never fires (the timer removes the entry before the second press).
+- The value must be 1 to 10000 ms ([KS-27](../audit.md#ks-27), fixed in `1dfd80a`). Outside that range the binding is rejected with a message that names it, counting from 0: `binding #1 [CapsLock]: Tap(0) is out of range: timings are 1 to 10000 ms`, or `Hold(10001) is out of range: …`.
 
 <a id="s11-3"></a>
 ### 11.3 `Immediate`
 
-[src/hook/keyboard_hook_callback.rs:229-237](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L229-L237). The action runs synchronously on key-down, on the hook thread.
+[src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412). The action fires on key-down and runs on the hook thread, after the decision ([§13.1](actions.md#s13-1)).
 
 - If several `Immediate` bindings match one press, only the first in check order runs: the one with the most keys, and on a tie the first in the file ([§16](matching.md#s16)).
-- The event is suppressed if at least one of the matched `Immediate` bindings has `block_default: true`, even one that did not run.
-- The auto-blocker is inserted before the binding that requested it, so it wins over `Immediate` bindings on the same combo that come later in the file ([§15.4](matching.md#s15-4), [KS-18](../audit.md#ks-18)).
+- The event is suppressed if at least one of the matched `Immediate` bindings has `block_default: true`, even one that did not run ([KS-13](../audit.md#ks-13)).
+- An auto-blocker never takes this slot: it fires nothing and only suppresses ([§15](matching.md#s15)).
 
 > [!WARNING]
-> **Known issue ([KS-10](../audit.md#ks-10)).** The action repeats on every auto-repeat ([src/hook/keyboard_hook_callback.rs:229](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L229)). `SwitchLanguage`, `Launch` and similar actions repeat at the auto-repeat rate ([§13.1](actions.md#s13-1)).
+> **Known issue ([KS-10](../audit.md#ks-10)).** The action repeats on every auto-repeat while the binding matches ([src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). `SwitchLanguage`, `Launch` and similar actions repeat at the auto-repeat rate ([§13.1](actions.md#s13-1)). Roadmap [item 1.1](../roadmap.md#11-per-binding-repeat-flag) adds a `repeat` flag.
 
 <a id="s11-4"></a>
 ### 11.4 Common to `Tap`, `Hold` and `DoubleTap`
 
-[src/hook/keyboard_hook_callback.rs:238-252](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L238-L252), [src/hook/tap_state.rs](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs):
+[src/engine/mod.rs:413-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L413-L452), [src/engine/gestures.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs):
 
-- A gesture is armed on a non-repeat key-down on which the `keys` combo matched. It is bound to the code of the key **just pressed** (`vk_code`). For `keys: "Ctrl+F17"` with `Tap(150)` this is F17 if Ctrl was pressed first, and the time runs from the F17 press to its release. If F17 is pressed first, the gesture is armed on Ctrl (code `LCtrl` or `RCtrl`): Ctrl is suppressed, and F17 goes through to the application.
-- Deferred bindings are armed **regardless** of whether an `Immediate` binding ran on the same press: the "`Immediate` already fired" flag does not affect them.
-- Suppression is forced: the press and the release of the trigger key never reach the application, whatever `block_default` says ([src/hook/keyboard_hook_callback.rs:241](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L241), [L246](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L246), [L251](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L251), [L317-L321](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L317-L321)). Combo keys pressed earlier (for example Ctrl) do reach the application.
+- A gesture is armed on a non-repeat key-down that fires the `keys` binding by the rules of [§7](kinds.md#s7): the key just pressed is one of the binding's trigger keys, all its keys are held and the modifiers are exactly its own. The gesture is bound to that key's code, and that key's key-up resolves it. For `keys: "Ctrl+F17"` with `Tap(150)`, press Ctrl, then F17: the time runs from the F17 press to its release. Pressing F17 first, then Ctrl arms nothing.
+- A key pressed while the gesture is pending is not the binding's key: it passes and arms nothing.
+- Deferred bindings are armed **regardless** of whether an `Immediate` binding ran on the same press: the "`Immediate` already fired" flag does not affect them ([KS-13](../audit.md#ks-13)).
+- Suppression is forced: the press, the auto-repeats and the release of the trigger key never reach the application, whatever `block_default` says ([§10](kinds.md#s10)). Combo keys pressed earlier (for example Ctrl) do reach the application. Roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap) makes `block_default` apply.
 - Auto-repeat does not re-arm the gesture, so `Hold` fires once per press.
-- Each new arming starts a separate timer thread ([src/hook/tap_state.rs:61](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L61), [L105](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L105), [L158](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L158); see [KS-33](../audit.md#ks-33)).
+- `Tap` and `DoubleTap` store a deadline and start no thread; the next event of the key checks it. Each `Hold` starts one short-lived `hold-timer` thread ([src/hook/keyboard_hook_callback.rs:197-218](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L197-L218)). If that thread cannot be started, the daemon prints `[WARN] could not start a hold timer, that Hold will not fire: <error>` and the Hold is dropped ([KS-33](../audit.md#ks-33), partly fixed).
 - The `when` condition is checked only on key-down. `Tap` runs on release even if the window has changed in the meantime; `Hold` runs on its timer whatever window is active.
 
 <a id="s11-5"></a>
 ### 11.5 How `Tap`, `Hold` and `DoubleTap` each resolve
 
-**`Tap(ms)`.** On key-down an entry is put into the table. If an entry for this key already exists, the new one is ignored ([src/hook/tap_state.rs:51-53](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L51-L53)). A timer thread removes the entry after `ms` ([L65](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L65)). If the entry is still there at the key-up of the same key, the action runs synchronously on the hook thread ([L83](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L83)). If the key is released later, nothing happens, and the keystroke is lost.
+[src/engine/gestures.rs:1-27](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L1-L27) describes the rules; [src/engine/mod.rs:538-564](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L538-L564) applies them on key-up.
 
-**`Hold(ms)`.** After `ms` the timer thread removes the entry and runs the action ([src/hook/tap_state.rs:108-117](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L108-L117)). This is the only trigger whose action runs outside the hook thread, so `Launch` and `OpenUrl` can safely be used with `Hold` directly. If the key is released earlier, the gesture is cancelled ([L125-L131](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L125-L131)). It fires once. It does not hold a modifier down: `Hold` with `PressKey("LShift")` produces one short Shift press.
+**`Tap(ms)`.** On key-down an entry with the deadline "press time + `ms`" is stored. While a live entry for this key exists, a new one is ignored ([src/engine/gestures.rs:91-112](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L91-L112)). At the key-up of the same key the entry is removed, and the action fires if the release came strictly before the deadline ([L114-L121](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L114-L121)). The action runs on the hook thread. If the key is released later, nothing happens, and the keystroke is lost.
 
-**`DoubleTap(ms)`.** The first press only arms the gesture; nothing runs. The timer thread removes the entry `ms` after the first press ([L162-L165](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L162-L165)). If the same key is pressed again before that, the action runs synchronously on key-down, while the mutex is held ([L146-L149](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L146-L149)). A third press starts a new cycle. A single press does nothing, and the keystroke is lost.
+**`Hold(ms)`.** Arming gives the entry a new generation number and asks for a timer ([L125-L154](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L125-L154)). The `hold-timer` thread sleeps until the deadline and then asks the engine to fire the entry with its token; a token whose entry is gone or re-armed fires nothing ([L171-L179](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L171-L179)). A key-up before the deadline cancels the gesture. A key-up at or after the deadline does not: the key was held for the whole term, so the timer fires the Hold even if its thread wakes a few milliseconds after the release ([L156-L169](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L156-L169)). `Hold` is the only trigger whose action runs outside the hook thread: it runs on the `hold-timer` thread, so `Launch` and `OpenUrl` can safely be used with `Hold` directly. It fires once. It does not hold a modifier down: `Hold` with `PressKey("LShift")` produces one short Shift press.
+
+**`DoubleTap(ms)`.** The first press only stores an entry with the deadline "press time + `ms`"; nothing runs. If the same key is pressed again strictly before the deadline, the entry is consumed and the action fires on that key-down, on the hook thread ([L197-L219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L197-L219)). A later press arms afresh, so a third press starts a new cycle. A single press does nothing, and the keystroke is lost.
+
+> [!NOTE]
+> Until `16a0461` every armed press started its own sleeper thread with no generation number, so a timer from an earlier press removed or fired the entry of the next one ([KS-11](../audit.md#ks-11), fixed): two quick taps lost the second, and a Hold could fire early on the next press.
 
 <a id="s11-6"></a>
 ### 11.6 `Tap` and `Hold` (or `DoubleTap`) on the same key
 
-These are two separate bindings. Both gestures are armed independently, and nothing arbitrates between them. The result depends on how long the key is held, `t`:
+These are two separate bindings. Both gestures are armed independently and resolve independently. The result depends on how long the key is held, `t`:
 
 | Duration `t` | Result |
 |---|---|
 | `t < Tap` and `t < Hold` | Tap |
 | `t ≥ Hold` and `t ≥ Tap` | Hold |
-| `Hold ≤ t < Tap` (possible when `Tap > Hold`) | **both**: Hold while the key is held, Tap on release |
+| `Hold ≤ t < Tap` (possible when `Tap > Hold`) | **both**: Hold at the `Hold` mark, Tap on release |
 | `Tap ≤ t < Hold` (possible when `Tap < Hold`) | nothing |
 
-> [!WARNING]
-> **Known issue ([KS-25](../audit.md#ks-25)).** With equal values, for example `Tap(200)` and `Hold(200)`, the thread scheduler decides the outcome of a release near the boundary ([src/hook/tap_state.rs:105](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L105)). Tap, Hold, both actions at once, or neither are all possible. Do not make `Tap` larger than `Hold`, or a window appears in which both fire. It is more reliable to make `Tap` slightly smaller than `Hold`, for example `Tap(180)` and `Hold(200)`: a short window with no action is better than a double action.
+With **equal** values, for example `Tap(200)` and `Hold(200)`, exactly one of the two fires: Tap if the key is released before 200 ms, Hold otherwise ([KS-25](../audit.md#ks-25), fixed for equal terms in `16a0461`). The engine decides the key-up and the Hold timer on one clock, so a release near the boundary never fires both or neither ([src/engine/mod.rs:68-74](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L68-L74)). Use equal values for a dual-role key:
 
 ```ron
-( keys: "F13", action: Media(PlayPause), trigger: Tap(180) ),
+( keys: "F13", action: Media(PlayPause), trigger: Tap(200) ),
 ( keys: "F13", action: Media(Next),      trigger: Hold(200) ),
 ```
 
-**`Tap` and `DoubleTap` on the same key** are also allowed, but the ambiguity is not resolved in any way. A double press produces three actions: Tap (release 1), DoubleTap (press 2), Tap (release 2). A single press produces Tap.
+> [!WARNING]
+> With **different** values nothing arbitrates between the two gestures, so the rows "both" and "nothing" above can happen ([KS-25](../audit.md#ks-25), rest open until roadmap [item 2.2](../roadmap.md#22-timers-on-the-main-thread)).
+
+**`Tap` and `DoubleTap` on the same key** are also allowed, but the ambiguity is not resolved in any way. A double press produces three actions: Tap (release 1), DoubleTap (press 2), Tap (release 2). A single press produces Tap ([Tap versus DoubleTap disambiguation](../gaps.md#tap-versus-doubletap-disambiguation)).
 
 <a id="s11-7"></a>
 ### 11.7 Several deferred bindings of the same type on one press
 
-This happens with one key and overlapping `when` conditions, or with `"Shift+F13"` and `"F13"` while Shift is held. The gesture table is keyed by the key code only:
+This happens with one key and overlapping `when` conditions, or with a binding that sets `allow_extra_modifiers: true` next to a more specific one, such as `"F13"` with the flag and `"Shift+F13"`. The gesture tables are keyed by the key code only:
 
-- `Tap` and `Hold`: only the first matching binding in check order ([§16](matching.md#s16)) is armed; the others are silently dropped ([src/hook/tap_state.rs:51](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L51), [L97](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L97)). This can be used on purpose: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap`, pressing Shift+F13 runs only the first one.
+- `Tap` and `Hold`: only the first matching binding in check order ([§16](matching.md#s16)) is armed; the others are silently dropped ([src/engine/gestures.rs:91-106](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L91-L106), [L125-L137](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L125-L137)). This can be used on purpose: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap` with `allow_extra_modifiers: true`, pressing Shift+F13 runs only the first one.
 - `DoubleTap`: see the warning below.
 - A related problem: a more specific binding does not override less specific deferred ones ([§16.3](matching.md#s16-3), [KS-13](../audit.md#ks-13)).
 
 > [!WARNING]
-> **Known issue: several `DoubleTap` bindings.** The second binding takes the first binding's entry, and the first binding's action runs already on the **first** press ([src/hook/tap_state.rs:146-152](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L146-L152); inferred from the code).
+> **Known issue: several `DoubleTap` bindings.** The second binding takes the first binding's entry, and the first binding's action runs already on the **first** press ([src/engine/gestures.rs:200-219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/gestures.rs#L200-L219); inferred from the code).
 
 <a id="s11-8"></a>
 ### 11.8 Defects
 
 > [!WARNING]
-> **Known issue ([KS-04](../audit.md#ks-04)): a gesture arms on any key pressed while the trigger is held** ([src/hook/keyboard_hook_callback.rs:240](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L240), also [L245](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L245) and [L250](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L250)). The match is a subset test, and the gesture is armed on `vk_code`. Example: `keys: "CapsLock", trigger: Tap(200)`. If you hold CapsLock and quickly press and release `A`, the Tap action runs and `A` is lost.
+> **Known issue ([KS-08](../audit.md#ks-08)): actions on the hook thread.** `Tap` and `DoubleTap` actions, as well as `chord` and `sequence` completions, run in the hook callback after the decision ([src/hook/keyboard_hook_callback.rs:185-195](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L185-L195)). A slow `Launch` or `OpenUrl` can exceed `LowLevelHooksTimeout`, and Windows then silently removes the hook ([§13.1](actions.md#s13-1); roadmap [item 2.1](../roadmap.md#21-action-executor)).
 
 > [!WARNING]
-> **Known issue ([KS-11](../audit.md#ks-11)): stale timers** ([src/hook/tap_state.rs:65](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L65), [L108-L117](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L108-L117), [L162-L165](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L162-L165)). A timer carries no generation number, so the thread of an earlier press removes or runs the entry of the next press. Example: CapsLock with `Tap(200)` and `Hold(200)`. Press at 0 ms, release at 80 ms: Tap fires. New press at 150 ms. At 200 ms the old Hold timer runs the Hold action only 50 ms after the second press, and the old Tap timer removes the second press's entry, so its Tap is lost. With `DoubleTap`, in a fast series the second double press in a row may not fire.
+> **A deferred trigger on a modifier swallows that modifier.** `keys: "LShift", trigger: DoubleTap(250)` ([README.md:340](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/README.md?plain=1#L340), [src/config/default_config.ron:251-258](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/default_config.ron#L251-L258)) toggles CapsLock on a double press of the left Shift, but every left-Shift press is suppressed, so it no longer types capitals. The right Shift is unaffected. Roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap) fixes this.
 
 > [!WARNING]
-> **Known issue ([KS-06](../audit.md#ks-06)): stuck keys.** While the key is held, auto-repeat passes through to the application while the release is suppressed, and the key gets stuck ([src/hook/keyboard_hook_callback.rs:239](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L239), [L244](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L244), [L249](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L249) together with [L324](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L324)). It is especially noticeable with `Hold`.
+> **Lone Win or Alt ([KS-12](../audit.md#ks-12)).** For `Win+…` and `Alt+…` with a deferred trigger, only the trigger key is suppressed, so releasing Win or Alt can open the Start menu or the menu bar ([§13.1](actions.md#s13-1); roadmap [item 1.2](../roadmap.md#12-mask-key-and-auto-blocker-v2)).
 
 > [!WARNING]
-> **Known issue ([KS-08](../audit.md#ks-08)): actions on the hook thread.** `Tap` and `DoubleTap` actions, as well as `chord` and `sequence` completions, run directly in the hook handler ([src/hook/tap_state.rs:83](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L83), [L148](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/tap_state.rs#L148)). A slow `Launch` or `OpenUrl` can exceed `LowLevelHooksTimeout`, and Windows then silently removes the hook ([§13.1](actions.md#s13-1)).
+> **Hot reload and armed gestures.** A hot reload does not reset gestures that are already armed ([src/hook/config_watcher.rs:162](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L162)). They complete with the old actions. `swch off` and `swch on` do drop them ([KS-31](../audit.md#ks-31)).
 
-> [!WARNING]
-> **Deferred triggers on modifiers are unreliable.** Sided names such as `LShift` in `keys` never match ([§6.7](keys.md#s6-7), [KS-07](../audit.md#ks-07)), so the example `keys: "LShift", trigger: DoubleTap(250)` ([README.md:262](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/README.md?plain=1#L262), [src/config/default_config.ron:200-205](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/default_config.ron#L200-L205)) loads but does not work. `Shift`, `Ctrl` and `Alt` have a different problem. Known issue ([KS-14](../audit.md#ks-14)): `sync_modifiers` clears a suppressed modifier on the next event of another key ([src/hook/keyboard_hook_callback.rs:95](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L95)), and the modifier's auto-repeat then looks like a new press.
-
-> [!WARNING]
-> **Lone Win or Alt ([KS-12](../audit.md#ks-12)).** For `Win+…` and `Alt+…` with a deferred trigger, only the trigger key is suppressed, so releasing Win or Alt can open the Start menu or the menu bar ([src/hook/keyboard_hook_callback.rs:294](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L294), [§13.1](actions.md#s13-1)).
-
-> [!WARNING]
-> **Hot reload and armed gestures.** A hot reload does not reset gestures that are already armed ([src/hook/config_watcher.rs:103](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/config_watcher.rs#L103)). They complete with the old actions.
+> [!NOTE]
+> Fixed in Phase 0: a gesture no longer arms on an unrelated key pressed while its key is held ([KS-04](../audit.md#ks-04)); a key held past the repeat delay no longer leaks its auto-repeats and sticks ([KS-06](../audit.md#ks-06)); sided names such as `LShift` fire ([KS-07](../audit.md#ks-07)); and a modifier whose key-down was suppressed is no longer erased by the resync, so its auto-repeat no longer looks like a new press ([KS-14](../audit.md#ks-14)).
 
 <a id="s12"></a>
 ## 12. Conditions (`when`)
@@ -132,23 +136,25 @@ This happens with one key and overlapping `when` conditions, or with `"Shift+F13
 
 ```text
 when: Always                                    // default, same as omitting the field
+when: AppEquals("code.exe")
 when: TitleContains("Visual Studio Code")
 when: TitleEquals("Калькулятор")
 when: Not(TitleContains("Incognito"))
-when: And([TitleContains("Chrome"), Not(TitleContains("Incognito"))])
-when: Or([TitleContains("Firefox"), TitleContains("Chrome")])
-when: AppEquals("code.exe")                     // currently never matches (§12.3)
+when: And([AppEquals("chrome.exe"), Not(TitleContains("Incognito"))])
+when: Or([AppEquals("firefox.exe"), AppEquals("chrome.exe")])
 ```
 
-| Variant | True when | Case handling ([src/data/condition.rs:57-78](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L57-L78)) |
-|---|---|---|
-| `Always` | always | not applicable |
-| `TitleContains("s")` | the title of the active window contains the substring | Unicode `to_lowercase` on both sides ([L67](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L67)): case-insensitive matching of Cyrillic works |
-| `TitleEquals("s")` | the title matches in full | case-insensitive for ASCII only ([L71](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L71), [KS-28](../audit.md#ks-28)): `"ПРИВЕТ"` ≠ `"Привет"` |
-| `AppEquals("x.exe")` | the base name of the executable of the active window's process equals the string (including `.exe`) | case-insensitive for ASCII only ([L62](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L62), [KS-28](../audit.md#ks-28)) |
-| `Not(c)` | `c` is false | not applicable |
-| `And([..])` | all are true; evaluation stops at the first false one; an empty list is true | not applicable |
-| `Or([..])` | at least one is true; evaluation stops at the first true one; an empty list is false | not applicable |
+Every string comparison ignores case with Unicode lowercasing, in every alphabet ([src/data/condition.rs:61-92](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/condition.rs#L61-L92); [KS-28](../audit.md#ks-28), fixed in `4177540`).
+
+| Variant | True when |
+|---|---|
+| `Always` | always |
+| `AppEquals("x.exe")` | the file name of the active window's executable, `.exe` included, equals the string: `"code.exe"` matches `C:\…\Microsoft VS Code\Code.exe` |
+| `TitleContains("s")` | the title of the active window contains the substring |
+| `TitleEquals("s")` | the title matches in full: `TitleEquals("КАЛЬКУЛЯТОР")` matches a window titled "Калькулятор" |
+| `Not(c)` | `c` is false |
+| `And([..])` | all are true; evaluation stops at the first false one; an empty list is true |
+| `Or([..])` | at least one is true; evaluation stops at the first true one; an empty list is false |
 
 - `Not` takes one condition; `And` and `Or` take a list in `[ ]`. Conditions can be nested inside each other, but not without limit: ron has a nesting limit ([§3.11](ron-syntax.md#s3-11)), which in practice means 60 levels of `Not(` or 30 levels of `And([`.
 - The string is written in double quotes; raw strings `r"..."` work too. Whitespace is not trimmed. There are no wildcard patterns and no regular expressions.
@@ -172,35 +178,33 @@ when: AppEquals("code.exe")                     // currently never matches (§12
 | nesting too deep | ``Exceeded recursion limit, try increasing `ron::Options::recursion_limit` …`` |
 
 <a id="s12-3"></a>
-### 12.3 `AppEquals` does not work
+### 12.3 `AppEquals`
 
-> [!WARNING]
-> **Known issue ([KS-03](../audit.md#ks-03)): `AppEquals` currently never matches** ([src/data/condition.rs:139-144](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L139-L144)). The process is opened with the `PROCESS_QUERY_LIMITED_INFORMATION` right ([L139](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L139)), but `GetModuleBaseNameW` ([L144](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L144)) needs `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ`. It returns 0 (ACCESS_DENIED), and the application name always stays unknown. Consequences:
->
-> - `AppEquals("x")` is always false;
-> - `Not(AppEquals("x"))` is always true, including inside `x` itself;
-> - `And([AppEquals(..), …])` is always false, and `Or([AppEquals(..), C])` behaves like plain `C`.
-
-Until the bug is fixed, use **`TitleContains`** with a distinctive part of the window title:
+`AppEquals` reads the process of the foreground window with `QueryFullProcessImageNameW`, which needs only `PROCESS_QUERY_LIMITED_INFORMATION`, and compares the file name after the last `\` ([src/data/condition.rs:139-154](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/condition.rs#L139-L154), [src/data/condition.rs:184-219](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/condition.rs#L184-L219)). The code relies on Windows granting that right for elevated processes too ([src/data/condition.rs:186-189](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/condition.rs#L186-L189)); the audit's probe read the image path of `explorer.exe` and of its own process through such a handle ([KS-03](../audit.md#ks-03)). An image path of 1024 or more UTF-16 units gives no name, so `AppEquals` is then false.
 
 ```ron
-( keys: "F13", action: PressKey("F5"), when: TitleContains("Visual Studio Code") ),
+( keys: "F13", action: PressKey("F5"), when: AppEquals("code.exe") ),
 ( keys: "F14", action: Media(PlayPause),
-  when: Or([TitleContains("Google Chrome"), TitleContains("Mozilla Firefox")]) ),
-( keys: "F15", action: DoNothing, when: Not(TitleContains("Visual Studio Code")) ),
+  when: Or([AppEquals("chrome.exe"), AppEquals("firefox.exe")]) ),
+( keys: "F15", action: DoNothing, when: Not(AppEquals("code.exe")) ),
 ```
 
-A title is not unique: a browser tab with the text "Visual Studio Code" matches as well. If needed, narrow the condition with `And([...])`. For UWP apps (Calculator, Settings) the active window belongs to the `ApplicationFrameHost.exe` process, so for them the title is more reliable even after `AppEquals` is fixed. A possible fix is `QueryFullProcessImageNameW`, which works with the `PROCESS_QUERY_LIMITED_INFORMATION` right.
+The tests `data::condition::tests::app_equals_matches_the_current_process` and `data::condition::tests::process_image_name_resolves_the_current_process` evaluate it against the test's own process. Whether a binding fires in a focused application on a live daemon is a manual check that has not been run ([Manual checks after Phase 0](../roadmap.md#manual-checks-after-phase-0)).
+
+> [!NOTE]
+> Until `4177540` every `AppEquals` was false, so `Not(AppEquals(..))` was true even inside that application ([KS-03](../audit.md#ks-03), fixed). A config that worked around it with `TitleContains` keeps working.
+
+The windows of UWP apps such as Calculator and Settings belong to the `ApplicationFrameHost.exe` process, so `AppEquals` cannot tell them apart: match them by title. A title is not unique either: a browser tab with the text "Visual Studio Code" matches `TitleContains("Visual Studio Code")`. Combine the two with `And([...])` if needed.
 
 <a id="s12-4"></a>
 ### 12.4 When and how a condition is checked
 
-[src/hook/keyboard_hook_callback.rs:204-221](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/hook/keyboard_hook_callback.rs#L204-L221), [src/data/condition.rs:81-163](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/condition.rs#L81-L163):
+[src/engine/mod.rs:373-378](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L373-L378), [src/hook/keyboard_hook_callback.rs:100-141](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L100-L141), [src/data/condition.rs:103-178](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/condition.rs#L103-L178):
 
-- Window data is collected only on key-down, and only if at least one binding has a condition other than `Always` (judged at the top level: `Not(Always)` or `And([])` already count as a condition). The window is found with `GetForegroundWindow()`: this is the top-level window, not the child control that has focus.
+- Window data is collected only on key-down, and only when a condition other than `Always` is evaluated (judged at the top level: `Not(Always)` or `And([])` already count as a condition). The window is found with `GetForegroundWindow()`: this is the top-level window, not the child control that has focus.
 - The data is queried lazily and at most once per keystroke: the executable name and the title are read when first needed and cached until the keystroke has been handled. The title is read with `GetWindowTextW` into a buffer of 512 UTF-16 code units; anything longer than 511 is truncated.
-- Each binding's condition is checked **before** its keys are compared. So if the config contains even one `when`, the Win32 queries run on every press of any key, auto-repeat included.
+- Each binding's condition is checked **before** its keys are compared. So if the config contains even one `when`, the Win32 queries run on every press of any key, auto-repeat included, on the hook thread (roadmap [item 3.5](../roadmap.md#35-hot-path-budget)).
 - The condition is not re-checked on key-up or in timers ([§11.4](#s11-4)). For `sequence`, the condition is checked at every step; if it is false, the step is skipped, and the wait is not reset ([§8.2](kinds.md#s8-2)).
 
 > [!WARNING]
-> The auto-blocker created by `block_original_combo: true` does not inherit the `when` of its binding and always gets `Always` ([src/data/binding.rs:95](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/data/binding.rs#L95), [§15.4](matching.md#s15-4), [KS-35](../audit.md#ks-35)).
+> The auto-blocker created by `block_original_combo: true` does not inherit the `when` of its binding and acts in every window ([§15.4](matching.md#s15-4), [KS-35](../audit.md#ks-35), open until roadmap [item 1.2](../roadmap.md#12-mask-key-and-auto-blocker-v2)). With `when: Not(AppEquals("game.exe"))` on the default config's CapsLock binding, CapsLock reaches the game as CapsLock while the Windows hotkey stays blocked there, so neither switches the layout in the game.
