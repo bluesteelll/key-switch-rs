@@ -123,11 +123,11 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
         // ───────────────────────── 5. when conditions ─────────────────────────
 
-        // The binding with a condition sits ABOVE the general binding on the same
-        // key: with equal key counts, file order decides. In VS Code F24 sends
-        // Ctrl+Shift+F5 (restart debugging) once per press: a Sequence does not
-        // repeat by default. In all other windows it sends F5, and a held F24
-        // repeats F5 like an ordinary key.
+        // The binding with a condition wins over the general binding on the same
+        // key wherever it sits: with equal key counts, a when: beats none. In
+        // VS Code F24 sends Ctrl+Shift+F5 (restart debugging) once per press: a
+        // Sequence does not repeat by default. In all other windows it sends F5,
+        // and a held F24 repeats F5 like an ordinary key.
         (
             keys: "F24",
             action: Sequence([ Combo("Ctrl+Shift+F5") ]),

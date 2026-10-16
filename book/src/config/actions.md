@@ -254,10 +254,10 @@ It executes nothing ([src/core/windows_actions.rs:140](https://github.com/bluest
 > [!WARNING]
 > **Known issue ([KS-12](../audit.md#ks-12)).** With a Win or Alt modifier, the release opens the Start menu or activates the menu bar ([§13.1](#s13-1)).
 
-- With `block_default: false` the action visibly does nothing, but as an `Immediate` binding it "takes the slot": less specific `Immediate` bindings (those with fewer keys) do not run their action on this press ([src/engine/mod.rs:261-267](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L261-L267), [src/engine/mod.rs:404-412](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L404-L412)). With exact modifiers such a binding competes only with bindings that set `allow_extra_modifiers: true` or have the same keys.
+- With `block_default: false` the action visibly does nothing, but the binding still wins the press over less specific bindings (those with fewer keys) and over a binding without `when` on the same keys, whatever their triggers: they neither run, nor arm, nor swallow the key ([src/engine/winner.rs:44-82](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/engine/winner.rs#L44-L82); [§16.2](matching.md#s16-2)). With exact modifiers such a binding competes only with bindings that set `allow_extra_modifiers: true` or have the same keys.
 
-> [!WARNING]
-> **Known issue ([KS-13](../audit.md#ks-13)).** In that case the key is still suppressed if the less specific binding has `block_default: true` ([src/engine/mod.rs:409-411](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/mod.rs#L409-L411); [§10](kinds.md#s10)), and so it is if a matching `Tap`, `Hold` or `DoubleTap` binding on the same key has it, since such bindings honour the flag (`feat/deferred-block-default`).
+> [!NOTE]
+> Fixed on `feat/one-winner` ([KS-13](../audit.md#ks-13)): a losing binding with `block_default: true`, whatever its trigger, no longer swallows the key of a winner with `block_default: false` ([§10](kinds.md#s10)).
 
 <a id="s14"></a>
 ## 14. The `Sequence([...])` macro and its steps
