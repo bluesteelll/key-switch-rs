@@ -1042,6 +1042,99 @@ mod tests {
         assert_eq!(blockers(&bindings), 1);
     }
 
+    // ---- block_original_combo: true | false | MaskOnly (roadmap item 1.2, KS-05) ----
+
+    /// The startup lines of the auto-blockers among `bindings`, in order.
+    fn blocker_lines(bindings: &[Binding]) -> Vec<String> {
+        bindings
+            .iter()
+            .map(Binding::to_string)
+            .filter(|line| line.starts_with("[AUTO-BLOCK]"))
+            .collect()
+    }
+
+    #[test]
+    fn block_original_combo_takes_true_false_and_mask_only() {
+        for (field, blocker) in [
+            ("block_original_combo: true,", Some("-> (blocked)")),
+            (
+                "block_original_combo: MaskOnly,",
+                Some("-> (masked, experimental)"),
+            ),
+            ("block_original_combo: false,", None),
+            ("", None),
+        ] {
+            let text =
+                format!(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, {field}) ] )"#);
+            let bindings = from_ron_str_with_hotkeys(&text, &language_hotkey(ALT_SHIFT))
+                .unwrap_or_else(|e| panic!("{field}: {e}"));
+            let lines = blocker_lines(&bindings);
+            match blocker {
+                Some(tail) => {
+                    assert_eq!(lines.len(), 1, "{field}: {lines:?}");
+                    assert!(lines[0].ends_with(tail), "{field}: {}", lines[0]);
+                }
+                None => assert_eq!(lines, Vec::<String>::new(), "{field}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_misspelled_block_original_combo_value_names_the_valid_ones() {
+        for value in ["Maskonly", "Some(true)"] {
+            let text = format!(
+                r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, block_original_combo: {value}) ] )"#
+            );
+            let err = from_ron_str_with_hotkeys(&text, &language_hotkey(ALT_SHIFT))
+                .expect_err(&format!("{value}: a misspelled value must be an error"));
+            assert!(matches!(err, ConfigError::Parse { .. }), "{value}: {err}");
+            assert!(
+                err.to_string()
+                    .contains("expected one of `true`, `false`, or `MaskOnly` instead"),
+                "{value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_only_on_a_hotkey_with_a_payload_key_blocks_it_as_true_and_warns() {
+        // The "`" hotkey (registry value "4") is no modifier chord: letting a
+        // lone "`" through would type it and switch the layout.
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+        ] )"#;
+        let parsed = parse_ron_str(text, &language_hotkey(&[VK_OEM_3]))
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        assert_eq!(
+            parsed.warnings,
+            [
+                "binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true"
+            ]
+        );
+        let lines = blocker_lines(&parsed.bindings);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].ends_with("-> (blocked)"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn true_and_mask_only_on_one_hotkey_give_one_blocker_each() {
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true),
+            (keys: "F13", action: SwitchLanguageBackward, block_original_combo: MaskOnly),
+            (keys: "F14", action: SwitchLanguage, block_original_combo: MaskOnly),
+        ] )"#;
+        let bindings = from_ron_str_with_hotkeys(text, &language_hotkey(ALT_SHIFT))
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        let lines = blocker_lines(&bindings);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].ends_with("-> (blocked)"), "{}", lines[0]);
+        assert!(
+            lines[1].ends_with("-> (masked, experimental)"),
+            "{}",
+            lines[1]
+        );
+    }
+
     #[test]
     fn parse_press_key_action() {
         let ron_text = r#"

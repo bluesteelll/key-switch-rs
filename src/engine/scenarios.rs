@@ -4237,6 +4237,167 @@ fn a_hold_timer_never_masks() {
     .expect_passed();
 }
 
+// ---- block_original_combo: MaskOnly (roadmap item 1.2, KS-05) ----
+
+/// The default config's two bindings, with the experimental
+/// `block_original_combo: MaskOnly`.
+const MASK_ONLY_CONFIG: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+] )"#;
+
+#[test]
+fn mask_only_blocker_lets_alt_and_shift_through_and_masks_the_exact_hotkey() {
+    // The hypothesis under test by hand: Windows switches the layout only
+    // on a clean Alt+Shift, so a mask key inside it stops the switch. The
+    // order of a key injected from inside the hook against the event in
+    // the hook is not documented, so the next event masks once more: that
+    // mask lands after Shift's key-down whatever the order.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .up("LShift")
+        .expect_passed()
+        .expect_masked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn mask_only_blocker_lets_ctrl_shift_t_reach_the_application() {
+    // KS-05: Ctrl, Shift, T arrived as Ctrl+T with `true`.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LCtrl")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .down("T")
+        .expect_passed()
+        .expect_masked()
+        .up("T")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LCtrl")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn mask_only_blocker_does_not_mask_a_hotkey_pressed_with_another_key_held() {
+    // Windows sees Alt, Tab and Shift, not its hotkey alone.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("Tab")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn mask_only_blocker_masks_only_the_first_event_after_the_match() {
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_passed()
+        .expect_masked()
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn alt_shift_x_fires_next_to_a_mask_only_blocker() {
+    Scenario::from_ron_with_language_hotkey(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+            (keys: "Alt+Shift+X", action: ToggleCapsLock),
+        ] )"#,
+        &[VK_MENU, VK_SHIFT],
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_masked()
+    .down("X")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .expect_masked()
+    .up("X")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LShift")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LAlt")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn remapping_off_drops_an_owed_mask() {
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .down("LAlt")
+        .down("LShift")
+        .expect_masked()
+        .remapping_off()
+        .remapping_on()
+        .down("F13")
+        .expect_passed()
+        .expect_unmasked()
+        .up("F13")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed();
+}
+
 // ---- The harness itself ----
 
 #[test]
