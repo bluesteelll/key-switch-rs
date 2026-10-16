@@ -1148,6 +1148,84 @@ mod tests {
         assert!(lines[0].ends_with("-> (blocked)"), "{}", lines[0]);
     }
 
+    // ---- The blocker's when: (roadmap item 1.2, KS-35) ----
+
+    /// The mode and condition of every auto-blocker of `text`, loaded with
+    /// `Alt+Shift` as the language hotkey.
+    fn blockers_of(text: &str) -> Vec<(Option<BlockerMode>, Condition)> {
+        from_ron_str_with_hotkeys(text, &language_hotkey(ALT_SHIFT))
+            .unwrap_or_else(|e| panic!("config does not load: {e}\n{text}"))
+            .into_iter()
+            .filter(Binding::is_auto_blocker)
+            .map(|b| (b.auto_blocker, b.condition))
+            .collect()
+    }
+
+    fn app(name: &str) -> Condition {
+        Condition::AppEquals(name.to_owned())
+    }
+
+    #[test]
+    fn the_blocker_takes_the_when_of_the_binding_that_asked_for_it() {
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("x.exe")),
+        ] )"#;
+        let blockers = blockers_of(text);
+        assert_eq!(blockers.len(), 1, "{blockers:?}");
+        assert_eq!(blockers[0].1, app("x.exe"));
+    }
+
+    #[test]
+    fn blockers_of_one_hotkey_combine_the_when_of_their_owners() {
+        for (name, text, condition) in [
+            (
+                "two apps",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+                    (keys: "F13", action: SwitchLanguageBackward, block_original_combo: true, when: AppEquals("b.exe")),
+                ] )"#,
+                Condition::Or(vec![app("a.exe"), app("b.exe")]),
+            ),
+            (
+                "an owner without when:",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+                    (keys: "F13", action: SwitchLanguageBackward, block_original_combo: true),
+                ] )"#,
+                Condition::Always,
+            ),
+            (
+                "one condition twice",
+                r#"( bindings: [
+                    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+                    (keys: "F13", action: SwitchLanguageBackward, block_original_combo: true, when: AppEquals("a.exe")),
+                ] )"#,
+                app("a.exe"),
+            ),
+        ] {
+            assert_eq!(
+                blockers_of(text),
+                [(Some(BlockerMode::Swallow), condition)],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hotkey_asked_for_by_true_and_mask_only_keeps_each_owners_when() {
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+            (keys: "F13", action: SwitchLanguageBackward, block_original_combo: MaskOnly, when: AppEquals("b.exe")),
+        ] )"#;
+        assert_eq!(
+            blockers_of(text),
+            [
+                (Some(BlockerMode::Swallow), app("a.exe")),
+                (Some(BlockerMode::MaskOnly), app("b.exe")),
+            ]
+        );
+    }
+
     #[test]
     fn true_and_mask_only_on_one_hotkey_give_one_blocker_each() {
         let text = r#"( bindings: [

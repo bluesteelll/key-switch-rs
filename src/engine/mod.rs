@@ -656,7 +656,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14};
+    use crate::data::condition::Condition;
+    use crate::data::key_combination::KeyCombination;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14, VK_MENU, VK_SHIFT};
 
     /// An [`Env`] stopped at one instant with nothing held and no
     /// foreground window: enough to arm a Hold and read its timer token.
@@ -718,6 +720,30 @@ mod tests {
         );
         assert_eq!(decision.fire, vec![BindAction::ToggleCapsLock]);
         assert!(decision.suppress, "F14's binding swallows its key-down");
+    }
+
+    #[test]
+    fn a_blocker_when_condition_is_asked_only_once_its_hotkey_matches() {
+        // An auto-blocker takes the `when:` of the bindings that ask for it
+        // (KS-35). Asked before its hotkey matches, it would capture the
+        // foreground window on the hook thread for every key press (KS-08).
+        let mut bindings = vec![
+            Binding::new(KeyCombination::new(VK_F14), BindAction::ToggleCapsLock),
+            Binding::new_auto_blocker(
+                KeyCombination::from_keys([VK_MENU, VK_SHIFT]),
+                BlockerMode::Swallow,
+            )
+            .with_condition(Condition::AppEquals("x.exe".to_owned())),
+        ];
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(
+            KeyEvent::down(VK_F14),
+            &bindings,
+            &ForegroundForbiddenEnv(Instant::now()),
+        );
+        assert_eq!(decision.fire, vec![BindAction::ToggleCapsLock]);
     }
 
     #[test]

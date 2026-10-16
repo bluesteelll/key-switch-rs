@@ -4416,6 +4416,67 @@ fn remapping_off_drops_an_owed_mask() {
         .expect_passed();
 }
 
+// ---- The auto-blocker's when: (roadmap item 1.2, KS-35) ----
+
+#[test]
+fn a_blocker_asked_for_by_a_binding_with_when_app_equals_is_inactive_in_other_apps() {
+    // The binding remaps the language switch in x.exe only, so Windows
+    // keeps its hotkey everywhere else.
+    Scenario::from_ron_with_language_hotkey(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("x.exe")),
+        ] )"#,
+        &[VK_MENU, VK_SHIFT],
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .foreground("y.exe", "Y")
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LShift")
+    .expect_passed()
+    .up("LAlt")
+    .expect_passed()
+    .foreground("x.exe", "X")
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LShift")
+    .expect_suppressed()
+    .up("LAlt")
+    .expect_passed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn blockers_act_where_any_owner_when_holds() {
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+        (keys: "F13", action: SwitchLanguageBackward, block_original_combo: true, when: AppEquals("b.exe")),
+    ] )"#;
+    for (app, swallowed) in [("a.exe", true), ("b.exe", true), ("c.exe", false)] {
+        let scenario = Scenario::from_ron_with_language_hotkey(config, &[VK_MENU, VK_SHIFT])
+            .with_context(app)
+            .check_nothing_stuck()
+            .check_press_symmetry()
+            .foreground(app, app)
+            .down("LAlt")
+            .expect_passed()
+            .down("LShift");
+        let scenario = if swallowed {
+            scenario.expect_suppressed()
+        } else {
+            scenario.expect_passed()
+        };
+        scenario.up("LShift").up("LAlt").expect_passed();
+    }
+}
+
 // ---- The harness itself ----
 
 #[test]
