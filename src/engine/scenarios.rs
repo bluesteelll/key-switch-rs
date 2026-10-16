@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::testing::Scenario;
 use crate::core::windows_actions::{BindAction, MediaKey};
-use crate::data::binding::Binding;
+use crate::data::binding::{Binding, BlockerMode};
 use crate::data::key_combination::KeyCombination;
 
 fn launch(exe: &str) -> BindAction {
@@ -24,15 +24,26 @@ pub(super) const DEFAULT_PAIR: &str = r#"( bindings: [
     (keys: "Shift+CapsLock", action: ToggleCapsLock),
 ] )"#;
 
-/// The `Alt+Shift` auto-blocker that `block_original_combo` adds for the
-/// Windows language hotkey, followed by the bindings of `ron`. The blocker
-/// comes first, where it used to shadow a binding on the same keys; the
-/// loader now appends it. It is built directly: loading it from RON would
-/// read the registry.
+/// The `Alt+Shift` auto-blocker that `block_original_combo: true` adds for
+/// the Windows language hotkey, followed by the bindings of `ron`. The
+/// blocker comes first, where it used to shadow a binding on the same keys;
+/// the loader now appends it. It is built directly: loading it from RON
+/// would read the registry.
 pub(super) fn with_alt_shift_blocker(ron: &str) -> Vec<Binding> {
-    let mut bindings = vec![Binding::new_auto_blocker(KeyCombination::from_keys(vec![
-        VK_MENU, VK_SHIFT,
-    ]))];
+    with_alt_shift_blocker_of(BlockerMode::Swallow, ron)
+}
+
+/// [`with_alt_shift_blocker`] with the experimental
+/// `block_original_combo: MaskOnly` blocker.
+pub(super) fn with_alt_shift_mask_only_blocker(ron: &str) -> Vec<Binding> {
+    with_alt_shift_blocker_of(BlockerMode::MaskOnly, ron)
+}
+
+fn with_alt_shift_blocker_of(mode: BlockerMode, ron: &str) -> Vec<Binding> {
+    let mut bindings = vec![Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        mode,
+    )];
     bindings.extend(
         crate::config::from_ron_str(ron)
             .unwrap_or_else(|e| panic!("scenario: config does not load: {e}")),
@@ -1209,9 +1220,10 @@ fn either_shift_counts_as_the_same_modifier() {
 fn auto_blocker_matches_its_modifiers_exactly() {
     // The Alt+Shift blocker that `block_original_combo` adds, built
     // directly: loading it from RON would read the registry.
-    Scenario::with_bindings(vec![Binding::new_auto_blocker(KeyCombination::from_keys(
-        vec![VK_MENU, VK_SHIFT],
-    ))])
+    Scenario::with_bindings(vec![Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        BlockerMode::Swallow,
+    )])
     .down("LAlt")
     .expect_passed()
     .down("LShift")
@@ -2578,8 +2590,10 @@ fn grave_blocker_acts_only_on_a_lone_grave() {
 #[test]
 fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
     // Pressed in the order Ctrl, Shift, T, Windows would see a bare
-    // Ctrl+Shift when Shift goes down: the blocker swallows Shift, and T
-    // reaches Windows as Ctrl+T until roadmap item 1.2.
+    // Ctrl+Shift when Shift goes down: with `true` the blocker swallows
+    // Shift, and T reaches Windows as Ctrl+T. Neither Alt nor Win is down,
+    // so nothing is masked. `MaskOnly` lets Shift through
+    // (mask_only_blocker_lets_ctrl_shift_t_reach_the_application).
     Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
         .check_nothing_stuck()
         .check_press_symmetry()
@@ -2588,6 +2602,7 @@ fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
         .down("LShift")
         .expect_suppressed()
         .expect_nothing_fired()
+        .expect_unmasked()
         .down("T")
         .expect_passed()
         .up("T")
@@ -2603,8 +2618,9 @@ fn ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing() {
 fn shift_pressed_after_tab_was_released_is_still_swallowed() {
     // The usual way back in the Alt+Tab switcher: Alt held, Tab tapped,
     // then Shift and Tab. Windows would see a bare Alt+Shift when Shift goes
-    // down, so the blocker swallows it and Tab reaches Windows as Alt+Tab
-    // until roadmap item 1.2.
+    // down, so with `true` the blocker swallows it, with the menu mask key
+    // since Alt is down in Windows, and Tab reaches Windows as Alt+Tab.
+    // `MaskOnly` lets Shift through.
     Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
         .check_nothing_stuck()
         .check_press_symmetry()
@@ -2617,6 +2633,7 @@ fn shift_pressed_after_tab_was_released_is_still_swallowed() {
         .down("LShift")
         .expect_suppressed()
         .expect_nothing_fired()
+        .expect_masked()
         .down("Tab")
         .expect_passed()
         .up("Tab")
@@ -2634,9 +2651,10 @@ fn user_binding_on_alt_shift_fires_with_the_blocker_in_either_order() {
     // list, never takes that binding's fire.
     const USER: &str = r#"( bindings: [ (keys: "Alt+Shift", action: SwitchLanguageBackward) ] )"#;
     let mut blocker_last = crate::config::from_ron_str(USER).expect("config loads");
-    blocker_last.push(Binding::new_auto_blocker(KeyCombination::from_keys(vec![
-        VK_MENU, VK_SHIFT,
-    ])));
+    blocker_last.push(Binding::new_auto_blocker(
+        KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT]),
+        BlockerMode::Swallow,
+    ));
     for (name, bindings) in [
         ("blocker first", with_alt_shift_blocker(USER)),
         ("blocker last", blocker_last),
@@ -3874,6 +3892,589 @@ fn repeats_after_the_modifier_is_released_elect_again_and_follow_the_key_down() 
         .expect_passed()
         .expect_nothing_fired()
         .expect_total_fired(&[BindAction::PressKey(VK_DOWN), BindAction::PressKey(VK_DOWN)]);
+}
+
+// ---- Menu mask key (roadmap item 1.2, KS-12) ----
+
+/// `PostMessage(msg: "WM_CLOSE")` as the loader builds it.
+const POST_WM_CLOSE: BindAction = BindAction::PostMessage {
+    msg: 0x0010,
+    wparam: 0,
+    lparam: 0,
+};
+
+#[test]
+fn win_q_post_message_masks_the_swallowed_q_and_its_release() {
+    // KS-12: Windows saw Win go down and nothing after it, so Win's release
+    // would open the Start menu. The swallowed Q and its release ask for
+    // the mask key; the events that pass do not.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Win+Q", action: PostMessage(msg: "WM_CLOSE")) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .expect_unmasked()
+    .down("Q")
+    .expect_suppressed()
+    .expect_fired(&[POST_WM_CLOSE])
+    .expect_masked()
+    .up("Q")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn alt_then_shift_with_the_template_blocker_masks_the_swallowed_shift() {
+    // The template's `block_original_combo: true` swallows Shift pressed
+    // after Alt; Windows saw a lone Alt, whose release would activate the
+    // menu bar.
+    template()
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .expect_masked()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn right_alt_and_right_win_mask_a_swallowed_key() {
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Alt+J", action: DoNothing),
+            (keys: "Win+J", action: DoNothing),
+        ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("RAlt")
+    .expect_passed()
+    .expect_unmasked()
+    .down("J")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_masked()
+    .up("J")
+    .expect_suppressed()
+    .expect_masked()
+    .up("RAlt")
+    .expect_passed()
+    .expect_unmasked()
+    .down("RWin")
+    .expect_passed()
+    .expect_unmasked()
+    .down("J")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_masked()
+    .up("J")
+    .expect_suppressed()
+    .expect_masked()
+    .up("RWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn swallowed_repeats_and_key_up_while_win_is_held_are_masked() {
+    // Q's key-down was swallowed before Win went down, so its repeats and
+    // its key-up stay swallowed; with Win down in Windows they mask too.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("Q")
+        .expect_suppressed()
+        .expect_unmasked()
+        .down("LWin")
+        .expect_passed()
+        .expect_unmasked()
+        .advance_ms(500)
+        .repeat("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn a_swallowed_event_without_alt_or_win_in_windows_is_not_masked() {
+    // CapsLock alone, the Ctrl+Shift blocker and Shift+CapsLock swallow
+    // keys while neither Alt nor Win is down: nothing to mask.
+    Scenario::from_ron_with_language_hotkey(DEFAULT_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .down("LCtrl")
+        .expect_passed()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LCtrl")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .expect_unmasked()
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn a_swallowed_key_is_not_masked_when_the_alt_or_win_key_down_was_swallowed() {
+    // Windows never saw that Alt or Win go down, so its release opens
+    // nothing.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed();
+
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Win", action: ToggleCapsLock, trigger: Tap(200), block_default: true),
+            (keys: "Q", action: DoNothing, allow_extra_modifiers: true),
+        ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_suppressed()
+    .expect_unmasked()
+    .down("Q")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_unmasked()
+    .up("Q")
+    .expect_suppressed()
+    .expect_unmasked()
+    .up("LWin")
+    .expect_suppressed()
+    .expect_unmasked();
+}
+
+#[test]
+fn a_passed_event_is_not_masked() {
+    // An event that reaches Windows tells it that Alt is not alone.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Alt+L", action: DoNothing, block_default: false) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LCtrl")
+    .expect_passed()
+    .down("LAlt")
+    .expect_passed()
+    .down("L")
+    .expect_passed()
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_unmasked()
+    .up("L")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LCtrl")
+    .expect_passed()
+    .down("A")
+    .expect_passed()
+    .expect_unmasked()
+    .up("A")
+    .expect_passed()
+    .up("LAlt")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn alt_held_before_the_hook_saw_it_masks_a_swallowed_key() {
+    // The resync finds Alt held with no record of its key-down: Windows
+    // has it down.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Alt+J", action: DoNothing) ] )"#)
+        .down_unseen("LAlt")
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("J")
+        .expect_suppressed()
+        .expect_masked();
+}
+
+#[test]
+fn win_held_through_remapping_on_masks_a_swallowed_key() {
+    // `swch on` takes Win from the OS as a key-down Windows saw.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .remapping_off()
+        .down("LWin")
+        .expect_passed()
+        .remapping_on()
+        .down("Q")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn win_held_across_a_foreground_change_masks_a_swallowed_key() {
+    // A foreground change keeps the records of key-downs that passed.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Q", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LWin")
+        .expect_passed()
+        .foreground_changed()
+        .down("Q")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_masked()
+        .up("Q")
+        .expect_suppressed()
+        .expect_masked()
+        .up("LWin")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn sequence_and_chord_keys_swallowed_while_win_is_held_are_masked() {
+    Scenario::from_ron(
+        r#"( bindings: [ (sequence: (steps: ["Win+F13", "Win+F14"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .up("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_masked()
+    .up("F14")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+
+    Scenario::from_ron(
+        r#"( bindings: [ (chord: (keys: ["F13", "F14"]), action: SwitchLanguage) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .down("F14")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_masked()
+    .up("F13")
+    .expect_suppressed()
+    .expect_masked()
+    .up("F14")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LWin")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn a_hold_timer_never_masks() {
+    // `advance_ms` asserts that no timer decision asks for the mask: a
+    // timer has no event in the hook to put it in front of.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Win+F13", action: DoNothing, trigger: Hold(200)) ] )"#,
+    )
+    .down("LWin")
+    .expect_passed()
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(250)
+    .expect_fired(&[BindAction::DoNothing])
+    .up("F13")
+    .expect_suppressed()
+    .up("LWin")
+    .expect_passed();
+}
+
+// ---- block_original_combo: MaskOnly (roadmap item 1.2, KS-05) ----
+
+/// The default config's two bindings, with the experimental
+/// `block_original_combo: MaskOnly`.
+const MASK_ONLY_CONFIG: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+] )"#;
+
+#[test]
+fn mask_only_blocker_lets_alt_and_shift_through_and_masks_the_exact_hotkey() {
+    // The hypothesis under test by hand: Windows switches the layout only
+    // on a clean Alt+Shift, so a mask key inside it stops the switch. The
+    // order of a key injected from inside the hook against the event in
+    // the hook is not documented, so the next event masks once more: that
+    // mask lands after Shift's key-down whatever the order.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .up("LShift")
+        .expect_passed()
+        .expect_masked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn mask_only_blocker_lets_ctrl_shift_t_reach_the_application() {
+    // KS-05: Ctrl, Shift, T arrived as Ctrl+T with `true`.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_CONTROL, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LCtrl")
+        .expect_passed()
+        .expect_unmasked()
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .down("T")
+        .expect_passed()
+        .expect_masked()
+        .up("T")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LCtrl")
+        .expect_passed()
+        .expect_unmasked()
+        .expect_total_fired(&[]);
+}
+
+#[test]
+fn mask_only_blocker_does_not_mask_a_hotkey_pressed_with_another_key_held() {
+    // Windows sees Alt, Tab and Shift, not its hotkey alone.
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .down("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("Tab")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn mask_only_blocker_masks_only_the_first_event_after_the_match() {
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .check_press_symmetry()
+        .down("LAlt")
+        .down("LShift")
+        .expect_passed()
+        .expect_masked()
+        .advance_ms(500)
+        .repeat("LShift")
+        .expect_passed()
+        .expect_masked()
+        .advance_ms(33)
+        .repeat("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LShift")
+        .expect_passed()
+        .expect_unmasked()
+        .up("LAlt")
+        .expect_passed()
+        .expect_unmasked();
+}
+
+#[test]
+fn alt_shift_x_fires_next_to_a_mask_only_blocker() {
+    Scenario::from_ron_with_language_hotkey(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+            (keys: "Alt+Shift+X", action: ToggleCapsLock),
+        ] )"#,
+        &[VK_MENU, VK_SHIFT],
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_masked()
+    .down("X")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .expect_masked()
+    .up("X")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LShift")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LAlt")
+    .expect_passed()
+    .expect_unmasked();
+}
+
+#[test]
+fn remapping_off_drops_an_owed_mask() {
+    Scenario::from_ron_with_language_hotkey(MASK_ONLY_CONFIG, &[VK_MENU, VK_SHIFT])
+        .check_nothing_stuck()
+        .down("LAlt")
+        .down("LShift")
+        .expect_masked()
+        .remapping_off()
+        .remapping_on()
+        .down("F13")
+        .expect_passed()
+        .expect_unmasked()
+        .up("F13")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed();
+}
+
+// ---- The auto-blocker's when: (roadmap item 1.2, KS-35) ----
+
+#[test]
+fn a_blocker_asked_for_by_a_binding_with_when_app_equals_is_inactive_in_other_apps() {
+    // The binding remaps the language switch in x.exe only, so Windows
+    // keeps its hotkey everywhere else.
+    Scenario::from_ron_with_language_hotkey(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("x.exe")),
+        ] )"#,
+        &[VK_MENU, VK_SHIFT],
+    )
+    .check_nothing_stuck()
+    .check_press_symmetry()
+    .foreground("y.exe", "Y")
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .expect_unmasked()
+    .up("LShift")
+    .expect_passed()
+    .up("LAlt")
+    .expect_passed()
+    .foreground("x.exe", "X")
+    .down("LAlt")
+    .expect_passed()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_masked()
+    .up("LShift")
+    .expect_suppressed()
+    .up("LAlt")
+    .expect_passed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn blockers_act_where_any_owner_when_holds() {
+    let config = r#"( bindings: [
+        (keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("a.exe")),
+        (keys: "F13", action: SwitchLanguageBackward, block_original_combo: true, when: AppEquals("b.exe")),
+    ] )"#;
+    for (app, swallowed) in [("a.exe", true), ("b.exe", true), ("c.exe", false)] {
+        let scenario = Scenario::from_ron_with_language_hotkey(config, &[VK_MENU, VK_SHIFT])
+            .with_context(app)
+            .check_nothing_stuck()
+            .check_press_symmetry()
+            .foreground(app, app)
+            .down("LAlt")
+            .expect_passed()
+            .down("LShift");
+        let scenario = if swallowed {
+            scenario.expect_suppressed()
+        } else {
+            scenario.expect_passed()
+        };
+        scenario.up("LShift").up("LAlt").expect_passed();
+    }
 }
 
 // ---- The harness itself ----

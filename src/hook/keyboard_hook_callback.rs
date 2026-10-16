@@ -18,9 +18,11 @@
 //!    binding list and a `HookEnv` that answers the engine's questions with
 //!    live Win32 calls;
 //! 6. carries out the [`Decision`] after the lock and the snapshot are
-//!    released: first the timers it asks for, then its actions in order, on
-//!    this thread, as before the engine existed (`Decision::mask` is
-//!    reserved for roadmap item 1.2 and never set yet);
+//!    released, on this thread: first the menu mask key if
+//!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
+//!    one `SendInput`, tagged with the sentinel; roadmap item 1.2, KS-12),
+//!    then the timers it asks for, then its actions in order, as before the
+//!    engine existed;
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
@@ -55,18 +57,29 @@
 //!
 //! # Re-entry
 //!
-//! The low-level hook is re-entered on the main thread only while that
-//! thread waits in a message-retrieving call. Nothing under the lock does
-//! that, and `with_engine` refuses a nested call on the same thread, so such
-//! an event would pass instead of deadlocking. That keeps the suppression
-//! invariant for a refused key-down (its key-up then passes too), but not
-//! for a refused key-up whose key-down was suppressed: the key-up would pass
-//! and the engine would keep the key held and blocked, so the key's next
-//! press would count as an auto-repeat and its release would be swallowed.
-//! No such re-entry exists today. A change that adds a window to the daemon,
-//! or anything else that pumps messages under the lock (for example a
-//! foreground lookup that sends `WM_GETTEXT` to a window of this process),
-//! must deal with it first; roadmap items 2.2 and 3.4 remove the lock.
+//! The low-level hook is re-entered on the main thread while that thread
+//! waits in a message-retrieving call, and while it is inside `SendInput`:
+//! the system calls the hook again for the events the call injects
+//! (AutoHotkey's hook relies on this). The menu mask key and every key an
+//! action sends are injected by `carry_out`, after the lock and the snapshot
+//! are released, and they carry the sentinel, so `decide_event` passes them
+//! before it takes the lock: no event of ours reaches the engine. Microsoft
+//! does not document whether another callback, such as
+//! `foreground_changed`, can run on this thread while `SendInput` waits; one
+//! that does finds the lock free and does what any foreground change does.
+//!
+//! Nothing under the lock waits for messages or injects input, and
+//! `with_engine` refuses a nested call on the same thread, so an event that
+//! did arrive under the lock would pass instead of deadlocking. That keeps
+//! the suppression invariant for a refused key-down (its key-up then passes
+//! too), but not for a refused key-up whose key-down was suppressed: the
+//! key-up would pass and the engine would keep the key held and blocked, so
+//! the key's next press would count as an auto-repeat and its release would
+//! be swallowed. No such re-entry exists today. A change that adds a window
+//! to the daemon, injects input under the lock, or pumps messages under it
+//! (for example a foreground lookup that sends `WM_GETTEXT` to a window of
+//! this process), must deal with it first; roadmap items 2.2 and 3.4 remove
+//! the lock.
 
 use std::cell::OnceCell;
 use std::sync::LazyLock;
@@ -183,15 +196,84 @@ fn decide_event(
 }
 
 /// Carries out a decision on the calling thread, outside the engine lock:
-/// first the timers it asks for, then its actions in order.
+/// first the menu mask key if it asks for one, then the timers it asks for,
+/// then its actions in order. The mask belongs to the event being decided,
+/// so it goes ahead of every key an action sends.
 fn carry_out(decision: Decision) {
-    let Decision { fire, timers, .. } = decision;
+    // Destructured without `..`: a new field of `Decision` does not compile
+    // until it is carried out here. `suppress` is the callback's to act on.
+    let Decision {
+        suppress: _,
+        fire,
+        timers,
+        mask,
+    } = decision;
+    if mask {
+        send_menu_mask();
+    }
     for request in timers {
         start_hold_timer(request);
     }
     for action in &fire {
         action.execute();
     }
+}
+
+/// The menu mask key's key-down and key-up (`constants::MENU_MASK_VK`),
+/// tagged with the sentinel, so that this hook passes them on without
+/// asking the engine.
+fn menu_mask_inputs() -> [INPUT; 2] {
+    let input = |flags| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(constants::MENU_MASK_VK),
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: constants::injected_sentinel(),
+            },
+        },
+    };
+    [input(KEYBD_EVENT_FLAGS(0)), input(KEYEVENTF_KEYUP)]
+}
+
+/// Inserts the menu mask key's key-down and key-up into the input stream,
+/// in one call so that nothing comes between them, and returns how many
+/// events were inserted.
+fn inject_menu_mask() -> u32 {
+    let inputs = menu_mask_inputs();
+    // SAFETY: `inputs` is an array of two fully initialised INPUT_KEYBOARD
+    // records on this stack frame, alive for the whole call, and cbsize is
+    // the size of one INPUT, as SendInput requires; it only reads the
+    // records of the slice it is given.
+    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) }
+}
+
+/// Sends the menu mask key. `SendInput` inserts fewer events when another
+/// thread blocks input, and none when UIPI keeps it from the foreground
+/// window without saying so; a short count is logged and the event is
+/// decided as before.
+#[cfg(not(test))]
+fn send_menu_mask() {
+    let sent = inject_menu_mask();
+    if sent != 2 {
+        eprintln!("[WARN] SendInput inserted {sent} of 2 menu mask key events");
+    }
+}
+
+/// Under test the menu mask key is only counted, on the calling thread: a
+/// test that drives `carry_out` must not inject input into the machine that
+/// runs it, whatever keys its user holds.
+#[cfg(test)]
+fn send_menu_mask() {
+    MASKS_SENT.with(|sent| sent.set(sent.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many menu mask keys `carry_out` asked for on this thread.
+    static MASKS_SENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Starts the timer for a Hold on its own `hold-timer` thread, which runs
@@ -300,6 +382,8 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::core::constants::injected_sentinel;
     use crate::core::windows_actions::BindAction;
@@ -404,7 +488,9 @@ mod tests {
         // extern level, and of the gate before the engine lock. The callback
         // reads the process-wide hook, so this is the only test that may
         // touch `get_hook()`. `carry_out` runs here, and the binding is
-        // `DoNothing` so that it starts and sends nothing.
+        // `DoNothing` so that it starts and sends nothing. If the user holds
+        // Win or Alt meanwhile, the swallowed F13 asks for the menu mask key,
+        // which under test is only counted (`send_menu_mask`).
         let f13 = u32::from(VK_F13.0);
         get_hook().update_bindings(vec![
             Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
@@ -458,5 +544,44 @@ mod tests {
             "remapping on again: the bound key is swallowed"
         );
         assert_eq!(call(f13, WM_KEYUP), LRESULT(1));
+    }
+
+    #[test]
+    fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
+        let inputs = menu_mask_inputs();
+        for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {
+            assert_eq!(input.r#type, INPUT_KEYBOARD);
+            // SAFETY: every element is built with r#type INPUT_KEYBOARD, so
+            // ki is the initialised field of the union.
+            let ki = unsafe { input.Anonymous.ki };
+            assert_eq!(ki.wVk, VIRTUAL_KEY(0xE8));
+            assert_eq!(ki.wScan, 0);
+            assert_eq!(ki.dwFlags, flags);
+            assert_eq!(ki.time, 0);
+            assert_eq!(
+                ki.dwExtraInfo,
+                injected_sentinel(),
+                "the hook must pass the mask key it injects"
+            );
+        }
+    }
+
+    #[test]
+    fn carry_out_sends_the_menu_mask_only_when_the_decision_asks() {
+        // Under test `send_menu_mask` only counts, on this thread.
+        let before = MASKS_SENT.with(Cell::get);
+        carry_out(Decision::default());
+        assert_eq!(MASKS_SENT.with(Cell::get), before, "no mask asked for");
+        carry_out(Decision {
+            mask: true,
+            ..Decision::default()
+        });
+        assert_eq!(MASKS_SENT.with(Cell::get), before + 1, "one mask asked for");
+    }
+
+    #[test]
+    #[ignore = "manual: injects vk 0xE8 down and up into the live input stream; run it with --ignored while Notepad has focus and check that it passes and nothing is typed and no menu opens"]
+    fn the_menu_mask_key_is_inserted_into_the_input_stream() {
+        assert_eq!(inject_menu_mask(), 2);
     }
 }

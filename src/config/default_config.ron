@@ -73,6 +73,11 @@
 // "Ctrl+J" does not fire on Ctrl+Shift+J. Set allow_extra_modifiers: true
 // on a binding to let it fire while other modifiers are held too.
 //
+// When a binding swallows a key pressed while Win or Alt is held ("Win+Q",
+// "Alt+J"), the daemon first sends the key code 0xE8, which types nothing,
+// so that releasing Win or Alt opens neither the Start menu nor the menu
+// bar. Other programs that watch the keyboard see that key.
+//
 // ---- action variants ----
 //
 // SwitchLanguage          — next keyboard layout
@@ -157,7 +162,7 @@
 //                         still detects its gesture. Only the binding that
 //                         wins a key press counts. sequence and chord
 //                         bindings ignore it.
-// block_original_combo: true (default false)
+// block_original_combo: true | false | MaskOnly (default false)
 //                       — auto-block the OS-default hotkey that normally
 //                         triggers this action's underlying function.
 //                         Useful when remapping language switching: we set
@@ -169,8 +174,20 @@
 //                         It acts only on the hotkey pressed on its own:
 //                         Shift pressed while Alt and Tab are held still
 //                         reaches Windows.
-//                         Until roadmap item 1.2 it ignores the binding's
-//                         when: and acts in every window (KS-35).
+//                         true swallows the hotkey's last key (Alt, then
+//                         Shift: the Shift), so Ctrl, Shift, T reaches
+//                         applications as Ctrl+T.
+//                         MaskOnly (experimental) swallows nothing: it
+//                         sends the key code 0xE8 inside the hotkey, on the
+//                         untested assumption that Windows then does not
+//                         switch the layout. Check it by hand: a bare
+//                         Alt+Shift (or Ctrl+Shift) pressed and released
+//                         must not switch the layout; if it does, use true.
+//                         MaskOnly needs a hotkey made only of modifiers;
+//                         with the ` hotkey it acts as true, with a warning.
+//                         The blocker acts only where the binding's when:
+//                         holds; with several bindings asking for it, where
+//                         any of their when: holds.
 // allow_extra_modifiers: true (default false)
 //                       - keys bindings only: also fire while modifiers
 //                         the binding does not name are held. A load
@@ -219,6 +236,8 @@
         //     keys: "Ctrl+Shift+L",
         //     action: PressKey("L"),
         // ),
+        // // Close the focused window; the Start menu stays closed when Win
+        // // is released.
         // (
         //     keys: "Win+Q",
         //     action: PostMessage(msg: "WM_CLOSE"),

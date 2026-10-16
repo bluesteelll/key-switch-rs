@@ -81,13 +81,14 @@ Lines and columns are numbered from 1, and the column is counted in characters (
 | A field is repeated | `` Unexpected duplicate field named `keys` in `RawBinding` `` |
 | An unknown variant, or a case mistake | `` Unexpected variant named `SwitchLang` in enum `RawAction`, expected one of `SwitchLanguage`, … `` (likewise `RawTrigger`, `RawCondition`, `RawStep`, `MediaKeyRef`, `RawWindowKind`) |
 | `Some(…)`/`None` in a field that is not an `Option` | `Expected boolean`, `Expected integer`, `` Expected opening `[` ``, ``Unexpected variant named `None` …``, ``Unexpected variant named `Some` …`` ([§3.6](ron-syntax.md#s3-6)) |
+| A `block_original_combo` value other than `true`, `false` or `MaskOnly` (`Maskonly`, `yes`, `Some(true)`) | ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead`` ([§15](matching.md#s15)) |
 | A variant that takes an argument written without parentheses; `Launch { … }` | `` Expected opening `(` `` |
 | An extra argument (`PressKey("A", "B")`, `Not(a, b)`) | `` Expected closing `)` `` |
 | A list instead of a single value, or the reverse (`And(x)`, `args: "x"`, `Sequence(Text("x"))`, `bindings: (…)`) | `` Expected opening `[` `` |
 | A string instead of an identifier (`action: "SwitchLanguage"`, `Media("PlayPause")`, `when: "x"`); a positional argument to a variant with fields (`Launch("x")`); `Media()`, `Window()`, `Not([…])` | `Expected identifier` |
 | Not a string where a string is required (`Text(123)`, `'a'`, `b"…"`, `keys: [F13]`, `PressKey()`) | `Expected string` |
 | Not a number where a number is required (`"500"`, `Tap()`, `Tap(.5)`, `Tap(NaN)`, `Tap(0x)`) | `Expected integer` |
-| Not `true`/`false` | `Expected boolean` |
+| Not `true`/`false` in a `true`/`false` field | `Expected boolean` |
 | A negative number in an unsigned field (except `-0`); a value outside the type's range; a value that does not fit the suffix type (`Tap(300u8)`, `msg: 300u8`) | `Integer is out of bounds` |
 | A fractional number as a positional argument (`Tap(50.0)`, `Tap(5.)`); `Tap(200usize)`, `Tap(1_000u128)`; `Tap(0X10)` | `` Expected closing `)` `` |
 | A fractional number in a named field (`window_ms: 50.0`); `window_ms: 0X10`; `msg: 16usize` | `Expected comma` |
@@ -118,6 +119,7 @@ A UTF-8 byte-order mark at the start of the file is no longer an error ([KS-24](
 | `RawAction` | the value of `action` |
 | `RawTrigger` | the value of `trigger` |
 | `RawCondition` | the value of `when` |
+| `RawBlockOriginalCombo` | the value of `block_original_combo` |
 | `RawStep` | a step inside `Sequence([…])` |
 | `MediaKeyRef` | the argument of `Media(…)` |
 | `RawWindowKind` | the argument of `Window(…)` |
@@ -175,6 +177,7 @@ These messages do not reject the file. The loader prints its messages to the dae
 | `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them` | the later binding repeats an earlier one: the same kind and keys (in any order for `keys` and `chord`, in order for `sequence` steps), the same trigger whatever its term, the same `when` as written and, for `keys`, the same `allow_extra_modifiers`; the action does not count ([src/config/loader.rs:299-321](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/config/loader.rs#L299-L321)). Of two such `keys` bindings only the first acts ([§11.7](triggers-conditions.md#s11-7), [§16.3](matching.md#s16-3)). If the one you remove sets `block_original_combo: true`, move the flag to the one you keep, or its auto-blocker goes ([§15](matching.md#s15)). Printed at startup and on every reload |
 | `[INFO] SwitchLanguage: registry combination Alt+Shift` / `[INFO] SwitchLanguage: using default combination` | a `block_original_combo` binding asked for its hotkey ([§15.2](matching.md#s15-2)) |
 | `[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys` | a binding of the file uses the hotkey's keys, so no blocker was added ([§15.3](matching.md#s15-3)) |
+| ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true`` | `MaskOnly` on a binding whose Windows hotkey is not made only of modifiers (the `` ` `` hotkey, registry value `"4"`): the blocker swallows the hotkey as with `true` ([src/config/loader.rs:346-362](https://github.com/bluesteelll/key-switch-rs/blob/ad7fe86/src/config/loader.rs#L346-L362), [§15.5](matching.md#s15-5)). Printed at startup and on every reload |
 | `[WARN] registry value "Hotkey" has type …, expected REG_SZ/REG_EXPAND_SZ` | the registry value is not of a string type |
 | `[INFO] config reloaded (N bindings live)` | a reload was applied |
 | `[ERROR] config reload failed:` + `[INFO] keeping previous bindings live` | a reload was rejected ([§18.1](#s18-1)) |
@@ -187,6 +190,7 @@ These messages do not reject the file. The loader prints its messages to the dae
 | `[ERROR] Launch "…": batch file arguments are invalid` | arguments to a `.bat`/`.cmd` file that cannot be passed to cmd safely |
 | `[ERROR] OpenUrl "…": ShellExecuteW returned error code N` | `ShellExecuteW` returned a code ≤ 32 |
 | `SendInput dropped events for vk …: sent N of M` | `PressKey`, `Media` or `ToggleCapsLock`: some events were not sent |
+| `[WARN] SendInput inserted N of 2 menu mask key events` | the menu mask key ([§13.1](actions.md#s13-1)) was not inserted whole, for example because another thread blocked input ([src/hook/keyboard_hook_callback.rs:253-263](https://github.com/bluesteelll/key-switch-rs/blob/ad7fe86/src/hook/keyboard_hook_callback.rs#L253-L263)). A mask that UIPI keeps from an elevated window is lost without this message |
 | `[WARN] type_text: SendInput sent N of M inputs` / `[WARN] press_key: …` / `[WARN] press_combo: …` | `Text`, `Key`, `Combo` steps: some events were not sent |
 | `[WARN] window step skipped: no foreground HWND captured` | a `Window(…)` step ran with no foreground window |
 | `[WARN] window close PostMessage failed: …` | a `Window(Close)` step could not post `WM_CLOSE` |

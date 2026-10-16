@@ -80,9 +80,10 @@ pub(super) fn combo_matches<H: HeldKeys + ?Sized>(
 
 /// Whether the key-down of `pressed`, with `held` the keys held after it,
 /// shows Windows its hotkey `combo` and nothing else, so that the
-/// auto-blocker for it swallows the key: `pressed` is a trigger key, every
-/// key of the hotkey is held, and every other key held is one that
-/// `windows_has_down` reports up.
+/// auto-blocker for it acts (swallows the key or asks for the menu mask
+/// key, by its mode): `pressed` is a trigger key, every key of the hotkey
+/// is held, and every other key held is one that `windows_has_down` reports
+/// up.
 ///
 /// `windows_has_down` is asked only about held keys that no key of `combo`
 /// accepts, so never about `pressed`, whose state Windows updates only

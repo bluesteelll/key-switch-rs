@@ -66,6 +66,28 @@ impl BindingKind {
     }
 }
 
+/// What an auto-blocker does when Windows would see its hotkey and nothing
+/// else (`block_original_combo`, roadmap item 1.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockerMode {
+    /// `block_original_combo: true`: swallow the key-down that completes the
+    /// hotkey, and with it that key's auto-repeats and key-up.
+    Swallow,
+    /// `block_original_combo: MaskOnly` (experimental, KS-05): let the
+    /// hotkey through and ask for the menu mask key on that key-down and on
+    /// the next key event, so that Windows does not see a clean hotkey.
+    MaskOnly,
+}
+
+impl std::fmt::Display for BlockerMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BlockerMode::Swallow => "swallow",
+            BlockerMode::MaskOnly => "mask only",
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub kind: BindingKind,
@@ -75,7 +97,10 @@ pub struct Binding {
     /// loader resolves a config without the field with
     /// [`Binding::blocks_by_default`]. Sequences and chords ignore it.
     pub block_default: bool,
-    pub block_original_combo: bool,
+    /// The auto-blocker this binding asks the loader for, for the Windows
+    /// hotkey of its action's system function: `None` for none
+    /// (`block_original_combo: false`, the default).
+    pub block_original_combo: Option<BlockerMode>,
     /// Foreground-context guard. `Condition::Always` (the default) makes the
     /// binding fire whenever the trigger matches; anything else gates it
     /// on the active window's exe name / title.
@@ -101,10 +126,10 @@ pub struct Binding {
     /// chords never fire on an auto-repeat, whatever it says; the loader
     /// rejects `true` on them.
     pub repeat: bool,
-    /// Set only by [`Binding::new_auto_blocker`]. The engine matches such a
-    /// binding by what Windows sees held and lets it only suppress: it fires
-    /// nothing.
-    pub(crate) is_auto_blocker: bool,
+    /// Set only by [`Binding::new_auto_blocker`], to the mode of the
+    /// blocker. The engine matches such a binding by what Windows sees held
+    /// and lets it only swallow or mask: it fires nothing.
+    pub(crate) auto_blocker: Option<BlockerMode>,
 }
 
 impl Binding {
@@ -120,26 +145,34 @@ impl Binding {
             repeat: action.repeats_by_default(),
             action,
             block_default: true,
-            block_original_combo: false,
+            block_original_combo: None,
             condition: Condition::Always,
             trigger: Trigger::Immediate,
             allow_extra_modifiers: false,
-            is_auto_blocker: false,
+            auto_blocker: None,
         }
     }
 
-    pub(crate) fn new_auto_blocker(combination: KeyCombination) -> Self {
+    /// An auto-blocker for the Windows hotkey `combination`, acting in
+    /// every window until [`with_condition`](Self::with_condition) narrows
+    /// it.
+    pub(crate) fn new_auto_blocker(combination: KeyCombination, mode: BlockerMode) -> Self {
         Self {
             kind: BindingKind::Combo(combination),
             action: BindAction::DoNothing,
             block_default: true,
-            block_original_combo: false,
+            block_original_combo: None,
             condition: Condition::Always,
             trigger: Trigger::Immediate,
             allow_extra_modifiers: false,
             repeat: false,
-            is_auto_blocker: true,
+            auto_blocker: Some(mode),
         }
+    }
+
+    /// Whether the loader added this binding as an auto-blocker.
+    pub(crate) fn is_auto_blocker(&self) -> bool {
+        self.auto_blocker.is_some()
     }
 
     /// The `block_default` of a binding whose config does not set it:
@@ -172,8 +205,8 @@ impl Binding {
     /// Of two `keys` bindings like that only the first ever acts; two
     /// sequences or chords like that share one pending entry.
     pub fn duplicates(&self, earlier: &Binding) -> bool {
-        !self.is_auto_blocker
-            && !earlier.is_auto_blocker
+        !self.is_auto_blocker()
+            && !earlier.is_auto_blocker()
             && self.kind.same_keys(&earlier.kind)
             && self.trigger.same_kind(earlier.trigger)
             && self.condition == earlier.condition
@@ -185,8 +218,8 @@ impl Binding {
         self
     }
 
-    pub fn with_block_original_combo(mut self, block: bool) -> Self {
-        self.block_original_combo = block;
+    pub fn with_block_original_combo(mut self, mode: Option<BlockerMode>) -> Self {
+        self.block_original_combo = mode;
         self
     }
 
@@ -247,11 +280,15 @@ impl std::fmt::Display for Binding {
             _ => "",
         };
 
-        if self.is_auto_blocker {
+        if let Some(mode) = self.auto_blocker {
+            let effect = match mode {
+                BlockerMode::Swallow => "(blocked)",
+                BlockerMode::MaskOnly => "(masked, experimental)",
+            };
             write!(
                 f,
-                "[AUTO-BLOCK] {:<24} -> (blocked){}{}{}",
-                keys_str, cond_suffix, trigger_suffix, extra_suffix
+                "[AUTO-BLOCK] {:<24} -> {}{}{}{}",
+                keys_str, effect, cond_suffix, trigger_suffix, extra_suffix
             )
         } else {
             write!(
@@ -316,7 +353,40 @@ mod tests {
         assert!(!switch.repeat, "SwitchLanguage does not repeat by default");
         assert!(switch.with_repeat(true).repeat);
 
-        assert!(!Binding::new_auto_blocker(KeyCombination::new(VK_F13)).repeat);
+        assert!(
+            !Binding::new_auto_blocker(KeyCombination::new(VK_F13), BlockerMode::Swallow).repeat
+        );
+    }
+
+    #[test]
+    fn display_marks_a_mask_only_blocker() {
+        let alt_shift = KeyCombination::from_keys([VK_MENU, VK_SHIFT]);
+        let swallow = Binding::new_auto_blocker(alt_shift.clone(), BlockerMode::Swallow);
+        let mask_only = Binding::new_auto_blocker(alt_shift, BlockerMode::MaskOnly);
+
+        let swallow_line = swallow.to_string();
+        assert!(swallow_line.starts_with("[AUTO-BLOCK] "), "{swallow_line}");
+        assert!(swallow_line.ends_with(" -> (blocked)"), "{swallow_line}");
+        let mask_line = mask_only.to_string();
+        assert!(mask_line.starts_with("[AUTO-BLOCK] "), "{mask_line}");
+        assert!(
+            mask_line.ends_with(" -> (masked, experimental)"),
+            "{mask_line}"
+        );
+
+        let line = mask_only
+            .with_condition(Condition::AppEquals("x.exe".to_owned()))
+            .to_string();
+        assert!(
+            line.ends_with(r#" -> (masked, experimental)  [AppEquals("x.exe")]"#),
+            "the blocker's when: is shown: {line}"
+        );
+    }
+
+    #[test]
+    fn blocker_mode_display() {
+        assert_eq!(BlockerMode::Swallow.to_string(), "swallow");
+        assert_eq!(BlockerMode::MaskOnly.to_string(), "mask only");
     }
 
     #[test]
@@ -444,7 +514,7 @@ mod tests {
     #[test]
     fn an_auto_blocker_duplicates_nothing() {
         let alt_shift = KeyCombination::from_keys([VK_MENU, VK_SHIFT]);
-        let blocker = Binding::new_auto_blocker(alt_shift.clone());
+        let blocker = Binding::new_auto_blocker(alt_shift.clone(), BlockerMode::Swallow);
         let user = Binding::new(alt_shift, BindAction::DoNothing);
         assert!(!blocker.duplicates(&user));
         assert!(!user.duplicates(&blocker));

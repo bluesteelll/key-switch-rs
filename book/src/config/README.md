@@ -39,7 +39,7 @@ The sketch below is not a ready-made file but an overview of the whole shape on 
             trigger: Immediate | Tap(ms) | Hold(ms) | DoubleTap(ms),  // = Immediate; ms 1…10000; deferred ones only with keys (§11)
             when: COND,                            // = Always (§12)
             block_default: true | false,           // = true, but false for Tap/Hold/DoubleTap on modifiers only; keys only (§10)
-            block_original_combo: true | false,    // = false; has an effect only for SwitchLanguage* (§15)
+            block_original_combo: true | false | MaskOnly,  // = false; only for SwitchLanguage*; MaskOnly is experimental (§15)
             allow_extra_modifiers: true | false,   // = false; keys only: fire with other modifiers held too (§7)
             repeat: true | false,                  // = true for PressKey, Media(VolumeUp/VolumeDown), else false; keys + Immediate only (§11.3)
         ),

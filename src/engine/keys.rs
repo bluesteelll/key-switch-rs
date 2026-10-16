@@ -36,6 +36,11 @@ const MODIFIERS: [VIRTUAL_KEY; 11] = [
     VK_RWIN,
 ];
 
+/// The Alt and Win codes, the generic `VK_MENU` slot the resync writes
+/// included. A lone Win or Alt press that Windows sees opens the Start menu
+/// or activates the menu bar on its release (KS-12).
+const MENU_KEYS: [VIRTUAL_KEY; 5] = [VK_LMENU, VK_RMENU, VK_MENU, VK_LWIN, VK_RWIN];
+
 /// Mouse buttons. They have virtual-key codes, and the OS key state reports
 /// them, but the keyboard hook never sees them, so
 /// [`KeyState::reset_from_os`] leaves them out.
@@ -220,6 +225,19 @@ impl KeyState {
     /// Whether the engine believes the key with this exact code is held.
     pub(super) fn is_active(&self, vk: VIRTUAL_KEY) -> bool {
         slot(vk.0).is_some_and(|index| self.active[index])
+    }
+
+    /// Whether Windows has an Alt or Win key down: one is held and its
+    /// key-down was not swallowed. The resync keeps every such key in step
+    /// with the OS key state, so this asks the OS nothing. A key held with
+    /// no record counts: the resync found it down in Windows. Read after the
+    /// event's own record update, an Alt or Win key-down being swallowed
+    /// right now does not count.
+    pub(super) fn alt_or_win_down_in_windows(&self) -> bool {
+        MENU_KEYS.iter().any(|key| {
+            let index = usize::from(key.0);
+            self.active[index] && !self.key_down_swallowed(index)
+        })
     }
 }
 
@@ -579,6 +597,73 @@ mod tests {
             state.press(VK_A),
             "the next key-down of a key held through the reset is an auto-repeat"
         );
+    }
+
+    /// Reports exactly the listed codes as down.
+    struct Down(&'static [VIRTUAL_KEY]);
+
+    impl Env for Down {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.0.contains(&vk)
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn alt_or_win_down_in_windows_counts_held_keys_whose_key_down_was_not_swallowed() {
+        let mut state = KeyState::new();
+        assert!(!state.alt_or_win_down_in_windows(), "nothing is held");
+
+        state.press(VK_LSHIFT);
+        state.mark_passed(VK_LSHIFT.0);
+        assert!(
+            !state.alt_or_win_down_in_windows(),
+            "Shift is neither Alt nor Win"
+        );
+
+        state.press(VK_LMENU);
+        state.mark_passed(VK_LMENU.0);
+        assert!(state.alt_or_win_down_in_windows(), "a passed Alt counts");
+        state.release(VK_LMENU);
+        state.take_blocked(VK_LMENU.0);
+        assert!(
+            !state.alt_or_win_down_in_windows(),
+            "a released Alt does not"
+        );
+
+        state.press(VK_LWIN);
+        state.mark_blocked(VK_LWIN.0);
+        assert!(
+            !state.alt_or_win_down_in_windows(),
+            "a Win whose key-down was swallowed does not count"
+        );
+        state.forget_blocked();
+        assert!(
+            !state.alt_or_win_down_in_windows(),
+            "nor does one a foreground change forgot"
+        );
+
+        // The resync skips the swallowed LWin and writes the rest.
+        state.sync_modifiers(&Down(&[VK_RWIN]), None);
+        assert!(
+            state.alt_or_win_down_in_windows(),
+            "a Win the resync found held with no record counts"
+        );
+        state.sync_modifiers(&Down(&[VK_MENU]), None);
+        assert!(
+            state.alt_or_win_down_in_windows(),
+            "the generic Alt slot the resync writes counts"
+        );
+        state.sync_modifiers(&Down(&[]), None);
+        assert!(!state.alt_or_win_down_in_windows());
     }
 
     #[test]

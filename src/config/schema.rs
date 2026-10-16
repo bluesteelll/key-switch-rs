@@ -49,8 +49,11 @@ pub(crate) struct RawBinding {
     #[serde(default)]
     pub block_default: Option<bool>,
 
+    /// Whether the loader adds an auto-blocker for the Windows hotkey of the
+    /// action's system function, and what it does. Missing or `false`: none.
+    /// See [`RawBlockOriginalCombo`].
     #[serde(default)]
-    pub block_original_combo: bool,
+    pub block_original_combo: RawBlockOriginalCombo,
 
     /// Foreground-window guard. Missing or `Always` means the binding fires
     /// unconditionally. Anything else gates the binding on focused app /
@@ -79,6 +82,27 @@ pub(crate) struct RawBinding {
     /// triggers, sequences and chords, which never fire on an auto-repeat.
     #[serde(default)]
     pub repeat: Option<bool>,
+}
+
+/// `block_original_combo: true | false | MaskOnly`, mirrored by
+/// `Option<BlockerMode>` on [`crate::data::binding::Binding`]. An enum, not
+/// a `bool`, so that `true` and `false` keep loading as they always did:
+/// RON reads a variant name as an identifier, and `true` and `false` are
+/// identifiers there. The declaration order is the order a misspelled
+/// value's error lists them in: ``expected one of `true`, `false`, or
+/// `MaskOnly` instead``.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+pub(crate) enum RawBlockOriginalCombo {
+    /// An auto-blocker that swallows the hotkey pressed on its own.
+    #[serde(rename = "true")]
+    On,
+    /// No auto-blocker.
+    #[default]
+    #[serde(rename = "false")]
+    Off,
+    /// Experimental: an auto-blocker that lets the hotkey through and sends
+    /// the menu mask key when it is pressed on its own.
+    MaskOnly,
 }
 
 /// On-disk mirror of [`crate::data::trigger::Trigger`]. The tuple argument

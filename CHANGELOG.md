@@ -62,6 +62,30 @@ minor version; such entries sit under **Changed** and start with
   The file still loads. The warning is printed at startup and on every
   reload. If the copy you remove sets `block_original_combo: true`, move
   the flag to the one you keep.
+- `block_original_combo: MaskOnly`, experimental (roadmap item 1.2, KS-05):
+  an auto-blocker that swallows nothing. When Windows would see its hotkey
+  and no other key, it sends the menu mask key (0xE8, see KS-12 under
+  **Fixed**) on the key-down that completes the hotkey and again on the
+  next key event, so that Windows does not see a clean hotkey press.
+  `Ctrl+Shift+T`, `Alt+Shift+Tab` and `Alt+Shift+X` then reach applications,
+  where `true` swallows the hotkey's second modifier. It rests on an
+  unverified hypothesis: that Windows switches the layout only on a clean
+  press and release of `Alt+Shift` or `Ctrl+Shift`. `true` and `false` keep
+  their meaning, and the template keeps `true`. The startup list shows such
+  a blocker as `-> (masked, experimental)`. On a hotkey that is not made only
+  of modifiers (the `` ` `` hotkey) `MaskOnly` blocks as `true` does and
+  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``.
+  A misspelled value is a load error that lists the valid ones,
+  ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``;
+  `Some(true)`, an error before too, now gets that message for `` `Some` ``.
+  Manual check (no test can tell what Windows does): with
+  `( keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly )`
+  and the `Ctrl+Shift` hotkey, `Ctrl+Shift+T` reopens a closed browser tab
+  and a bare Ctrl+Shift pressed and released five times never switches the
+  layout; with the `Alt+Shift` hotkey, a bare Alt+Shift five times never
+  switches it, Alt+Shift+Tab steps back in the switcher, and Alt, Shift,
+  release in Notepad activates no menu. If the layout still switches, the
+  hypothesis does not hold: keep `true`.
 
 ### Changed
 
@@ -155,7 +179,8 @@ minor version; such entries sit under **Changed** and start with
     lets Windows switch the layout as well, also when that binding sets
     `block_original_combo: true` itself.
   - A `Tap` on `Alt` or `Win` alone lets Windows see the tap, which
-    activates the menu bar or opens Start (until roadmap item 1.2).
+    activates the menu bar or opens Start. The menu mask key (KS-12, under
+    **Fixed**) does not cover it: nothing is swallowed there.
   - `block_default: Some(true)` and `block_default: None` (the default)
     load, as for `keys`.
 - **Breaking:** one binding wins each key press (roadmap item 1.6, KS-13).
@@ -194,6 +219,22 @@ minor version; such entries sit under **Changed** and start with
     holding Ctrl+J and then releasing Ctrl now lets `j` repeat in the
     application next to one Down per repeat; the losing `J` binding used to
     swallow the press and its repeats.
+- **Breaking:** an auto-blocker acts only where the `when:` of a binding
+  that asked for it holds (roadmap item 1.2, KS-35); it used to act in every
+  window. With `when: Not(AppEquals("game.exe"))` added to the default
+  config's CapsLock binding, the Windows hotkey (`Alt+Shift` by default) now
+  reaches the game and switches the layout there, while CapsLock reaches it
+  as CapsLock; the hotkey used to stay blocked in the game too. Bindings that
+  ask for a blocker of the same hotkey and mode share one, which acts where
+  any of their `when:` holds, and everywhere if one of them has no `when:`.
+  The startup list shows the blocker's condition as for any binding:
+  `[AUTO-BLOCK] Alt + Shift              -> (blocked)  [Not(AppEquals("game.exe"))]`.
+  The bindings' triggers are not inherited: the blocker acts on the
+  hotkey's own press. Its condition is asked only once the hotkey matches,
+  so it costs the hook no foreground lookup on other keys. Manual check:
+  with `( keys: "CapsLock", action: SwitchLanguage, block_original_combo: true, when: AppEquals("notepad.exe") )`,
+  Alt+Shift in Notepad neither switches the layout nor activates the menu
+  bar, and in another window Windows switches the layout.
 
 ### Fixed
 
@@ -241,12 +282,11 @@ minor version; such entries sit under **Changed** and start with
   `QueryFullProcessImageNameW` and compares the executable's file name:
   `notepad.exe` for `C:\Windows\System32\notepad.exe`. A binding with
   `when: Not(AppEquals("game.exe"))` now stays silent in that game. The
-  auto-blocker of a `block_original_combo` binding still ignores the
-  binding's `when:` and acts in every window until roadmap item 1.2
-  (KS-35). With `when: Not(AppEquals("game.exe"))` added to the default
-  config's CapsLock binding, CapsLock now reaches the game as CapsLock
-  while the Windows hotkey (`Alt+Shift` by default) stays blocked there,
-  so neither switches the layout in the game. Windows of UWP apps such as
+  auto-blocker of a `block_original_combo` binding follows that binding's
+  `when:` too (KS-35, under **Changed**): with
+  `when: Not(AppEquals("game.exe"))` added to the default config's CapsLock
+  binding, CapsLock reaches the game as CapsLock and the Windows hotkey
+  (`Alt+Shift` by default) switches the layout there. Windows of UWP apps such as
   Calculator and Settings belong to `ApplicationFrameHost.exe`; match
   those by title. Manual check (no automated test can focus a window):
   with `( keys: "F9", action: PressKey("A"), when: AppEquals("notepad.exe") )`
@@ -259,17 +299,19 @@ minor version; such entries sit under **Changed** and start with
   swallows the typed keys, Shift pressed while CapsLock is held no longer
   fires `Shift+CapsLock`, and pressing a combo's modifier after its other key
   (J, then Ctrl) no longer fires `Ctrl+J`.
-- KS-05 (partly; roadmap item 1.2 fixes the rest): an auto-blocker swallows
-  a key only when Windows would see the hotkey's keys and no other key
-  held. Shift pressed while Alt and Tab are both held, Shift pressed while
-  Ctrl and T are held, and Alt+Shift pressed while a letter is still held in
-  fast typing now reach Windows. A key Windows does not have down (one a
-  binding swallowed, or one whose release went to the lock screen) does not
-  count. Pressed in the order Alt, Shift, Tab, the hotkey's Shift is still
-  swallowed and the application gets Alt+Tab (Ctrl+T for Ctrl, Shift, T
-  with the `Ctrl+Shift` hotkey) until item 1.2. That includes the usual way
-  back in the Alt+Tab switcher, Alt held, Tab released, then Shift+Tab,
-  which still moves forward.
+- KS-05 (partly with `true`; the experimental `MaskOnly` under **Added**
+  covers the rest): an auto-blocker swallows a key only when Windows would
+  see the hotkey's keys and no other key held. Shift pressed while Alt and
+  Tab are both held, Shift pressed while Ctrl and T are held, and Alt+Shift
+  pressed while a letter is still held in fast typing now reach Windows. A
+  key Windows does not have down (one a binding swallowed, or one whose
+  release went to the lock screen) does not count. Pressed in the order
+  Alt, Shift, Tab, the hotkey's Shift is still swallowed with
+  `block_original_combo: true` and the application gets Alt+Tab (Ctrl+T for
+  Ctrl, Shift, T with the `Ctrl+Shift` hotkey); `MaskOnly` lets that Shift
+  through. That includes the usual way back in the Alt+Tab switcher, Alt
+  held, Tab released, then Shift+Tab, which still moves forward with
+  `true`.
 - KS-06: an auto-repeat is suppressed exactly when its key's first key-down
   was, and a key-down that reaches Windows clears any suppression left for
   its key-up. Holding a key past the repeat delay no longer lets its
@@ -311,6 +353,26 @@ minor version; such entries sit under **Changed** and start with
   press of the same key. Two quick taps fire twice, a Hold no longer fires
   early on the next press, and a quick series of DoubleTaps no longer loses
   fires.
+- KS-12 (roadmap item 1.2): releasing Win or Alt no longer opens the Start
+  menu or activates the menu bar after the daemon swallowed a key pressed
+  with it. When the hook swallows a key event (a key-down, an auto-repeat
+  or a key-up) while Windows has a Win or Alt key down whose key-down it
+  saw, it first sends the menu mask key, the unassigned virtual-key code
+  0xE8, down and up, as AutoHotkey's `#MenuMaskKey` does, so Windows no
+  longer sees a lone Win or Alt press. This covers
+  `( keys: "Win+Q", action: PostMessage(msg: "WM_CLOSE") )`, Alt then Shift
+  with the default config's auto-blocker, and
+  `( keys: "Alt+X", action: DoNothing )`. Applications, games, key-logging
+  tools and other keyboard hooks see the injected 0xE8 events; 0xE8 types
+  nothing. A `Tap`, `Hold` or `DoubleTap` on `Alt` or `Win` alone that lets
+  the key through still activates the menu bar or opens Start: nothing is
+  swallowed there, so nothing is masked. Manual checks (no test injects
+  input): in Notepad, Alt down, Shift down, Shift up, Alt up with the
+  default config activates no menu; with the `Win+Q` binding, Notepad
+  closes and the Start menu stays closed when Win is released. Tests:
+  `engine::scenarios::win_q_post_message_masks_the_swallowed_q_and_its_release`,
+  `alt_then_shift_with_the_template_blocker_masks_the_swallowed_shift`; the
+  engine's property runs check the rule on every generated event.
 - KS-25 (equal terms): with `Tap(n)` and `Hold(n)` on one key, exactly one
   fires: `Tap` when the key is released before `n` ms, `Hold` when it is
   held for `n` ms or more. A Hold whose key is released after its term but
@@ -344,7 +406,8 @@ minor version; such entries sit under **Changed** and start with
   Shift pressed after Alt with the default config's auto-blocker now stays
   swallowed for its whole press, auto-repeats and release included, even
   after Alt is released; its repeats used to reach Windows from the first
-  one on (roadmap item 1.2 stops the blocker swallowing it).
+  one on. `block_original_combo: MaskOnly` (under **Added**) lets that
+  Shift through instead.
 - KS-18: `block_original_combo` no longer adds an auto-blocker when a
   `keys` binding anywhere in the file uses the same keys as the Windows
   hotkey, in any order and with any trigger or `when:`, the flagged binding

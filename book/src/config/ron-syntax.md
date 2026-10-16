@@ -90,7 +90,7 @@ The fields `keys`, `sequence`, `chord`, `repeat` and `block_default` have the ty
 ```
 `None` in `repeat` or `block_default` means the field's default, which depends on the binding ([§5.1](structure.md#s5-1)). The other fields are not of an `Option` type, so `Some(...)` and `None` are not allowed in them:
 - `bindings: None` and `bindings: Some([])` give ``Expected opening `[` ``;
-- `block_original_combo: Some(true)` gives `Expected boolean`;
+- `block_original_combo: Some(true)` gives ``Unexpected variant named `Some` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``: the field takes `true`, `false` or `MaskOnly` ([§15](matching.md#s15));
 - `max_gap_ms: Some(300)` gives `Expected integer`;
 - `when: None` gives ``Unexpected variant named `None` in enum `RawCondition` ``, and `action: None` gives the same for `RawAction`;
 - `trigger: Some(Tap(200))` gives ``Unexpected variant named `Some` in enum `RawTrigger` ``.

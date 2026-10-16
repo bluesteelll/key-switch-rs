@@ -61,7 +61,7 @@ pub(super) fn elect<'a>(
         let BindingKind::Combo(combo) = &binding.kind else {
             continue;
         };
-        if binding.is_auto_blocker {
+        if binding.is_auto_blocker() {
             continue;
         }
         if winner

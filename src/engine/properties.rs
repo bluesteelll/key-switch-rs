@@ -7,11 +7,17 @@
 //! paths. The `winners` config puts bindings on the same key that compete
 //! for one press (roadmap item 1.6): a more specific or conditional winner
 //! that lets the key through next to a loser that would swallow it, and a
-//! deferred winner next to an `Immediate` loser.
+//! deferred winner next to an `Immediate` loser. The `mask_only` config is
+//! the `default` one with the experimental `MaskOnly` auto-blocker in place
+//! of the one that swallows (roadmap item 1.2, KS-05).
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
-//! (`Scenario::with_context`) above the transcript. Three properties:
+//! (`Scenario::with_context`) above the transcript. Three properties, and in
+//! every run but `mask_only`'s the menu mask rule (`check_mask_rule`,
+//! KS-12): a key event asks for the mask key exactly when it is suppressed
+//! while the modelled OS has Alt down. A `MaskOnly` blocker also masks
+//! events it lets through.
 //!
 //! - Strict mode, with no focus change and no lost key-up: every press is
 //!   suppressed or passed as a whole, its key-down, auto-repeats and key-up
@@ -32,9 +38,10 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
 
-use super::scenarios::with_alt_shift_blocker;
+use super::scenarios::{with_alt_shift_blocker, with_alt_shift_mask_only_blocker};
 use super::testing::Scenario;
 use crate::core::windows_actions::BindAction;
+use crate::data::binding::BlockerMode;
 
 /// SplitMix64 (Steele, Lea and Flood, 2014): a tiny generator whose output
 /// is fixed by its seed, which is all a script generator needs.
@@ -71,24 +78,28 @@ const DELAYS_MS: [u64; 13] = [0, 1, 20, 33, 49, 50, 199, 200, 201, 250, 500, 600
 struct Config {
     name: &'static str,
     /// Put the `Alt+Shift` auto-blocker that `block_original_combo` adds in
-    /// front of the bindings (`with_alt_shift_blocker`).
-    blocker: bool,
+    /// front of the bindings, of this mode (`with_alt_shift_blocker`,
+    /// `with_alt_shift_mask_only_blocker`).
+    blocker: Option<BlockerMode>,
     ron: &'static str,
 }
 
-const CONFIGS: [Config; 7] = [
+/// The `default` config's bindings.
+const DEFAULT_BINDINGS: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage),
+    (keys: "Shift+CapsLock", action: ToggleCapsLock),
+    (keys: "Alt+Shift+K", action: ToggleCapsLock),
+] )"#;
+
+const CONFIGS: [Config; 8] = [
     Config {
         name: "default",
-        blocker: true,
-        ron: r#"( bindings: [
-            (keys: "CapsLock", action: SwitchLanguage),
-            (keys: "Shift+CapsLock", action: ToggleCapsLock),
-            (keys: "Alt+Shift+K", action: ToggleCapsLock),
-        ] )"#,
+        blocker: Some(BlockerMode::Swallow),
+        ron: DEFAULT_BINDINGS,
     },
     Config {
         name: "immediate",
-        blocker: false,
+        blocker: None,
         ron: r#"( bindings: [
             (keys: "Ctrl+Alt+J", action: ToggleCapsLock),
             (keys: "F13", action: PressKey("Left")),
@@ -99,7 +110,7 @@ const CONFIGS: [Config; 7] = [
     },
     Config {
         name: "gestures",
-        blocker: false,
+        blocker: None,
         ron: r#"( bindings: [
             (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
             (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
@@ -111,7 +122,7 @@ const CONFIGS: [Config; 7] = [
     },
     Config {
         name: "chords",
-        blocker: false,
+        blocker: None,
         ron: r#"( bindings: [
             (chord: (keys: ["Shift", "Space"], window_ms: 500), action: SwitchLanguage),
             (chord: (keys: ["J", "K"], window_ms: 50), action: ToggleCapsLock),
@@ -120,7 +131,7 @@ const CONFIGS: [Config; 7] = [
     },
     Config {
         name: "sequences",
-        blocker: false,
+        blocker: None,
         ron: r#"( bindings: [
             (sequence: (steps: ["F13", "F14"]), action: SwitchLanguage),
             (sequence: (steps: ["F14+F15", "F14+F16"]), action: ToggleCapsLock),
@@ -129,7 +140,7 @@ const CONFIGS: [Config; 7] = [
     },
     Config {
         name: "mixed",
-        blocker: true,
+        blocker: Some(BlockerMode::Swallow),
         ron: r#"( bindings: [
             (keys: "CapsLock", action: SwitchLanguage),
             (keys: "Shift+CapsLock", action: ToggleCapsLock),
@@ -142,7 +153,7 @@ const CONFIGS: [Config; 7] = [
     },
     Config {
         name: "winners",
-        blocker: false,
+        blocker: None,
         ron: r#"( bindings: [
             (keys: "Shift+CapsLock", action: ToggleCapsLock),
             (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true),
@@ -154,6 +165,12 @@ const CONFIGS: [Config; 7] = [
             (keys: "F15", action: SwitchLanguage),
             (keys: "F15", action: ToggleCapsLock, block_default: false, when: Not(AppEquals("game.exe"))),
         ] )"#,
+    },
+    // Last, so that the scripts of the configs above keep their seeds.
+    Config {
+        name: "mask_only",
+        blocker: Some(BlockerMode::MaskOnly),
+        ron: DEFAULT_BINDINGS,
     },
 ];
 
@@ -224,10 +241,12 @@ fn step(
 /// auto-repeat check too with `repeat_check`.
 fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool) {
     let mut rng = SplitMix64(seed.wrapping_mul(0x100) + index as u64);
-    let scenario = if config.blocker {
-        Scenario::with_bindings(with_alt_shift_blocker(config.ron))
-    } else {
-        Scenario::from_ron(config.ron)
+    let scenario = match config.blocker {
+        Some(BlockerMode::Swallow) => Scenario::with_bindings(with_alt_shift_blocker(config.ron)),
+        Some(BlockerMode::MaskOnly) => {
+            Scenario::with_bindings(with_alt_shift_mask_only_blocker(config.ron))
+        }
+        None => Scenario::from_ron(config.ron),
     };
     let mut scenario = scenario
         .with_context(format!(
@@ -235,6 +254,11 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
             config.name
         ))
         .check_nothing_stuck();
+    // A `MaskOnly` blocker masks events it lets through, which the rule
+    // does not cover.
+    if config.blocker != Some(BlockerMode::MaskOnly) {
+        scenario = scenario.check_mask_rule();
+    }
     if mode == Mode::Strict {
         scenario = scenario.check_press_symmetry();
     }
