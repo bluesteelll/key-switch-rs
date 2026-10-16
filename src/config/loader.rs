@@ -371,12 +371,28 @@ fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, Str
         ));
     }
 
+    // Deferred triggers, sequences and chords never fire on an auto-repeat,
+    // so `repeat: true` there would be accepted and ignored. `false` states
+    // what they do anyway and loads.
+    let honours_repeat = matches!(kind, BindingKind::Combo(_)) && trigger.is_immediate();
+    if raw.repeat == Some(true) && !honours_repeat {
+        return Err(format!(
+            "{}: `repeat: true` applies only to `keys` bindings with the `Immediate` trigger",
+            err_prefix
+        ));
+    }
+
     let binding = Binding::with_kind(kind, action)
         .with_block_default(raw.block_default)
         .with_block_original_combo(raw.block_original_combo)
         .with_condition(raw_condition_to_condition(&raw.when))
         .with_trigger(trigger)
         .with_allow_extra_modifiers(raw.allow_extra_modifiers);
+    // Unset, `repeat` keeps the default `with_kind` took from the action.
+    let binding = match raw.repeat {
+        Some(repeat) => binding.with_repeat(repeat),
+        None => binding,
+    };
 
     Ok(binding)
 }
@@ -1058,6 +1074,10 @@ mod tests {
                 in_list(
                     r#"( keys: "CapsLock", action: SwitchLanguage, allow_extra_modifier: true )"#,
                 ),
+            ),
+            (
+                "repaet",
+                in_list(r#"( keys: "F13", action: PressKey("A"), repaet: true )"#),
             ),
             (
                 "maxgap_ms",
@@ -1900,6 +1920,22 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}: repeat: false must load: {e}"));
             assert_eq!(bindings.len(), 1, "{name}");
         }
+    }
+
+    #[test]
+    fn repeat_defaults_follow_the_action_and_an_explicit_value_wins() {
+        let ron = r#"( bindings: [
+            (keys: "F13", action: PressKey("A")),
+            (keys: "F14", action: Media(VolumeDown)),
+            (keys: "F15", action: Media(VolumeMute)),
+            (keys: "F16", action: Launch(exe: "wt.exe")),
+            (keys: "F17", action: SwitchLanguage, repeat: true),
+            (keys: "F18", action: PressKey("A"), repeat: false),
+        ] )"#;
+        let bindings = from_ron_str_with_hotkeys(ron, &|_: &BindAction| None)
+            .unwrap_or_else(|e| panic!("config loads: {e}"));
+        let repeats: Vec<bool> = bindings.iter().map(|b| b.repeat).collect();
+        assert_eq!(repeats, [true, true, false, false, true, false]);
     }
 
     #[test]

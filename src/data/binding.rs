@@ -69,6 +69,14 @@ pub struct Binding {
     /// `Chord`. Auto-blockers ignore it: they match only their hotkey on its
     /// own.
     pub allow_extra_modifiers: bool,
+    /// Whether an `Immediate` `Combo` binding fires again on every
+    /// auto-repeat of its key. Without it, the binding fires once per press,
+    /// and its repeats are still suppressed when its key-down was. The
+    /// constructors take the default from the action
+    /// ([`BindAction::repeats_by_default`]). Deferred triggers, sequences and
+    /// chords never fire on an auto-repeat, whatever it says; the loader
+    /// rejects `true` on them.
+    pub repeat: bool,
     /// Set only by [`Binding::new_auto_blocker`]. The engine matches such a
     /// binding by what Windows sees held and lets it only suppress: it fires
     /// nothing.
@@ -85,6 +93,7 @@ impl Binding {
     pub fn with_kind(kind: BindingKind, action: BindAction) -> Self {
         Self {
             kind,
+            repeat: action.repeats_by_default(),
             action,
             block_default: true,
             block_original_combo: false,
@@ -104,6 +113,7 @@ impl Binding {
             condition: Condition::Always,
             trigger: Trigger::Immediate,
             allow_extra_modifiers: false,
+            repeat: false,
             is_auto_blocker: true,
         }
     }
@@ -143,6 +153,13 @@ impl Binding {
         self
     }
 
+    /// Overrides the auto-repeat default that the constructor took from the
+    /// action.
+    pub fn with_repeat(mut self, repeat: bool) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
     pub fn execute(&self) {
         self.action.execute();
     }
@@ -167,6 +184,16 @@ impl std::fmt::Display for Binding {
         } else {
             ""
         };
+        // Only a value that differs from the action's default is shown, so
+        // a config that never sets `repeat:` lists as before. The flag means
+        // nothing to deferred triggers, sequences and chords.
+        let honours_repeat =
+            matches!(self.kind, BindingKind::Combo(_)) && self.trigger.is_immediate();
+        let repeat_suffix = match (self.repeat, self.action.repeats_by_default()) {
+            (true, false) if honours_repeat => "  [repeat]",
+            (false, true) if honours_repeat => "  [no repeat]",
+            _ => "",
+        };
 
         if self.is_auto_blocker {
             write!(
@@ -177,8 +204,8 @@ impl std::fmt::Display for Binding {
         } else {
             write!(
                 f,
-                "{:<34} -> {}{}{}{}",
-                keys_str, self.action, cond_suffix, trigger_suffix, extra_suffix
+                "{:<34} -> {}{}{}{}{}",
+                keys_str, self.action, cond_suffix, trigger_suffix, extra_suffix, repeat_suffix
             )
         }
     }
@@ -224,5 +251,18 @@ mod tests {
             relaxed_line.ends_with("  [allow_extra_modifiers]"),
             "{relaxed_line}"
         );
+    }
+
+    #[test]
+    fn a_binding_takes_its_repeat_default_from_its_action() {
+        let press_left = Binding::new(KeyCombination::new(VK_F13), BindAction::PressKey(VK_LEFT));
+        assert!(press_left.repeat, "PressKey repeats by default");
+        assert!(!press_left.with_repeat(false).repeat);
+
+        let switch = Binding::new(KeyCombination::new(VK_F13), BindAction::SwitchLanguage);
+        assert!(!switch.repeat, "SwitchLanguage does not repeat by default");
+        assert!(switch.with_repeat(true).repeat);
+
+        assert!(!Binding::new_auto_blocker(KeyCombination::new(VK_F13)).repeat);
     }
 }

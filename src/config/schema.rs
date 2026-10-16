@@ -65,6 +65,14 @@ pub(crate) struct RawBinding {
     /// rejects `true` on `sequence` and `chord` bindings.
     #[serde(default)]
     pub allow_extra_modifiers: bool,
+
+    /// Whether a `keys` binding with the `Immediate` trigger fires again on
+    /// every auto-repeat of its key. Missing: the action's default
+    /// (`BindAction::repeats_by_default`), which an `Option` is needed to
+    /// tell from an explicit `false`. The loader rejects `true` on deferred
+    /// triggers, sequences and chords, which never fire on an auto-repeat.
+    #[serde(default)]
+    pub repeat: Option<bool>,
 }
 
 /// On-disk mirror of [`crate::data::trigger::Trigger`]. The tuple argument
