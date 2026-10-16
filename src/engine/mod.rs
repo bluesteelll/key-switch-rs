@@ -584,7 +584,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14};
 
     /// An [`Env`] stopped at one instant with nothing held and no
     /// foreground window: enough to arm a Hold and read its timer token.
@@ -603,6 +603,49 @@ mod tests {
         fn foreground_title(&self) -> Option<&str> {
             None
         }
+    }
+
+    /// An [`Env`] stopped at one instant with nothing held, which panics if
+    /// the foreground window is asked for.
+    struct ForegroundForbiddenEnv(Instant);
+
+    impl Env for ForegroundForbiddenEnv {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            panic!("the foreground was asked for although no binding with a when: matches this key")
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            panic!("the foreground was asked for although no binding with a when: matches this key")
+        }
+    }
+
+    #[test]
+    fn a_when_condition_is_asked_only_for_a_binding_whose_keys_match() {
+        // On the hook thread a `when:` may capture the foreground window
+        // (GetForegroundWindow, OpenProcess, GetWindowTextW): a binding on
+        // other keys must not pay for it on every key press (KS-08).
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, when: AppEquals("code.exe")),
+                (keys: "F14", action: ToggleCapsLock),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(
+            KeyEvent::down(VK_F14),
+            &bindings,
+            &ForegroundForbiddenEnv(Instant::now()),
+        );
+        assert_eq!(decision.fire, vec![BindAction::ToggleCapsLock]);
+        assert!(decision.suppress, "F14's binding swallows its key-down");
     }
 
     #[test]

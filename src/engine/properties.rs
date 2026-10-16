@@ -4,7 +4,10 @@
 //! kind and trigger. Their `Tap`, `Hold` and `DoubleTap` bindings include
 //! ones that swallow their key and ones that let it through
 //! (`block_default`, roadmap item 1.3), so a press is checked on both
-//! paths.
+//! paths. The `winners` config puts bindings on the same key that compete
+//! for one press (roadmap item 1.6): a more specific or conditional winner
+//! that lets the key through next to a loser that would swallow it, and a
+//! deferred winner next to an `Immediate` loser.
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
@@ -73,7 +76,7 @@ struct Config {
     ron: &'static str,
 }
 
-const CONFIGS: [Config; 6] = [
+const CONFIGS: [Config; 7] = [
     Config {
         name: "default",
         blocker: true,
@@ -135,6 +138,21 @@ const CONFIGS: [Config; 6] = [
             (chord: (keys: ["J", "K"], window_ms: 50), action: ToggleCapsLock),
             (sequence: (steps: ["F13", "F14"]), action: SwitchLanguage),
             (sequence: (steps: ["F14+F15", "F14+F16"]), action: ToggleCapsLock),
+        ] )"#,
+    },
+    Config {
+        name: "winners",
+        blocker: false,
+        ron: r#"( bindings: [
+            (keys: "Shift+CapsLock", action: ToggleCapsLock),
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true),
+            (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200), allow_extra_modifiers: true),
+            (keys: "F13", action: SwitchLanguage, allow_extra_modifiers: true),
+            (keys: "Shift+F13", action: ToggleCapsLock, block_default: false),
+            (keys: "F14", action: PressKey("Left"), allow_extra_modifiers: true),
+            (keys: "Ctrl+F14", action: ToggleCapsLock, trigger: Tap(200), block_default: false),
+            (keys: "F15", action: SwitchLanguage),
+            (keys: "F15", action: ToggleCapsLock, block_default: false, when: Not(AppEquals("game.exe"))),
         ] )"#,
     },
 ];
