@@ -269,13 +269,25 @@ mod tests {
         }
     }
 
-    /// The numbers (from 1) of the lines of `fn print_welcome` in `text`,
-    /// from its `fn` line until its braces balance.
-    fn print_welcome_lines(text: &str) -> std::ops::RangeInclusive<usize> {
+    /// The index of the line that opens the tests module of a source file
+    /// (`#[cfg(test)]` followed by `mod tests {`), or the line count.
+    fn tests_start(lines: &[&str]) -> usize {
+        lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len())
+    }
+
+    /// The numbers (from 1) of the lines of the first function whose line
+    /// contains `signature` before the tests module of `text`, from that
+    /// line until its braces balance. Panics if there is none, so that a
+    /// renamed function fails a scan loudly instead of passing it.
+    fn fn_lines(text: &str, signature: &str) -> std::ops::RangeInclusive<usize> {
+        let lines: Vec<&str> = text.lines().collect();
         let mut first = None;
         let mut depth = 0_i64;
-        for (index, line) in text.lines().enumerate() {
-            if first.is_none() && line.contains("fn print_welcome(") {
+        for (index, line) in lines[..tests_start(&lines)].iter().enumerate() {
+            if first.is_none() && line.contains(signature) {
                 first = Some(index + 1);
             }
             let Some(start) = first else {
@@ -286,7 +298,7 @@ mod tests {
                 return start..=index + 1;
             }
         }
-        panic!("src/core/app.rs has no complete fn print_welcome");
+        panic!("no complete function `{signature}` before the tests module");
     }
 
     /// Whether `line` names the `log` crate's path, as a macro call or an
@@ -325,7 +337,8 @@ mod tests {
                 .expect("a file under the manifest folder")
                 .to_string_lossy()
                 .replace('\\', "/");
-            let banner = (relative == "src/core/app.rs").then(|| print_welcome_lines(&text));
+            let banner =
+                (relative == "src/core/app.rs").then(|| fn_lines(&text, "fn print_welcome("));
             for (index, line) in text.lines().enumerate() {
                 let number = index + 1;
                 let allowed = banner.as_ref().is_some_and(|lines| lines.contains(&number))
@@ -367,6 +380,85 @@ mod tests {
             }
         }
         assert!(report.is_empty(), "{report}");
+    }
+
+    /// Roadmap item 2.1 ("the hook path never calls `log::`"): the
+    /// functions that run on the hook thread (or a Hold's `hold-timer`
+    /// thread, which carries out the same way) outside
+    /// `keyboard_hook_callback.rs` name no `log::`. That file, with
+    /// `carry_out` and `dispatch`, is scanned whole by
+    /// `only_the_startup_banner_prints_outside_src_bin`. `None` scans the
+    /// whole non-test part of the file.
+    #[test]
+    fn the_functions_on_the_hook_path_log_nothing() {
+        let hook_path: &[(&str, Option<&str>)] = &[
+            // Picks where every action fired on the hook thread runs.
+            ("src/core/windows_actions.rs", Some("fn as_fast(")),
+            // `FastAction::run`: runs the fast actions where they fire.
+            ("src/core/windows_actions.rs", Some("fn run(")),
+            // What `run` calls for `PressKey` and `Media`, and for
+            // `PostMessage`.
+            ("src/core/windows_actions.rs", Some("fn press_vk(")),
+            (
+                "src/core/windows_actions.rs",
+                Some("fn post_message_to_foreground("),
+            ),
+            // What `run` reaches for `SwitchLanguage`,
+            // `SwitchLanguageBackward` and `ToggleCapsLock`.
+            ("src/system/system_function.rs", Some("fn execute(")),
+            (
+                "src/system/system_function.rs",
+                Some("fn switch_language_forward("),
+            ),
+            (
+                "src/system/system_function.rs",
+                Some("fn switch_language_backward("),
+            ),
+            (
+                "src/system/system_function.rs",
+                Some("fn toggle_caps_lock("),
+            ),
+            ("src/system/system_function.rs", Some("fn press_key(")),
+            // Every slow fire: the target, the queue and the wake.
+            ("src/core/executor/mod.rs", Some("fn for_action(")),
+            ("src/core/executor/mod.rs", Some("fn foreground(")),
+            ("src/core/executor/mod.rs", Some("fn submit(")),
+            ("src/core/executor/mod.rs", Some("fn wake(")),
+            // The cancel that `set_enabled` and `update_bindings` make.
+            ("src/core/executor/mod.rs", Some("fn cancel_pending(")),
+            // The hook's entry to the executor, and its cancel.
+            ("src/hook/keyboard_hook.rs", Some("fn submit(")),
+            ("src/hook/keyboard_hook.rs", Some("fn cancel_actions(")),
+            // `bump` and `record_callback` run on the hook thread for every
+            // event that needs them.
+            ("src/logging/counters.rs", None),
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut sites = Vec::new();
+        for (file, signature) in hook_path {
+            let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
+            let lines: Vec<&str> = text.lines().collect();
+            let scanned = match signature {
+                Some(signature) => fn_lines(&text, signature),
+                None => 1..=tests_start(&lines),
+            };
+            for number in scanned {
+                let line = lines[number - 1];
+                if names_the_log_crate(line) {
+                    sites.push(format!(
+                        "{file}:{number}: {} in {}",
+                        line.trim(),
+                        signature.unwrap_or("the non-test part")
+                    ));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "{} log calls on the hook path:\n  {}",
+            sites.len(),
+            sites.join("\n  ")
+        );
     }
 
     #[test]
