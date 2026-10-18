@@ -106,10 +106,12 @@ fn write_to_stderr(_line: &LogLine) {}
 /// later call, or a call after another logger was installed, does nothing.
 /// If the thread cannot be started, records go to stderr directly.
 pub fn init() {
-    let spawned = writer::spawn(Box::new(io::stderr()), &counters::COUNTERS, REPORT_PERIOD);
-    if log::set_logger(&LOGGER).is_err() {
+    let Some(spawned) = start_logging(
+        || log::set_logger(&LOGGER).is_ok(),
+        || writer::spawn(Box::new(io::stderr()), &counters::COUNTERS, REPORT_PERIOD),
+    ) else {
         return;
-    }
+    };
     log::set_max_level(MAX_LEVEL);
     match spawned {
         Ok(tx) => {
@@ -119,6 +121,20 @@ pub fn init() {
             log::warn!("could not start the log writer, logging to the console only: {error}")
         }
     }
+}
+
+/// The order of [`init`]: starts the writer with `start_writer`, then
+/// installs the logger with `install`. `None` if `install` fails; the
+/// started writer is then dropped. Otherwise what `start_writer` returned.
+fn start_logging<W>(
+    install: impl FnOnce() -> bool,
+    start_writer: impl FnOnce() -> io::Result<W>,
+) -> Option<io::Result<W>> {
+    let spawned = start_writer();
+    if !install() {
+        return None;
+    }
+    Some(spawned)
 }
 
 /// From now on, the writer also appends every line to `daemon.log` in
