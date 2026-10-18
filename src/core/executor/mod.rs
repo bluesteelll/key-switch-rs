@@ -1237,6 +1237,52 @@ mod tests {
     }
 
     #[test]
+    fn a_job_still_queued_when_the_executor_dies_is_counted() {
+        use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+
+        let (tx, records) = mpsc::channel();
+        let (executor, counters) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let handle = executor.handle();
+
+        handle.submit(open("first"), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "open first");
+        // The executor returns to its GetMessageW within microseconds of
+        // the call; this wait only makes sure that it has, so that the job
+        // below is not drained and run by a pass that is still going.
+        thread::sleep(Duration::from_millis(200));
+
+        // A job whose wake was lost (the case the epilogue exists for):
+        // queued without the wake that `submit` posts, then WM_QUIT.
+        let epoch = handle.shared.epoch.load(Ordering::Acquire);
+        handle
+            .jobs
+            .try_send(Job {
+                action: open("lost"),
+                target: TargetWindow::NONE,
+                epoch,
+            })
+            .expect("the queue has room");
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; WM_QUIT carries no pointer, and
+        // the thread is this test's own executor.
+        unsafe { PostThreadMessageW(handle.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+            .expect("the executor thread has a message queue");
+        wait_until("the executor ends on WM_QUIT", || executor.is_finished());
+
+        let counts = take_counts(counters);
+        assert_eq!(
+            count_of(&counts, Counter::ExecutorUnavailable),
+            1,
+            "the job left in the queue is counted when the executor dies: {counts:?}"
+        );
+        assert!(
+            records.try_recv().is_err(),
+            "a dead executor runs nothing more"
+        );
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
     fn a_panicking_job_leaves_the_executor_running() {
         let (tx, records) = mpsc::channel();
         let (executor, _) = start(
