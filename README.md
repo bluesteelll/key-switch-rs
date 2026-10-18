@@ -733,10 +733,51 @@ cleanly. `swch` commands continue to work against the directly-launched daemon.
 
 Only one daemon runs per Windows session. A second start, by double-click,
 from a console or from a Scheduled Task, prints
-``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
-and exits with code 2 before it reads the config, without waiting for Enter.
+``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+and exits with code 2 before it reads the config, without waiting for Enter
+and without writing to the running daemon's log file.
 The check covers the Windows session the daemon starts in; a second
 signed-in user's daemon stops at the pipe instead (see above).
+
+### Log file
+
+The daemon writes the lines it logs on its console also to
+`%LOCALAPPDATA%\key-switch-rs\daemon.log`, so a daemon started by a
+Scheduled Task, whose console nobody watches, still leaves a record. The
+folder is the one of the account the daemon runs as: with UAC consent on
+your own account, your own `%LOCALAPPDATA%`. It is created with the first
+line, and again if you delete it. Every line of the file starts with the
+time in UTC (ISO 8601, with milliseconds) and the level:
+
+```text
+2026-10-16T09:41:07.123Z [INFO] key-switch-rs 0.1.0 started (pid 4242), logging to C:\Users\you\AppData\Local\key-switch-rs\daemon.log
+```
+
+The console shows the same lines without the time, on stderr. The startup
+banner (the list of bindings) is never written to the file, because a
+binding can hold the text of a macro. The log never records the keys you
+press or the text you type; lines about the config quote the config, key
+names included.
+
+At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
+becomes `daemon.2.log`, and the oldest file is deleted: three files, about
+3 MiB, are kept. Read the file with Notepad or
+`Get-Content -Tail 50 "$env:LOCALAPPDATA\key-switch-rs\daemon.log"`. A
+program that keeps a log file open without letting others delete it holds
+up the rotation, and `daemon.log` then grows past 1 MiB until that program
+closes it.
+
+If the daemon cannot find the folder, the console says
+`[WARN] no log file: ...` and the daemon logs to the console only. If the
+file cannot be written, the console says `[WARN] log file <path>: ...` once,
+and every later line tries again.
+
+Lines reach the file and the console through one writer thread, the file
+first. In a window of the classic console host (`conhost.exe`) with
+QuickEdit on, a selection you hold in the daemon's console stops that
+thread at its next console write, so the lines after it reach the file
+only once you release the selection; the keyboard is not slowed down. At
+exit the daemon waits at most 1 s for the lines still queued.
 
 ### Avoiding the UAC prompt at every boot
 
@@ -753,7 +794,8 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_UI_WindowsAndMessaging`
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
-  - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`)
+  - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
+  - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns)
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
@@ -762,6 +804,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - `arc-swap` for lock-free, hot-reloadable binding list
 - `notify` for filesystem-driven config reload
 - `interprocess` for cross-platform local socket / Win32 named pipe IPC
+- `log` facade with an in-house sink: one writer thread for the console and the rotating `daemon.log`
 - Per-binary `requireAdministrator` manifest embedded via raw MSVC linker flag (`/MANIFESTUAC`) in `build.rs` — only the daemon binary gets it; `swch.exe` stays at default `asInvoker`
 - Low-level keyboard hook (`WH_KEYBOARD_LL`)
 - Foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`)

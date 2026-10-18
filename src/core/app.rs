@@ -97,7 +97,11 @@ impl App {
         self
     }
 
+    /// Console only, never logged: a binding line can hold the text of a
+    /// macro's `Text(...)` step. The flush puts the records queued so far,
+    /// the loader's among them, above the banner.
     fn print_welcome(&self) {
+        crate::logging::flush();
         println!("Key Switch started");
         println!("─────────────────────────────────────");
 

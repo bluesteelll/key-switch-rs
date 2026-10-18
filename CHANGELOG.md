@@ -86,8 +86,34 @@ minor version; such entries sit under **Changed** and start with
   switches it, Alt+Shift+Tab steps back in the switcher, and Alt, Shift,
   release in Notepad activates no menu. If the layout still switches, the
   hypothesis does not hold: keep `true`.
+- File logging (roadmap item 1.7): the daemon writes the lines it logs also
+  to `%LOCALAPPDATA%\key-switch-rs\daemon.log`, so a daemon started by a
+  Scheduled Task leaves a record that nobody has to watch. The folder is
+  the one of the account the daemon runs as, found with
+  `SHGetKnownFolderPath`, and is created with the first line. Every line of
+  the file starts with the time in UTC (ISO 8601, with milliseconds) and
+  the level, for example
+  `2026-10-16T09:41:07.123Z [INFO] key-switch-rs 0.1.0 started (pid 4242), logging to <path>`;
+  the console keeps `[LEVEL] message`, on stderr. At 1 MiB the file rotates
+  into `daemon.1.log` and `daemon.2.log`, and three files are kept. Records
+  go through the `log` crate, the one new dependency, into an in-house sink:
+  one `log-writer` thread owns the console output and the files, and every
+  other thread only queues its line, without waiting. The file is attached
+  once the daemon owns its session, so a second start never writes to it.
+  The startup banner stays on the console. Manual checks: a first start
+  creates the folder and `daemon.log`, whose first line is the start line;
+  a second start in the same session prints its `[ERROR] already running`
+  line, leaves `$LASTEXITCODE` at 2 and adds no line to `daemon.log`;
+  `key-switch-rs.exe missing.ron` shows `[FATAL] config file ... does not
+  exist`, a blank line and `Press Enter to exit...`, and before Enter
+  `daemon.log` already ends with that `[FATAL]` line.
 
 ### Changed
+
+- The line of a second start in the same session (roadmap item 1.7) is
+  ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``;
+  it was ``key-switch-rs: already running in this session; ...``. The exit
+  code stays 2.
 
 - The source is formatted with `cargo fmt`.
 - The keyboard decisions moved into a pure decision core, `src/engine`
@@ -452,8 +478,8 @@ minor version; such entries sit under **Changed** and start with
   Windows session. Before it reads or writes the config and before it
   installs any hook, the daemon creates the mutex `Local\key-switch-rs`;
   when another daemon of the session holds it, the new one prints
-  ``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
-  and exits with code 2, without the "Press Enter to exit" prompt. A
+  ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+  (see **Changed**) and exits with code 2, without the "Press Enter to exit" prompt. A
   double-click on `key-switch-rs.exe` while the Scheduled Task's daemon
   ran used to start a second elevated daemon: its hook ran first, keys
   were remapped twice, a double `SwitchLanguage` left the layout
