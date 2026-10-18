@@ -683,7 +683,7 @@ fn run_loop(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::mpsc::{self, Receiver};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -692,14 +692,13 @@ mod tests {
     use windows::Win32::UI::WindowsAndMessaging::USER_TIMER_MAXIMUM;
 
     use super::runs::{Ctx, Job, Next, Runs};
-    use super::testing::{FakeRunner, Ran, Record, leaked_counters};
+    use super::testing::{
+        FakeRunner, Ran, Record, WAIT, leaked_counters, next_record as next, wait_until,
+    };
     use super::*;
     use crate::core::windows_actions::BindAction;
     use crate::data::sequence::SequenceStep;
     use crate::logging::counters::{Counter, Counters};
-
-    /// How long a test waits for something the executor should do at once.
-    const WAIT: Duration = Duration::from_secs(2);
 
     fn sequence(steps: Vec<SequenceStep>) -> BindAction {
         BindAction::Sequence(Arc::new(steps))
@@ -722,21 +721,6 @@ mod tests {
         let counters = leaked_counters();
         let executor = Executor::start(runner, capacity, counters).expect("the executor starts");
         (executor, counters)
-    }
-
-    fn next(records: &Receiver<Record>) -> Record {
-        records
-            .recv_timeout(WAIT)
-            .expect("the runner is called within 2 s")
-    }
-
-    /// Waits up to 2 s for `condition`, and fails naming `what`.
-    fn wait_until(what: &str, condition: impl Fn() -> bool) {
-        let begun = Instant::now();
-        while !condition() {
-            assert!(begun.elapsed() < WAIT, "{what}: not within 2 s");
-            thread::sleep(Duration::from_millis(1));
-        }
     }
 
     /// The counts since the last call, each with its counter.

@@ -22,6 +22,9 @@ use crate::logging::counters::Counters;
 /// fails before it opens the gate does not hang the suite.
 const GATE_LIMIT: Duration = Duration::from_secs(10);
 
+/// How long a test waits for something the executor should do at once.
+pub(crate) const WAIT: Duration = Duration::from_secs(2);
+
 /// What the runner was asked to run, as the startup list prints it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ran {
@@ -154,4 +157,20 @@ impl Runner for FakeRunner {
 /// Counters of one test's own, so that no test takes the daemon's.
 pub(crate) fn leaked_counters() -> &'static Counters {
     Box::leak(Box::new(Counters::new()))
+}
+
+/// The next call of the runner, waited for up to [`WAIT`].
+pub(crate) fn next_record(records: &Receiver<Record>) -> Record {
+    records
+        .recv_timeout(WAIT)
+        .expect("the runner is called within 2 s")
+}
+
+/// Waits up to [`WAIT`] for `condition`, and fails naming `what`.
+pub(crate) fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    let begun = Instant::now();
+    while !condition() {
+        assert!(begun.elapsed() < WAIT, "{what}: not within 2 s");
+        thread::sleep(Duration::from_millis(1));
+    }
 }

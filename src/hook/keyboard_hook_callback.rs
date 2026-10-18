@@ -387,14 +387,17 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::sync::{Mutex, PoisonError, mpsc};
+    use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::time::Duration;
 
     use super::*;
     use crate::core::constants::injected_sentinel;
+    use crate::core::executor::testing::{FakeRunner, Record, leaked_counters, next_record};
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
+    use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
 
     // No test installs a hook. The `decide_event` tests use a local
@@ -675,14 +678,151 @@ mod tests {
     #[test]
     fn carry_out_sends_the_menu_mask_only_when_the_decision_asks() {
         // Under test `send_menu_mask` only counts, on this thread.
+        let hook = KeyboardHook::new();
         let before = MASKS_SENT.with(Cell::get);
-        carry_out(Decision::default());
+        carry_out(&hook, Decision::default());
         assert_eq!(MASKS_SENT.with(Cell::get), before, "no mask asked for");
-        carry_out(Decision {
-            mask: true,
-            ..Decision::default()
-        });
+        carry_out(
+            &hook,
+            Decision {
+                mask: true,
+                ..Decision::default()
+            },
+        );
         assert_eq!(MASKS_SENT.with(Cell::get), before + 1, "one mask asked for");
+    }
+
+    /// A local hook with an executor whose runner only records, attached.
+    fn hook_with_executor(runner: FakeRunner, capacity: usize) -> (KeyboardHook, Executor) {
+        let hook = KeyboardHook::new();
+        let executor =
+            Executor::start(runner, capacity, leaked_counters()).expect("the executor starts");
+        hook.attach_executor(Some(executor.handle()));
+        (hook, executor)
+    }
+
+    #[test]
+    fn carry_out_queues_the_slow_actions_in_order_and_runs_none_here() {
+        // Only `DoNothing` runs here: a test must not run a real action.
+        let (tx, records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(FakeRunner::new(tx), QUEUE_CAPACITY);
+
+        carry_out(
+            &hook,
+            Decision {
+                fire: vec![
+                    BindAction::DoNothing,
+                    BindAction::Launch {
+                        exe: "no-such.exe".to_owned(),
+                        args: Vec::new(),
+                    },
+                    BindAction::OpenUrl("https://example.com".to_owned()),
+                    BindAction::Sequence(Arc::new(vec![SequenceStep::PressKey(VK_F13)])),
+                ],
+                ..Decision::default()
+            },
+        );
+
+        let ran: Vec<Record> = (0..3).map(|_| next_record(&records)).collect();
+        let texts: Vec<&str> = ran.iter().map(Record::text).collect();
+        assert_eq!(
+            texts,
+            ["launch no-such.exe", "open https://example.com", "key F13"]
+        );
+        for record in &ran {
+            assert_eq!(record.thread, executor.thread().id());
+            assert_ne!(record.thread, thread::current().id());
+        }
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "DoNothing never reaches it");
+    }
+
+    /// How long each of 20 `carry_out` calls with one `OpenUrl` took, on
+    /// a fresh executor whose runner blocks 500 ms per call.
+    fn twenty_carry_out_times() -> Vec<Duration> {
+        let (tx, _records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(
+            FakeRunner::new(tx).with_block(Duration::from_millis(500)),
+            64,
+        );
+        let times = (0..20)
+            .map(|_| {
+                let decision = Decision {
+                    fire: vec![BindAction::OpenUrl("https://example.com".to_owned())],
+                    ..Decision::default()
+                };
+                let begun = Instant::now();
+                carry_out(&hook, decision);
+                begun.elapsed()
+            })
+            .collect();
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        times
+    }
+
+    #[test]
+    fn carry_out_returns_in_under_5_ms_while_slow_actions_block() {
+        // Roadmap item 2.1: the runner stands in for OpenUrl against a cold
+        // browser. Every one of the 20 under 5 ms, one whole-batch retry.
+        let limit = Duration::from_millis(5);
+        let first = twenty_carry_out_times();
+        if first.iter().all(|took| *took < limit) {
+            return;
+        }
+        let second = twenty_carry_out_times();
+        assert!(
+            second.iter().all(|took| *took < limit),
+            "a carry_out took 5 ms or more twice: {first:?}, then {second:?}"
+        );
+    }
+
+    /// Detaches the executor from the process-wide hook when dropped, also
+    /// on unwind, and only then stops it.
+    struct DetachAtEnd(Option<Executor>);
+
+    impl Drop for DetachAtEnd {
+        fn drop(&mut self) {
+            get_hook().attach_executor(None);
+            if let Some(executor) = self.0.take() {
+                let _ = executor.stop();
+            }
+        }
+    }
+
+    #[test]
+    fn a_hold_runs_its_slow_action_on_the_executor() {
+        // Roadmap item 2.1: a Hold fires on its `hold-timer` thread, which
+        // carries out the decision through the process-wide hook, so the
+        // test holds `GLOBAL_HOOK`. Nothing is installed or injected: no
+        // hook exists, the mask key is only counted under test, and the
+        // OpenUrl goes to the recording runner. The engine fires a Hold
+        // from its timer without asking whether the key is still down.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, records) = mpsc::channel();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        get_hook().attach_executor(Some(executor.handle()));
+        let executor = DetachAtEnd(Some(executor));
+        get_hook().update_bindings(vec![
+            Binding::new(
+                KeyCombination::new(VK_F13),
+                BindAction::OpenUrl("https://example.com".to_owned()),
+            )
+            .with_trigger(Trigger::Hold(1))
+            .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        let record = next_record(&records);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert_eq!(record.text(), "open https://example.com");
+        assert_eq!(record.name.as_deref(), Some("action-executor"));
+        let thread = executor.0.as_ref().map(|executor| executor.thread().id());
+        assert_eq!(Some(record.thread), thread);
     }
 
     /// The acceptance line of roadmap item 2.1: `rg "\.execute\(\)"

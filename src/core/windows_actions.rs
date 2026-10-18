@@ -349,4 +349,59 @@ mod tests {
             assert_eq!(action.repeats_by_default(), expected, "{action:?}");
         }
     }
+
+    #[test]
+    fn only_launch_open_url_and_sequence_leave_the_firing_thread() {
+        // Roadmap item 2.1: the fast actions stay where they fire, so their
+        // output keeps its order with the keys typed after them; the
+        // others go to the action executor. Nothing here runs an action.
+        let mut actions = vec![
+            (BindAction::SwitchLanguage, Some(FastAction::SwitchLanguage)),
+            (
+                BindAction::SwitchLanguageBackward,
+                Some(FastAction::SwitchLanguageBackward),
+            ),
+            (BindAction::ToggleCapsLock, Some(FastAction::ToggleCapsLock)),
+            (
+                BindAction::PressKey(VK_BACK),
+                Some(FastAction::PressKey(VK_BACK)),
+            ),
+            (
+                BindAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 7,
+                    lparam: -3,
+                },
+                Some(FastAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 7,
+                    lparam: -3,
+                }),
+            ),
+            (BindAction::DoNothing, Some(FastAction::DoNothing)),
+            (BindAction::Sequence(Arc::new(Vec::new())), None),
+            (
+                BindAction::Launch {
+                    exe: "wt.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                None,
+            ),
+            (BindAction::OpenUrl("https://example.com".to_owned()), None),
+        ];
+        for key in [
+            MediaKey::PlayPause,
+            MediaKey::Stop,
+            MediaKey::Next,
+            MediaKey::Previous,
+            MediaKey::VolumeUp,
+            MediaKey::VolumeDown,
+            MediaKey::VolumeMute,
+        ] {
+            actions.push((BindAction::Media(key), Some(FastAction::Media(key))));
+        }
+        for (action, expected) in actions {
+            assert_eq!(action.as_fast(), expected, "{action:?}");
+        }
+    }
 }
