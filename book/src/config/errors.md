@@ -1,6 +1,6 @@
 # Error messages
 
-A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `1dfd80a`, those about the `repeat` field the branch `feat/repeat-flag` and those about `block_default` the branch `feat/deferred-block-default`, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
+A config that does not load produces one of four kinds of error: the file is missing, it cannot be read, it is not valid RON for the schema, or a binding in it is invalid. At startup each is fatal; on hot reload the previous bindings stay live. Facts describe commit `20af28d`, the tip of `master` after roadmap Phase 1, and every message on this page was produced by the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)), unless the row says otherwise.
 
 <a id="s18"></a>
 ## 18. Error messages
@@ -10,14 +10,14 @@ A config that does not load produces one of four kinds of error: the file is mis
 
 | Kind | Format | When |
 |---|---|---|
-| File missing | `config file <path> does not exist` | the file, or a folder on its path, does not exist: a command-line path at startup, or any path at a reload ([src/config/loader.rs:184-197](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L184-L197)) |
+| File missing | `config file <path> does not exist` | the file, or a folder on its path, does not exist: a command-line path at startup, or any path at a reload ([src/config/loader.rs:184-197](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L184-L197)) |
 | File read error | `config I/O error (<path>): <OS message>` | the file cannot be read, or the template cannot be written |
 | RON parse error | `config parse error (<path>): <line>:<column>: <message>` | RON syntax or the schema is violated, including an unknown field; parsing stops at the **first** error |
 | Binding validation errors | `config has <K> invalid binding(s):` followed by one line `  - binding #<N> [<label>]: <message>` per error | the RON is valid, but bindings are semantically invalid; errors are collected across **all** bindings |
 
 If a file has both a parse error and validation errors, only the parse error is printed. Any error rejects the whole file.
 
-**At startup** the error is fatal ([src/main.rs:47-62](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/main.rs#L47-L62)):
+**At startup** the error is fatal ([src/main.rs:47-62](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/main.rs#L47-L62)):
 ```text
 [FATAL] config has 3 invalid binding(s):
   - binding #1 [Ctrl+Foo]: unknown key "Foo" in combo "Ctrl+Foo"
@@ -28,7 +28,7 @@ Press Enter to exit...
 ```
 The log drops the line break at the end of the validation-error text, and one empty line is printed before `Press Enter to exit...`, so every kind of error has one blank line here. The `[FATAL]` record also goes into `daemon.log` ([Log file](../build-and-run.md#log-file)), where each of its lines starts with the timestamp and `[FATAL]`.
 
-**On hot reload** the same text is logged below `[ERROR] config reload failed:`, followed by `[INFO] keeping previous bindings live` with no blank line between them, and the previous bindings keep working ([src/hook/config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/hook/config_watcher.rs#L165-L168)). In `daemon.log` every line of the error starts with the timestamp and `[ERROR]`:
+**On hot reload** the same text is logged below `[ERROR] config reload failed:`, followed by `[INFO] keeping previous bindings live` with no blank line between them, and the previous bindings keep working ([src/hook/config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/hook/config_watcher.rs#L165-L168)). In `daemon.log` every line of the error starts with the timestamp and `[ERROR]`:
 ```text
 2026-10-16T09:52:30.518Z [ERROR] config reload failed:
 2026-10-16T09:52:30.518Z [ERROR] config has 1 invalid binding(s):
@@ -55,7 +55,7 @@ The log drops the line break at the end of the validation-error text, and one em
 | `<exe folder>\config.ron` does not exist and the template could not be written | `config I/O error (<path>): …` |
 | Default path: the path to the exe could not be determined | `config I/O error (<current_exe>): …` |
 | Default path: the path to the exe has no parent folder | `config error: executable path … has no parent directory` |
-| A command-line path that cannot be made absolute | `config error: config path … cannot be used: …` ([src/config/loader.rs:127-136](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L127-L136)) |
+| A command-line path that cannot be made absolute | `config error: config path … cannot be used: …` ([src/config/loader.rs:127-136](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L127-L136)) |
 
 The rows about locks, folders, the exe path and paths that cannot be made absolute come from reading the code; the validator cannot produce them.
 
@@ -134,15 +134,15 @@ A UTF-8 byte-order mark at the start of the file is no longer an error ([KS-24](
 <a id="s18-5"></a>
 ### 18.5 Binding validation errors
 
-Code: [src/config/loader.rs:250-262](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L250-L262), [src/config/loader.rs:341-497](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L341-L497), [src/config/loader.rs:515-622](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L515-L622).
+Code: [src/config/loader.rs:272-284](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L272-L284), [src/config/loader.rs:451-634](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L451-L634), [src/config/loader.rs:652-759](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L652-L759).
 
 ```text
 config has <K> invalid binding(s):
   - binding #<N> [<label>]: <message>
 ```
-- **All** bindings are checked, and the errors are collected into one list. For each binding only the **first** error is printed, in this order: the kind (`keys`/`sequence`/`chord`, including the step count, the chord keys and the `max_gap_ms` or `window_ms` range), the action, the trigger and its range, a deferred trigger on `sequence`/`chord`, `allow_extra_modifiers` on `sequence`/`chord`, and `repeat: true` outside `keys` + `Immediate` ([src/config/loader.rs:341-382](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L341-L382)). Within a kind, a combo or a macro, checking stops at the first bad segment or step. For example, `( keys: "Foo", action: PressKey("Bar") )` gives only `unknown key "Foo" in combo "Foo"`.
+- **All** bindings are checked, and the errors are collected into one list. For each binding only the **first** error is printed, in this order: the kind (`keys`/`sequence`/`chord`, including the step count, the chord keys and the `max_gap_ms` or `window_ms` range), the action, the trigger and its range, a deferred trigger on `sequence`/`chord`, `allow_extra_modifiers` on `sequence`/`chord`, and `repeat: true` outside `keys` + `Immediate` ([src/config/loader.rs:451-511](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L451-L511)). Within a kind, a combo or a macro, checking stops at the first bad segment or step. For example, `( keys: "Foo", action: PressKey("Bar") )` gives only `unknown key "Foo" in combo "Foo"`.
 - `N` is the index in the `bindings` list, **counting from 0**, in file order. Commented-out bindings and auto-blockers are not counted. The numbers in `step #M`, `Sequence step #M` and `Chord key #M` also count from 0.
-- `<label>` is the value of `keys` as written (spaces included), `Sequence[F13 → F14]` for a sequence, `Chord[F15+F16]` for a chord, or `<unset>`. If several kind fields are set, the first of `keys`, `sequence`, `chord` is used. A chord label is built by simply joining the original strings with `+` ([src/config/loader.rs:460-471](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L460-L471)), so with empty or `+` names it is confusing: `["", "k"]` → `[Chord[+k]]`, `["+", "k"]` → `[Chord[++k]]`, `keys: []` → `[Chord[]]`.
+- `<label>` is the value of `keys` as written (spaces included), `Sequence[F13 → F14]` for a sequence, `Chord[F15+F16]` for a chord, or `<unset>`. If several kind fields are set, the first of `keys`, `sequence`, `chord` is used. A chord label is built by simply joining the original strings with `+` ([src/config/loader.rs:589-600](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L589-L600)), so with empty or `+` names it is confusing: `["", "k"]` → `[Chord[+k]]`, `["+", "k"]` → `[Chord[++k]]`, `keys: []` → `[Chord[]]`.
 - Strings after the colon are printed in Rust's Debug format: in quotes, with `\` as `\\`, `"` as `\"`, a tab as `\t` and U+00A0 as `\u{a0}`. For example, `keys: "Ctrl+\\+Foo"` gives `binding #0 [Ctrl+\+Foo]: unknown key "Foo" in combo "Ctrl+\\+Foo"`.
 
 | # | Rule | Message after `binding #N [...]: ` |
@@ -167,7 +167,7 @@ config has <K> invalid binding(s):
 | 18 | `repeat: true` only together with `keys` and `Immediate` | `` `repeat: true` applies only to `keys` bindings with the `Immediate` trigger `` |
 
 > [!NOTE]
-> The code also has a `Combo {:?}: empty` branch ([src/config/loader.rs:600-602](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L600-L602)), but it is unreachable: the combo parser never returns an empty list without an error, so a user never sees this message.
+> The code also has a `Combo {:?}: empty` branch ([src/config/loader.rs:737-739](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L737-L739)), but it is unreachable: the combo parser never returns an empty list without an error, so a user never sees this message.
 
 <a id="s18-6"></a>
 ### 18.6 Messages at load time and at run time
@@ -179,10 +179,10 @@ These messages do not reject the file. The loader logs its messages to the daemo
 | `[INFO] generated default config at <path>` | `<exe folder>\config.ron` did not exist at startup, so the template was written ([§2.2](structure.md#s2-2)) |
 | `[INFO] loading config from <path>` | the file was read (at startup and on every reload) |
 | `[WARN] config contains no bindings` | `bindings: []` ([§4](structure.md#s4)) |
-| `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them` | the later binding repeats an earlier one: the same kind and keys (in any order for `keys` and `chord`, in order for `sequence` steps), the same trigger whatever its term, the same `when` as written and, for `keys`, the same `allow_extra_modifiers`; the action does not count ([src/config/loader.rs:299-321](https://github.com/bluesteelll/key-switch-rs/blob/ed623c5/src/config/loader.rs#L299-L321)). Of two such `keys` bindings only the first acts ([§11.7](triggers-conditions.md#s11-7), [§16.3](matching.md#s16-3)). If the one you remove sets `block_original_combo: true`, move the flag to the one you keep, or its auto-blocker goes ([§15](matching.md#s15)). Printed at startup and on every reload |
+| `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them` | the later binding repeats an earlier one: the same kind and keys (in any order for `keys` and `chord`, in order for `sequence` steps), the same trigger whatever its term, the same `when` as written and, for `keys`, the same `allow_extra_modifiers`; the action does not count ([src/config/loader.rs:297-319](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L297-L319)). Of two such `keys` bindings only the first acts ([§11.7](triggers-conditions.md#s11-7), [§16.3](matching.md#s16-3)). If the one you remove sets `block_original_combo: true`, move the flag to the one you keep, or its auto-blocker goes ([§15](matching.md#s15)). Printed at startup and on every reload |
 | `[INFO] SwitchLanguage: registry combination Alt+Shift` / `[INFO] SwitchLanguage: using default combination` / `[INFO] SwitchLanguage: hotkey not assigned in Windows, no auto-blocker` | a `block_original_combo` binding asked for its hotkey ([§15.2](matching.md#s15-2)). The last one: the Windows hotkey is set to Not assigned (`"3"`), so no blocker is added |
 | `[INFO] no auto-blocker for Alt+Shift: binding #1 uses the same keys` | a binding of the file uses the hotkey's keys, so no blocker was added ([§15.3](matching.md#s15-3)) |
-| ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true`` | `MaskOnly` on a binding whose Windows hotkey is not made only of modifiers (the `` ` `` hotkey, registry value `"4"`): the blocker swallows the hotkey as with `true` ([src/config/loader.rs:346-362](https://github.com/bluesteelll/key-switch-rs/blob/ad7fe86/src/config/loader.rs#L346-L362), [§15.5](matching.md#s15-5)). Printed at startup and on every reload |
+| ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true`` | `MaskOnly` on a binding whose Windows hotkey is not made only of modifiers (the `` ` `` hotkey, registry value `"4"`): the blocker swallows the hotkey as with `true` ([src/config/loader.rs:346-362](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L346-L362), [§15.5](matching.md#s15-5)). Printed at startup and on every reload |
 | `[WARN] registry value "Hotkey" has type …, expected REG_SZ/REG_EXPAND_SZ` | the registry value is not of a string type |
 | `[INFO] config reloaded (N bindings live)` | a reload was applied |
 | `[ERROR] config reload failed:` + `[INFO] keeping previous bindings live` | a reload was rejected ([§18.1](#s18-1)) |
@@ -193,7 +193,7 @@ These messages do not reject the file. The loader logs its messages to the daemo
 | `[ERROR] Launch "": program path has no file name` | `Launch(exe: "")` |
 | `[ERROR] Launch "…": batch file arguments are invalid` | arguments to a `.bat`/`.cmd` file that cannot be passed to cmd safely |
 | `[ERROR] OpenUrl "…": ShellExecuteW returned error code N` | `ShellExecuteW` returned a code ≤ 32 |
-| `[WARN] counters since the last report: menu_mask_short=N key_press_short=N hold_timer_not_started=N log_lines_dropped=N` | every 60 s and at exit, while a count is not 0 ([src/logging/counters.rs](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/logging/counters.rs)). The keyboard hook counts these instead of logging them per event: `menu_mask_short`, the menu mask key ([§13.1](actions.md#s13-1)) was not inserted whole, for example because another thread blocked input (a mask that UIPI keeps from an elevated window is lost without being counted); `key_press_short`, a `PressKey`, `Media` or `ToggleCapsLock` press was not sent whole; `hold_timer_not_started`, the `hold-timer` thread of a `Hold` could not be started, so that Hold did not fire ([§11.4](triggers-conditions.md#s11-4)); `log_lines_dropped`, log lines were lost to a full queue |
+| `[WARN] counters since the last report: menu_mask_short=N key_press_short=N hold_timer_not_started=N log_lines_dropped=N` | every 60 s and at exit, while a count is not 0 ([src/logging/counters.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/logging/counters.rs)). The keyboard hook counts these instead of logging them per event: `menu_mask_short`, the menu mask key ([§13.1](actions.md#s13-1)) was not inserted whole, for example because another thread blocked input (a mask that UIPI keeps from an elevated window is lost without being counted); `key_press_short`, a `PressKey`, `Media` or `ToggleCapsLock` press was not sent whole; `hold_timer_not_started`, the `hold-timer` thread of a `Hold` could not be started, so that Hold did not fire ([§11.4](triggers-conditions.md#s11-4)); `log_lines_dropped`, log lines were lost to a full queue |
 | `[WARN] type_text: SendInput sent N of M inputs` / `[WARN] press_key: …` / `[WARN] press_combo: …` | `Text`, `Key`, `Combo` steps: some events were not sent |
 | `[WARN] window step skipped: no foreground HWND captured` | a `Window(…)` step ran with no foreground window |
 | `[WARN] window close PostMessage failed: …` | a `Window(Close)` step could not post `WM_CLOSE` |

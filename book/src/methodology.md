@@ -375,7 +375,7 @@ flowchart LR
 
 ### Validation harness
 
-`cfgcheck` is a tiny crate in the scratch directory. It loads one file through the real loader and then prints every resulting binding. At the audit that was `key_switch_rs::config::load`, the only public loading function; the module re-exported just `load` and `default_config_path` ([src/config/mod.rs:15](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/mod.rs#L15)), and the in-memory `from_ron_str` is `pub(crate)` ([src/config/loader.rs:130](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L130)). Since roadmap Workstream B, `load` takes a `config::ConfigPath`, and the harness calls `config::reload`, the loader that takes a path and never writes ([src/config/loader.rs:175-182](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/config/loader.rs#L175-L182)).
+`cfgcheck` is a tiny crate in the scratch directory. It loads one file through the real loader and then prints every resulting binding. At the audit that was `key_switch_rs::config::load`, the only public loading function; the module re-exported just `load` and `default_config_path` ([src/config/mod.rs:15](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/mod.rs#L15)), and the in-memory `from_ron_str` is `pub(crate)` ([src/config/loader.rs:130](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L130)). Since roadmap Workstream B, `load` takes a `config::ConfigPath`, and the harness calls `config::reload`, the loader that takes a path and never writes ([src/config/loader.rs:175-182](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L175-L182)).
 
 Since roadmap [item 1.7](roadmap.md#17-file-logging) the loader reports through the `log` crate, so a program that installs no logger loses its `[INFO]` and `[WARN]` lines, a duplicate-binding warning among them. The harness therefore starts the daemon's logger first, `key_switch_rs::logging::init()`, which writes to stderr only and opens no log file, and calls `key_switch_rs::logging::flush()` before every exit: once after the load, so that the loader's lines are written and come above the result, and once before the exit for a missing file. Its `Cargo.toml`, verbatim:
 
@@ -439,7 +439,7 @@ At the audit the harness called `config::load(&path)`, printed `block_original_c
 | 2 | The file does not exist; `ERR: file does not exist` on stderr, and nothing was written |
 | 101 | No argument given (panic from `expect`) |
 
-Output for the shipped `src/config/default_config.ron`, with stdout and stderr together (`2>&1`), from the harness above built against the branch `feat/file-logging` (roadmap item 1.7), on the machine of that lane:
+Output for the shipped `src/config/default_config.ron`, with stdout and stderr together (`2>&1`), from the harness above built against the branch `feat/file-logging` (roadmap item 1.7) on the machine of that lane, and again against `20af28d` for the book sync after Phase 1, with the same lines apart from the path in the first one:
 
 ```text
 [INFO] loading config from D:/key-switch-rs/key-switch-rs/src/config/default_config.ron
@@ -450,7 +450,7 @@ OK: 3 bindings (after auto-blocker expansion)
   #2: kind=Combo(KeyCombination { keys: [AnySide(Alt), AnySide(Shift)] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate
 ```
 
-The two `[INFO]` lines come on stderr. Binding `#2` is the auto-blocker that `expand_with_auto_blockers` appends after the file's bindings for the CapsLock binding ([src/config/loader.rs:338-401](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/config/loader.rs#L338-L401)). Its keys come from the registry, with Alt+Shift as the fallback ([src/system/registry.rs:65-116](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/system/registry.rs#L65-L116)). The second `[INFO]` line shows that the machine's registry gave no combination, so the fallback was used. On another machine binding `#2` can differ. A file with a duplicate binding loads and shows the loader's warning:
+The two `[INFO]` lines come on stderr. Binding `#2` is the auto-blocker that `expand_with_auto_blockers` appends after the file's bindings for the CapsLock binding ([src/config/loader.rs:338-401](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L338-L401)). Its keys come from the registry, with Alt+Shift as the fallback ([src/system/registry.rs:65-114](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/system/registry.rs#L65-L114)). The second `[INFO]` line shows that the machine's registry gave no combination, so the fallback was used. On another machine binding `#2` can differ. A file with a duplicate binding loads and shows the loader's warning:
 
 ```text
 [INFO] loading config from dup.ron
@@ -534,6 +534,16 @@ When roadmap Phase 0 had merged, one agent updated the book to commit `1dfd80a` 
 - A script checked every internal link and anchor, and the book was built with `mdbook build`.
 - Run-time behaviour was taken from the engine's code and its scenario tests. The daemon was not run.
 
+### The book sync after Phase 1
+
+The seven Phase 1 lanes updated the configuration reference, the README and the template in the lane that changed their meaning, and left the other pages, the audit status lines and the roadmap to one sync after the phase. When item 1.7 had merged, one agent updated the book to commit `20af28d` from the merged code, `git log` and `git diff` since `1dfd80a`, and the lanes' plans, rulings and results. Each lane's results listed what it handed to this sync, and every item was either done, found done by a lane, or recorded with the reason it did not apply. Decisions that belong to the owner went to [Open questions for the owner](roadmap.md#open-questions-for-the-owner), and follow-ups that existed only in lane reports went to [Follow-ups from Phase 1](roadmap.md#follow-ups-from-phase-1) and [Other functional gaps](gaps.md#other-functional-gaps). The checks:
+
+- The harness above was rebuilt from this page, against `20af28d`, and gave the output shown for the shipped template. Every `ron` block of the configuration reference and the README ran through it: whole configs as they are, and single bindings wrapped in `(bindings: [ ... ])`. All of them loaded; two fragments of RON syntax are not configs and were not run. The template and its commented examples are checked by the test suite (`default_config_parses`, `default_config_commented_examples_load`).
+- A script moved every permalink of the pages that describe the program from `1dfd80a` and the lane commits to `20af28d`: automatically where the cited lines are unchanged or moved unchanged, by hand where the code changed, reading each sentence against the new lines. Links in status notes that describe the state after Phase 0 keep `1dfd80a`, and one sentence about the code before item 1.3 links `1dfd80a` on purpose.
+- Test and line counts were measured at `20af28d` with a fresh target directory: `cargo test --locked`, `cargo test --locked -- --list`, `cargo fmt --check` and clippy with `-D warnings`. The line-count script gives the Phase 0 numbers for `1dfd80a` too.
+- A script checked every internal link and anchor, and the book was built with `mdbook build`.
+- Run-time behaviour was taken from the code and the scenario tests. The daemon was not run, and none of the manual checks of either phase was performed.
+
 ## Limitations
 
 - **No live keyboard input.** The daemon was never run with its hook installed, and no keystrokes were typed or injected against it. Behaviour that depends on Windows delivering events is inferred from the code and the Win32 documentation. This covers the dead hook after `swch on` ([KS-01](audit.md#ks-01)), stuck keys ([KS-06](audit.md#ks-06)), the `LowLevelHooksTimeout` risk ([KS-08](audit.md#ks-08)), auto-repeat ([KS-10](audit.md#ks-10)) and the Start menu opening ([KS-12](audit.md#ks-12)). The repro crate calls the state machines directly instead of through hook events.
@@ -558,7 +568,7 @@ These checks would turn three of the high-severity code-reading findings into ob
 
 Both test configs for KS-03 load with `OK` in the harness.
 
-KS-01, KS-02 and KS-03 are fixed at `1dfd80a` ([Audit results](audit.md)); the same steps now check the fixes, with the opposite expected result. [Manual checks after Phase 0](roadmap.md#manual-checks-after-phase-0) lists further checks for the merged work.
+KS-01, KS-02 and KS-03 are fixed at `1dfd80a` ([Audit results](audit.md)); the same steps now check the fixes, with the opposite expected result. [Manual checks after Phase 0](roadmap.md#manual-checks-after-phase-0) and [Manual checks after Phase 1](roadmap.md#manual-checks-after-phase-1) list further checks for the merged work.
 
 ## Re-running the checks
 
