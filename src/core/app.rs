@@ -12,13 +12,55 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Win32Runner};
 use crate::data::binding::Binding;
 use crate::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::{config_watcher, keyboard_hook_callback};
 use crate::ipc;
+use crate::logging::counters;
 
 static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// The action executor while it is attached to the process-wide hook.
+/// Detaches and stops it when dropped, so that every return of `App::run`
+/// stops it, after the hooks are removed; the normal path calls
+/// [`stop`](Self::stop) right after removing them.
+struct AttachedExecutor {
+    hook: &'static KeyboardHook,
+    executor: Option<Executor>,
+}
+
+impl AttachedExecutor {
+    fn attach(hook: &'static KeyboardHook, executor: Executor) -> Self {
+        hook.attach_executor(Some(executor.handle()));
+        Self {
+            hook,
+            executor: Some(executor),
+        }
+    }
+
+    /// Detaches the executor, so that a late action is `Closed`, then stops
+    /// it: no queued action and no further macro step runs, and the step
+    /// running now, if any, gets 2 s to finish. Main thread, after the
+    /// hooks are removed: a macro's `SendInput` waits on the hook thread
+    /// while that thread blocks here.
+    fn stop(&mut self) {
+        let Some(executor) = self.executor.take() else {
+            return;
+        };
+        self.hook.attach_executor(None);
+        if executor.stop() == Stopped::TimedOut {
+            log::warn!("the action executor did not stop within 2 s; exiting without it");
+        }
+    }
+}
+
+impl Drop for AttachedExecutor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 
 /// The daemon's side of the IPC commands, called on the IPC connection
 /// workers. `on` and `off` only flip the remapping switch of the
@@ -127,13 +169,17 @@ impl App {
     }
 
     /// Runs the daemon on the calling thread, which becomes its main
-    /// thread, until `WM_QUIT`: creates the IPC pipe, installs both hooks,
-    /// serves the pipe, pumps messages and removes the hooks.
+    /// thread, until `WM_QUIT`: creates the IPC pipe, starts the action
+    /// executor, installs both hooks, serves the pipe, pumps messages,
+    /// removes the hooks and stops the executor.
     ///
-    /// A pipe that cannot be created is an error before any hook is
-    /// installed, so no hook ever runs without `swch` control (KS-20). If
-    /// the IPC server thread cannot be started, the hooks are removed again
-    /// before the error is returned.
+    /// A pipe that cannot be created, or an executor that cannot be
+    /// started, is an error before any hook is installed, so no hook ever
+    /// runs without `swch` control (KS-20) or with nowhere to send `Launch`,
+    /// `OpenUrl` and `Sequence` (roadmap item 2.1). If the IPC server thread
+    /// cannot be started, the hooks are removed again before the error is
+    /// returned. On every return the executor is stopped after the hooks
+    /// are removed, waiting at most 2 s for a step that still runs.
     pub fn run(mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
         // SAFETY: GetCurrentThreadId takes no arguments, touches no memory
         // of ours and cannot fail.
@@ -148,12 +194,18 @@ impl App {
         self.print_welcome();
         self.setup_ctrl_c_handler()?;
 
+        // Before the hooks, so that the first slow action has somewhere to
+        // go and the hooks never wait for one.
+        let executor = Executor::start(Win32Runner, QUEUE_CAPACITY, &counters::COUNTERS)
+            .map_err(|error| format!("could not start the action executor: {error}"))?;
+
         let hook = keyboard_hook_callback::get_hook();
         let bindings = std::mem::take(&mut self.pending_bindings);
         hook.update_bindings(bindings);
+        let mut executor = AttachedExecutor::attach(hook, executor);
         // On failure the listener is dropped on return, which closes the
-        // pipe; a failed foreground hook has already removed the keyboard
-        // hook inside `install`.
+        // pipe, and the executor is stopped; a failed foreground hook has
+        // already removed the keyboard hook inside `install`.
         hook.install()?;
         log::info!("Hook installed successfully");
 
@@ -212,6 +264,7 @@ impl App {
 
         log::info!("Removing keyboard hook...");
         hook.uninstall()?;
+        executor.stop();
 
         Ok(())
     }

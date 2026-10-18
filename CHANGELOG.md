@@ -115,9 +115,15 @@ minor version; such entries sit under **Changed** and start with
   `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
   (a Hold whose timer thread could not be started, so that it never fired)
   and `log_lines_dropped` (log lines lost to a full queue). While one of
-  them is not 0, the log writer reports all four every 60 s and at exit, in
-  one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0`.
+  them is not 0, the log writer reports all of them every 60 s and at exit,
+  in one line on the console and in `daemon.log`:
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0`.
+- Counters of the action executor (roadmap item 2.1), in the same line:
+  `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
+  because 32 were already waiting for the executor; `executor_unavailable`,
+  one fired after the action executor had stopped on its own (it logs one
+  `[ERROR]` line, and `Launch`, `OpenUrl` and `Sequence` then do nothing
+  until the daemon restarts).
 
 ### Changed
 
@@ -373,8 +379,8 @@ minor version; such entries sit under **Changed** and start with
   state, so a `Hold` armed just before `swch off` no longer fires (KS-31,
   an unverified report), and a key still held at `swch on` counts as
   already pressed. A key swallowed by a binding and released while
-  remapping is off reaches Windows as a lone key-up. A running macro keeps
-  running after `swch off` (roadmap item 2.1).
+  remapping is off reaches Windows as a lone key-up. `swch off` also stops
+  a running macro (roadmap item 2.1).
 - KS-02: the daemon's pipe has an explicit security descriptor: full
   control for SYSTEM and Administrators, read and write for interactive
   users, and a medium integrity label. `swch` in a normal console now
@@ -463,6 +469,34 @@ minor version; such entries sit under **Changed** and start with
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works, and the left Shift keeps typing capitals
   (roadmap item 1.3).
+- KS-08 (roadmap item 2.1): `Launch`, `OpenUrl` and `Sequence` no longer
+  run inside the keyboard hook. The hook queues them for the
+  `action-executor` thread, which has its own message loop and initialises
+  COM as a single-threaded apartment, as `ShellExecuteW` asks, and returns
+  at once, so a cold browser, an antivirus scan or an unreachable path no
+  longer freezes typing or lets Windows remove the hook. `PressKey`,
+  `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`
+  and `PostMessage` still run before the hook returns, so their output
+  stays in order with the keys typed after them; a `Hold` runs them on its
+  timer thread as before and queues the others. Up to 32 actions wait; a
+  further one is dropped and counted in `executor_jobs_dropped`. Macros
+  still run side by side: a `Delay` waits on a timer of the executor and
+  holds up no other action or macro, while a step that blocks inside
+  Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds
+  up the others while it runs. Manual checks: with
+  `( keys: "F13", action: OpenUrl("https://example.com") )` and every
+  browser closed, 20 presses of F13 within a few seconds never pause
+  typing; with a `Sequence([Text("1"), Delay(2000), Text("2")])` on F16
+  and that `OpenUrl` on F13, F16 then F13 opens the browser at once and
+  types `2` two seconds after F16.
+- No cancellation for macros (roadmap item 2.1): `swch off`, a reload
+  (saving `config.ron`) and `swch exit` stop every running macro within
+  100 ms, also inside a `Delay` of any length, and drop the actions still
+  queued; a step already running (a `Launch`, an `OpenUrl`) finishes
+  first. A repeated `swch on` stops nothing. A macro no longer starts a
+  thread of its own. Manual check: with
+  `( keys: "F13", action: Sequence([Text("a"), Delay(10000), Text("b")]) )`,
+  F13 then `swch off` within 3 s types only `a`.
 - KS-10: holding a key no longer re-runs a one-shot action at the
   auto-repeat rate. With the default config, holding CapsLock switches the
   layout once and holding Shift+CapsLock toggles CapsLock once. A held
@@ -605,7 +639,9 @@ minor version; such entries sit under **Changed** and start with
   for `["F14+F15", "F14+F16"]`, which was left held in Windows.
 - KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
   thread per press, and a Hold timer thread that cannot be started is
-  logged instead of aborting the daemon; that Hold then does not fire.
+  logged instead of aborting the daemon; that Hold then does not fire. A
+  `Sequence` macro no longer starts a thread, so it cannot abort the daemon
+  when one cannot be started (roadmap item 2.1).
 - KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
   harness from `src/main.rs` (`test = false` and `bench = false` on the
   daemon binary). That harness inherited the daemon's `requireAdministrator`

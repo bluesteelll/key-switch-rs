@@ -13,7 +13,8 @@
 //!     - KBDLLHOOKSTRUCT -> KeyEvent
 //!     - Engine::on_key(event, &bindings, &env) -> Decision
 //!     - sends the menu mask key if Decision::mask, starts
-//!       Decision::timers, runs Decision::fire, then returns
+//!       Decision::timers, runs the fast actions of Decision::fire and
+//!       queues the others for the action executor, then returns
 //!       LRESULT(1) if Decision::suppress, else CallNextHookEx
 //! ```
 //!
@@ -27,7 +28,7 @@
 //! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
 //! FFI, because every Win32 call through the `windows` crate is `unsafe`.
 //! It does not rule out safe wrappers that do Win32 work or read the clock,
-//! such as `ForegroundContext::capture`, `BindAction::execute` or
+//! such as `ForegroundContext::capture`, `FastAction::run` or
 //! `Instant::now()`. Outside tests the engine calls none of them, and
 //! review keeps it that way. The engine uses [`BindAction`] only as data
 //! (actions to fire, cloned into pending gestures) and never executes one.
@@ -82,9 +83,10 @@
 //! adapter keeps it behind a `Mutex` in `KeyboardHook`, reached only through
 //! `KeyboardHook::with_engine`, because `Hold` timers still run on their own
 //! short-lived `hold-timer` threads and call [`Engine::on_timer`] there; the
-//! Hold action then runs on that timer thread, as before. The adapter holds
-//! the lock only while the engine decides and runs every action after
-//! releasing it. `with_engine` refuses a nested call on the same thread
+//! adapter then carries out the Hold on that timer thread: a fast action
+//! runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action
+//! executor (roadmap item 2.1). The adapter holds the lock only while the
+//! engine decides and carries out every action after releasing it. `with_engine` refuses a nested call on the same thread
 //! (the event then passes) instead of deadlocking on the lock. `swch on` and
 //! `swch off` take the lock on an IPC connection worker to call
 //! [`Engine::reset`].

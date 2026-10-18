@@ -135,7 +135,11 @@ impl Runner for Win32Runner {
             | BindAction::PressKey(_)
             | BindAction::PostMessage { .. }
             | BindAction::Media(_)
-            | BindAction::DoNothing => action.execute(),
+            | BindAction::DoNothing => {
+                if let Some(fast) = action.as_fast() {
+                    fast.run();
+                }
+            }
         }
     }
 

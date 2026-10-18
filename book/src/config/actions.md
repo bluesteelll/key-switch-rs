@@ -5,7 +5,7 @@
 <a id="s13"></a>
 ## 13. Actions (`action`)
 
-`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 10 variants of `RawAction` ([src/config/schema.rs:171-205](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/schema.rs#L171-L205)). The loader turns it into a `BindAction` ([src/config/loader.rs:652-710](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L652-L710)), and `BindAction::execute` runs it ([src/core/windows_actions.rs:119-143](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L119-L143)).
+`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 10 variants of `RawAction` ([src/config/schema.rs:171-205](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/schema.rs#L171-L205)). The loader turns it into a `BindAction` ([src/config/loader.rs:652-710](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L652-L710)), and the hook adapter runs it where it fires or hands it to the action executor ([§13.1](#s13-1)).
 
 | Variant | Syntax | What it does |
 |---|---|---|
@@ -17,7 +17,7 @@
 | `Launch` | `Launch(exe: "code.exe", args: ["D:\\proj"])` | Starts a process |
 | `OpenUrl` | `OpenUrl("https://github.com")` | Calls `ShellExecuteW` with the `"open"` verb |
 | `Media` | `Media(PlayPause)` | Synthesizes a media key or a volume key |
-| `Sequence` | `Sequence([Text("hi"), Key("Enter")])` | A macro; runs on a separate thread ([§14](#s14)) |
+| `Sequence` | `Sequence([Text("hi"), Key("Enter")])` | A macro; runs on the action executor ([§14](#s14)) |
 | `DoNothing` | `DoNothing` | Does nothing (needed only to suppress a key) |
 
 The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/system/system_function.rs:18-25](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/system/system_function.rs#L18-L25)), but `RawAction` has no variants for them, so they are not available from the config: `action: LockWorkstation` gives ``Unexpected variant named `LockWorkstation` in enum `RawAction`, expected one of `SwitchLanguage`, ... or `DoNothing` instead``. Macro steps do not work outside `Sequence` either: `action: Text("hi")` and `action: Window(Minimize)` give an error of the same form.
@@ -35,9 +35,9 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 <a id="s13-1"></a>
 ### 13.1 General execution rules
 
-**Which thread runs the action, and when.** The decision core decides which actions fire; the hook adapter runs them after the decision, outside the engine lock ([src/hook/keyboard_hook_callback.rs:199-221](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/hook/keyboard_hook_callback.rs#L199-L221)):
+**Which thread runs the action, and when.** The decision core decides which actions fire; the hook adapter carries them out after the decision, outside the engine lock, on the thread that fired them (`carry_out` and `dispatch` in `src/hook/keyboard_hook_callback.rs`):
 
-| How the binding fired | Thread | Moment | Decided at |
+| How the binding fired | Thread that fires | Moment | Decided at |
 |---|---|---|---|
 | `keys` + `Immediate` | hook thread | key press; on auto-repeat only with `repeat` | [src/engine/mod.rs:475-482](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L475-L482) |
 | `trigger: Tap(ms)` | hook thread | key released before `ms` | [src/engine/mod.rs:626-631](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L626-L631) |
@@ -46,15 +46,17 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 | `chord` | hook thread | the last key of the chord is pressed | [src/engine/mod.rs:568-574](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L568-L574) |
 | `sequence` | hook thread | last step | [src/engine/mod.rs:546-555](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L546-L555) |
 
-The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` ([src/core/app.rs:137-217](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/app.rs#L137-L217)). While an action runs, keyboard input stalls system-wide. Only `Sequence` moves its work to a separate thread; all other actions run synchronously on the thread that invoked them. When one key-down fires several actions, they run in order.
+The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` ([src/core/app.rs:137-217](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/app.rs#L137-L217)). While it runs an action, keyboard input stalls system-wide. Since roadmap [item 2.1](../roadmap.md#21-action-executor) (fixed on `feat/action-executor`, [KS-08](../audit.md#ks-08)) the thread that fires runs only the fast actions itself, before the hook returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` and `DoNothing`. Each of them only posts a message or sends one key press, and running it there keeps its output in order with the keys typed after it. `Launch`, `OpenUrl` and `Sequence` are queued for the `action-executor` thread, and the hook returns at once. When one key-down fires several actions, the fast ones run in order before the hook returns, and the others run in order on the executor after it.
+
+**The action executor** (`src/core/executor/`) is one thread with its own message loop, and it initialises COM as a single-threaded apartment, as `ShellExecuteW` asks. Up to 32 actions wait for it; a further one is dropped and counted in `executor_jobs_dropped` ([§18.6](errors.md#s18-6)). Macros run side by side on it ([§14.1](#s14-1)): a `Delay` holds up no other action. A `Launch` or `OpenUrl`, as an action or a macro step, holds up the other queued actions and macros while it runs inside Windows (a cold browser, a dialog that `ShellExecuteW` shows). `swch off`, `swch on` when remapping was off, a reload (saving `config.ron`) and `swch exit` drop the actions still queued and stop the running macros; a step already running finishes first. If the executor stops on its own, it logs one `[ERROR]` line, and every later `Launch`, `OpenUrl` and `Sequence` does nothing and counts in `executor_unavailable` until the daemon restarts.
 
 > [!NOTE]
 > **Auto-repeat ([KS-10](../audit.md#ks-10), fixed in `feat/repeat-flag`).** While the trigger of a `keys` + `Immediate` binding is held, the keyboard repeats its key-down, about 30 times per second after the initial delay. By default only `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` fire again on each repeat (owner decision); every other action fires once per press, so `trigger: Tap(…)` is no longer needed to make an action one-shot. `repeat: true` on a binding makes it fire on every repeat, and `repeat: false` once per press ([§11.3](triggers-conditions.md#s11-3)). Each repeat of a `PressKey` sends a new press and release: for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`, or a held trigger toggles the key at the repeat rate or taps the modifier ([§13.5](#s13-5)).
 
-Three known issues cut across several actions:
+One known issue and two fixes cut across several actions:
 
-> [!WARNING]
-> **Known issue ([KS-08](../audit.md#ks-08)).** `Launch` and `OpenUrl` run synchronously inside the hook callback ([src/core/windows_actions.rs:138-139](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L138-L139)). The exception is `trigger: Hold(ms)`, where the action is called from the `hold-timer` thread. `CreateProcessW` and `ShellExecuteW` can take hundreds of milliseconds. If the callback runs longer than `LowLevelHooksTimeout` (at most 1000 ms on Windows 10 1709 and later), Windows silently removes the hook, while the daemon goes on considering itself running. **Workaround:** `Sequence([Launch(...)])` or `Sequence([OpenUrl(...)])`: macro steps run on a worker thread. Roadmap [item 2.1](../roadmap.md#21-action-executor) moves actions off the hook thread.
+> [!NOTE]
+> **Fixed on `feat/action-executor` ([KS-08](../audit.md#ks-08), roadmap [item 2.1](../roadmap.md#21-action-executor)).** `Launch` and `OpenUrl` no longer run inside the hook callback. `CreateProcessW` and `ShellExecuteW` can take hundreds of milliseconds, and a callback that runs longer than `LowLevelHooksTimeout` (at most 1000 ms on Windows 10 1709 and later) gets the hook silently removed; they now run on the action executor, and the hook returns at once. `Sequence([Launch(...)])` and `Sequence([OpenUrl(...)])` are no longer needed as a workaround. The fast actions still run in the callback, by design; noticing a hook that Windows removed is roadmap [item 2.4](../roadmap.md#24-hook-watchdog).
 
 > [!WARNING]
 > **Known issue ([KS-19](../audit.md#ks-19)).** Synthesized keys combine with physically held modifiers ([src/core/windows_actions.rs:192](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L192), [src/data/sequence.rs:197](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L197)). The trigger's modifier presses have already reached the OS; only the key that completed the combination is suppressed. Example: with `keys: "Ctrl+J", action: PressKey("Down")` the application receives Ctrl+Down. Workaround: triggers without modifiers (`F13`–`F24`, `CapsLock`, `Pause`), and in a macro a first step `Delay(150…300)` so that the user has time to release the keys.
@@ -197,8 +199,8 @@ Code: `std::process::Command::new(exe).args(args).spawn()` ([src/core/windows_ac
 > [!WARNING]
 > **Known issue ([KS-09](../audit.md#ks-09), [KS-34](../audit.md#ks-34)).** Console programs attach to the daemon's console ([src/core/windows_actions.rs:249](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L249); the doc comment at [src/core/windows_actions.rs:35-38](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L35-L38) says so since [`13ce323`](https://github.com/bluesteelll/key-switch-rs/commit/13ce323)). The daemon is a console application, and `spawn` is called without creation flags. So `cmd`, `powershell`, `python` and CLI utilities do not get a window of their own: they write to the daemon's console, share its input, and exit on Ctrl+C or when its console is closed. GUI programs are not affected. Workaround: `Launch(exe: "wt.exe", args: [...])`, or `Launch(exe: "cmd.exe", args: ["/c", "start", "", "powershell.exe"])` (`start` opens a new console window), or `OpenUrl("powershell.exe")` (a new console, but without arguments).
 
-> [!WARNING]
-> **Known issue ([KS-08](../audit.md#ks-08)).** It runs on the hook thread ([§13.1](#s13-1)). The safe variant is `Sequence([Launch(...)])` or `trigger: Hold(…)`.
+> [!NOTE]
+> **Fixed on `feat/action-executor` ([KS-08](../audit.md#ks-08)).** It runs on the action executor, not on the hook thread ([§13.1](#s13-1)); `Sequence([Launch(...)])` and `trigger: Hold(…)` are no longer needed for that.
 
 Roadmap [item 3.3](../roadmap.md#33-launch-and-openurl-without-elevation) starts programs without elevation.
 
@@ -206,10 +208,10 @@ Roadmap [item 3.3](../roadmap.md#33-launch-and-openurl-without-elevation) starts
 ### 13.7 `OpenUrl`
 
 ```ron
-( keys: "F13", action: Sequence([ OpenUrl("https://github.com") ]) ),
-( keys: "F14", action: Sequence([ OpenUrl("mailto:me@example.com") ]) ),
-( keys: "F15", action: Sequence([ OpenUrl("ms-settings:display") ]) ),
-( keys: "F16", action: Sequence([ OpenUrl(r"D:\key-switch-rs") ]) ),
+( keys: "F13", action: OpenUrl("https://github.com") ),
+( keys: "F14", action: OpenUrl("mailto:me@example.com") ),
+( keys: "F15", action: OpenUrl("ms-settings:display") ),
+( keys: "F16", action: OpenUrl(r"D:\key-switch-rs") ),
 ```
 
 The argument is one string, and there are no other parameters: `OpenUrl()` → `Expected string`, `OpenUrl("a", "b")` → ``Expected closing `)` ``. Call: `ShellExecuteW(NULL, "open", <string>, NULL, NULL, SW_SHOWNORMAL)` ([src/core/windows_actions.rs:259-282](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L259-L282)).
@@ -220,8 +222,8 @@ The argument is one string, and there are no other parameters: `OpenUrl()` → `
 - If the call returns ≤ 32, the console shows `[ERROR] OpenUrl "...": ShellExecuteW returned error code N`. The loader does not check the string, so `OpenUrl("")` loads.
 - A console program opened through `OpenUrl` gets a console window of its own (the default `ShellExecute` behaviour).
 
-> [!WARNING]
-> **Known issue ([KS-08](../audit.md#ks-08)).** The call is synchronous, runs on the hook thread, and COM is not initialised ([src/core/windows_actions.rs:139](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L139)). Workaround: `Sequence([OpenUrl(...)])`, as in the examples above.
+> [!NOTE]
+> **Fixed on `feat/action-executor` ([KS-08](../audit.md#ks-08)).** The call is still synchronous, but it runs on the action executor, which initialises COM as a single-threaded apartment, as `ShellExecuteW` asks; the hook returns at once ([§13.1](#s13-1)). While the call runs (a cold browser, a dialog), the other queued actions and macros wait.
 
 > [!WARNING]
 > **Known issue ([KS-09](../audit.md#ks-09)).** The new handler process inherits the daemon's elevated rights, as with `Launch` ([src/core/windows_actions.rs:266](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L266)).
@@ -269,7 +271,7 @@ action: Sequence([ <step>, <step>, ... ])
 ```
 
 - The argument is a list in square brackets. `Sequence(Text("x"))` and `Sequence()` → ``Expected opening `[` ``.
-- An empty list `Sequence([])` is allowed: a thread starts and does nothing. A trailing comma and comments inside the list are allowed.
+- An empty list `Sequence([])` is allowed: it is queued and does nothing. A trailing comma and comments inside the list are allowed.
 - The steps are the 8 variants of `RawStep` ([src/config/schema.rs:231-249](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/schema.rs#L231-L249)). An unknown step gives ``Unexpected variant named `Fly` in enum `RawStep`, expected one of `Window`, `Delay`, `Text`, `Key`, `Combo`, `Launch`, `OpenUrl`, or `Media` instead``. Actions that are not among the steps give the same error: `PressKey("A")` inside a macro (write `Key("A")`) and a nested `Sequence([...])`.
 - All steps are validated at load time ([src/config/loader.rs:689-699](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L689-L699), [src/config/loader.rs:724-759](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L724-L759)). The error gives the number of the first invalid step, counting from 0: `binding #0 [F13]: step #2: Combo "Ctrl+Foo": unknown key "Foo" in combo "Ctrl+Foo"`.
 - `Sequence` as an action works with any trigger on `keys`, including `Tap`, `Hold` and `DoubleTap`, and also with the `sequence` and `chord` kinds (their trigger is always `Immediate`).
@@ -277,20 +279,22 @@ action: Sequence([ <step>, <step>, ... ])
 <a id="s14-1"></a>
 ### 14.1 How it runs
 
-[src/data/sequence.rs:111-135](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L111-L135):
+`src/core/executor/` (`runs.rs` walks the steps) and `run_step` in `src/data/sequence.rs`:
 
-1. When the action fires, the thread that invoked it calls `GetForegroundWindow()` once and remembers the **target window (HWND)**. The firing moment follows the table in [§13.1](#s13-1): the press for `Immediate`, the release for `Tap`, the timer expiry for `Hold`.
-2. A new OS thread is started (`thread::spawn`), and the hook returns at once.
-3. The steps run strictly one after another on that thread. There are no pauses between steps other than `Delay`. Each `Text`, `Key`, `Combo` and `Media` step is a separate `SendInput` call.
+1. When the action fires, the thread that fired it calls `GetForegroundWindow()` once and remembers the **target window (HWND)**. The firing moment follows the table in [§13.1](#s13-1): the press for `Immediate`, the release for `Tap`, the timer expiry for `Hold`.
+2. The macro is queued for the action executor, and the hook returns at once. No thread is started for it.
+3. The executor runs the steps one after another up to the next `Delay`. A `Delay` stores its deadline and lets the executor run other actions and macros meanwhile; once the deadline has passed, the macro goes on with the next step. There are no pauses between steps other than `Delay`. Each `Text`, `Key`, `Combo` and `Media` step is a separate `SendInput` call.
 
 - `Window(...)` steps always act on the remembered HWND, even if the focus has already moved.
 - `Text`, `Key` and `Combo` go to the window that has the keyboard focus **at the time of the step**: `SendInput` is not addressed to a window.
 - `Launch`, `OpenUrl` and `Media` do not depend on a window.
 - A step error does not abort the macro: it is only logged, to the console and to `daemon.log`.
-- `Launch` and `OpenUrl` inside `Sequence` run on the worker thread and **do not block the hook**. This is the recommended way to run them.
+- `Launch` and `OpenUrl` inside `Sequence` run on the action executor, as the actions of the same name do. While one of them runs inside Windows (a cold browser, a dialog), the other macros and actions wait.
+- Several macros run side by side on the one executor, as they did on a thread each before: they interleave at their `Delay` steps, oldest first, and the steps between two `Delay`s of one macro run without a break. A held `Immediate` macro starts once per press; with `repeat: true` it starts once per auto-repeat ([KS-10](../audit.md#ks-10)), up to 32 waiting to start, a further one dropped and counted.
+- A step that panics stops only its macro: `[ERROR] an action panicked on the action executor; it keeps running`.
 
-> [!WARNING]
-> **Known issue.** Macros have neither a limit nor cancellation ([src/data/sequence.rs:116](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L116)). Every firing creates a new independent thread. A held `Immediate` macro starts once per press; with `repeat: true` it starts once per auto-repeat, dozens of parallel macros with interleaved output ([KS-10](../audit.md#ks-10)). `swch off`, a hot reload and a new key press do not stop a running macro, and a `Delay` cannot be interrupted.
+> [!NOTE]
+> **Fixed on `feat/action-executor`** (roadmap [item 2.1](../roadmap.md#21-action-executor)). `swch off`, `swch on` when remapping was off, a reload (saving `config.ron`) and `swch exit` stop every running macro within 100 ms, also inside a `Delay` of any length, and drop the actions still queued; a step already running (a `Launch`, an `OpenUrl`) finishes first. A repeated `swch on` stops nothing, and neither does a new key press. A macro no longer starts a thread ([KS-33](../audit.md#ks-33)). The number of macros running at once has no limit.
 
 <a id="s14-2"></a>
 ### 14.2 `Window(<operation>)`
@@ -311,12 +315,12 @@ action: Sequence([ <step>, <step>, ... ])
 <a id="s14-3"></a>
 ### 14.3 `Delay(<ms>)`
 
-`Delay(250)`: the argument is a `u64` in milliseconds; the step runs `thread::sleep` on the macro thread.
+`Delay(250)`: the argument is a `u64` in milliseconds. The action executor keeps the deadline and goes on with the macro when a thread timer wakes it, usually within about one tick of the system clock (about 15.6 ms) after the deadline, as with the `thread::sleep` it replaces; a `Delay` never ends early.
 
 - All integer forms work ([§3.7](ron-syntax.md#s3-7)): `Delay(0x10)`, `Delay(1_000)`, `Delay(+5)`.
-- `Delay(0)` is allowed. There is no upper bound: `Delay(18446744073709551615)` loads and "hangs" the macro forever, with no way to cancel it.
+- `Delay(0)` is allowed, and lets the other macros run first. There is no upper bound: `Delay(18446744073709551615)` loads and holds the macro until `swch off`, a reload or `swch exit` stops it.
 - Errors: `Delay(-1)` and `Delay(18446744073709551616)` → `Integer is out of bounds`; `Delay("100")` and `Delay()` → `Expected integer`; `Delay(1.5)` → ``Expected closing `)` ``.
-- It blocks neither the hook nor other macros.
+- It blocks neither the hook nor other actions and macros, and `swch off`, a reload or `swch exit` cut it short.
 - Typical uses: give an application time after `Window(...)` or `Launch(...)` before typing; let the user release the trigger's modifiers.
 
 <a id="s14-4"></a>
@@ -374,4 +378,4 @@ Examples:
 <a id="s14-7"></a>
 ### 14.7 `Launch(...)`, `OpenUrl("...")` and `Media(...)` as steps
 
-The syntax and semantics are the same as for the actions of the same name ([§13.6](#s13-6)–[§13.8](#s13-8), [src/data/sequence.rs:131-133](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L131-L133)), including the elevated rights and the console for `Launch` ([KS-09](../audit.md#ks-09)). There is one difference: the steps run on the macro's worker thread and do not block the hook. `Launch` waits neither for the process to start nor for its window to appear, so put a `Delay(...)` before typing into a new window.
+The syntax and semantics are the same as for the actions of the same name ([§13.6](#s13-6)–[§13.8](#s13-8), [src/data/sequence.rs:131-133](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L131-L133)), including the elevated rights and the console for `Launch` ([KS-09](../audit.md#ks-09)). They run on the action executor, as those actions do. `Launch` waits neither for the process to start nor for its window to appear, so put a `Delay(...)` before typing into a new window.

@@ -1,18 +1,16 @@
 //! Sequence steps: the macro-like body of a `BindAction::Sequence`.
 //!
-//! A sequence runs in its own spawned thread because a low-level keyboard
-//! hook callback must return *fast* — blocking it for any meaningful sleep
-//! would freeze input system-wide. The hook only enqueues the work and lets
-//! the worker thread do the typing/delays/window ops.
+//! A sequence runs on the action executor (`core::executor`, roadmap item
+//! 2.1), because a low-level keyboard hook callback must return *fast* —
+//! blocking it for any meaningful time would freeze input system-wide. The
+//! hook only queues the macro; the executor walks its steps, keeps each
+//! `Delay` as a deadline on its own timer, and runs every other step
+//! through `run_step`.
 //!
 //! The target window (`GetForegroundWindow()` at the moment the combo
 //! matched) is captured once and reused for every window-related step, so
 //! "restore this window … type … minimize this window" operates on the same
 //! HWND throughout — not on whatever happened to be focused later.
-
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use windows::Win32::{
     Foundation::*,
@@ -39,8 +37,9 @@ pub enum SequenceStep {
     /// during the press, everything else is the chord's payload key(s).
     PressCombo(Vec<VIRTUAL_KEY>),
 
-    /// Sleep for `ms` milliseconds before the next step. Lives in the worker
-    /// thread, never in the hook callback.
+    /// Wait `ms` milliseconds before the next step. The action executor
+    /// keeps it as a deadline on its own timer, so other actions and macros
+    /// go on meanwhile, and `swch off`, a reload or exit cut it short.
     Delay(u64),
 
     /// Minimise, maximise or restore the captured target window with
@@ -102,35 +101,14 @@ impl std::fmt::Display for SequenceStep {
     }
 }
 
-/// Spawns a worker thread that executes the given steps in order against
-/// the foreground window captured *now*. Returns immediately — the caller
-/// (a hook callback) must not block.
-///
-/// `steps` is shared with the worker via `Arc` (no deep clone). `HWND` is
-/// `*mut c_void` and therefore not `Send`, so we ferry it across the thread
-/// boundary as an `isize` and rebuild it on arrival — equivalent to passing
-/// a window handle through any other integer-bearing channel (PostMessage's
-/// thread-message queue, registry, etc.).
-pub fn spawn_sequence(steps: Arc<Vec<SequenceStep>>) {
-    // SAFETY: GetForegroundWindow has no preconditions; an invalid/null HWND
-    // is handled by per-step checks in `apply_window_op`.
-    let target_raw: isize = unsafe { GetForegroundWindow().0 as isize };
-
-    thread::spawn(move || {
-        let target = HWND(target_raw as *mut std::ffi::c_void);
-        for step in steps.iter() {
-            run_step(step, target);
-        }
-    });
-}
-
 /// Runs one step against `target`, on the calling thread.
 pub(crate) fn run_step(step: &SequenceStep, target: HWND) {
     match step {
         SequenceStep::TypeText(s) => type_text(s),
         SequenceStep::PressKey(vk) => press_key(*vk),
         SequenceStep::PressCombo(keys) => press_combo(keys),
-        SequenceStep::Delay(ms) => thread::sleep(Duration::from_millis(*ms)),
+        // The executor keeps a Delay itself and never hands one here.
+        SequenceStep::Delay(_) => {}
         SequenceStep::Window(op) => apply_window_op(*op, target),
         SequenceStep::Launch { exe, args } => launch_process(exe, args),
         SequenceStep::OpenUrl(url) => shell_open(url),

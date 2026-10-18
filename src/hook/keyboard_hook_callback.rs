@@ -21,8 +21,12 @@
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
 //!    one `SendInput`, tagged with the sentinel; roadmap item 1.2, KS-12),
-//!    then the timers it asks for, then its actions in order, as before the
-//!    engine existed;
+//!    then the timers it asks for, then its actions in order. A fast action
+//!    ([`FastAction`](crate::core::windows_actions::FastAction): `PressKey`, `Media`, `ToggleCapsLock`,
+//!    `SwitchLanguage*`, `PostMessage`) runs here, before the hook returns,
+//!    so that its output stays in order with the keys typed after it;
+//!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
+//!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
@@ -37,11 +41,12 @@
 //! its own short-lived `hold-timer` thread, which sleeps until the request is
 //! due by `Instant::now()`, asks
 //! [`Engine::on_timer`](crate::engine::Engine::on_timer) under the lock and
-//! runs the Hold action itself, off the hook thread. The engine fires a Hold
-//! only from `on_timer`, so a Hold action never runs on the hook thread.
-//! Tap, DoubleTap, Chord and Sequence need no thread: the next event checks
-//! their deadlines. Roadmap item 2.2 moves the Hold timers onto the main
-//! thread and removes the lock.
+//! carries out the decision itself, off the hook thread, with the same
+//! split: a fast Hold action runs on that thread, and the others go to the
+//! action executor. The engine fires a Hold only from `on_timer`, so a Hold
+//! action never runs on the hook thread. Tap, DoubleTap, Chord and Sequence
+//! need no thread: the next event checks their deadlines. Roadmap item 2.2
+//! moves the Hold timers onto the main thread and removes the lock.
 //!
 //! `swch on` and `swch off` take the lock too, on the IPC connection worker
 //! that handles them (`KeyboardHook::set_enabled`): the switch flips and the
@@ -92,6 +97,8 @@ use windows::Win32::{
 };
 
 use crate::core::constants;
+use crate::core::executor::TargetWindow;
+use crate::core::windows_actions::BindAction;
 use crate::data::condition::ForegroundContext;
 use crate::engine::{Decision, Env, KeyEvent, TimerRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
@@ -198,9 +205,9 @@ fn decide_event(
 
 /// Carries out a decision on the calling thread, outside the engine lock:
 /// first the menu mask key if it asks for one, then the timers it asks for,
-/// then its actions in order. The mask belongs to the event being decided,
-/// so it goes ahead of every key an action sends.
-fn carry_out(decision: Decision) {
+/// then its actions in order (see [`dispatch`]). The mask belongs to the
+/// event being decided, so it goes ahead of every key an action sends.
+fn carry_out(hook: &KeyboardHook, decision: Decision) {
     // Destructured without `..`: a new field of `Decision` does not compile
     // until it is carried out here. `suppress` is the callback's to act on.
     let Decision {
@@ -215,8 +222,22 @@ fn carry_out(decision: Decision) {
     for request in timers {
         start_hold_timer(request);
     }
-    for action in &fire {
-        action.execute();
+    for action in fire {
+        dispatch(hook, action);
+    }
+}
+
+/// Runs a fast action here, or queues a slow one for the action executor
+/// with the window a macro acts on. Neither waits: a queue that is full or
+/// an executor that has stopped is counted by `submit`, and `Closed` means
+/// no executor is attached, at startup or exit.
+fn dispatch(hook: &KeyboardHook, action: BindAction) {
+    match action.as_fast() {
+        Some(fast) => fast.run(),
+        None => {
+            let target = TargetWindow::for_action(&action);
+            let _ = hook.submit(action, target);
+        }
     }
 }
 
@@ -278,8 +299,8 @@ thread_local! {
     static MASKS_SENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Starts the timer for a Hold on its own `hold-timer` thread, which runs
-/// the Hold action if the engine still wants it.
+/// Starts the timer for a Hold on its own `hold-timer` thread, which
+/// carries out the Hold if the engine still wants it.
 ///
 /// If the thread cannot be started, the failure is counted in
 /// `logging::counters` (`hold_timer_not_started`), which the log writer
@@ -294,7 +315,7 @@ fn start_hold_timer(request: TimerRequest) {
             sleep_until(request.due);
             if let Some(decision) = get_hook().with_engine(|engine| engine.on_timer(request.token))
             {
-                carry_out(decision);
+                carry_out(get_hook(), decision);
             }
         });
     if spawned.is_err() {
@@ -342,7 +363,7 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
     if let Some(decision) = decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
         let suppress = decision.suppress;
-        carry_out(decision);
+        carry_out(hook, decision);
         if suppress {
             return LRESULT(1);
         }
@@ -402,8 +423,10 @@ mod tests {
 
     // No test installs a hook. The `decide_event` tests use a local
     // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
-    // never called); the extern-callback tests drive the process-wide hook,
-    // one at a time (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
+    // not called); the `carry_out` tests run only `DoNothing` here and send
+    // every other action to an executor whose runner only records; the
+    // extern-callback tests drive the process-wide hook, one at a time
+    // (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
     // reads `GetAsyncKeyState`, the live state of the machine's keyboard, so
     // every F13 binding sets `allow_extra_modifiers`: under exact matching a
     // modifier the user happens to hold while the tests run would otherwise
