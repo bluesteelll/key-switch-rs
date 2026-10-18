@@ -1,3 +1,217 @@
+//! The macro runs of the action executor: bookkeeping only, with no Win32
+//! call, no thread and no clock of its own (the executor passes `now` and
+//! `live` in), so that iteration, `Delay` deadlines and epochs are tested
+//! with a fake clock.
+//!
+//! A `Sequence` job becomes a run. A run goes step after step until its
+//! next `Delay`, which stores the deadline and yields to the other runs and
+//! jobs; once `now` has reached the deadline, the run goes on from the step
+//! after the `Delay`. Runs advance oldest first, once per poll, so two
+//! macros fired together interleave at their `Delay` steps and never inside
+//! a stretch of steps between two of them.
+
+use std::ops::AddAssign;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use super::{Runner, TargetWindow};
+use crate::core::windows_actions::BindAction;
+use crate::data::sequence::SequenceStep;
+
+/// One slow action, as the thread that fired it queued it.
+pub(crate) struct Job {
+    pub(crate) action: BindAction,
+    /// The foreground window when it fired, for a `Sequence` only.
+    pub(crate) target: TargetWindow,
+    /// The epoch it fired in; a job of an older epoch never starts.
+    pub(crate) epoch: u64,
+}
+
+/// The macros that run, oldest first.
+pub(crate) struct Runs {
+    active: Vec<Run>,
+}
+
+struct Run {
+    steps: Arc<Vec<SequenceStep>>,
+    /// The index of the next step.
+    next: usize,
+    target: TargetWindow,
+    epoch: u64,
+    resume: Resume,
+}
+
+/// When a run goes on.
+#[derive(Debug, Clone, Copy)]
+enum Resume {
+    /// At the next poll: a run that has not started.
+    Now,
+    /// Once `now` reaches the deadline of its `Delay`.
+    At(Instant),
+    /// Only by being cancelled: the deadline is past what `Instant` holds.
+    WhenCancelled,
+}
+
+/// When the executor must poll again without a job or a wake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Next {
+    /// No run waits for a deadline.
+    Idle,
+    /// At the nearest deadline of the waiting runs.
+    At(Instant),
+}
+
+/// What the runs need from the executor for one `start` or `poll`.
+pub(crate) struct Ctx<'a> {
+    pub(crate) runner: &'a mut dyn Runner,
+    /// Whether work fired in this epoch may still run.
+    pub(crate) live: &'a dyn Fn(u64) -> bool,
+    pub(crate) now: &'a dyn Fn() -> Instant,
+}
+
+/// The runner calls of a `start` or a `poll`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Calls {
+    /// How many calls were made, the ones that panicked included.
+    pub(crate) made: u32,
+    /// How many of them panicked.
+    pub(crate) panics: u32,
+}
+
+impl AddAssign for Calls {
+    fn add_assign(&mut self, other: Self) {
+        self.made += other.made;
+        self.panics += other.panics;
+    }
+}
+
+/// What a poll did, and when the next one is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Polled {
+    pub(crate) next: Next,
+    pub(crate) calls: Calls,
+}
+
+impl Runs {
+    pub(crate) fn new() -> Self {
+        Self { active: Vec::new() }
+    }
+
+    /// Starts `job` unless its epoch is no longer live: a `Sequence`
+    /// becomes a run, which the next poll starts, and any other action
+    /// runs at once.
+    pub(crate) fn start(&mut self, job: Job, ctx: &mut Ctx<'_>) -> Calls {
+        if !(ctx.live)(job.epoch) {
+            return Calls::default();
+        }
+        match job.action {
+            BindAction::Sequence(steps) => {
+                self.active.push(Run {
+                    steps,
+                    next: 0,
+                    target: job.target,
+                    epoch: job.epoch,
+                    resume: Resume::Now,
+                });
+                Calls::default()
+            }
+            action => call(|| ctx.runner.action(&action)),
+        }
+    }
+
+    /// Drops every run that is no longer live, then advances each due run
+    /// once, oldest first, up to its next `Delay` or its end.
+    pub(crate) fn poll(&mut self, ctx: &mut Ctx<'_>) -> Polled {
+        let mut calls = Calls::default();
+        self.active.retain(|run| (ctx.live)(run.epoch));
+        let mut index = 0;
+        while index < self.active.len() {
+            let run = &mut self.active[index];
+            let due = match run.resume {
+                Resume::Now => true,
+                Resume::At(deadline) => (ctx.now)() >= deadline,
+                Resume::WhenCancelled => false,
+            };
+            if due && !run.advance(ctx, &mut calls) {
+                self.active.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        Polled {
+            next: self.next(),
+            calls,
+        }
+    }
+
+    fn next(&self) -> Next {
+        self.active
+            .iter()
+            .filter_map(|run| match run.resume {
+                Resume::At(deadline) => Some(deadline),
+                Resume::Now | Resume::WhenCancelled => None,
+            })
+            .min()
+            .map_or(Next::Idle, Next::At)
+    }
+
+    /// Drops every run that waits for a deadline, which nothing would wake
+    /// without a timer, and returns how many.
+    pub(crate) fn drop_timed(&mut self) -> usize {
+        let before = self.active.len();
+        self.active
+            .retain(|run| !matches!(run.resume, Resume::At(_)));
+        before - self.active.len()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.active.len()
+    }
+}
+
+impl Run {
+    /// Runs steps up to the next `Delay`, which sets when the run goes on,
+    /// and returns `true`; or up to the run's end (past its last step, its
+    /// epoch no longer live, a step that panicked) and returns `false`.
+    fn advance(&mut self, ctx: &mut Ctx<'_>, calls: &mut Calls) -> bool {
+        loop {
+            if !(ctx.live)(self.epoch) {
+                return false;
+            }
+            let Some(step) = self.steps.get(self.next) else {
+                return false;
+            };
+            self.next += 1;
+            if let SequenceStep::Delay(ms) = step {
+                // Taken when the step is reached, after any slow step
+                // before it.
+                self.resume = (ctx.now)()
+                    .checked_add(Duration::from_millis(*ms))
+                    .map_or(Resume::WhenCancelled, Resume::At);
+                return true;
+            }
+            let target = self.target;
+            let made = call(|| ctx.runner.step(step, target));
+            *calls += made;
+            if made.panics > 0 {
+                return false;
+            }
+        }
+    }
+}
+
+/// Makes one runner call and catches its panic: one thread carries every
+/// slow action, so an action that panics must end only itself, as its own
+/// thread did before the executor.
+fn call(f: impl FnOnce()) -> Calls {
+    let panicked = panic::catch_unwind(AssertUnwindSafe(f)).is_err();
+    Calls {
+        made: 1,
+        panics: u32::from(panicked),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;

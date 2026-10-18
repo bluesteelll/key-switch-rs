@@ -116,12 +116,13 @@ pub fn spawn_sequence(steps: Arc<Vec<SequenceStep>>) {
     thread::spawn(move || {
         let target = HWND(target_raw as *mut std::ffi::c_void);
         for step in steps.iter() {
-            execute_step(step, target);
+            run_step(step, target);
         }
     });
 }
 
-fn execute_step(step: &SequenceStep, target: HWND) {
+/// Runs one step against `target`, on the calling thread.
+pub(crate) fn run_step(step: &SequenceStep, target: HWND) {
     match step {
         SequenceStep::TypeText(s) => type_text(s),
         SequenceStep::PressKey(vk) => press_key(*vk),

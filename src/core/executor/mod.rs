@@ -1,6 +1,673 @@
+//! The action executor (roadmap item 2.1, KS-08): one `action-executor`
+//! thread that runs the slow actions, `Launch`, `OpenUrl` and `Sequence`,
+//! so that the keyboard hook never waits for them.
+//!
+//! The thread that fires such an action (the hook thread, or a Hold's
+//! `hold-timer` thread) hands it to [`ExecutorHandle::submit`], which moves
+//! it into a bounded queue without waiting and posts a wake-up to the
+//! executor; a full queue drops the job and counts it
+//! (`executor_jobs_dropped`). The executor initialises COM as a
+//! single-threaded apartment, as `ShellExecuteW` asks, and waits in its own
+//! `GetMessageW` loop, so it pumps its queue as an STA must.
+//!
+//! Macros run side by side without a thread each: a `Sequence` is a run
+//! (`runs`) that goes up to its next `Delay`, stores the deadline and
+//! yields, and one thread timer wakes the loop for the nearest deadline. A
+//! `Delay` holds up no other job. Only a step that blocks inside Windows (a
+//! `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the
+//! other jobs and runs while it runs.
+//!
+//! [`ExecutorHandle::cancel_pending`] starts a new epoch (`swch off` or
+//! `on`, a reload, exit): every queued job and every run of the old epoch
+//! is dropped at the executor's next wake, and no further step of such a
+//! run starts; a step already running finishes first.
+//!
+//! The executor never touches a hook or the engine. What it runs goes
+//! through a [`Runner`]: the daemon's [`Win32Runner`], or a fake one in the
+//! tests, so that no test runs a real action.
+
 mod runs;
 #[cfg(test)]
 pub(crate) mod testing;
+
+use std::io;
+use std::marker::PhantomData;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
+use std::thread::{self, JoinHandle, Thread};
+use std::time::{Duration, Instant};
+
+use windows::Win32::{
+    Foundation::*,
+    System::{
+        Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
+        Threading::GetCurrentThreadId,
+    },
+    UI::WindowsAndMessaging::*,
+};
+
+use crate::core::windows_actions::{BindAction, launch_process, shell_open};
+use crate::data::sequence::{self, SequenceStep};
+use crate::logging::counters::{Counter, Counters};
+use runs::{Calls, Ctx, Job, Next, Runs};
+
+/// How many slow actions wait for the executor before the next one is
+/// dropped: a second of a `repeat: true` macro at the auto-repeat rate.
+pub const QUEUE_CAPACITY: usize = 32;
+/// How long [`Executor::start`] waits for the thread to create its queue.
+pub const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long [`Executor::stop`] waits for a running step to finish.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// The thread message that wakes the executor: a job was queued, or the
+/// epoch changed.
+const WAKE: u32 = WM_APP;
+
+/// The window a macro's `Window(...)` steps act on: the foreground window
+/// when the macro fired. An integer, because `HWND` is not `Send`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetWindow(isize);
+
+impl TargetWindow {
+    /// No window. What a `Launch` or an `OpenUrl` carries, which never
+    /// reads it; a `Window(...)` step skips it.
+    pub const NONE: Self = Self(0);
+
+    /// The foreground window now, or `NONE` if there is none.
+    pub fn foreground() -> Self {
+        // SAFETY: GetForegroundWindow takes no arguments and reads no
+        // memory of ours; a null window becomes NONE.
+        let hwnd = unsafe { GetForegroundWindow() };
+        Self(hwnd.0 as isize)
+    }
+
+    /// The target to queue with `action`: the foreground window for a
+    /// `Sequence`, the only action with `Window(...)` steps, and `NONE`
+    /// otherwise, so that a `Launch` or an `OpenUrl` adds no Win32 call to
+    /// the thread that fires it.
+    pub fn for_action(action: &BindAction) -> Self {
+        if let BindAction::Sequence(_) = action {
+            Self::foreground()
+        } else {
+            Self::NONE
+        }
+    }
+
+    fn hwnd(self) -> HWND {
+        HWND(self.0 as *mut std::ffi::c_void)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_raw(raw: isize) -> Self {
+        Self(raw)
+    }
+}
+
+/// Runs what the executor hands out, on the executor thread. The executor
+/// keeps the iteration, the `Delay` steps, their deadlines and the epochs
+/// itself. Every call is made under `catch_unwind`, so an implementation
+/// must stay usable after one of its calls panicked.
+pub trait Runner: Send + 'static {
+    /// Runs a job that is not a `Sequence`: a `Launch` or an `OpenUrl`.
+    fn action(&mut self, action: &BindAction);
+    /// Runs one step of a macro: any step but a `Delay`.
+    fn step(&mut self, step: &SequenceStep, target: TargetWindow);
+}
+
+/// The daemon's runner, which runs the actions and steps for real.
+/// Stateless, so a panic in one call leaves nothing behind.
+pub struct Win32Runner;
+
+impl Runner for Win32Runner {
+    fn action(&mut self, action: &BindAction) {
+        // Every arm is spelled out, so a new action does not compile until
+        // its place is decided here too.
+        match action {
+            BindAction::Launch { exe, args } => launch_process(exe, args),
+            BindAction::OpenUrl(url) => shell_open(url),
+            // The executor walks a macro step by step and never hands one
+            // to `action`.
+            BindAction::Sequence(_) => {}
+            BindAction::SwitchLanguage
+            | BindAction::SwitchLanguageBackward
+            | BindAction::ToggleCapsLock
+            | BindAction::PressKey(_)
+            | BindAction::PostMessage { .. }
+            | BindAction::Media(_)
+            | BindAction::DoNothing => action.execute(),
+        }
+    }
+
+    fn step(&mut self, step: &SequenceStep, target: TargetWindow) {
+        sequence::run_step(step, target.hwnd());
+    }
+}
+
+/// What became of a submitted action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submitted {
+    /// It waits in the queue.
+    Queued,
+    /// The queue was full; counted in `executor_jobs_dropped`.
+    Dropped,
+    /// The executor had stopped on its own; counted in
+    /// `executor_unavailable`.
+    Unavailable,
+    /// The executor was asked to stop, or none is attached; not counted.
+    Closed,
+}
+
+/// How [`Executor::stop`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// The thread ended and was joined.
+    Joined,
+    /// A step still ran after [`STOP_TIMEOUT`]; the thread was left to the
+    /// end of the process.
+    TimedOut,
+}
+
+/// What the handles and the executor thread share. None of the fields
+/// publishes other data: a job travels through the channel.
+struct Shared {
+    /// Moved on by `cancel_pending` (`fetch_add`, AcqRel) and read with
+    /// Acquire; work fired in an older epoch never runs.
+    epoch: AtomicU64,
+    /// Set once by `Executor::stop` (Release), read with Acquire.
+    stopping: AtomicBool,
+    /// How many macros run, stored by the executor after each poll
+    /// (Release), read with Acquire.
+    active_runs: AtomicUsize,
+}
+
+impl Shared {
+    fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
+    /// Whether work fired in `epoch` may still run.
+    fn live(&self, epoch: u64) -> bool {
+        !self.stopping() && self.epoch.load(Ordering::Acquire) == epoch
+    }
+}
+
+/// The submitting side of an executor, for every thread that fires or
+/// cancels actions. No method waits.
+pub struct ExecutorHandle {
+    jobs: SyncSender<Job>,
+    thread_id: u32,
+    shared: Arc<Shared>,
+    counters: &'static Counters,
+}
+
+impl ExecutorHandle {
+    /// Queues `action` with the window its `Window(...)` steps act on and
+    /// wakes the executor. It runs on the hook thread, so it never waits,
+    /// allocates or logs: the bounded queue's slots exist already, and a
+    /// full queue or a dead executor is only counted.
+    pub fn submit(&self, action: BindAction, target: TargetWindow) -> Submitted {
+        let epoch = self.shared.epoch.load(Ordering::Acquire);
+        match self.jobs.try_send(Job {
+            action,
+            target,
+            epoch,
+        }) {
+            Ok(()) => {
+                self.wake();
+                Submitted::Queued
+            }
+            Err(TrySendError::Full(_)) => {
+                self.counters.bump(Counter::ExecutorJobsDropped);
+                Submitted::Dropped
+            }
+            Err(TrySendError::Disconnected(_)) if self.shared.stopping() => Submitted::Closed,
+            Err(TrySendError::Disconnected(_)) => {
+                self.counters.bump(Counter::ExecutorUnavailable);
+                Submitted::Unavailable
+            }
+        }
+    }
+
+    /// Starts a new epoch: every job queued and every macro running is
+    /// dropped at the executor's next wake, which this posts, and no
+    /// further step of such a macro starts. A step already running
+    /// finishes first.
+    pub fn cancel_pending(&self) {
+        self.shared.epoch.fetch_add(1, Ordering::AcqRel);
+        self.wake();
+    }
+
+    /// How many macros run, as of the executor's last poll.
+    pub fn active_runs(&self) -> usize {
+        self.shared.active_runs.load(Ordering::Acquire)
+    }
+
+    /// Posted after the job or the epoch it announces, so that a drain
+    /// that missed them is followed by this wake. A lost or failed wake
+    /// loses no job: it waits in the queue until the next one.
+    fn wake(&self) {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value, reads no memory of ours and returns without waiting; WAKE
+        // carries no pointer. An id that is no longer valid only makes the
+        // call fail.
+        let _ = unsafe { PostThreadMessageW(self.thread_id, WAKE, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// The `action-executor` thread. Dropping it stops it, as
+/// [`stop`](Self::stop) does.
+pub struct Executor {
+    handle: Arc<ExecutorHandle>,
+    thread: Thread,
+    join: Option<JoinHandle<()>>,
+    /// Receives once the thread has dropped everything it owns.
+    done: Receiver<()>,
+}
+
+impl Executor {
+    /// Starts the thread with `runner` and a queue of `capacity` jobs (at
+    /// least one), counting in `counters`. Returns once the thread has
+    /// created its message queue, so that no wake is posted before it.
+    pub fn start<R: Runner>(
+        runner: R,
+        capacity: usize,
+        counters: &'static Counters,
+    ) -> io::Result<Self> {
+        let (jobs, queue) = mpsc::sync_channel(capacity.max(1));
+        let shared = Arc::new(Shared {
+            epoch: AtomicU64::new(0),
+            stopping: AtomicBool::new(false),
+            active_runs: AtomicUsize::new(0),
+        });
+        let (ready_tx, ready) = mpsc::sync_channel(1);
+        let (done_tx, done) = mpsc::sync_channel(1);
+        let thread_shared = Arc::clone(&shared);
+        let join = thread::Builder::new()
+            .name("action-executor".into())
+            .spawn(move || {
+                run_executor(runner, queue, &thread_shared, counters, &ready_tx);
+                let _ = done_tx.send(());
+            })?;
+        let thread_id = ready.recv_timeout(START_TIMEOUT).map_err(|_| {
+            io::Error::other("the action executor thread did not create its message queue")
+        })?;
+        Ok(Self {
+            handle: Arc::new(ExecutorHandle {
+                jobs,
+                thread_id,
+                shared,
+                counters,
+            }),
+            thread: join.thread().clone(),
+            join: Some(join),
+            done,
+        })
+    }
+
+    /// A handle to submit and cancel with, for any thread.
+    pub fn handle(&self) -> Arc<ExecutorHandle> {
+        Arc::clone(&self.handle)
+    }
+
+    pub fn thread(&self) -> &Thread {
+        &self.thread
+    }
+
+    /// Whether the thread has ended: after a stop, or on its own.
+    pub fn is_finished(&self) -> bool {
+        self.join.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    /// Stops the executor: no queued job and no further step runs, and the
+    /// thread is joined once the step running now, if any, has finished;
+    /// after [`STOP_TIMEOUT`] the thread is left to the end of the process.
+    pub fn stop(mut self) -> Stopped {
+        self.stop_thread()
+    }
+
+    fn stop_thread(&mut self) -> Stopped {
+        let Some(join) = self.join.take() else {
+            return Stopped::Joined;
+        };
+        self.handle.shared.stopping.store(true, Ordering::Release);
+        self.handle.cancel_pending();
+        match self.done.recv_timeout(STOP_TIMEOUT) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                // The thread catches the panics of its loop; one of its
+                // epilogue has nobody to report to.
+                let _ = join.join();
+                Stopped::Joined
+            }
+            Err(RecvTimeoutError::Timeout) => Stopped::TimedOut,
+        }
+    }
+}
+
+impl Drop for Executor {
+    fn drop(&mut self) {
+        let _ = self.stop_thread();
+    }
+}
+
+/// This thread's COM apartment, from [`enter_sta`](Self::enter_sta) until
+/// dropped. Not `Send`: `CoUninitialize` must run on the thread that
+/// initialised COM.
+struct Apartment {
+    initialized: bool,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl Apartment {
+    /// Initialises COM on this thread as a single-threaded apartment, as
+    /// `ShellExecuteW` asks ("Some Shell extensions require the COM
+    /// single-threaded apartment"). On failure the thread runs without COM,
+    /// as every action did before the executor existed.
+    fn enter_sta() -> Self {
+        // SAFETY: CoInitializeEx takes no pointer of ours (no reserved
+        // argument) and only sets up COM for the calling thread; `Drop`
+        // balances every successful call, S_FALSE included, on this same
+        // thread, since an Apartment never leaves it.
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        if hr.is_err() {
+            log::warn!(
+                "could not initialise COM on the action executor ({hr}); OpenUrl runs without it"
+            );
+        }
+        Self {
+            initialized: hr.is_ok(),
+            _thread_bound: PhantomData,
+        }
+    }
+}
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        if self.initialized {
+            // SAFETY: balances the successful CoInitializeEx of `enter_sta`
+            // on the thread that made it; no COM object of ours outlives
+            // this guard.
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+/// The one thread timer that wakes the loop for the nearest `Delay`
+/// deadline. Created, killed and pumped on the executor thread, which owns
+/// it. `Instant` decides when a run goes on; the timer is only the wake-up,
+/// so an early, late, stale or repeated `WM_TIMER` only makes the loop
+/// poll and arm again.
+struct DelayTimer {
+    /// The timer's id and the deadline it was armed for.
+    armed: Option<(usize, Instant)>,
+}
+
+/// What [`DelayTimer::arm`] did.
+enum Arming {
+    /// No run waits for a deadline, and no timer is armed.
+    Idle,
+    /// A timer is armed for the nearest deadline.
+    Waiting,
+    /// The nearest deadline has passed: poll again without waiting.
+    Due,
+    /// No timer could be made.
+    Failed(windows::core::Error),
+}
+
+/// What to do with the timer, decided without a Win32 call.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    Kill,
+    Due,
+    Keep,
+    Arm { ms: u32, at: Instant },
+}
+
+/// The plan for a timer armed for `armed`, when the runs next wait for
+/// `next`. `code_ran` says whether code ran on this thread since the timer
+/// was armed: a runner call, or a message dispatched to a foreign window
+/// procedure, may have pumped the queue and eaten the timer's `WM_TIMER`,
+/// and since a thread timer repeats only after its full period, it is not
+/// trusted then.
+fn plan(armed: Option<Instant>, next: Next, now: Instant, code_ran: bool) -> Plan {
+    match next {
+        Next::Idle => Plan::Kill,
+        Next::At(at) if at <= now => Plan::Due,
+        Next::At(at) if !code_ran && armed == Some(at) => Plan::Keep,
+        Next::At(at) => Plan::Arm {
+            ms: timer_ms(now, at),
+            at,
+        },
+    }
+}
+
+impl DelayTimer {
+    fn new() -> Self {
+        Self { armed: None }
+    }
+
+    fn arm(&mut self, next: Next, now: Instant, code_ran: bool) -> Arming {
+        match plan(self.armed.map(|(_, at)| at), next, now, code_ran) {
+            Plan::Kill => {
+                self.kill();
+                Arming::Idle
+            }
+            Plan::Due => {
+                self.kill();
+                Arming::Due
+            }
+            Plan::Keep => Arming::Waiting,
+            Plan::Arm { ms, at } => {
+                // Killed and made anew rather than replaced by its id:
+                // "SetTimer can reuse timer IDs in the case where hWnd is
+                // NULL".
+                self.kill();
+                // SAFETY: with no window and no TimerProc the call reads no
+                // memory of ours and only posts WM_TIMER to this thread's
+                // queue, which this thread pumps; the id it returns is
+                // killed on this thread too. No coalescing, so macro pacing
+                // does not depend on the system's default tolerance.
+                let id = unsafe { SetCoalescableTimer(None, 0, ms, None, TIMERV_NO_COALESCING) };
+                if id == 0 {
+                    return Arming::Failed(windows::core::Error::from_thread());
+                }
+                self.armed = Some((id, at));
+                Arming::Waiting
+            }
+        }
+    }
+
+    /// A `WM_TIMER` arrived for `id`. Ours is killed, so that its periodic
+    /// repeat never comes, and forgotten: the next `arm` makes a timer from
+    /// `Instant`. Another id (a stale or a foreign one) changes nothing.
+    fn fired(&mut self, id: usize) {
+        if self.armed.is_some_and(|(armed, _)| armed == id) {
+            self.kill();
+        }
+    }
+
+    fn kill(&mut self) {
+        if let Some((id, _)) = self.armed.take() {
+            // SAFETY: KillTimer with no window and an id that
+            // SetCoalescableTimer returned on this thread reads no memory of
+            // ours; a timer that is gone only makes it fail. A WM_TIMER
+            // posted already stays queued, and the loop takes it for a wake.
+            let _ = unsafe { KillTimer(None, id) };
+        }
+    }
+}
+
+/// The time from `now` to `at` in whole milliseconds for a timer: rounded
+/// up, so that the timer does not fire before the deadline by its own
+/// count, and clamped to 1 ..= `USER_TIMER_MAXIMUM` (about 24.8 days).
+pub(crate) fn timer_ms(now: Instant, at: Instant) -> u32 {
+    let ms = at
+        .saturating_duration_since(now)
+        .as_nanos()
+        .div_ceil(1_000_000);
+    u32::try_from(ms)
+        .unwrap_or(u32::MAX)
+        .clamp(1, USER_TIMER_MAXIMUM)
+}
+
+/// Why the loop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    /// A stop was asked for, or every handle is gone.
+    Stopped,
+    /// It ended on its own; it has logged why.
+    Died,
+}
+
+/// The executor thread: its prologue, its loop and its epilogue.
+fn run_executor<R: Runner>(
+    mut runner: R,
+    queue: Receiver<Job>,
+    shared: &Shared,
+    counters: &Counters,
+    ready: &SyncSender<u32>,
+) {
+    let apartment = Apartment::enter_sta();
+    let mut msg = MSG::default();
+    // SAFETY: `msg` is a local that outlives the call, which only writes
+    // it; the call creates this thread's message queue, as
+    // PostThreadMessageW asks of the receiving thread, and removes nothing.
+    let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+    // SAFETY: GetCurrentThreadId takes no arguments, touches no memory of
+    // ours and cannot fail.
+    let thread_id = unsafe { GetCurrentThreadId() };
+    // A starter that gave up has dropped the queue's sender, so the loop
+    // ends at its first drain.
+    let _ = ready.send(thread_id);
+
+    // The queue, the timer and the runs are owned out here, outside the
+    // closure that can unwind, so that this epilogue also runs after a
+    // panic of the loop itself.
+    let mut timer = DelayTimer::new();
+    let mut runs = Runs::new();
+    let end = panic::catch_unwind(AssertUnwindSafe(|| {
+        run_loop(&mut runner, &queue, shared, &mut runs, &mut timer)
+    }))
+    .unwrap_or_else(|_| {
+        log::error!(
+            "the action executor panicked and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts"
+        );
+        End::Died
+    });
+
+    timer.kill();
+    shared.active_runs.store(0, Ordering::Release);
+    drop(runs);
+    if end == End::Died {
+        // The jobs still queued would vanish with the queue: they count as
+        // every later submit does.
+        while queue.try_recv().is_ok() {
+            counters.bump(Counter::ExecutorUnavailable);
+        }
+    }
+    drop(queue);
+    drop(runner);
+    drop(apartment);
+}
+
+fn report_panics(calls: Calls) {
+    for _ in 0..calls.panics {
+        log::error!("an action panicked on the action executor; it keeps running");
+    }
+}
+
+/// The loop: drain the jobs, advance the due runs, arm the timer, wait.
+fn run_loop(
+    runner: &mut dyn Runner,
+    queue: &Receiver<Job>,
+    shared: &Shared,
+    runs: &mut Runs,
+    timer: &mut DelayTimer,
+) -> End {
+    let live = |epoch: u64| shared.live(epoch);
+    let now = Instant::now;
+    let mut ctx = Ctx {
+        runner,
+        live: &live,
+        now: &now,
+    };
+    let mut msg = MSG::default();
+    // Whether code ran on this thread since the timer was last armed.
+    let mut code_ran = false;
+    loop {
+        // Jobs, oldest first, each followed by a poll, so that a due run is
+        // late by one job at most.
+        loop {
+            if shared.stopping() {
+                return End::Stopped;
+            }
+            match queue.try_recv() {
+                Ok(job) => {
+                    let mut calls = runs.start(job, &mut ctx);
+                    calls += runs.poll(&mut ctx).calls;
+                    code_ran |= calls.made > 0;
+                    report_panics(calls);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return End::Stopped,
+            }
+        }
+
+        let polled = runs.poll(&mut ctx);
+        code_ran |= polled.calls.made > 0;
+        report_panics(polled.calls);
+        shared.active_runs.store(runs.len(), Ordering::Release);
+        if shared.stopping() {
+            return End::Stopped;
+        }
+
+        match timer.arm(polled.next, Instant::now(), std::mem::take(&mut code_ran)) {
+            Arming::Due => continue,
+            Arming::Failed(error) => {
+                let stopped = runs.drop_timed();
+                shared.active_runs.store(runs.len(), Ordering::Release);
+                log::error!(
+                    "could not start the Delay timer ({error}); {stopped} macros waiting in a Delay stop"
+                );
+            }
+            Arming::Idle | Arming::Waiting => {}
+        }
+
+        // SAFETY: `msg` is a local that outlives the call, which only
+        // writes it.
+        let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        if got.0 == -1 {
+            log::error!(
+                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts",
+                windows::core::Error::from_thread()
+            );
+            return End::Died;
+        }
+        if got.0 == 0 {
+            // Nothing of ours posts WM_QUIT; foreign code on this thread
+            // asked it to end its loop.
+            log::error!(
+                "the action executor received WM_QUIT and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts"
+            );
+            return End::Died;
+        }
+        if msg.hwnd.is_invalid() && msg.message == WAKE {
+            continue;
+        }
+        if msg.hwnd.is_invalid() && msg.message == WM_TIMER && msg.lParam.0 == 0 {
+            timer.fired(msg.wParam.0);
+            continue;
+        }
+        // COM's hidden windows, or a foreign TimerProc's WM_TIMER.
+        // SAFETY: `msg` was filled by GetMessageW above and outlives both
+        // calls, which only read it.
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        code_ran = true;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -254,7 +921,7 @@ mod tests {
             Next::At(at) => {
                 let ms = timer_ms(base, at);
                 assert_eq!(ms, USER_TIMER_MAXIMUM);
-                assert!(ms <= u32::MAX - 1);
+                assert!(ms < u32::MAX, "no timer longer than u32::MAX - 1 ms");
                 assert!(
                     matches!(plan(None, polled.next, base, false), Plan::Arm { ms, .. } if ms == USER_TIMER_MAXIMUM),
                     "the timer is armed for at most USER_TIMER_MAXIMUM ms"

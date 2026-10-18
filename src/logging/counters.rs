@@ -10,7 +10,7 @@ use std::fmt::{self, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many counters there are.
-const SLOTS: usize = 4;
+const SLOTS: usize = 6;
 
 /// A condition that is counted instead of logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,12 @@ pub enum Counter {
     HoldTimerNotStarted,
     /// A log line was dropped because the log writer's queue was full.
     LogLinesDropped,
+    /// A `Launch`, `OpenUrl` or `Sequence` was dropped because the action
+    /// executor's queue was full.
+    ExecutorJobsDropped,
+    /// A `Launch`, `OpenUrl` or `Sequence` fired after the action executor
+    /// had stopped on its own, so it did nothing.
+    ExecutorUnavailable,
 }
 
 impl Counter {
@@ -33,6 +39,8 @@ impl Counter {
         Counter::KeyPressShort,
         Counter::HoldTimerNotStarted,
         Counter::LogLinesDropped,
+        Counter::ExecutorJobsDropped,
+        Counter::ExecutorUnavailable,
     ];
 }
 
@@ -43,6 +51,8 @@ impl fmt::Display for Counter {
             Counter::KeyPressShort => "key_press_short",
             Counter::HoldTimerNotStarted => "hold_timer_not_started",
             Counter::LogLinesDropped => "log_lines_dropped",
+            Counter::ExecutorJobsDropped => "executor_jobs_dropped",
+            Counter::ExecutorUnavailable => "executor_unavailable",
         })
     }
 }
@@ -63,6 +73,8 @@ impl Counters {
             Counter::KeyPressShort => &self.0[1],
             Counter::HoldTimerNotStarted => &self.0[2],
             Counter::LogLinesDropped => &self.0[3],
+            Counter::ExecutorJobsDropped => &self.0[4],
+            Counter::ExecutorUnavailable => &self.0[5],
         }
     }
 
@@ -121,9 +133,9 @@ mod tests {
     #[test]
     fn the_summary_names_every_counter_once_one_is_non_zero() {
         assert_eq!(
-            summary(&[3, 0, 1, 0]).as_deref(),
+            summary(&[3, 0, 1, 0, 0, 2]).as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0"
+                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2"
             )
         );
     }
@@ -135,7 +147,7 @@ mod tests {
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::LogLinesDropped);
 
-        assert_eq!(counters.take(), [0, 2, 0, 1]);
+        assert_eq!(counters.take(), [0, 2, 0, 1, 0, 0]);
         assert_eq!(counters.take(), [0; SLOTS], "take resets every count");
     }
 
@@ -148,7 +160,9 @@ mod tests {
                 "menu_mask_short",
                 "key_press_short",
                 "hold_timer_not_started",
-                "log_lines_dropped"
+                "log_lines_dropped",
+                "executor_jobs_dropped",
+                "executor_unavailable"
             ]
         );
     }
