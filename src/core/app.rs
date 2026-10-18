@@ -245,6 +245,12 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
 
             let main_thread_id = MAIN_THREAD_ID.load(Ordering::Acquire);
             if main_thread_id != 0 {
+                // SAFETY: PostThreadMessageW takes the thread id and the
+                // message by value and reads no memory of ours; WM_QUIT
+                // carries no pointer in its parameters. `run` stored the id
+                // before it registered this handler. An id that is no
+                // longer valid only makes the call fail, and the handler
+                // has nobody to report that to.
                 unsafe {
                     let _ = PostThreadMessageW(main_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
                 }
