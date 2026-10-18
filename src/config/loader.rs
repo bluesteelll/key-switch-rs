@@ -777,6 +777,7 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
+    use crate::logging::testing::capture;
     use crate::system::registry::hotkey_from_values;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
@@ -1603,6 +1604,26 @@ mod tests {
         let ron_text = r#"( bindings: [] )"#;
         let bindings = from_ron_str(ron_text).unwrap();
         assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn an_empty_config_warning_is_returned_not_logged() {
+        // The 1.6 review (m3): `parse_ron_str` is the half that does not
+        // log, so that a test can read every warning.
+        let no_hotkeys = |_: &BindAction| None;
+        let (parsed, lines) = capture(|| parse_ron_str("( bindings: [] )", &no_hotkeys));
+        let parsed = parsed.unwrap_or_else(|e| panic!("an empty config loads: {e}"));
+        assert_eq!(parsed.warnings, ["config contains no bindings"]);
+        assert_eq!(lines, Vec::<String>::new(), "parse_ron_str logs nothing");
+
+        let (loaded, lines) =
+            capture(|| from_ron_str_with_hotkeys("( bindings: [] )", &no_hotkeys));
+        assert!(loaded.expect("an empty config loads").is_empty());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with(" [WARN] config contains no bindings\n"),
+            "{lines:?}"
+        );
     }
 
     #[test]
