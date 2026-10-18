@@ -5,23 +5,23 @@ A trigger key is written by name, case and spaces ignored: `"CapsLock"`, `"Ctrl+
 <a id="s6"></a>
 ## 6. Key names and combo strings
 
-Main files: [src/config/parsing.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs), [src/data/vk_name.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs), [src/data/key_spec.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs), [src/engine/matching.rs](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/matching.rs). Facts describe commit `1dfd80a`. Key names and codes were checked with the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)). The codes that Windows sends were cross-checked against the layout tables of `kbdus.dll` and `kbdru.dll` (through `KbdLayerDescriptor`) during the audit, but were not tested on a live daemon.
+Main files: [src/config/parsing.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs), [src/config/loader.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs), [src/data/vk_name.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs), [src/data/key_spec.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_spec.rs), [src/engine/matching.rs](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/matching.rs). Facts describe commit `20af28d`, the tip of `master` after roadmap Phase 1. Key names and codes were checked with the validator, which runs the real loader ([How the audit was done](../methodology.md#validation-harness)). The codes that Windows sends were cross-checked against the layout tables of `kbdus.dll` and `kbdru.dll` (through `KbdLayerDescriptor`) during the audit, but were not tested on a live daemon.
 
 <a id="s6-1"></a>
 ### 6.1 Where key names appear in the config
 
 | Place | What is written | Parsed by | Code |
 |---|---|---|---|
-| `keys: "..."` | a combo string | `parse_combo`, into trigger keys | [src/config/loader.rs:401-403](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L401-L403) |
-| `sequence: (steps: [...])` | each step is a combo string | `parse_combo` for each step | [src/config/loader.rs:424-427](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L424-L427) |
-| `chord: (keys: [...])` | each element is **one** name, without `+` | `KeySpec::parse`; overlapping keys rejected | [src/config/loader.rs:439-452](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L439-L452) |
-| `action: PressKey("...")` | one name | `parse_vk`, into a key to send | [src/config/loader.rs:522-525](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L522-L525) |
-| step `Key("...")` in `Sequence([...])` | one name | `parse_vk` | [src/config/loader.rs:593-596](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L593-L596) |
-| step `Combo("...")` in `Sequence([...])` | a combo string | `parse_key_list`, into keys to send | [src/config/loader.rs:598-604](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L598-L604) |
+| `keys: "..."` | a combo string | `parse_combo`, into trigger keys | [src/config/loader.rs:530-532](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L530-L532) |
+| `sequence: (steps: [...])` | each step is a combo string | `parse_combo` for each step | [src/config/loader.rs:553-556](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L553-L556) |
+| `chord: (keys: [...])` | each element is **one** name, without `+` | `KeySpec::parse`; overlapping keys rejected | [src/config/loader.rs:568-581](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L568-L581) |
+| `action: PressKey("...")` | one name | `parse_vk`, into a key to send | [src/config/loader.rs:659-662](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L659-L662) |
+| step `Key("...")` in `Sequence([...])` | one name | `parse_vk` | [src/config/loader.rs:730-733](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L730-L733) |
+| step `Combo("...")` in `Sequence([...])` | a combo string | `parse_key_list`, into keys to send | [src/config/loader.rs:735-741](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/loader.rs#L735-L741) |
 
-Trigger keys (`keys`, steps, chord keys) and keys the daemon sends (`PressKey`, `Key`, `Combo`) use the same names but are stored differently. A trigger key is a `KeySpec`: either one key on its side, or a modifier on either side ([src/data/key_spec.rs:116-129](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs#L116-L129)). A key to send is a single virtual-key code ([§6.8](#s6-8)).
+Trigger keys (`keys`, steps, chord keys) and keys the daemon sends (`PressKey`, `Key`, `Combo`) use the same names but are stored differently. A trigger key is a `KeySpec`: either one key on its side, or a modifier on either side ([src/data/key_spec.rs:116-129](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_spec.rs#L116-L129)). A key to send is a single virtual-key code ([§6.8](#s6-8)).
 
-`Media(...)` (both the action and the step) does not take a key name. It takes a separate RON variant, written without quotes: `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute` ([src/config/schema.rs:169-181](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/schema.rs#L169-L181)). That is why `Media(Mute)` is a RON parse error, while `PressKey("Mute")` is valid (`VK_VOLUME_MUTE`, 0xAD).
+`Media(...)` (both the action and the step) does not take a key name. It takes a separate RON variant, written without quotes: `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute` ([src/config/schema.rs:207-219](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/schema.rs#L207-L219)). That is why `Media(Mute)` is a RON parse error, while `PressKey("Mute")` is valid (`VK_VOLUME_MUTE`, 0xAD).
 
 Case does not matter only inside strings that hold key names. RON identifiers (actions, `Media` variants, steps, triggers) are case-sensitive and are written without quotes: `Media(playpause)`, `pressKey("A")` and `Media("PlayPause")` are parse errors.
 
@@ -33,19 +33,19 @@ combo   := segment ( "+" segment )*
 segment := [whitespace] key-name [whitespace]
 ```
 
-`parse_combo` and `parse_key_list` share one splitter ([src/config/parsing.rs:15-52](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L15-L52)). It works as follows:
+`parse_combo` and `parse_key_list` share one splitter ([src/config/parsing.rs:15-52](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L15-L52)). It works as follows:
 
-1. The string is trimmed at both ends. If it is empty or consists only of whitespace, the error is `combo is empty` ([lines 36-39](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L36-L39)).
-2. The string is split at **every** `+` character ([line 42](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L42)). There is no escaping.
-3. Each segment is trimmed at both ends. An empty segment gives the error `empty segment in combo "<string>" (stray '+'?)` ([lines 43-46](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L43-L46)). This rejects `"Ctrl++A"`, `"+A"`, `"A+"`, `"+"` and `"Ctrl+ +A"`.
-4. Each segment is parsed as a key name. If the name is unknown, the error is `unknown key "<segment>" in combo "<string>"` ([lines 47-48](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L47-L48)). The segment is printed already trimmed, the string as it is written in the config. Parsing stops at the first unknown segment: `"Ctrl+Plus+Foo"` reports only `unknown key "Plus"`.
-5. **Duplicates are removed silently** (`KeyCombination::from_keys`, [src/data/key_combination.rs:50-59](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_combination.rs#L50-L59)). Two names are duplicates when they mean the same trigger key, so synonyms merge: `"Ctrl+Ctrl+A"` and `"Ctrl+Control+A"` give 2 keys, and so does `"Alt+Menu+F4"`. `Win` and `LWin` are different trigger keys (either Win key, the left one), so `"Win+LWin+Super+E"` keeps 3 keys: `Win`, `LWin`, `E`. `"Shift+LShift"` keeps both too; it is held only when the left Shift is, so it behaves like `"LShift"` (inferred from the code).
+1. The string is trimmed at both ends. If it is empty or consists only of whitespace, the error is `combo is empty` ([lines 36-39](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L36-L39)).
+2. The string is split at **every** `+` character ([line 42](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L42)). There is no escaping.
+3. Each segment is trimmed at both ends. An empty segment gives the error `empty segment in combo "<string>" (stray '+'?)` ([lines 43-46](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L43-L46)). This rejects `"Ctrl++A"`, `"+A"`, `"A+"`, `"+"` and `"Ctrl+ +A"`.
+4. Each segment is parsed as a key name. If the name is unknown, the error is `unknown key "<segment>" in combo "<string>"` ([lines 47-48](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L47-L48)). The segment is printed already trimmed, the string as it is written in the config. Parsing stops at the first unknown segment: `"Ctrl+Plus+Foo"` reports only `unknown key "Plus"`.
+5. **Duplicates are removed silently** (`KeyCombination::from_keys`, [src/data/key_combination.rs:50-59](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_combination.rs#L50-L59)). Two names are duplicates when they mean the same trigger key, so synonyms merge: `"Ctrl+Ctrl+A"` and `"Ctrl+Control+A"` give 2 keys, and so does `"Alt+Menu+F4"`. `Win` and `LWin` are different trigger keys (either Win key, the left one), so `"Win+LWin+Super+E"` keeps 3 keys: `Win`, `LWin`, `E`. `"Shift+LShift"` keeps both too; it is held only when the left Shift is, so it behaves like `"LShift"` (inferred from the code).
 6. The written order is kept, but it does not affect matching: `"A+Ctrl"` is the same trigger as `"Ctrl+A"`. The order matters only for the `Combo(...)` step ([§6.8](#s6-8)).
 
 <a id="s6-3"></a>
 ### 6.3 Name normalisation
 
-`parse_vk` and `KeySpec::parse` first normalise the name ([src/data/vk_name.rs:175-183](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L175-L183)): **all** Unicode whitespace characters are removed, including whitespace inside the name, tabs and U+00A0, and the name is lowercased with Unicode rules. This applies in every place that takes a name, including `PressKey`, `Key` and `chord`. Consequences:
+`parse_vk` and `KeySpec::parse` first normalise the name ([src/data/vk_name.rs:175-183](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L175-L183)): **all** Unicode whitespace characters are removed, including whitespace inside the name, tabs and U+00A0, and the name is lowercased with Unicode rules. This applies in every place that takes a name, including `PressKey`, `Key` and `chord`. Consequences:
 
 - case does not matter: `ctrl`, `CTRL` and `Ctrl` are equivalent;
 - spaces inside a name are allowed: `"Caps Lock"`, `"Page Up"`, `"Left Shift"`, `"Print Screen"`, `"Volume Up"`, `"F 1"`, `"Num 5"`, `PressKey("Volume Mute")`, even `"C T R L"`;
@@ -54,7 +54,7 @@ segment := [whitespace] key-name [whitespace]
 
 **Can a key be named `+`?** No. In a combo, `+` is always the separator. In the places that take a single name, `"+"` is not a key name either: `PressKey("+")` gives `PressKey: unknown key "+"`, the step `Key("+")` gives `step #0: Key: unknown key "+"`, and `chord: (keys: ["+", "k"])` gives `Chord key #0: unknown key name "+"`. There is no `Plus` word either. The `=`/`+` key of the main row is written as `"="` (`VK_OEM_PLUS`), and with Shift as `"Shift+="`. The numpad plus (`VK_ADD`) is not available at all.
 
-**Numbers in F-keys and numpad keys.** The number after the `F`, `Num` or `Numpad` prefix is parsed with `u16::parse` ([src/data/vk_name.rs:111-127](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L111-L127)). Therefore:
+**Numbers in F-keys and numpad keys.** The number after the `F`, `Num` or `Numpad` prefix is parsed with `u16::parse` ([src/data/vk_name.rs:111-127](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L111-L127)). Therefore:
 
 - leading zeros are allowed: `"F01"` = F1, `"F007"` = F7, `"Numpad05"` = Num5;
 - a `+` sign is allowed where the string is not split at `+`: `PressKey("F+1")` = F1, `PressKey("Num+5")` = Num5, `chord: (keys: ["F+13", "F+14"])` = F13 and F14. In `keys`, `sequence` and `Combo` the same string `"F+1"` is split into two keys: the letter F and the digit 1;
@@ -63,7 +63,7 @@ segment := [whitespace] key-name [whitespace]
 <a id="s6-4"></a>
 ### 6.4 Complete list of names
 
-**Modifiers** ([src/data/vk_name.rs:131-141](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L131-L141), [src/data/key_spec.rs:162-170](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs#L162-L170)). The "As a trigger" column applies to `keys`, `sequence` steps and `chord` keys ([§6.7](#s6-7)); the "As output" column to `PressKey`, `Key` and `Combo` ([§6.8](#s6-8)).
+**Modifiers** ([src/data/vk_name.rs:131-141](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L131-L141), [src/data/key_spec.rs:162-170](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_spec.rs#L162-L170)). The "As a trigger" column applies to `keys`, `sequence` steps and `chord` keys ([§6.7](#s6-7)); the "As output" column to `PressKey`, `Key` and `Combo` ([§6.8](#s6-8)).
 
 | Names | As a trigger | As output |
 |---|---|---|
@@ -82,7 +82,7 @@ segment := [whitespace] key-name [whitespace]
 
 These synonyms do not exist: `LControl`, `RControl`, `LMenu`, `RMenu`, `LSuper`, `RSuper`, `Windows`, `Cmd`, `Meta`, `AltGr`, `Fn`. `Menu` means Alt (in WinAPI it is VK_MENU), **not** the context-menu key.
 
-**Letters, digits, F-keys, numpad** ([src/data/vk_name.rs:103-127](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L103-L127), [src/data/vk_name.rs:185-192](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L185-L192))
+**Letters, digits, F-keys, numpad** ([src/data/vk_name.rs:103-127](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L103-L127), [src/data/vk_name.rs:185-192](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L185-L192))
 
 | Names | VK | Codes | Note |
 |---|---|---|---|
@@ -93,7 +93,7 @@ These synonyms do not exist: `LControl`, `RControl`, `LMenu`, `RMenu`, `LSuper`,
 
 Letters are identified by VK codes, not by characters. In the standard Russian layout the letter keys have the same VK codes as in US (the `kbdru.dll` and `kbdus.dll` tables match), so `"Ctrl+S"` also fires on Ctrl+`Ы` (`Ы` is the Russian letter on the S key). In QWERTZ and AZERTY layouts the letter VK follows the character, not the position: in the German `kbdgr.dll` the key in the US Z position sends `VK_Y`, and in the French `kbdfr.dll` the key in the US Q position sends `VK_A`.
 
-**Named keys** ([src/data/vk_name.rs:142-161](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L142-L161))
+**Named keys** ([src/data/vk_name.rs:142-161](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L142-L161))
 
 | Names | VK | Code |
 |---|---|---|
@@ -120,7 +120,7 @@ Letters are identified by VK codes, not by characters. In the standard Russian l
 
 These common spellings are **not** accepted: `PrtScr`, `SysRq`, `ScrLk`, `PgDown`, `PageDn`, `ArrowUp`, `Bksp`, `Caps-Lock`.
 
-**OEM punctuation.** The name is exactly one character ([src/data/vk_name.rs:193-206](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L193-L206)). It is the character the key produces in the **US layout**, which identifies its physical position. In the standard Russian layout these keys have the same VK codes as in US. Other layouts assign the OEM codes differently: for example, in the German `kbdgr.dll` the key in the US `` ` `` position sends `VK_OEM_5`, and in the French `kbdfr.dll` the key in the US `;` position sends `VK_M`.
+**OEM punctuation.** The name is exactly one character ([src/data/vk_name.rs:193-206](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L193-L206)). It is the character the key produces in the **US layout**, which identifies its physical position. In the standard Russian layout these keys have the same VK codes as in US. Other layouts assign the OEM codes differently: for example, in the German `kbdgr.dll` the key in the US `` ` `` position sends `VK_OEM_5`, and in the French `kbdfr.dll` the key in the US `;` position sends `VK_M`.
 
 | Name | VK | Code | Same key on the Russian `ЙЦУКЕН` layout |
 |---|---|---|---|
@@ -143,7 +143,7 @@ In a normal RON string the `\` key is written as `\\`: `"Ctrl+\\"`, `PressKey("\
 
 The `"` key is written as `"Shift+'"`; `"Ctrl+\""` gives `unknown key "\""`. There are no word names (`Plus`, `Minus`, `Comma`, `Grave`, `Tilde` …).
 
-**Media and volume** ([src/data/vk_name.rs:162-170](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L162-L170))
+**Media and volume** ([src/data/vk_name.rs:162-170](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L162-L170))
 
 | Names | VK | Code | `Media(…)` variant |
 |---|---|---|---|
@@ -157,7 +157,7 @@ The `"` key is written as `"Shift+'"`; `"Ctrl+\""` gives `unknown key "\""`. The
 
 Bare `Stop`, `Next` and `Previous` are not accepted as key names: they are `Media(...)` variants, not names.
 
-**How the daemon prints names.** At startup the daemon prints the list of bindings ([src/core/app.rs:99-112](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L99-L112)) with canonical names, not the way they are written in the config, and joins the keys of a combo with ` + `. A trigger key prints as `Shift`, `Ctrl`, `Alt` or `Win` when it means either side, and `LWin` for the left Win key ([src/data/key_spec.rs:184-194](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs#L184-L194)). Every other key prints with its `vk_name` ([src/data/vk_name.rs:5-73](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L5-L73)): `Super` is printed as `Win`, `Menu` as `Alt`, `LeftShift` as `LShift`, `Return` as `Enter`, `PrintScreen` as `PrtSc`, `Numpad5` as `Num5`. A key that a `PressKey` action sends prints with `vk_name`, so `PressKey("LWin")` prints as `press key Win`. The form `VK(n)` with a decimal `n` is the fallback output of `vk_name` for codes that have no name ([src/data/vk_name.rs:71](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/vk_name.rs#L71)). Every code that can be set in the config has a name, so `VK(n)` does not appear in this list, and the form is not parsed back.
+**How the daemon prints names.** At startup the daemon prints the list of bindings ([src/core/app.rs:100-117](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/app.rs#L100-L117)) with canonical names, not the way they are written in the config, and joins the keys of a combo with ` + `. A trigger key prints as `Shift`, `Ctrl`, `Alt` or `Win` when it means either side, and `LWin` for the left Win key ([src/data/key_spec.rs:184-194](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_spec.rs#L184-L194)). Every other key prints with its `vk_name` ([src/data/vk_name.rs:5-73](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L5-L73)): `Super` is printed as `Win`, `Menu` as `Alt`, `LeftShift` as `LShift`, `Return` as `Enter`, `PrintScreen` as `PrtSc`, `Numpad5` as `Num5`. A key that a `PressKey` action sends prints with `vk_name`, so `PressKey("LWin")` prints as `press key Win`. The form `VK(n)` with a decimal `n` is the fallback output of `vk_name` for codes that have no name ([src/data/vk_name.rs:71](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/vk_name.rs#L71)). Every code that can be set in the config has a name, so `VK(n)` does not appear in this list, and the form is not parsed back.
 
 <a id="s6-5"></a>
 ### 6.5 What does not exist at all
@@ -175,7 +175,7 @@ New key names are planned as [new feature 2](../roadmap.md#new-features-after-st
 <a id="s6-6"></a>
 ### 6.6 Windows behaviour that affects key names
 
-The hook adapter takes only `vkCode` and `dwExtraInfo` from `KBDLLHOOKSTRUCT` (the latter to skip its own synthesized events). It reads neither the flags nor the scan code ([src/hook/keyboard_hook_callback.rs:253-257](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L253-L257)). The codes in the list and in the two warnings below are taken from the layout tables of `kbdus.dll` and `kbdru.dll`; this was not tested on a live daemon:
+The hook adapter takes only `vkCode` and `dwExtraInfo` from `KBDLLHOOKSTRUCT` (the latter to skip its own synthesized events). It reads neither the flags nor the scan code ([src/hook/keyboard_hook_callback.rs:339-343](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/hook/keyboard_hook_callback.rs#L339-L343)). The codes in the list and in the two warnings below are taken from the layout tables of `kbdus.dll` and `kbdru.dll`; this was not tested on a live daemon:
 
 - the main Enter and the numpad Enter (scan code E0 1C) have the same code, `VK_RETURN`, so `"Enter"` catches both. The same goes for the navigation keys: `"Home"` catches both Home and Num7 with NumLock off;
 - with NumLock off, the numpad sends navigation codes: Num1 → End, Num8 → Up, Num0 → Insert, `.` → Delete, Num5 → `VK_CLEAR` (0x0C). In that state `"Num1"` does not fire, and `"End"` fires on Num1 as well.
@@ -191,10 +191,10 @@ The hook adapter takes only `vkCode` and `dwExtraInfo` from `KBDLLHOOKSTRUCT` (t
 
 How the daemon compares modifiers ([KS-07](../audit.md#ks-07), fixed in `1dfd80a`; the sided handling came with Workstream A):
 
-- For physical keys the low-level hook reports the code of the specific side: LShift 0xA0, RShift 0xA1, LCtrl 0xA2, RCtrl 0xA3, LAlt 0xA4, RAlt 0xA5, LWin 0x5B, RWin 0x5C. The engine keeps these codes in its table of held keys. Its modifier resync also writes the generic codes Shift 0x10, Ctrl 0x11 and Alt 0x12 from the Windows key state ([src/engine/keys.rs:20-37](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/keys.rs#L20-L37)).
-- Every trigger key is a `KeySpec`, fixed when the config loads. `Shift`, `Ctrl`, `Alt` and `Win` (`Super`) accept either side, and the generic code too; every other name accepts its own code only ([src/data/key_spec.rs:131-139](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/key_spec.rs#L131-L139)).
-- A key of a combo or of a sequence step counts as held if a key it accepts is held ([src/engine/keys.rs:226-236](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/keys.rs#L226-L236)). A chord key counts as pressed if it accepts the code of the key-down ([src/engine/chords.rs:72-74](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/chords.rs#L72-L74)).
-- Exact modifier matching compares families, not sides: the held modifiers are Shift, Ctrl, Alt and Win, each held if either of its keys is ([src/engine/matching.rs:38-45](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/matching.rs#L38-L45)). `"LShift+F13"` fires with the left Shift held, also when the right Shift is held too, and does not fire with only the right Shift.
+- For physical keys the low-level hook reports the code of the specific side: LShift 0xA0, RShift 0xA1, LCtrl 0xA2, RCtrl 0xA3, LAlt 0xA4, RAlt 0xA5, LWin 0x5B, RWin 0x5C. The engine keeps these codes in its table of held keys. Its modifier resync also writes the generic codes Shift 0x10, Ctrl 0x11 and Alt 0x12 from the Windows key state ([src/engine/keys.rs:20-37](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/keys.rs#L20-L37)).
+- Every trigger key is a `KeySpec`, fixed when the config loads. `Shift`, `Ctrl`, `Alt` and `Win` (`Super`) accept either side, and the generic code too; every other name accepts its own code only ([src/data/key_spec.rs:131-139](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/key_spec.rs#L131-L139)).
+- A key of a combo or of a sequence step counts as held if a key it accepts is held ([src/engine/keys.rs:244-254](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/keys.rs#L244-L254)). A chord key counts as pressed if it accepts the code of the key-down ([src/engine/chords.rs:72-74](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/chords.rs#L72-L74)).
+- Exact modifier matching compares families, not sides: the held modifiers are Shift, Ctrl, Alt and Win, each held if either of its keys is ([src/engine/matching.rs:38-45](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/matching.rs#L38-L45)). `"LShift+F13"` fires with the left Shift held, also when the right Shift is held too, and does not fire with only the right Shift.
 
 What to write in practice, the same in `keys`, `sequence` and `chord`:
 
@@ -211,19 +211,19 @@ What to write in practice, the same in `keys`, `sequence` and `chord`:
 A chord's keys must not overlap: `["Shift", "LShift"]`, `["Win", "RWin"]` and `["Ctrl", "Control"]` are load errors, because one press would count for two keys ([§9.1](kinds.md#s9-1)).
 
 > [!TIP]
-> **It is better not to put modifiers into chords at all.** A chord key is suppressed on **every** press ([src/engine/chords.rs:10-16](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/engine/chords.rs#L10-L16), [§9](kinds.md#s9)). For example, `["LCtrl", "F13"]` breaks every combination with the left Ctrl, and `chord: (keys: ["Shift", "Space"])` swallows both Shift keys and the space bar for normal typing.
+> **It is better not to put modifiers into chords at all.** A chord key is suppressed on **every** press ([src/engine/chords.rs:10-16](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/chords.rs#L10-L16), [§9](kinds.md#s9)). For example, `["LCtrl", "F13"]` breaks every combination with the left Ctrl, and `chord: (keys: ["Shift", "Space"])` swallows both Shift keys and the space bar for normal typing.
 
 <a id="s6-8"></a>
 ### 6.8 Synthesized input: `PressKey`, `Key`, `Combo`
 
-The code is passed to `SendInput` as is, with `wScan = 0` and without the `KEYEVENTF_EXTENDEDKEY` flag ([src/core/windows_actions.rs:163-202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163-L202), [src/data/sequence.rs:182-251](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L182-L251)). Side-specific names are allowed here and are sent with their own codes: `PressKey("RShift")` sends `VK_RSHIFT`, while `Shift`, `Ctrl` and `Alt` go out as the generic codes 0x10/0x11/0x12, and `Win` as the left Win key, 0x5B. The trigger-key rules of [§6.7](#s6-7) do not apply to output.
+The code is passed to `SendInput` as is, with `wScan = 0` and without the `KEYEVENTF_EXTENDEDKEY` flag ([src/core/windows_actions.rs:192-226](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L192-L226), [src/data/sequence.rs:181-245](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L181-L245)). Side-specific names are allowed here and are sent with their own codes: `PressKey("RShift")` sends `VK_RSHIFT`, while `Shift`, `Ctrl` and `Alt` go out as the generic codes 0x10/0x11/0x12, and `Win` as the left Win key, 0x5B. The trigger-key rules of [§6.7](#s6-7) do not apply to output.
 
 - Which side the application sees is decided by Windows; this was not tested on a live system.
 - `PressKey` and `Key` make a single press (down and up). A modifier is pressed and released at once, not held: `trigger: Hold(...)` with `PressKey("LShift")` does not give a held Shift. Holding a synthesized modifier is not implemented ([Hold that keeps a synthesized modifier held](../gaps.md#hold-that-keeps-a-synthesized-modifier-held)).
-- `Combo("...")` first presses all the modifiers (any of the 11 modifier codes, [src/data/sequence.rs:253-268](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L253-L268)) in the written order, then the other keys in the written order, and releases them in reverse order ([src/data/sequence.rs:202-236](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L202-L236)). For example, `Combo("A+Ctrl")` sends Ctrl↓ A↓ A↑ Ctrl↑. Repeated names are dropped by code ([src/config/parsing.rs:19-32](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/parsing.rs#L19-L32)).
+- `Combo("...")` first presses all the modifiers (any of the 11 modifier codes, [src/data/sequence.rs:247-262](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L247-L262)) in the written order, then the other keys in the written order, and releases them in reverse order ([src/data/sequence.rs:197-230](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L197-L230)). For example, `Combo("A+Ctrl")` sends Ctrl↓ A↓ A↑ Ctrl↑. Repeated names are dropped by code ([src/config/parsing.rs:19-32](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/parsing.rs#L19-L32)).
 
 > [!WARNING]
 > Because the extended-key flag is missing, programs that read the scan code (games, RDP and VM clients) may take right Ctrl/Alt for the left keys, and the arrows, Home/End, Insert/Delete and PageUp/PageDown for numpad keys (not tested; [KS-36](../audit.md#ks-36), open until roadmap [item 3.1](../roadmap.md#31-single-input-module)).
 
 > [!WARNING]
-> Known issue ([KS-19](../audit.md#ks-19)): synthesized presses do not release the modifiers that the user is physically holding ([src/core/windows_actions.rs:163](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163); [src/data/sequence.rs:182](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L182), [src/data/sequence.rs:202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/data/sequence.rs#L202)). With `keys: "Ctrl+Alt+L", action: PressKey("L")` the application receives Ctrl+Alt+L, not L ([§13.1](actions.md#s13-1)).
+> Known issue ([KS-19](../audit.md#ks-19)): synthesized presses do not release the modifiers that the user is physically holding ([src/core/windows_actions.rs:192](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/windows_actions.rs#L192); [src/data/sequence.rs:181](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L181), [src/data/sequence.rs:197](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L197)). With `keys: "Ctrl+Alt+L", action: PressKey("L")` the application receives Ctrl+Alt+L, not L ([§13.1](actions.md#s13-1)).
