@@ -83,7 +83,7 @@ pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
 /// The first value whose text is a `Combo` or `Disabled` decides (`Disabled`
 /// gives `None`); the values after it are not read. With no deciding value,
 /// or for a function without a registry location, the built-in default.
-/// Prints the [INFO] line that says where the hotkey came from.
+/// Logs the [INFO] line that says where the hotkey came from.
 pub(crate) fn hotkey_from_values<S: AsRef<str>>(
     function: SystemFunction,
     values: impl IntoIterator<Item = Option<S>>,
@@ -92,15 +92,13 @@ pub(crate) fn hotkey_from_values<S: AsRef<str>>(
         for value in values.into_iter().flatten() {
             match (location.parser)(value.as_ref()) {
                 HotkeySetting::Combo(combo) => {
-                    println!("[INFO] {function:?}: registry combination {combo}");
+                    log::info!("{function:?}: registry combination {combo}");
                     return Some(combo);
                 }
                 // KS-17: an Alt+Shift fallback here would swallow Shift
                 // pressed after Alt (KS-05) with no Windows hotkey to block.
                 HotkeySetting::Disabled => {
-                    println!(
-                        "[INFO] {function:?}: hotkey not assigned in Windows, no auto-blocker"
-                    );
+                    log::info!("{function:?}: hotkey not assigned in Windows, no auto-blocker");
                     return None;
                 }
                 HotkeySetting::Unknown => {}
@@ -110,7 +108,7 @@ pub(crate) fn hotkey_from_values<S: AsRef<str>>(
 
     let default = get_default_combination(function);
     if default.is_some() {
-        println!("[INFO] {function:?}: using default combination");
+        log::info!("{function:?}: using default combination");
     }
     default
 }
@@ -206,9 +204,8 @@ fn read_string_value(key: &HKeyGuard, value_name: &str) -> Option<String> {
     // Reject non-string types instead of reinterpreting REG_DWORD/REG_BINARY
     // bytes as UTF-16 and parsing garbage.
     if reg_type != REG_SZ && reg_type != REG_EXPAND_SZ {
-        eprintln!(
-            "[WARN] registry value {:?} has type {:?}, expected REG_SZ/REG_EXPAND_SZ",
-            value_name, reg_type
+        log::warn!(
+            "registry value {value_name:?} has type {reg_type:?}, expected REG_SZ/REG_EXPAND_SZ"
         );
         return None;
     }

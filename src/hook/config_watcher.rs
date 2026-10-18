@@ -160,11 +160,11 @@ fn reload_into(config_path: &Path, hook: &KeyboardHook) {
         Ok(new_bindings) => {
             let count = new_bindings.len();
             hook.update_bindings(new_bindings);
-            println!("[INFO] config reloaded ({} bindings live)", count);
+            log::info!("config reloaded ({count} bindings live)");
         }
         Err(e) => {
-            eprintln!("[ERROR] config reload failed:\n{}", e);
-            eprintln!("[INFO] keeping previous bindings live");
+            log::error!("config reload failed:\n{e}");
+            log::info!("keeping previous bindings live");
         }
     }
 }

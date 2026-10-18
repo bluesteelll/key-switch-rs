@@ -114,6 +114,22 @@ minor version; such entries sit under **Changed** and start with
   ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``;
   it was ``key-switch-rs: already running in this session; ...``. The exit
   code stays 2.
+- The lines of loading and reloading the config are log records (roadmap
+  item 1.7): `[INFO] loading config from ...`, `[INFO] generated default
+  config at ...`, `[INFO] config reloaded (N bindings live)`, the hotkey
+  lines such as `[INFO] SwitchLanguage: registry combination Alt+Shift`,
+  the `[WARN]` lines of a config that loads, and
+  `[ERROR] config reload failed:` with `[INFO] keeping previous bindings live`.
+  They also go into `daemon.log`, where every line of a reload error
+  carries its own time and `[ERROR]`, and the `[INFO]` lines go to stderr
+  instead of stdout. A reload or startup error no longer ends with a blank
+  line of its own on the console. Manual check: with the daemon running,
+  save `config.ron` with `bindngs:` instead of `bindings:`; `daemon.log`
+  gets `<time> [ERROR] config reload failed:`, the parse error on a line
+  with its own time and `[ERROR]`, and
+  `<time> [INFO] keeping previous bindings live`, and CapsLock still
+  switches the layout. After the fix and a save,
+  `[INFO] config reloaded (3 bindings live)`.
 
 - The source is formatted with `cargo fmt`.
 - The keyboard decisions moved into a pure decision core, `src/engine`

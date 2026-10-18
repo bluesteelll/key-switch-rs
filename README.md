@@ -147,7 +147,8 @@ without a restart.
 
 If the file does not load (a syntax error, an unknown or misspelled field,
 an unknown key name, a timing value outside 1 to 10000 ms, ...) or is
-deleted or renamed, the error is printed and the **previously-running
+deleted or renamed, the error is written to the console and to the
+[log file](#log-file), and the **previously-running
 bindings stay live** — a malformed save never
 bricks the daemon. Fix the file and save again to apply. The file is UTF-8,
 with or without a BOM.
@@ -619,7 +620,7 @@ every problem in one pass. Common cases:
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
 
-A warning does not stop the file from loading; it is printed at startup and
+A warning does not stop the file from loading; it is logged at startup and
 on every reload:
 
 - `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`
@@ -751,9 +752,17 @@ time in UTC (ISO 8601, with milliseconds) and the level:
 
 ```text
 2026-10-16T09:41:07.123Z [INFO] key-switch-rs 0.1.0 started (pid 4242), logging to C:\Users\you\AppData\Local\key-switch-rs\daemon.log
+2026-10-16T09:52:30.517Z [INFO] loading config from C:\Tools\key-switch-rs\config.ron
+2026-10-16T09:52:30.518Z [ERROR] config reload failed:
+2026-10-16T09:52:30.518Z [ERROR] config has 1 invalid binding(s):
+2026-10-16T09:52:30.518Z [ERROR]   - binding #0 [F13]: PressKey: unknown key "Foo"
+2026-10-16T09:52:30.518Z [INFO] keeping previous bindings live
 ```
 
-The console shows the same lines without the time, on stderr. The startup
+A message of several lines, such as the reload error above, repeats its
+time and level on every line, so that a search for `[ERROR]` finds all of
+it. The console shows the same lines without the time, on stderr, with the
+level on the first line of a message only. The startup
 banner (the list of bindings) is never written to the file, because a
 binding can hold the text of a macro. The log never records the keys you
 press or the text you type; lines about the config quote the config, key
