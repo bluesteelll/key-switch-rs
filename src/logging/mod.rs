@@ -123,24 +123,26 @@ pub fn init() {
     }
 }
 
-/// The order of [`init`]: starts the writer with `start_writer`, then
-/// installs the logger with `install`. `None` if `install` fails; the
-/// started writer is then dropped. Otherwise what `start_writer` returned.
+/// The order of [`init`]: installs the logger with `install`, and only if
+/// that worked starts the writer with `start_writer` and returns what it
+/// returned. `None` means the writer was never started: a second `init`,
+/// or one after another logger was installed, starts no thread that would
+/// report the counters once its queue is dropped.
 fn start_logging<W>(
     install: impl FnOnce() -> bool,
     start_writer: impl FnOnce() -> io::Result<W>,
 ) -> Option<io::Result<W>> {
-    let spawned = start_writer();
     if !install() {
         return None;
     }
-    Some(spawned)
+    Some(start_writer())
 }
 
 /// From now on, the writer also appends every line to `daemon.log` in
 /// `dir`, which it creates on demand, and returns the file's path. A file
 /// that cannot be written is reported once on the console, and every later
-/// line tries again. Fails only if there is no writer to hand the file to.
+/// line tries again. Fails if there is no writer to hand the file to, or
+/// if the writer's queue stays full for 1 s.
 pub fn attach_file(dir: &Path) -> io::Result<PathBuf> {
     let files = LogFiles::new(dir.to_path_buf());
     let path = files.path();
