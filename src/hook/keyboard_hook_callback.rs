@@ -685,6 +685,44 @@ mod tests {
         assert_eq!(MASKS_SENT.with(Cell::get), before + 1, "one mask asked for");
     }
 
+    /// The acceptance line of roadmap item 2.1: `rg "\.execute\(\)"
+    /// src/hook` finds nothing, so no action runs through the old entry
+    /// that ran every action on the hook thread. Every line of every file
+    /// under `src/hook` counts, tests included; the call is assembled, so
+    /// this test does not match itself.
+    #[test]
+    fn the_hook_path_names_no_execute_call() {
+        let call = concat!(".exe", "cute()");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("src/hook"))
+            .expect("list src/hook")
+            .map(|entry| entry.expect("a folder entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .collect();
+        files.sort();
+        assert!(files.len() >= 4, "the scan found the sources: {files:?}");
+
+        let mut sites = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read a source file");
+            let relative = file
+                .strip_prefix(root)
+                .expect("a file under the manifest folder")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (index, line) in text.lines().enumerate() {
+                if line.contains(call) {
+                    sites.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "execute calls under src/hook:\n{}",
+            sites.join("\n")
+        );
+    }
+
     #[test]
     #[ignore = "manual: injects vk 0xE8 down and up into the live input stream; run it with --ignored while Notepad has focus and check that it passes and nothing is typed and no menu opens"]
     fn the_menu_mask_key_is_inserted_into_the_input_stream() {
