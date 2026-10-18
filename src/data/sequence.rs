@@ -43,8 +43,11 @@ pub enum SequenceStep {
     /// thread, never in the hook callback.
     Delay(u64),
 
-    /// Apply a `ShowWindow`/`PostMessage` operation to the captured target
-    /// window.
+    /// Minimise, maximise or restore the captured target window with
+    /// `ShowWindowAsync`, or close it with a posted `WM_CLOSE`. Neither
+    /// waits for the window: it changes when its own thread handles the
+    /// request, so a step that depends on the change needs a `Delay`
+    /// before it.
     Window(WindowOp),
 
     /// Spawn a process. Same as the top-level `Launch` action.
@@ -268,26 +271,32 @@ fn apply_window_op(op: WindowOp, target: HWND) {
         return;
     }
 
-    // SAFETY: target is a non-invalid HWND obtained from GetForegroundWindow
-    // at sequence start; ShowWindow / PostMessageW both tolerate a stale
-    // HWND by returning an error / FALSE without UB.
-    unsafe {
-        match op {
-            WindowOp::Minimize => {
-                let _ = ShowWindow(target, SW_MINIMIZE);
+    // Nothing here waits for the target window, which may be Not
+    // Responding: ShowWindowAsync "posts a show-window event to
+    // the message queue of the given window", and WM_CLOSE is posted.
+    let show = match op {
+        WindowOp::Minimize => SW_MINIMIZE,
+        WindowOp::Maximize => SW_MAXIMIZE,
+        WindowOp::Restore => SW_RESTORE,
+        WindowOp::Close => {
+            // SAFETY: target is a non-invalid HWND obtained from
+            // GetForegroundWindow when the macro fired; PostMessageW takes
+            // it and the message by value, reads no memory of ours, and
+            // fails without UB on a stale HWND.
+            let posted = unsafe { PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+            if let Err(e) = posted {
+                log::warn!("window close PostMessage failed: {e:?}");
             }
-            WindowOp::Maximize => {
-                let _ = ShowWindow(target, SW_MAXIMIZE);
-            }
-            WindowOp::Restore => {
-                let _ = ShowWindow(target, SW_RESTORE);
-            }
-            WindowOp::Close => {
-                if let Err(e) = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)) {
-                    log::warn!("window close PostMessage failed: {e:?}");
-                }
-            }
+            return;
         }
+    };
+    // SAFETY: target is a non-invalid HWND obtained from GetForegroundWindow
+    // when the macro fired; ShowWindowAsync takes it by value, reads no
+    // memory of ours, only posts to the window's thread and returns FALSE
+    // without UB on a stale HWND.
+    let started = unsafe { ShowWindowAsync(target, show) };
+    if !started.as_bool() {
+        log::warn!("window step failed: ShowWindowAsync did not start {op:?}");
     }
 }
 
@@ -341,7 +350,7 @@ mod tests {
         assert_eq!(format!("{}", s), "delay 250ms");
     }
 
-    /// Ruling R2: `ShowWindow` waits until the target window's thread has
+    /// Roadmap item 2.1: `ShowWindow` waits until the target window's thread has
     /// handled the change, so on a window that is Not Responding it would
     /// hold up the one executor thread. The name is assembled, so the scan
     /// does not match itself.

@@ -197,6 +197,7 @@ These messages do not reject the file. The loader logs its messages to the daemo
 | `[WARN] type_text: SendInput sent N of M inputs` / `[WARN] press_key: …` / `[WARN] press_combo: …` | `Text`, `Key`, `Combo` steps: some events were not sent |
 | `[WARN] window step skipped: no foreground HWND captured` | a `Window(…)` step ran with no foreground window |
 | `[WARN] window close PostMessage failed: …` | a `Window(Close)` step could not post `WM_CLOSE` |
+| `[WARN] window step failed: ShowWindowAsync did not start Minimize` (or `Maximize`, `Restore`) | Windows did not accept the change of a `Window(…)` step, for example because the window was closed meanwhile ([§14.2](actions.md#s14-2)) |
 | `[WARN] no log file: the LocalAppData folder is unknown: …` | at startup the shell did not return `%LOCALAPPDATA%`; the daemon logs to the console only |
 | `[WARN] log file <path>: could not write: …` / `[WARN] log file <path>: could not rotate, so daemon.log grows past its limit: …` | on the console only, once per run of failures: `daemon.log` or its folder cannot be written, or another program holds a log file open without delete sharing. Every later line tries again |
 | `[INFO] log file <path> works again` | the first line written after such a run of failures |

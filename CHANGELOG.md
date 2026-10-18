@@ -347,6 +347,17 @@ minor version; such entries sit under **Changed** and start with
   `cargo test --locked -- --ignored --nocapture hold_the_daemon_pipe_name_for_a_manual_start`
   holds the pipe, the release daemon stops with that line and CapsLock
   stays CapsLock.
+- `Window(Minimize)`, `Window(Maximize)` and `Window(Restore)` macro steps
+  use `ShowWindowAsync` (roadmap item 2.1), so a window that is Not
+  Responding no longer holds up the macro or the other actions. The step
+  no longer waits for the window to finish the change: put a `Delay` after
+  it when the next step depends on it, for example after `Window(Restore)`
+  before typing into the window (the README and template examples already
+  do). A step that Windows does not accept logs
+  `[WARN] window step failed: ShowWindowAsync did not start Minimize` (or
+  `Maximize`, `Restore`). Manual check: with a `Window(Minimize)` macro
+  fired at a Not Responding window, an `OpenUrl` hotkey pressed right after
+  it opens its page at once.
 
 ### Fixed
 

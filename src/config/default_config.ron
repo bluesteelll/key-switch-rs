@@ -143,7 +143,9 @@
 //                            Operates on the window that was foreground
 //                            when the binding fired (captured once at the
 //                            start of the sequence — subsequent focus
-//                            changes don't redirect it).
+//                            changes don't redirect it). Does not wait for
+//                            the window: put a Delay after it when the
+//                            next step needs the change.
 // Delay(100)              — sleep N ms (worker thread, not the hook)
 // Text("Hello 🚀")        — type Unicode (layout-independent, supports
 //                            emoji via UTF-16 surrogate pairs)

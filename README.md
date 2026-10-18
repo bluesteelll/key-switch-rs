@@ -515,7 +515,7 @@ Eight step variants:
 | `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work. |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |
-| `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`.     |
+| `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`. It does not wait for the window (`ShowWindowAsync`, a posted `WM_CLOSE`): put a `Delay` after it when the next step depends on the change. |
 | `Launch(exe: "<path>", args: [...])` | Spawn a process (same as the top-level action).                                               |
 | `OpenUrl("<url>")`    | OS default handler (same as the top-level action).                                                           |
 | `Media(<key>)`        | Synthesize a media key (same as the top-level action).                                                       |

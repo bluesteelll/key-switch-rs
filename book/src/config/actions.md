@@ -297,16 +297,16 @@ action: Sequence([ <step>, <step>, ... ])
 
 `Window(Minimize)`, `Window(Maximize)`, `Window(Restore)`, `Window(Close)`. Case matters: `Window(minimize)` and `Window(Explode)` → ``Unexpected variant named ... in enum `RawWindowKind` ``. `Window` without parentheses → ``Expected opening `(` ``, `Window()` → `Expected identifier`.
 
-| Operation | Call ([src/data/sequence.rs:264-291](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/data/sequence.rs#L264-L291)) |
+| Operation | Call (`apply_window_op` in `src/data/sequence.rs`) |
 |---|---|
-| `Minimize` | `ShowWindow(target, SW_MINIMIZE)`: minimize and activate the next window |
-| `Maximize` | `ShowWindow(target, SW_MAXIMIZE)`: maximize |
-| `Restore` | `ShowWindow(target, SW_RESTORE)`: return from the minimized or maximized state to the normal one |
+| `Minimize` | `ShowWindowAsync(target, SW_MINIMIZE)`: minimize and activate the next window |
+| `Maximize` | `ShowWindowAsync(target, SW_MAXIMIZE)`: maximize |
+| `Restore` | `ShowWindowAsync(target, SW_RESTORE)`: return from the minimized or maximized state to the normal one |
 | `Close` | `PostMessageW(target, WM_CLOSE, 0, 0)`: asynchronous; the application may ask about saving |
 
 - If there was no foreground window when the macro started, the step is skipped with the message `[WARN] window step skipped: no foreground HWND captured`. The other steps still run.
-- The result of `ShowWindow` is ignored. Only a `Close` error is printed: `[WARN] window close PostMessage failed: ...`.
-- After `Window(Minimize)` the focus moves to another window, and the following `Text` and `Key` steps go there.
+- No operation waits for the window. `ShowWindowAsync` posts the change to the window's own thread, and the window changes when that thread handles it, so a window that is Not Responding holds up neither the macro nor the other actions (fixed on `feat/action-executor`, roadmap item 2.1; `ShowWindow` used to wait for the window). A change that Windows does not accept logs `[WARN] window step failed: ShowWindowAsync did not start Minimize` (or `Maximize`, `Restore`); a `Close` that cannot be posted logs `[WARN] window close PostMessage failed: ...`.
+- After `Window(Minimize)` the focus moves to another window once Windows has handled the minimize, and the following `Text` and `Key` steps go there. Put a `Delay` between them (for example `Delay(100)`), or the first keys can still reach the window being minimized. The same holds after `Window(Restore)`, before typing into the restored window.
 
 <a id="s14-3"></a>
 ### 14.3 `Delay(<ms>)`
