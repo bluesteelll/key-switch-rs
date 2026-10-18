@@ -269,9 +269,15 @@ minor version; such entries sit under **Changed** and start with
     such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
     lets Windows switch the layout as well, also when that binding sets
     `block_original_combo: true` itself.
-  - A `Tap` on `Alt` or `Win` alone lets Windows see the tap, which
-    activates the menu bar or opens Start. The menu mask key (KS-12, under
-    **Fixed**) does not cover it: nothing is swallowed there.
+  - A `Tap`, `Hold` or `DoubleTap` on `Alt` or `Win` alone lets Windows
+    see the tap, which activates the menu bar or opens Start. The menu mask
+    key (KS-12, under **Fixed**) does not cover it: nothing is swallowed
+    there.
+  - A `Hold` or `DoubleTap` made only of modifiers now sends its output
+    while that modifier is down in Windows. For example,
+    `( keys: "LCtrl", action: PressKey("Escape"), trigger: Hold(300) )`
+    sends Ctrl+Esc, which opens Start, where it used to send Escape. Write
+    `block_default: true` for the old output (KS-19, roadmap item 3.1).
   - `block_default: Some(true)` and `block_default: None` (the default)
     load, as for `keys`.
 - **Breaking:** one binding wins each key press (roadmap item 1.6, KS-13).
