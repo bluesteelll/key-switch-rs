@@ -1318,6 +1318,44 @@ mod tests {
         );
     }
 
+    /// Roadmap item 2.1: a macro's `Delay` is a deadline that the loop's
+    /// timer resumes, so neither the executor nor the steps it runs sleep
+    /// or block in a wait. The non-test lines of the three files count;
+    /// the names are assembled, so this test does not match itself.
+    #[test]
+    fn macros_never_sleep_or_block_in_a_wait() {
+        let banned = [
+            concat!("thread::", "sleep"),
+            concat!("MsgWaitFor", "MultipleObjects"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut sites = Vec::new();
+        for file in [
+            "src/core/executor/mod.rs",
+            "src/core/executor/runs.rs",
+            "src/data/sequence.rs",
+        ] {
+            let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
+            let lines: Vec<&str> = text.lines().collect();
+            let tests_at = lines
+                .windows(2)
+                .position(|pair| {
+                    pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {"
+                })
+                .unwrap_or_else(|| panic!("{file} has a tests module"));
+            for (index, line) in lines[..tests_at].iter().enumerate() {
+                if banned.iter().any(|name| line.contains(name)) {
+                    sites.push(format!("{file}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "sleeps or blocking waits:\n{}",
+            sites.join("\n")
+        );
+    }
+
     #[test]
     #[ignore = "manual: opens https://example.com in the default browser through Win32Runner on a real executor thread; check that the page opens and the test passes"]
     fn the_win32_runner_opens_a_url() {
