@@ -875,6 +875,53 @@ mod tests {
         assert_eq!(executor.stop(), Stopped::Joined);
     }
 
+    /// How late each `Delay(ms)` of a `[Key(F13), Delay(ms)] x count` macro
+    /// ended on a real executor thread: the time between two keys less
+    /// `ms`. Fails if a `Delay` ended early.
+    fn delay_lateness(ms: u64, count: usize) -> Vec<Duration> {
+        let (tx, records) = mpsc::channel();
+        let (executor, _) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let steps = (0..count)
+            .flat_map(|_| [key(VK_F13), delay(ms)])
+            .chain([key(VK_F13)])
+            .collect();
+        executor
+            .handle()
+            .submit(sequence(steps), TargetWindow::NONE);
+        let keys: Vec<Instant> = (0..=count).map(|_| next(&records).at).collect();
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        let wanted = Duration::from_millis(ms);
+        keys.windows(2)
+            .map(|pair| {
+                let gap = pair[1].duration_since(pair[0]);
+                assert!(gap >= wanted, "a Delay({ms}) ended after {gap:?}");
+                gap - wanted
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_delay_ends_within_a_few_ms_of_its_deadline() {
+        // A Delay used to be a high-resolution sleep, about 1 ms late. A
+        // wake on the system clock tick (about 15.6 ms) is about 10 ms late
+        // on average, and a thread timer is never shorter than 10 ms, so a
+        // Delay(5) on one is at least 5 ms late. 5 ms is a third of a tick
+        // and well above the lateness of a high-resolution timer here
+        // (under 1 ms); the median ignores the few gaps in which a loaded
+        // machine did not run the executor thread at once.
+        let limit = Duration::from_millis(5);
+        for (ms, count) in [(5, 20), (20, 20), (50, 10)] {
+            let mut late = delay_lateness(ms, count);
+            late.sort();
+            let median = late[late.len() / 2];
+            assert!(
+                median < limit,
+                "Delay({ms}) ended {median:?} late in the median; sorted: {late:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_delay_of_u64_max_waits_until_cancelled() {
         let (tx, records) = mpsc::channel();
