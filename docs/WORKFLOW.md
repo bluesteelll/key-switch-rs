@@ -20,7 +20,7 @@ are defined in [.claude/agents/](../.claude/agents/README.md):
 | `architecture-critic` | opus | xhigh | Read, Write, Glob, Grep, WebSearch, WebFetch | `cut.md`, spec, cited KS/roadmap entries, tree | `critique.md`, `critique_v2.md` |
 | `developer` | opus | xhigh | Read, Write, Edit, Glob, Grep, Bash | `cut.md`, critique, triage | code on the lane branch, `impl.md`, `fix_rN.md`, `merge.md` |
 | `code-reviewer` | opus | xhigh | Read, Write, Glob, Grep, Bash, WebSearch, WebFetch | lane diff via `git show` / `git diff`, `cut.md`, pack | `review_rN.md`; in TRIAGE mode `triage_rN.md` |
-| `tester` | **sonnet** | high | Read, Write, Edit, Glob, Grep, Bash | lane HEAD, `cut.md`, `impl.md`, pack | `test_rN.md`; scratch worktree under the lane dir; no commits |
+| `tester` | **sonnet** | high | Read, Write, Edit, Glob, Grep, Bash | lane HEAD, `cut.md`, `impl.md`, pack | `test_rN.md`; scratch worktree under the lane dir; only `Tests:` commits of test code |
 | `results-analyst` | opus | xhigh | Read, Write, Glob, Grep, Bash | every lane report + the actual diff | `results.md` (ACCEPT / REWORK / RETHINK) |
 | `project-analyst` | opus | xhigh (high as pack scout) | Read, Write, Glob, Grep, Bash, WebSearch, WebFetch | anything, read-only | analysis reports; `pack_rN.md` as scout |
 | `researcher` | opus | high | WebSearch, WebFetch, Read, Write, Glob, Grep | Win32 / crate docs, the web, the tree | a research report with citations |

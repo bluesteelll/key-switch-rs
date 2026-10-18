@@ -42,7 +42,8 @@ Rust 2024 keyboard remapper. One package builds the library `key_switch_rs`, the
 
 - The daemon's main thread installs a `WH_KEYBOARD_LL` hook and an `EVENT_SYSTEM_FOREGROUND` WinEvent
   hook and pumps `GetMessageW`; both callbacks run there. Helper threads: `ipc-server` and a worker per
-  connection, notify, `config-watcher`, a `hold-timer` thread per armed Hold, a worker per macro run.
+  connection, notify, `config-watcher`, a `hold-timer` thread per armed Hold, a worker per macro run,
+  and `log-writer` (`src/logging`), the only owner of the console and of `daemon.log`.
 - All hot state is one `KeyboardHook` in a `LazyLock` static, reached as `&'static KeyboardHook`:
   `ArcSwap<Vec<Binding>>`, the hook handles, and `Mutex<Engine>` (held and blocked keys, pending gestures)
   until roadmap item 2.2. The PID-mixed sentinel is `injected_sentinel()` in `core/constants.rs`.
