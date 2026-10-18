@@ -340,4 +340,33 @@ mod tests {
         let s = SequenceStep::Delay(250);
         assert_eq!(format!("{}", s), "delay 250ms");
     }
+
+    /// Ruling R2: `ShowWindow` waits until the target window's thread has
+    /// handled the change, so on a window that is Not Responding it would
+    /// hold up the one executor thread. The name is assembled, so the scan
+    /// does not match itself.
+    #[test]
+    fn a_window_step_never_waits_for_its_window() {
+        let blocking = concat!("ShowWindow", "(");
+        let file = "src/data/sequence.rs";
+        let text =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                .expect("read the sequence module");
+        let lines: Vec<&str> = text.lines().collect();
+        let tests_at = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .expect("the sequence module has a tests module");
+        let sites: Vec<String> = lines[..tests_at]
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(blocking))
+            .map(|(index, line)| format!("{file}:{}: {}", index + 1, line.trim()))
+            .collect();
+        assert!(
+            sites.is_empty(),
+            "synchronous ShowWindow calls:\n{}",
+            sites.join("\n")
+        );
+    }
 }
