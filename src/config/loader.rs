@@ -1238,6 +1238,20 @@ mod tests {
         assert!(lines[0].ends_with("-> (blocked)"), "{}", lines[0]);
     }
 
+    #[test]
+    fn mask_only_on_a_hotkey_a_binding_takes_over_warns_nothing() {
+        // KS-18: the "`" binding takes the hotkey over, so no blocker is
+        // added, and a warning about how that blocker would block is noise.
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+            (keys: "`", action: DoNothing),
+        ] )"#;
+        let parsed = parse_ron_str(text, &language_hotkey(&[VK_OEM_3]))
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        assert_eq!(parsed.warnings, Vec::<String>::new());
+        assert_eq!(blockers(&parsed.bindings), 0);
+    }
+
     // ---- The blocker's when: (roadmap item 1.2, KS-35) ----
 
     /// The mode and condition of every auto-blocker of `text`, loaded with
