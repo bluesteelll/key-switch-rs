@@ -265,6 +265,9 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     }
 }
 
+/// Posts `msg` to the foreground window, for `PostMessage`. It runs on the
+/// hook thread, so a failed post is only counted (`post_message_failed`),
+/// never logged.
 fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
     // SAFETY: GetForegroundWindow / PostMessageW have no preconditions on
     // their inputs beyond what we already validate (HWND non-invalid).
@@ -274,9 +277,8 @@ fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
             return;
         }
 
-        if let Err(e) = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam)) {
-            log::error!("Post message error {msg:#X}: {e:?}");
-        }
+        let posted = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam));
+        counters::bump_if_err(Counter::PostMessageFailed, &posted);
     }
 }
 

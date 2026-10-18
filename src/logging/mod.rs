@@ -9,11 +9,10 @@
 //! 1 MiB the file rotates into `daemon.1.log` and `daemon.2.log`.
 //!
 //! A thread that logs only builds its line and queues it without waiting
-//! (see `writer`), so logging is safe on the hook thread, where a fast
-//! action's failed post is still reported. The hook callback itself never
-//! logs: its per-event conditions go to [`counters`]. The failures of
-//! `Launch`, `OpenUrl` and macro steps are logged on the `action-executor`
-//! thread (roadmap item 2.1).
+//! (see `writer`). The hook path never logs: the hook callback and the
+//! fast actions it runs count their per-event conditions in [`counters`].
+//! The failures of `Launch`, `OpenUrl` and macro steps are logged on the
+//! `action-executor` thread (roadmap item 2.1).
 //!
 //! A program that never calls [`init`] loses every record, because `log`
 //! drops them until a logger is installed: a tool that loads a config to

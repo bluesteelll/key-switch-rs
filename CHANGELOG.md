@@ -117,13 +117,15 @@ minor version; such entries sit under **Changed** and start with
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 longest_callback_us=12`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
   one fired after the action executor had stopped on its own (it logs one
   `[ERROR]` line, and `Launch`, `OpenUrl` and `Sequence` then do nothing
-  until the daemon restarts). The line ends with `longest_callback_us`, the
+  until the daemon restarts); `post_message_failed`, a `SwitchLanguage`,
+  `SwitchLanguageBackward` or `PostMessage` whose `PostMessageW` failed.
+  The line ends with `longest_callback_us`, the
   longest keyboard-hook callback since the last report, in microseconds,
   and a callback of 5 ms or more triggers the line on its own.
 
@@ -366,6 +368,11 @@ minor version; such entries sit under **Changed** and start with
   `Maximize`, `Restore`). Manual check: with a `Window(Minimize)` macro
   fired at a Not Responding window, an `OpenUrl` hotkey pressed right after
   it opens its page at once.
+- `[ERROR] Post message error …`, `[ERROR] Language switch error: …` and
+  `[ERROR] Language switch backward error: …` are no longer logged
+  (roadmap item 2.1): those actions run on the hook thread, which never
+  logs, so a failed post is counted in `post_message_failed` and the error
+  text is no longer shown.
 
 ### Fixed
 

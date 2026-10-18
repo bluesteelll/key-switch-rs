@@ -67,7 +67,7 @@ One known issue and two fixes cut across several actions:
 Two further rules apply to every action:
 
 - `SendInput` events are tagged in `dwExtraInfo` ([src/core/constants.rs:15-28](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/core/constants.rs#L15-L28)), and the daemon's own hook passes them through before the decision core sees them ([src/hook/keyboard_hook_callback.rs:180-182](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/hook/keyboard_hook_callback.rs#L180-L182)). The output of one action therefore never triggers another binding: there is no chaining and no looping (`CapsLock → ToggleCapsLock` does not recurse), and the auto-blocker does not block the daemon's own synthesized input. To other programs this is ordinary injected input with the `LLKHF_INJECTED` flag.
-- Process rights. The release build requests `requireAdministrator` when it is linked with the MSVC linker ([build.rs:24-43](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/build.rs#L24-L43)): the daemon runs elevated, so `PostMessage` and `SendInput` reach any window. The debug build runs with the rights of whoever started it; UIPI then blocks input to elevated windows: the daemon prints the `PostMessage` error to the console, while `SendInput` is blocked silently.
+- Process rights. The release build requests `requireAdministrator` when it is linked with the MSVC linker ([build.rs:24-43](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/build.rs#L24-L43)): the daemon runs elevated, so `PostMessage` and `SendInput` reach any window. The debug build runs with the rights of whoever started it; UIPI then blocks input to elevated windows: a refused `PostMessage` is counted in `post_message_failed` ([§18.6](errors.md#s18-6)), while `SendInput` is blocked silently.
 
 <a id="s13-2"></a>
 ### 13.2 `SwitchLanguage` / `SwitchLanguageBackward`
@@ -81,7 +81,7 @@ No arguments. Code: [src/system/system_function.rs:43-80](https://github.com/blu
 
 - The window is obtained with `GetForegroundWindow()`. If there is no window, nothing happens.
 - Call: `PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST (0x0050), wParam, lParam = 0)`, where `wParam = INPUTLANGCHANGE_FORWARD (0x0002)` for `SwitchLanguage` and `INPUTLANGCHANGE_BACKWARD (0x0004)` for `SwitchLanguageBackward`.
-- Posting is asynchronous. A posting error is logged to the console and to `daemon.log` ([Log file](../build-and-run.md#log-file)): `[ERROR] Language switch error: ...` for `SwitchLanguage` and `[ERROR] Language switch backward error: ...` for `SwitchLanguageBackward`.
+- Posting is asynchronous. The action runs on the hook thread, so a posting error is only counted in `post_message_failed`, which the log writer reports in its counters line ([§18.6](errors.md#s18-6), [Log file](../build-and-run.md#log-file)); the error text is not shown (since `feat/action-executor`, roadmap item 2.1).
 - The recipient is the top-level window, not the focused child control. Whether to switch the layout is up to the window itself; usually `DefWindowProc` accepts the request.
 - No OS hotkey is pressed, so the action does not depend on what is configured in Windows (Alt+Shift and so on).
 - Equivalent: `PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2)` (forward) or `wparam: 4` (backward).
@@ -143,7 +143,7 @@ The values are passed as is: on x64, `wparam` becomes `usize` and `lparam` becom
 
 - The recipient is `PostMessageW(GetForegroundWindow(), ...)` at the moment the binding fires: the top-level window of the active application, not the focused child control and not the window under the cursor.
 - If there is no foreground window, nothing happens.
-- Posting is asynchronous, and the result of the processing is unknown. Only an error of the posting itself is logged: `[ERROR] Post message error 0x10: ...`, for example when UIPI blocks it in a debug build.
+- Posting is asynchronous, and the result of the processing is unknown. Only an error of the posting itself is noticed, for example when UIPI blocks it in a debug build: it is counted in `post_message_failed` ([§18.6](errors.md#s18-6)), without the error text, because the action runs on the hook thread.
 
 In practice:
 

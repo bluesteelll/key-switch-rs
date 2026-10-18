@@ -40,6 +40,8 @@ impl SystemFunction {
         registry::get_system_hotkey(self)
     }
 
+    /// Runs on the hook thread, so a failed post is only counted
+    /// (`post_message_failed`), never logged.
     fn switch_language_forward() {
         // SAFETY: GetForegroundWindow + PostMessageW require only a valid HWND,
         // which we validate.
@@ -49,17 +51,17 @@ impl SystemFunction {
                 return;
             }
 
-            if let Err(e) = PostMessageW(
+            let posted = PostMessageW(
                 Some(hwnd),
                 WM_INPUTLANGCHANGEREQUEST,
                 WPARAM(INPUTLANGCHANGE_FORWARD as usize),
                 LPARAM(0),
-            ) {
-                log::error!("Language switch error: {e:?}");
-            }
+            );
+            counters::bump_if_err(Counter::PostMessageFailed, &posted);
         }
     }
 
+    /// As [`switch_language_forward`](Self::switch_language_forward).
     fn switch_language_backward() {
         // SAFETY: same as switch_language_forward.
         unsafe {
@@ -68,14 +70,13 @@ impl SystemFunction {
                 return;
             }
 
-            if let Err(e) = PostMessageW(
+            let posted = PostMessageW(
                 Some(hwnd),
                 WM_INPUTLANGCHANGEREQUEST,
                 WPARAM(INPUTLANGCHANGE_BACKWARD as usize),
                 LPARAM(0),
-            ) {
-                log::error!("Language switch backward error: {e:?}");
-            }
+            );
+            counters::bump_if_err(Counter::PostMessageFailed, &posted);
         }
     }
 

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How many counters there are.
-const SLOTS: usize = 6;
+const SLOTS: usize = 7;
 
 /// A condition that is counted instead of logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +34,9 @@ pub enum Counter {
     /// A `Launch`, `OpenUrl` or `Sequence` fired after the action executor
     /// had stopped on its own, so it did nothing.
     ExecutorUnavailable,
+    /// The `PostMessageW` of a `SwitchLanguage`, `SwitchLanguageBackward` or
+    /// `PostMessage` action failed.
+    PostMessageFailed,
 }
 
 impl Counter {
@@ -45,6 +48,7 @@ impl Counter {
         Counter::LogLinesDropped,
         Counter::ExecutorJobsDropped,
         Counter::ExecutorUnavailable,
+        Counter::PostMessageFailed,
     ];
 }
 
@@ -57,6 +61,7 @@ impl fmt::Display for Counter {
             Counter::LogLinesDropped => "log_lines_dropped",
             Counter::ExecutorJobsDropped => "executor_jobs_dropped",
             Counter::ExecutorUnavailable => "executor_unavailable",
+            Counter::PostMessageFailed => "post_message_failed",
         })
     }
 }
@@ -100,6 +105,7 @@ impl Counters {
             Counter::LogLinesDropped => &self.counts[3],
             Counter::ExecutorJobsDropped => &self.counts[4],
             Counter::ExecutorUnavailable => &self.counts[5],
+            Counter::PostMessageFailed => &self.counts[6],
         }
     }
 
@@ -108,6 +114,15 @@ impl Counters {
         // AcqRel, the house default for an RMW; the counts publish no other
         // data, and on x86-64 every RMW is a locked instruction anyway.
         self.slot(counter).fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Counts one more `counter` if `result` is an error, without reading
+    /// the error: on the hook thread a failed call is counted, never
+    /// logged.
+    pub fn bump_if_err<T, E>(&self, counter: Counter, result: &Result<T, E>) {
+        if result.is_err() {
+            self.bump(counter);
+        }
     }
 
     /// Records that a keyboard callback took `took`, if it is the longest
@@ -173,6 +188,11 @@ pub fn bump(counter: Counter) {
     COUNTERS.bump(counter);
 }
 
+/// Counts one more `counter` in [`COUNTERS`] if `result` is an error.
+pub fn bump_if_err<T, E>(counter: Counter, result: &Result<T, E>) {
+    COUNTERS.bump_if_err(counter, result);
+}
+
 /// Records a keyboard callback's run time in [`COUNTERS`].
 pub fn record_callback(took: Duration) {
     COUNTERS.record_callback(took);
@@ -200,12 +220,12 @@ mod tests {
     fn the_summary_names_every_counter_once_one_is_non_zero() {
         assert_eq!(
             summary(&Snapshot {
-                counts: [3, 0, 1, 0, 0, 2],
+                counts: [3, 0, 1, 0, 0, 2, 0],
                 longest_callback: Duration::from_micros(42),
             })
             .as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 longest_callback_us=42"
+                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 longest_callback_us=42"
             )
         );
     }
@@ -217,7 +237,7 @@ mod tests {
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::LogLinesDropped);
 
-        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0]);
+        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0]);
         assert_eq!(
             counters.take().counts,
             [0; SLOTS],
@@ -259,9 +279,25 @@ mod tests {
         assert_eq!(
             summary(&slow).as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 longest_callback_us=5000"
+                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=5000"
             )
         );
+    }
+
+    #[test]
+    fn bump_if_err_counts_only_an_error() {
+        let counters = Counters::new();
+        counters.bump_if_err(Counter::PostMessageFailed, &Ok::<(), ()>(()));
+        counters.bump_if_err(Counter::PostMessageFailed, &Err::<(), &str>("denied"));
+
+        let counts = counters.take().counts;
+        let failed = Counter::ALL
+            .iter()
+            .zip(counts)
+            .find(|(counter, _)| **counter == Counter::PostMessageFailed)
+            .map(|(_, count)| count);
+        assert_eq!(failed, Some(1));
+        assert_eq!(counts.iter().sum::<u64>(), 1, "{counts:?}");
     }
 
     #[test]
@@ -275,7 +311,8 @@ mod tests {
                 "hold_timer_not_started",
                 "log_lines_dropped",
                 "executor_jobs_dropped",
-                "executor_unavailable"
+                "executor_unavailable",
+                "post_message_failed"
             ]
         );
     }
