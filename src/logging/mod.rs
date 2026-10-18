@@ -221,4 +221,130 @@ mod tests {
         assert!(attach_file(&dir).is_err());
         assert!(!dir.exists(), "nothing is created without a writer");
     }
+
+    /// Every `.rs` file under `dir`, recursively, except under `skip`.
+    fn rust_files(dir: &Path, skip: &Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("list a source folder") {
+            let path = entry.expect("a folder entry").path();
+            if path == skip {
+                continue;
+            }
+            if path.is_dir() {
+                rust_files(&path, skip, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// The numbers (from 1) of the lines of `fn print_welcome` in `text`,
+    /// from its `fn` line until its braces balance.
+    fn print_welcome_lines(text: &str) -> std::ops::RangeInclusive<usize> {
+        let mut first = None;
+        let mut depth = 0_i64;
+        for (index, line) in text.lines().enumerate() {
+            if first.is_none() && line.contains("fn print_welcome(") {
+                first = Some(index + 1);
+            }
+            let Some(start) = first else {
+                continue;
+            };
+            depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            if depth == 0 && line.contains('}') {
+                return start..=index + 1;
+            }
+        }
+        panic!("src/core/app.rs has no complete fn print_welcome");
+    }
+
+    /// Whether `line` names the `log` crate's path, as a macro call or an
+    /// import does, and not only a path that ends in `log`.
+    fn names_the_log_crate(line: &str) -> bool {
+        let path = concat!("log", "::");
+        line.match_indices(path).any(|(at, _)| {
+            !line[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|before| before.is_alphanumeric() || before == '_')
+        })
+    }
+
+    /// The acceptance line of roadmap item 1.7: the only print macros
+    /// under `src`, `src/bin` aside, are the startup banner's. And the hook
+    /// callback module logs nothing outside its tests: its per-event
+    /// conditions go to the counters. The macro names are assembled, so
+    /// this file does not match itself.
+    #[test]
+    fn only_the_startup_banner_prints_outside_src_bin() {
+        let print = concat!("print", "ln!");
+        let eprint = concat!("eprint", "ln!");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = root.join("src");
+        let mut files = Vec::new();
+        rust_files(&src, &src.join("bin"), &mut files);
+        files.sort();
+        assert!(files.len() > 10, "the scan found the sources: {files:?}");
+
+        let mut prints = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read a source file");
+            let relative = file
+                .strip_prefix(root)
+                .expect("a file under the manifest folder")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let banner = (relative == "src/core/app.rs").then(|| print_welcome_lines(&text));
+            for (index, line) in text.lines().enumerate() {
+                let number = index + 1;
+                let allowed = banner.as_ref().is_some_and(|lines| lines.contains(&number))
+                    && !line.contains(eprint);
+                if line.contains(print) && !allowed {
+                    prints.push(format!("{relative}:{number}: {}", line.trim()));
+                }
+            }
+        }
+
+        let callback = "src/hook/keyboard_hook_callback.rs";
+        let text = std::fs::read_to_string(root.join(callback)).expect("read the hook callback");
+        let lines: Vec<&str> = text.lines().collect();
+        let tests_at = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .expect("the hook callback has a tests module");
+        let hook_logs: Vec<String> = lines[..tests_at]
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| names_the_log_crate(line))
+            .map(|(index, line)| format!("{callback}:{}: {}", index + 1, line.trim()))
+            .collect();
+
+        let mut report = String::new();
+        if !prints.is_empty() {
+            report += &format!("{} print sites outside the startup banner:\n", prints.len());
+            for site in &prints {
+                report += &format!("  {site}\n");
+            }
+        }
+        if !hook_logs.is_empty() {
+            report += &format!(
+                "{} log calls in {callback} outside its tests:\n",
+                hook_logs.len()
+            );
+            for site in &hook_logs {
+                report += &format!("  {site}\n");
+            }
+        }
+        assert!(report.is_empty(), "{report}");
+    }
+
+    #[test]
+    fn a_path_that_only_ends_in_log_does_not_count_as_the_log_crate() {
+        let call = concat!("log", "::warn!(\"x\")");
+        assert!(names_the_log_crate(call));
+        assert!(names_the_log_crate(&format!("    {call}")));
+        assert!(names_the_log_crate(concat!("use ", "log", "::Level;")));
+        assert!(!names_the_log_crate("crate::logging::counters::bump(c)"));
+        assert!(!names_the_log_crate(concat!("sys", "log", "::send()")));
+        assert!(!names_the_log_crate(concat!("my_", "log", "::send()")));
+    }
 }
