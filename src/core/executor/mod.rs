@@ -1480,13 +1480,19 @@ mod tests {
 
     /// Roadmap item 2.1: a macro's `Delay` is a deadline that the loop's
     /// timer resumes, so neither the executor nor the steps it runs sleep
-    /// or block in a wait. The non-test lines of the three files count;
-    /// the names are assembled, so this test does not match itself.
+    /// or block in a wait of their own. The one wait is the loop's, for its
+    /// messages and its Delay timer at once, so that a message never waits
+    /// for the timer nor the timer for a message. The non-test lines of the
+    /// three files count; the names are assembled, so this test does not
+    /// match itself.
     #[test]
     fn macros_never_sleep_or_block_in_a_wait() {
+        let the_wait = concat!("MsgWaitFor", "MultipleObjectsEx(");
         let banned = [
             concat!("thread::", "sleep"),
             concat!("MsgWaitFor", "MultipleObjects"),
+            concat!("WaitFor", "SingleObject"),
+            concat!("GetMess", "ageW"),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut sites = Vec::new();
@@ -1509,10 +1515,18 @@ mod tests {
                 }
             }
         }
+        let (waits, others): (Vec<String>, Vec<String>) = sites.into_iter().partition(|site| {
+            site.starts_with("src/core/executor/mod.rs:") && site.contains(the_wait)
+        });
         assert!(
-            sites.is_empty(),
+            others.is_empty(),
             "sleeps or blocking waits:\n{}",
-            sites.join("\n")
+            others.join("\n")
+        );
+        assert_eq!(
+            waits.len(),
+            1,
+            "the executor's loop waits in exactly one place: {waits:?}"
         );
     }
 
