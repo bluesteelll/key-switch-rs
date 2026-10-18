@@ -582,7 +582,7 @@ fn report_panics(calls: Calls) {
 /// A runner call can pump this thread's queue (a `ShellExecuteW` dialog, a
 /// DDE or COM wait) and eat the `WAKE` of a job queued meanwhile, so the
 /// last thing before `GetMessageW` is a drain that found the queue empty,
-/// with no runner call after it (ruling V2-I1).
+/// with no runner call after it.
 fn run_loop(
     runner: &mut dyn Runner,
     queue: &Receiver<Job>,
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn a_job_queued_while_a_step_pumps_messages_runs_without_another_wake() {
-        // Ruling V2-I1: a step resumed after a Delay pumps the thread's
+        // A step resumed after a Delay pumps the thread's
         // queue (a ShellExecuteW dialog, a DDE wait) and eats the WAKE of a
         // job queued meanwhile; the job must run once the step returns,
         // with no further wake.
