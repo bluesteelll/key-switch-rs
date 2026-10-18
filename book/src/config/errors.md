@@ -17,19 +17,24 @@ A config that does not load produces one of four kinds of error: the file is mis
 
 If a file has both a parse error and validation errors, only the parse error is printed. Any error rejects the whole file.
 
-**At startup** the error is fatal ([src/main.rs:6-20](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs#L6-L20)):
+**At startup** the error is fatal ([src/main.rs:47-62](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/main.rs#L47-L62)):
 ```text
 [FATAL] config has 3 invalid binding(s):
   - binding #1 [Ctrl+Foo]: unknown key "Foo" in combo "Ctrl+Foo"
   - binding #2 [<unset>]: binding has none of `keys` / `sequence` / `chord` set — must specify exactly one
   - binding #3 [F14]: PressKey: unknown key "Baz"
 
-
 Press Enter to exit...
 ```
-The validation-error text itself ends with a newline, and one more is printed before `Press Enter to exit...`, so there are two blank lines here. For the other kinds there is one blank line.
+The log drops the line break at the end of the validation-error text, and one empty line is printed before `Press Enter to exit...`, so every kind of error has one blank line here. The `[FATAL]` record also goes into `daemon.log` ([Log file](../build-and-run.md#log-file)), where each of its lines starts with the timestamp and `[FATAL]`.
 
-**On hot reload** the same text is printed below `[ERROR] config reload failed:`. It is followed by `[INFO] keeping previous bindings live` (for validation errors, after a blank line), and the previous bindings keep working ([src/hook/config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L165-L168)).
+**On hot reload** the same text is logged below `[ERROR] config reload failed:`, followed by `[INFO] keeping previous bindings live` with no blank line between them, and the previous bindings keep working ([src/hook/config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/hook/config_watcher.rs#L165-L168)). In `daemon.log` every line of the error starts with the timestamp and `[ERROR]`:
+```text
+2026-10-16T09:52:30.518Z [ERROR] config reload failed:
+2026-10-16T09:52:30.518Z [ERROR] config has 1 invalid binding(s):
+2026-10-16T09:52:30.518Z [ERROR]   - binding #0 [F13]: PressKey: unknown key "Foo"
+2026-10-16T09:52:30.518Z [INFO] keeping previous bindings live
+```
 
 <a id="s18-2"></a>
 ### 18.2 File missing and file read errors
@@ -167,7 +172,7 @@ config has <K> invalid binding(s):
 <a id="s18-6"></a>
 ### 18.6 Messages at load time and at run time
 
-These messages do not reject the file. The loader prints its messages to the daemon console; the others appear when actions are executed.
+These messages do not reject the file. The loader logs its messages to the daemon console and to `daemon.log` ([Log file](../build-and-run.md#log-file)); the others appear there when actions are executed or the log file fails.
 
 | Message | Cause |
 |---|---|
@@ -182,18 +187,19 @@ These messages do not reject the file. The loader prints its messages to the dae
 | `[INFO] config reloaded (N bindings live)` | a reload was applied |
 | `[ERROR] config reload failed:` + `[INFO] keeping previous bindings live` | a reload was rejected ([§18.1](#s18-1)) |
 | `[WARN] could not start config file watcher for <path>: …` + `[INFO] continuing without hot-reload` | the watcher did not start ([§2.3](structure.md#s2-3)) |
-| `[WARN] could not start a hold timer, that Hold will not fire: …` | the `hold-timer` thread of a `Hold` could not be started ([§11.4](triggers-conditions.md#s11-4)) |
-| `Language switch error: …` / `Language switch backward error: …` | `WM_INPUTLANGCHANGEREQUEST` could not be posted |
-| `Post message error 0x10: …` | `PostMessageW` returned an error (for example, UIPI in a debug build) |
+| `[ERROR] Language switch error: …` / `[ERROR] Language switch backward error: …` | `WM_INPUTLANGCHANGEREQUEST` could not be posted |
+| `[ERROR] Post message error 0x10: …` | `PostMessageW` returned an error (for example, UIPI in a debug build) |
 | `[ERROR] Launch "…": program not found` | the program was not found ([§13.6](actions.md#s13-6)) |
 | `[ERROR] Launch "": program path has no file name` | `Launch(exe: "")` |
 | `[ERROR] Launch "…": batch file arguments are invalid` | arguments to a `.bat`/`.cmd` file that cannot be passed to cmd safely |
 | `[ERROR] OpenUrl "…": ShellExecuteW returned error code N` | `ShellExecuteW` returned a code ≤ 32 |
-| `SendInput dropped events for vk …: sent N of M` | `PressKey`, `Media` or `ToggleCapsLock`: some events were not sent |
-| `[WARN] SendInput inserted N of 2 menu mask key events` | the menu mask key ([§13.1](actions.md#s13-1)) was not inserted whole, for example because another thread blocked input ([src/hook/keyboard_hook_callback.rs:253-263](https://github.com/bluesteelll/key-switch-rs/blob/ad7fe86/src/hook/keyboard_hook_callback.rs#L253-L263)). A mask that UIPI keeps from an elevated window is lost without this message |
+| `[WARN] counters since the last report: menu_mask_short=N key_press_short=N hold_timer_not_started=N log_lines_dropped=N` | every 60 s and at exit, while a count is not 0 ([src/logging/counters.rs](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/logging/counters.rs)). The keyboard hook counts these instead of logging them per event: `menu_mask_short`, the menu mask key ([§13.1](actions.md#s13-1)) was not inserted whole, for example because another thread blocked input (a mask that UIPI keeps from an elevated window is lost without being counted); `key_press_short`, a `PressKey`, `Media` or `ToggleCapsLock` press was not sent whole; `hold_timer_not_started`, the `hold-timer` thread of a `Hold` could not be started, so that Hold did not fire ([§11.4](triggers-conditions.md#s11-4)); `log_lines_dropped`, log lines were lost to a full queue |
 | `[WARN] type_text: SendInput sent N of M inputs` / `[WARN] press_key: …` / `[WARN] press_combo: …` | `Text`, `Key`, `Combo` steps: some events were not sent |
 | `[WARN] window step skipped: no foreground HWND captured` | a `Window(…)` step ran with no foreground window |
 | `[WARN] window close PostMessage failed: …` | a `Window(Close)` step could not post `WM_CLOSE` |
+| `[WARN] no log file: the LocalAppData folder is unknown: …` | at startup the shell did not return `%LOCALAPPDATA%`; the daemon logs to the console only |
+| `[WARN] log file <path>: could not write: …` / `[WARN] log file <path>: could not rotate, so daemon.log grows past its limit: …` | on the console only, once per run of failures: `daemon.log` or its folder cannot be written, or another program holds a log file open without delete sharing. Every later line tries again |
+| `[INFO] log file <path> works again` | the first line written after such a run of failures |
 
 The run-time messages come from reading the code; the validator shows only the load-time ones.
 
