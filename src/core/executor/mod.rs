@@ -319,6 +319,7 @@ impl Executor {
         Arc::clone(&self.handle)
     }
 
+    /// The executor thread, so that a test can check where a job ran.
     pub fn thread(&self) -> &Thread {
         &self.thread
     }
