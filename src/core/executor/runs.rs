@@ -390,6 +390,30 @@ mod tests {
     }
 
     #[test]
+    fn the_nearest_deadline_of_several_waiting_runs_is_next() {
+        let mut fixture = Fixture::new();
+        fixture.start(sequence(vec![delay(200), key(VK_F13)]));
+        fixture.start(sequence(vec![delay(50), key(VK_F14)]));
+        fixture.start(sequence(vec![delay(900), key(VK_F15)]));
+
+        let waiting = fixture.poll();
+        assert_eq!(
+            waiting.next,
+            Next::At(fixture.ms(50)),
+            "the timer is armed for the earliest deadline, not the oldest or the latest run's"
+        );
+
+        fixture.at(50);
+        let after_first = fixture.poll();
+        assert_eq!(fixture.taken(), ["key F14"]);
+        assert_eq!(
+            after_first.next,
+            Next::At(fixture.ms(200)),
+            "with the nearest run gone the next one is the nearest"
+        );
+    }
+
+    #[test]
     fn two_macros_fired_together_interleave_at_their_delays_and_keep_their_order() {
         let mut fixture = Fixture::new();
         fixture.start(sequence(vec![
