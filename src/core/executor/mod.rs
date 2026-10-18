@@ -1283,6 +1283,28 @@ mod tests {
     }
 
     #[test]
+    fn launch_and_open_url_carry_no_window_and_ask_for_none() {
+        // Only a Sequence reads the foreground window; for the others the
+        // hook thread makes no Win32 call and queues NONE. Where no window
+        // has the foreground at all, NONE and the foreground are the same
+        // and this checks nothing, so it runs where a desktop exists.
+        let launch = BindAction::Launch {
+            exe: "tool.exe".to_owned(),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            TargetWindow::for_action(&launch),
+            TargetWindow::NONE,
+            "a Launch never reads its window"
+        );
+        assert_eq!(
+            TargetWindow::for_action(&open("https://example.com")),
+            TargetWindow::NONE,
+            "an OpenUrl never reads its window"
+        );
+    }
+
+    #[test]
     fn a_panicking_job_leaves_the_executor_running() {
         let (tx, records) = mpsc::channel();
         let (executor, _) = start(

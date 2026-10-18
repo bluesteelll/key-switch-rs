@@ -301,6 +301,19 @@ mod tests {
     }
 
     #[test]
+    fn bump_if_err_ignores_an_ok_result() {
+        let counters = Counters::new();
+        counters.bump_if_err(Counter::PostMessageFailed, &Ok::<(), ()>(()));
+
+        let counts = counters.take().counts;
+        assert_eq!(
+            counts.iter().sum::<u64>(),
+            0,
+            "an Ok result counts nothing: {counts:?}"
+        );
+    }
+
+    #[test]
     fn counter_names_are_snake_case() {
         let names: Vec<String> = Counter::ALL.iter().map(Counter::to_string).collect();
         assert_eq!(
