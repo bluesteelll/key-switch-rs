@@ -122,6 +122,8 @@ pub fn bump(counter: Counter) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -149,6 +151,45 @@ mod tests {
 
         assert_eq!(counters.take(), [0, 2, 0, 1, 0, 0]);
         assert_eq!(counters.take(), [0; SLOTS], "take resets every count");
+    }
+
+    #[test]
+    fn the_longest_callback_is_kept_until_taken() {
+        let counters = Counters::new();
+        counters.record_callback(Duration::from_millis(3));
+        counters.record_callback(Duration::from_millis(1));
+        assert_eq!(counters.longest_callback(), Duration::from_millis(3));
+
+        assert_eq!(counters.take().longest_callback, Duration::from_millis(3));
+        assert_eq!(
+            counters.longest_callback(),
+            Duration::ZERO,
+            "take resets it"
+        );
+        assert_eq!(counters.take().longest_callback, Duration::ZERO);
+    }
+
+    #[test]
+    fn a_slow_callback_alone_is_reported_and_a_fast_one_is_not() {
+        // Roadmap item 2.1: a callback is normally a few microseconds, so
+        // the gauge triggers a report only from the 5 ms budget, and normal
+        // typing adds no line per minute.
+        let fast = Snapshot {
+            counts: [0; SLOTS],
+            longest_callback: Duration::from_micros(4_999),
+        };
+        assert_eq!(summary(&fast), None);
+
+        let slow = Snapshot {
+            counts: [0; SLOTS],
+            longest_callback: SLOW_CALLBACK,
+        };
+        assert_eq!(
+            summary(&slow).as_deref(),
+            Some(
+                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 longest_callback_us=5000"
+            )
+        );
     }
 
     #[test]

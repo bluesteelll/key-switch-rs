@@ -679,6 +679,26 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_callback_records_how_long_it_ran() {
+        // Roadmap item 2.1: the gauge lives in the process-wide counters,
+        // which no test takes (no test starts the daemon's writer), so an
+        // event of another test can only raise it. The callback reads the
+        // process-wide hook, hence `GLOBAL_HOOK`; the binding is
+        // `DoNothing`, so nothing is sent.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert!(counters::COUNTERS.longest_callback() > Duration::ZERO);
+    }
+
+    #[test]
     fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
         let inputs = menu_mask_inputs();
         for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {

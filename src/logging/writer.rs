@@ -356,6 +356,21 @@ mod tests {
     }
 
     #[test]
+    fn a_flush_reports_a_slow_callback() {
+        let console = Console::default();
+        let counters = leaked_counters();
+        let tx = start(&console, counters, NEVER);
+        counters.record_callback(Duration::from_millis(7));
+
+        assert!(flush_on(&tx, WAIT), "the flush is acknowledged");
+
+        assert_eq!(
+            console.text(),
+            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 longest_callback_us=7000\n"
+        );
+    }
+
+    #[test]
     fn the_writer_reports_counters_every_period() {
         let console = Console::default();
         let counters = leaked_counters();
