@@ -233,7 +233,7 @@ impl KeyboardHook {
             // most once.
             let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(we_handle)) };
             if let Err(error) = removed.ok() {
-                eprintln!("[WARN] could not remove the foreground hook: {error}");
+                log::warn!("could not remove the foreground hook: {error}");
             }
         }
 

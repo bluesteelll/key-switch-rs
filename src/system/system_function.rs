@@ -55,7 +55,7 @@ impl SystemFunction {
                 WPARAM(INPUTLANGCHANGE_FORWARD as usize),
                 LPARAM(0),
             ) {
-                eprintln!("Language switch error: {:?}", e);
+                log::error!("Language switch error: {e:?}");
             }
         }
     }
@@ -74,7 +74,7 @@ impl SystemFunction {
                 WPARAM(INPUTLANGCHANGE_BACKWARD as usize),
                 LPARAM(0),
             ) {
-                eprintln!("Language switch backward error: {:?}", e);
+                log::error!("Language switch backward error: {e:?}");
             }
         }
     }
@@ -86,7 +86,7 @@ impl SystemFunction {
             .args(["user32.dll,LockWorkStation"])
             .spawn()
         {
-            eprintln!("LockWorkStation spawn error ({}): {}", exe.display(), e);
+            log::error!("LockWorkStation spawn error ({}): {e}", exe.display());
         }
     }
 
@@ -96,13 +96,13 @@ impl SystemFunction {
             let hwnd = match FindWindowW(w!("Shell_TrayWnd"), None) {
                 Ok(h) if !h.is_invalid() => h,
                 _ => {
-                    eprintln!("[WARN] Shell_TrayWnd not found - cannot show desktop");
+                    log::warn!("Shell_TrayWnd not found - cannot show desktop");
                     return;
                 }
             };
 
             if let Err(e) = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(419), LPARAM(0)) {
-                eprintln!("Show desktop error: {:?}", e);
+                log::error!("Show desktop error: {e:?}");
             }
         }
     }
@@ -111,7 +111,7 @@ impl SystemFunction {
         use std::process::Command;
         let exe = system32_path("Taskmgr.exe");
         if let Err(e) = Command::new(&exe).spawn() {
-            eprintln!("Taskmgr spawn error ({}): {}", exe.display(), e);
+            log::error!("Taskmgr spawn error ({}): {e}", exe.display());
         }
     }
 

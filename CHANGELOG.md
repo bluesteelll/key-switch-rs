@@ -149,6 +149,36 @@ minor version; such entries sit under **Changed** and start with
   line at every cut-short press, which at the auto-repeat rate filled the
   console, and no line names the key that was cut short; the error of a
   failed thread start is no longer shown.
+- Every other line the daemon printed is a log record too (roadmap item
+  1.7), so it also goes into `daemon.log`; only the startup banner stays
+  on stdout and out of the file. The console lines change:
+  - the `✓` lines are `[INFO] Hook installed successfully`,
+    ``[INFO] IPC server listening (use `swch on/off/exit`)`` and
+    `[INFO] Watching <path> for changes`, without the blank line after
+    them; `Removing keyboard hook...` and `Received shutdown signal...`
+    get `[INFO]`;
+  - errors that had no tag get `[ERROR]`: `Launch`, `OpenUrl` and
+    `PostMessage` failures, the language switch, `LockWorkStation`, show
+    desktop and Task Manager;
+  - the `[WARN]` of a macro `Key` step that `SendInput` cut short no
+    longer names the key: `[WARN] press_key: SendInput sent 1 of 2`;
+  - every `[INFO]` line goes to stderr instead of stdout, so a script that
+    reads the daemon's stdout sees the banner only.
+
+  On Ctrl+C or a closed console window the daemon writes the queued lines
+  before it ends. Manual checks: with
+  `( keys: "F13", action: Launch(exe: "no-such-program.exe") )`, pressing
+  F13 writes `<time> [ERROR] Launch "no-such-program.exe": program not found`
+  to `daemon.log` and typing is not delayed; with
+  `( keys: "F13", action: PressKey("A") )` in the default config, text typed
+  in Notepad and a layout switch with CapsLock leave no typed word in any of
+  the three log files (`Select-String`); under `conhost.exe` with QuickEdit
+  on, a selection held in the daemon's console while F13 is pressed five
+  times does not delay typing in Notepad, and the five `[ERROR] Launch`
+  lines appear once the selection is released (on `master` before this
+  change, typing stalls while the selection is held); a daemon started
+  by its Scheduled Task writes a reload error to `daemon.log` with a
+  timestamp although nobody watches its console.
 
 - The source is formatted with `cargo fmt`.
 - The keyboard decisions moved into a pure decision core, `src/engine`

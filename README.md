@@ -762,11 +762,15 @@ time in UTC (ISO 8601, with milliseconds) and the level:
 A message of several lines, such as the reload error above, repeats its
 time and level on every line, so that a search for `[ERROR]` finds all of
 it. The console shows the same lines without the time, on stderr, with the
-level on the first line of a message only. The startup
-banner (the list of bindings) is never written to the file, because a
-binding can hold the text of a macro. The log never records the keys you
-press or the text you type; lines about the config quote the config, key
-names included.
+level on the first line of a message only. Only the startup banner (the
+list of bindings) goes to stdout, and it is never written to the file,
+because a binding can hold the text of a macro. The log never records the
+keys you press or the text you type; lines about the config quote the
+config, key names included. What the keyboard hook must not log at every
+key press, a `SendInput` that Windows cut short or a Hold whose timer
+could not start, it counts; while a count is not 0, one
+`[WARN] counters since the last report: ...` line every minute and at exit
+gives all of them.
 
 At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
 becomes `daemon.2.log`, and the oldest file is deleted: three files, about

@@ -235,7 +235,7 @@ fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
         }
 
         if let Err(e) = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam)) {
-            eprintln!("Post message error {:#X}: {:?}", msg, e);
+            log::error!("Post message error {msg:#X}: {e:?}");
         }
     }
 }
@@ -251,7 +251,7 @@ pub(crate) fn launch_process(exe: &str, args: &[String]) {
             // We drop the Child handle; the OS keeps the process alive.
         }
         Err(e) => {
-            eprintln!("[ERROR] Launch {:?}: {}", exe, e);
+            log::error!("Launch {exe:?}: {e}");
         }
     }
 }
@@ -277,10 +277,7 @@ pub(crate) fn shell_open(target: &str) {
     // HINSTANCE-as-pointer convention is tagged-pointer-style on Windows).
     let val = result.0 as usize;
     if val <= 32 {
-        eprintln!(
-            "[ERROR] OpenUrl {:?}: ShellExecuteW returned error code {}",
-            target, val
-        );
+        log::error!("OpenUrl {target:?}: ShellExecuteW returned error code {val}");
     }
 }
 

@@ -135,7 +135,7 @@ impl IpcListener {
                             thread::spawn(move || handle_connection(stream, control.as_ref()));
                         }
                         Err(e) => {
-                            eprintln!("[WARN] IPC accept error: {}", e);
+                            log::warn!("IPC accept error: {e}");
                         }
                     }
                 }
@@ -155,7 +155,7 @@ where
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     if let Err(e) = reader.read_line(&mut line) {
-        eprintln!("[WARN] IPC read error: {}", e);
+        log::warn!("IPC read error: {e}");
         return;
     }
 
@@ -167,7 +167,7 @@ where
     };
 
     if let Err(e) = stream.write_all(response.as_bytes()) {
-        eprintln!("[WARN] IPC write error: {}", e);
+        log::warn!("IPC write error: {e}");
     }
     let _ = stream.flush();
 }
@@ -364,16 +364,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual: holds the daemon's pipe for 60 s; meanwhile start the release daemon and check that it stops with [FATAL] could not create the IPC pipe and that CapsLock is not remapped"]
+    #[ignore = "manual: holds the daemon's pipe for 60 s; meanwhile start the release daemon now, check that it stops with [FATAL] could not create the IPC pipe, press CapsLock in Notepad and check that it is not remapped, then press Enter in the daemon's console"]
     fn hold_the_daemon_pipe_name_for_a_manual_start() {
-        let path = crate::ipc::pipe_path(crate::ipc::PIPE_NAME);
         let _listener = match bind(crate::ipc::PIPE_NAME) {
             Ok(listener) => listener,
             Err(error) => panic!("a daemon owns the pipe; stop it first: {error}"),
         };
-        eprintln!(
-            "holding {path} for 60 s: start the release daemon now, press CapsLock in Notepad, then Enter in the daemon's console"
-        );
         thread::sleep(Duration::from_secs(60));
     }
 }
