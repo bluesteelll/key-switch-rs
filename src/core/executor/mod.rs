@@ -729,7 +729,10 @@ mod tests {
 
     /// The counts since the last call, each with its counter.
     fn take_counts(counters: &Counters) -> Vec<(Counter, u64)> {
-        Counter::ALL.into_iter().zip(counters.take()).collect()
+        Counter::ALL
+            .into_iter()
+            .zip(counters.take().counts)
+            .collect()
     }
 
     fn count_of(counts: &[(Counter, u64)], counter: Counter) -> u64 {

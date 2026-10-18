@@ -357,16 +357,25 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
+    // Our own work only: from here until the decision is carried out, not
+    // the passes above, which do nothing, nor CallNextHookEx (roadmap item
+    // 2.1). Two clock reads and one RMW per event.
+    let started = Instant::now();
     // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
     // this call; two fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-    if let Some(decision) = decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
-        let suppress = decision.suppress;
-        carry_out(hook, decision);
-        if suppress {
-            return LRESULT(1);
+    let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+        Some(decision) => {
+            let suppress = decision.suppress;
+            carry_out(hook, decision);
+            suppress
         }
+        None => false,
+    };
+    counters::record_callback(started.elapsed());
+    if suppress {
+        return LRESULT(1);
     }
 
     // SAFETY: passes the event on with the exact arguments the system gave

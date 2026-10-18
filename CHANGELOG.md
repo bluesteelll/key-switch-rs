@@ -117,13 +117,15 @@ minor version; such entries sit under **Changed** and start with
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
   one fired after the action executor had stopped on its own (it logs one
   `[ERROR]` line, and `Launch`, `OpenUrl` and `Sequence` then do nothing
-  until the daemon restarts).
+  until the daemon restarts). The line ends with `longest_callback_us`, the
+  longest keyboard-hook callback since the last report, in microseconds,
+  and a callback of 5 ms or more triggers the line on its own.
 
 ### Changed
 
