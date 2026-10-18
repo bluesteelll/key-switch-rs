@@ -576,7 +576,13 @@ fn report_panics(calls: Calls) {
     }
 }
 
-/// The loop: drain the jobs, advance the due runs, arm the timer, wait.
+/// The loop: drain the jobs and advance the due runs until a whole pass
+/// made no runner call, then arm the timer and wait.
+///
+/// A runner call can pump this thread's queue (a `ShellExecuteW` dialog, a
+/// DDE or COM wait) and eat the `WAKE` of a job queued meanwhile, so the
+/// last thing before `GetMessageW` is a drain that found the queue empty,
+/// with no runner call after it (ruling V2-I1).
 fn run_loop(
     runner: &mut dyn Runner,
     queue: &Receiver<Job>,
@@ -595,33 +601,38 @@ fn run_loop(
     // Whether code ran on this thread since the timer was last armed.
     let mut code_ran = false;
     loop {
-        // Jobs, oldest first, each followed by a poll, so that a due run is
-        // late by one job at most.
-        loop {
+        let next = loop {
+            let mut calls = Calls::default();
+            // Jobs, oldest first, each followed by a poll, so that a due
+            // run is late by one job at most.
+            loop {
+                if shared.stopping() {
+                    return End::Stopped;
+                }
+                match queue.try_recv() {
+                    Ok(job) => {
+                        calls += runs.start(job, &mut ctx);
+                        calls += runs.poll(&mut ctx).calls;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return End::Stopped,
+                }
+            }
+
+            let polled = runs.poll(&mut ctx);
+            calls += polled.calls;
+            report_panics(calls);
+            shared.active_runs.store(runs.len(), Ordering::Release);
             if shared.stopping() {
                 return End::Stopped;
             }
-            match queue.try_recv() {
-                Ok(job) => {
-                    let mut calls = runs.start(job, &mut ctx);
-                    calls += runs.poll(&mut ctx).calls;
-                    code_ran |= calls.made > 0;
-                    report_panics(calls);
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return End::Stopped,
+            if calls.made == 0 {
+                break polled.next;
             }
-        }
+            code_ran = true;
+        };
 
-        let polled = runs.poll(&mut ctx);
-        code_ran |= polled.calls.made > 0;
-        report_panics(polled.calls);
-        shared.active_runs.store(runs.len(), Ordering::Release);
-        if shared.stopping() {
-            return End::Stopped;
-        }
-
-        match timer.arm(polled.next, Instant::now(), std::mem::take(&mut code_ran)) {
+        match timer.arm(next, Instant::now(), std::mem::take(&mut code_ran)) {
             Arming::Due => continue,
             Arming::Failed(error) => {
                 let stopped = runs.drop_timed();
