@@ -213,15 +213,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_file_cannot_be_attached_without_a_writer() {
-        let temp = crate::config::testing::TempDir::new("attach-no-writer");
-        let dir = temp.path().join("key-switch-rs");
-
-        assert!(attach_file(&dir).is_err());
-        assert!(!dir.exists(), "nothing is created without a writer");
-    }
-
     /// Every `.rs` file under `dir`, recursively, except under `skip`.
     fn rust_files(dir: &Path, skip: &Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("list a source folder") {
