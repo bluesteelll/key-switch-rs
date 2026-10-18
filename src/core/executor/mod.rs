@@ -691,7 +691,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use windows::Win32::System::Com::{APTTYPE, APTTYPE_STA, APTTYPEQUALIFIER, CoGetApartmentType};
+    use windows::Win32::System::Com::{
+        APTTYPE, APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER, CoGetApartmentType,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::USER_TIMER_MAXIMUM;
 
@@ -1332,6 +1334,14 @@ mod tests {
             .map(|()| kind)
     }
 
+    /// Whether `kind` is a single-threaded apartment. The first thread to
+    /// enter an STA while no other STA thread is alive becomes the process's
+    /// main STA and reads as `APTTYPE_MAINSTA`, so which of the two a thread
+    /// gets depends on the other tests running at the same time.
+    fn is_sta(kind: Option<APTTYPE>) -> bool {
+        kind == Some(APTTYPE_STA) || kind == Some(APTTYPE_MAINSTA)
+    }
+
     /// Reports the apartment type inside every `action`.
     struct ApartmentProbe(mpsc::Sender<Option<APTTYPE>>);
 
@@ -1354,7 +1364,7 @@ mod tests {
             .submit(open("https://example.com"), TargetWindow::NONE);
 
         let kind = kinds.recv_timeout(WAIT).expect("the probe runs");
-        assert_eq!(kind, Some(APTTYPE_STA));
+        assert!(is_sta(kind), "the job ran in {kind:?}, not an STA");
         assert_eq!(executor.stop(), Stopped::Joined);
     }
 
@@ -1369,11 +1379,10 @@ mod tests {
         .join()
         .expect("the scratch thread does not panic");
 
-        assert_eq!(inside, Some(APTTYPE_STA));
-        assert_ne!(
-            after,
-            Some(APTTYPE_STA),
-            "after the guard the thread has no apartment of its own (or the implicit MTA)"
+        assert!(is_sta(inside), "the guard entered {inside:?}, not an STA");
+        assert!(
+            !is_sta(after),
+            "after the guard the thread has no apartment of its own (or the implicit MTA), not {after:?}"
         );
     }
 
