@@ -283,13 +283,14 @@ fn parse_ron_str(
         return Err(ConfigError::Bindings(errors));
     }
 
+    let mut warnings = Vec::new();
     if user_bindings.is_empty() {
-        log::warn!("config contains no bindings");
+        warnings.push("config contains no bindings".to_owned());
     }
 
     // Every entry converted (an error returned above), so `raw.bindings[k]`
     // and `user_bindings[k]` are the same entry of the file.
-    let mut warnings = duplicate_warnings(&raw.bindings, &user_bindings);
+    warnings.extend(duplicate_warnings(&raw.bindings, &user_bindings));
     let bindings = expand_with_auto_blockers(user_bindings, system_combination, &mut warnings);
     Ok(ParsedConfig { bindings, warnings })
 }
