@@ -509,9 +509,10 @@ to keep the left Shift for the gesture alone.
 A `Sequence` action runs a list of steps on the action executor thread. The
 keyboard hook callback only queues it, so even long sequences with
 multi-second delays never block input system-wide. `swch off`, a reload
-(saving `config.ron`) and `swch exit` stop a running macro within 100 ms,
-also inside a `Delay`; a step already running (a `Launch`, an `OpenUrl`)
-finishes first.
+(a saved `config.ron` that loads) and `swch exit` stop a running macro
+within 100 ms, also inside a `Delay`; a step already running (a `Launch`,
+an `OpenUrl`) finishes first. A save that does not load keeps the running
+macros, as it keeps the bindings.
 
 ```ron
 (
@@ -533,7 +534,7 @@ Eight step variants:
 
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `Delay(<ms>)`         | Wait `<ms>` milliseconds on the action executor's timer. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
+| `Delay(<ms>)`         | Wait at least `<ms>` milliseconds on the action executor's timer, which Windows fires on a system clock tick (about 15.6 ms): about 10 ms longer on average, and `Delay(1)` to `Delay(9)` last about 16 ms. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
 | `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work. |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |

@@ -368,6 +368,16 @@ minor version; such entries sit under **Changed** and start with
   `Maximize`, `Restore`). Manual check: with a `Window(Minimize)` macro
   fired at a Not Responding window, an `OpenUrl` hotkey pressed right after
   it opens its page at once.
+- A macro `Delay` is coarser (roadmap item 2.1): it waits on a thread timer
+  of the action executor, which Windows fires on a tick of the system clock
+  (about 15.6 ms) and raises to 10 ms when it is shorter. A `Delay` still
+  never ends early, but it now ends on average about 10 ms after its time
+  and up to about 30 ms (two ticks) after it, and `Delay(1)` to `Delay(9)`
+  last as long as `Delay(10)`, about 16 ms on average. It used to be a
+  `thread::sleep` on the macro's own thread, accurate to about 1 ms, so
+  macros that pace keys with many short Delays run slower: 100 steps of
+  `Delay(5)` take about 1.6 s instead of about 0.5 s. `Delay(0)` waits for
+  no timer.
 - `[ERROR] Post message error …`, `[ERROR] Language switch error: …` and
   `[ERROR] Language switch backward error: …` are no longer logged
   (roadmap item 2.1): those actions run on the hook thread, which never
@@ -499,11 +509,12 @@ minor version; such entries sit under **Changed** and start with
   and that `OpenUrl` on F13, F16 then F13 opens the browser at once and
   types `2` two seconds after F16.
 - No cancellation for macros (roadmap item 2.1): `swch off`, a reload
-  (saving `config.ron`) and `swch exit` stop every running macro within
-  100 ms, also inside a `Delay` of any length, and drop the actions still
-  queued; a step already running (a `Launch`, an `OpenUrl`) finishes
-  first. A repeated `swch on` stops nothing. A macro no longer starts a
-  thread of its own. Manual check: with
+  (a saved `config.ron` that loads) and `swch exit` stop every running
+  macro within 100 ms, also inside a `Delay` of any length, and drop the
+  actions still queued; a step already running (a `Launch`, an `OpenUrl`)
+  finishes first. A save that does not load keeps the running macros, as
+  it keeps the bindings. A repeated `swch on` stops nothing. A macro no
+  longer starts a thread of its own. Manual check: with
   `( keys: "F13", action: Sequence([Text("a"), Delay(10000), Text("b")]) )`,
   F13 then `swch off` within 3 s types only `a`.
 - KS-10: holding a key no longer re-runs a one-shot action at the
