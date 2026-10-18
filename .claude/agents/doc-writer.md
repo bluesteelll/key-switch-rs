@@ -79,9 +79,9 @@ A new page gets both its file and its `SUMMARY.md` entry (2-space nesting) in th
 
 Every ` ```ron ` block you add or change, and every snippet in `README.md` and `default_config.ron`, is run through the real loader before it is published. Use the `cfgcheck` harness documented in `book/src/methodology.md#validation-harness`:
 
-1. Create it (once per lane) in `D:/tmp/ks-orch/<lane>/cfgcheck/`, with `key-switch-rs = { path = "<the checkout you are documenting>" }`.
-2. Write each example to its own file in `D:/tmp/ks-orch/<lane>/ron/`. The file must exist before the call: `config::load` writes the default config to any missing path (KS-41), and `cfgcheck` refuses a missing path with exit code 2.
-3. Run `cargo run --quiet --manifest-path D:/tmp/ks-orch/<lane>/cfgcheck/Cargo.toml -- <file>`. Exit 0 = `OK: N bindings`, 1 = `ERR: <message>`. This only parses, validates and expands bindings; it installs no hook and injects nothing.
+1. Create it (once per lane) in `D:/tmp/ks-orch/<lane>/cfgcheck/`, with `key-switch-rs = { path = "<the checkout you are documenting>" }`. Copy `main.rs` from the page as it is: it calls `logging::init()` first (console only, no log file) and `logging::flush()` before every exit, or the loader's `[INFO]`/`[WARN]` lines are lost.
+2. Write each example to its own file in `D:/tmp/ks-orch/<lane>/ron/`. The harness calls `config::reload`, which never writes; it refuses a missing path with exit code 2.
+3. Run `cargo run --quiet --manifest-path D:/tmp/ks-orch/<lane>/cfgcheck/Cargo.toml -- <file> 2>&1` (the loader's lines come on stderr). Exit 0 = `OK: N bindings`, 1 = `ERR: <message>`. This only parses, validates and expands bindings; it installs no hook and injects nothing.
 4. Compare the outcome, the binding count (auto-blockers included), and the binding shapes with what the page claims. An example meant to fail must fail with the error text the page quotes.
 5. Record every run (file, expected, actual, PASS/MISMATCH) in the report. Show validator output on the page where the reader benefits, as `config/example.md` does.
 

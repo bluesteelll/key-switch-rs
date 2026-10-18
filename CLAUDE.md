@@ -20,10 +20,13 @@ One package with a library, two binaries, a build script and the book:
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
   `config_watcher.rs`, `ipc_server.rs`.
-- `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`, `registry.rs`).
+- `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`,
+  `registry.rs`, `single_instance.rs`, `known_folder.rs`).
+- `src/logging/`: `mod.rs` (`init`, `attach_file`, `flush`, `FATAL_TARGET`), `sink.rs` (line format, rotation),
+  `writer.rs` (the `log-writer` thread), `counters.rs` (hook-path counters), `testing.rs` (`capture`, test only).
 - `src/engine/`: the pure decision core (`#![forbid(unsafe_code)]`; no Win32 calls, threads, locks or clock).
   `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
-  `fire`, `timers`; `mask` is reserved for roadmap 1.2). `Env` supplies the clock, the OS key state and the
+  `fire`, `timers`, and `mask`, the menu mask key of roadmap 1.2). `Env` supplies the clock, the OS key state and the
   foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`. Scenario tests live in
   `engine::scenarios` on the `engine::testing` harness (`Scenario`, fake `Env`). New matching, suppression and
   gesture logic goes here; the hook callback only adapts Win32 to it and carries out the `Decision`.
@@ -54,6 +57,8 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 1. **The hook callback is the hot path.** Windows stalls all keyboard input until it returns (KS-08).
    No blocking, sleeping, I/O, process creation, new allocations, new locks or Win32 lookups in it
    beyond what the cut prescribes. Never catch panics there. A swallowed panic leaves a phantom-blocked keyboard.
+   `keyboard_hook_callback.rs` names no `log::` outside its tests: a per-event condition is a
+   `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_engine`.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
    if and only if its key-down was.
@@ -69,13 +74,14 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    `Mutex<Engine>` in `KeyboardHook`, until roadmap item 2.2 moves the Hold timers to the main thread. Only
    `KeyboardHook::with_engine` takes it, and only while the engine decides: no action, `SendInput`, thread
    spawn or message pump under it. `with_engine` refuses a nested call on the same thread (the event passes)
-   instead of deadlocking. Other shared state is atomics or
+   instead of deadlocking. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
 6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows and
    pumps `GetMessageW`. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
-   APIs needs its own pump. Macro steps run on worker threads. Moving hook work off the main thread is
+   APIs needs its own pump. Macro steps run on worker threads. The `log-writer` thread alone writes the console
+   and the log files; every other thread only queues a line. Moving hook work off the main thread is
    a design question, so escalate it.
 7. **Win32 errors:** propagate `windows::core::Result<()>`, check handles and close them on every
    path (use `Drop` guards like the registry key's), and remember that `RegQueryValueExW` lengths are in bytes. Grouped
@@ -83,10 +89,13 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    `vk_name.rs`, and pass a wide-string `PCWSTR` only while its buffer is alive.
 8. **House style:** use consuming `with_*` builders and no public setters. Every new variant gets a `Display`
    arm in the same commit. Write `expect("invariant: ...")` instead of `unwrap()`. Keep source ASCII. Comments say why.
-   Add no new dependencies unless the cut names them, and use no async runtime and no `tracing`.
+   Add no new dependencies unless the cut names them, and use no async runtime and no `tracing`. Diagnostics are
+   path-qualified `log::info!`/`warn!`/`error!`. The print macros appear only in `core/app.rs` `print_welcome` and
+   in `src/bin`; a scan test fails on the tokens anywhere else under `src`, comments and strings included.
 9. **Tests:** unit tests go in `#[cfg(test)] mod tests` at the bottom of the file, with real `VK_*` constants and no
    mocks. Decision logic is pinned by scenario tests in `engine::scenarios`. Work is red-first: a regression test fails for the
-   right reason before the fix lands.
+   right reason before the fix lands. Tests never call `logging::init` or `attach_file`; they use
+   `logging::testing::capture` and `config::testing::TempDir`, and the suite prints nothing.
 
 ## Safety rules for agents (non-negotiable)
 
@@ -114,7 +123,9 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 - Exact modifier matching, with a per-binding `allow_extra_modifiers`.
 - Auto-repeat on by default only for `PressKey` / `VolumeUp` / `VolumeDown`.
 - The config stays RON.
-- Logging uses the `log` crate plus an in-house rotating file sink. Until that item lands, use `println!`/`eprintln!`.
+- Logging uses the `log` crate plus the in-house rotating file sink in `src/logging` (roadmap 1.7).
+- After a key-up the hook never saw (Win+L), the next press of a swallowed, non-repeating trigger key fires (roadmap 2.3, 2026-10-18).
+- Another key-down cancels a pending `Tap`/`Hold`/`DoubleTap` whose key passes, as AutoHotkey does (roadmap 2.2, 2026-10-18).
 - Licence: MIT OR Apache-2.0.
 - Full roadmap scope, new features included.
 
@@ -164,7 +175,8 @@ Cost is roughly turns times context. Most spend is re-reading context that grows
   `book/src/SUMMARY.md`. The `doc-writer` owns the book. A developer whose change alters config
   semantics updates the matching `book/src/config/*.md` page, `README.md` and `default_config.ron` in the same lane.
 - Every published RON example is validated against the real loader first (the `cfgcheck` harness,
-  `book/src/methodology.md#validation-harness`). Build the book and check its links before reporting.
+  `book/src/methodology.md#validation-harness`), which calls `logging::init()` first and `logging::flush()` before
+  every exit; read its output with `2>&1`. Build the book and check its links before reporting.
 - `audit.md` is the historical audit pinned to `7cb3521`. Update only status lines
   ("Fixed in <sha> (<branch>)"), never the findings themselves.
 
