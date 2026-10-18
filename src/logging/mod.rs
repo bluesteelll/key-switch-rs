@@ -220,6 +220,27 @@ mod tests {
     }
 
     #[test]
+    fn a_second_init_starts_no_writer() {
+        // The 1.7 review (m1): a second `init` finds the logger installed,
+        // and a writer it started first would only run until its queue is
+        // dropped. No test calls `init` itself.
+        let started = std::cell::Cell::new(false);
+        assert!(
+            start_logging(
+                || false,
+                || {
+                    started.set(true);
+                    Ok(())
+                }
+            )
+            .is_none()
+        );
+        assert!(!started.get(), "a second init must not start a writer");
+
+        assert!(matches!(start_logging(|| true, || Ok(7)), Some(Ok(7))));
+    }
+
+    #[test]
     fn flush_without_a_writer_returns_true_at_once() {
         let begun = std::time::Instant::now();
         assert!(flush());
