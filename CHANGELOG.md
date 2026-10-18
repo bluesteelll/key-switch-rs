@@ -74,7 +74,9 @@ minor version; such entries sit under **Changed** and start with
   their meaning, and the template keeps `true`. The startup list shows such
   a blocker as `-> (masked, experimental)`. On a hotkey that is not made only
   of modifiers (the `` ` `` hotkey) `MaskOnly` blocks as `true` does and
-  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``.
+  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``,
+  unless a `keys` binding of the file takes the hotkey over (KS-18): then
+  there is no blocker and no warning.
   A misspelled value is a load error that lists the valid ones,
   ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``;
   `Some(true)`, an error before too, now gets that message for `` `Some` ``.

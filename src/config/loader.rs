@@ -325,7 +325,8 @@ fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
 /// One blocker per distinct hotkey and mode, in the order the file first
 /// asks for them, after all of the file's bindings. `MaskOnly` needs a
 /// hotkey made only of modifiers: on another hotkey, such as `` ` ``, it
-/// gives a blocker that swallows, as `true` does, and a warning. No blocker
+/// gives a blocker that swallows, as `true` does, and a warning, unless no
+/// blocker is added for that hotkey (below): then it warns nothing. No blocker
 /// for a hotkey whose exact keys a `keys` binding of the file uses, the
 /// flagged one included, whatever its trigger or `when:`: that binding takes
 /// the hotkey over, and its own `block_default` and `when:` decide whether
@@ -341,8 +342,9 @@ fn expand_with_auto_blockers(
     warnings: &mut Vec<String>,
 ) -> Vec<Binding> {
     // What the file asks for, in file order, with the asking binding's
-    // condition.
-    let mut requests: Vec<(KeyCombination, BlockerMode, &Condition)> = Vec::new();
+    // condition and, for a MaskOnly that falls back to swallowing, the
+    // asking binding's index.
+    let mut requests: Vec<(KeyCombination, BlockerMode, &Condition, Option<usize>)> = Vec::new();
     for (index, binding) in user_bindings.iter().enumerate() {
         let Some(requested) = binding.block_original_combo else {
             continue;
@@ -350,20 +352,19 @@ fn expand_with_auto_blockers(
         let Some(hotkey) = system_combination(&binding.action) else {
             continue;
         };
-        let mode = if requested == BlockerMode::MaskOnly && !hotkey.is_modifier_only() {
-            warnings.push(format!(
-                "binding #{index}: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the {hotkey} hotkey is blocked as with true"
-            ));
-            BlockerMode::Swallow
-        } else {
-            requested
-        };
-        requests.push((hotkey, mode, &binding.condition));
+        let (mode, fallback_of) =
+            if requested == BlockerMode::MaskOnly && !hotkey.is_modifier_only() {
+                (BlockerMode::Swallow, Some(index))
+            } else {
+                (requested, None)
+            };
+        requests.push((hotkey, mode, &binding.condition, fallback_of));
     }
 
     let mut blockers = Vec::new();
     let mut hotkeys_seen: Vec<&KeyCombination> = Vec::new();
-    for (hotkey, _, _) in &requests {
+    let mut hotkeys_blocked: Vec<&KeyCombination> = Vec::new();
+    for (hotkey, _, _, _) in &requests {
         if hotkeys_seen.contains(&hotkey) {
             continue;
         }
@@ -377,8 +378,9 @@ fn expand_with_auto_blockers(
             log::info!("no auto-blocker for {hotkey}: binding #{index} uses the same keys");
             continue;
         }
+        hotkeys_blocked.push(hotkey);
         let mut modes: Vec<BlockerMode> = Vec::new();
-        for (other, mode, _) in &requests {
+        for (other, mode, _, _) in &requests {
             if other == hotkey && !modes.contains(mode) {
                 modes.push(*mode);
             }
@@ -386,12 +388,24 @@ fn expand_with_auto_blockers(
         for mode in modes {
             let owners = requests
                 .iter()
-                .filter(|(other, other_mode, _)| other == hotkey && *other_mode == mode)
-                .map(|&(_, _, condition)| condition);
+                .filter(|(other, other_mode, _, _)| other == hotkey && *other_mode == mode)
+                .map(|&(_, _, condition, _)| condition);
             blockers.push(
                 Binding::new_auto_blocker(hotkey.clone(), mode)
                     .with_condition(any_of_conditions(owners)),
             );
+        }
+    }
+
+    // Only where the blocker is added, so a hotkey that a binding takes
+    // over (KS-18) warns about nothing; in file order.
+    for (hotkey, _, _, fallback_of) in &requests {
+        if let Some(index) = fallback_of
+            && hotkeys_blocked.contains(&hotkey)
+        {
+            warnings.push(format!(
+                "binding #{index}: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the {hotkey} hotkey is blocked as with true"
+            ));
         }
     }
 

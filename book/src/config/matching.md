@@ -147,7 +147,7 @@ Check it by hand before relying on it, with the release build started by `swch o
 
 If the layout still switches, the hypothesis or the injection order does not hold: go back to `true`.
 
-`MaskOnly` needs a hotkey made only of modifiers. With the `` ` `` hotkey (registry value `"4"`) letting a lone `` ` `` through would type it and switch the layout, so the loader adds a blocker that swallows, as `true` does, and warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true`` ([§18.6](errors.md#s18-6)).
+`MaskOnly` needs a hotkey made only of modifiers. With the `` ` `` hotkey (registry value `"4"`) letting a lone `` ` `` through would type it and switch the layout, so the loader adds a blocker that swallows, as `true` does, and warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true`` ([§18.6](errors.md#s18-6)), unless a `keys` binding of the file takes the hotkey over ([§15.3](#s15-3), KS-18): then there is no blocker and no warning.
 
 > [!NOTE]
 > Before `1dfd80a` the blocker matched any superset of its keys and swallowed every Alt+Shift+X ([KS-05](../audit.md#ks-05)), and it was inserted before its owner as an ordinary `Immediate` binding, so an `Immediate` binding on the same keys below it never ran ([KS-18](../audit.md#ks-18)).
