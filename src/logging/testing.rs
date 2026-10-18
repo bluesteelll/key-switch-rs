@@ -9,7 +9,9 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 
 use super::LOGGER;
-use super::sink::{LogLine, TIMESTAMP_LEN};
+use super::sink::LogLine;
+/// For tests that cut the timestamp off a captured line.
+pub(crate) use super::sink::TIMESTAMP_LEN;
 
 thread_local! {
     /// The file form of every record logged on this thread inside

@@ -180,6 +180,8 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TWO, TempDir};
     use crate::data::key_spec::KeySpec;
+    use crate::logging;
+    use crate::logging::testing::{TIMESTAMP_LEN, is_timestamped};
 
     fn cwd() -> PathBuf {
         std::env::current_dir().expect("the test has a current folder")
@@ -343,6 +345,56 @@ mod tests {
             1,
             "a misspelled `bindings` must keep the live bindings (KS-22)"
         );
+    }
+
+    #[test]
+    fn a_reload_error_is_logged_with_a_timestamp() {
+        let dir = TempDir::new("logged");
+        let path = dir.path().join("config.ron");
+        fs::write(&path, ONE).expect("write the config");
+        let hook = KeyboardHook::new();
+        hook.update_bindings(config::reload(&path).expect("the config loads"));
+        // A validation error: a header line, one line per invalid binding
+        // and a trailing line break.
+        fs::write(
+            &path,
+            r#"( bindings: [ ( keys: "F13", action: PressKey("Foo") ) ] )"#,
+        )
+        .expect("write the broken config");
+
+        let ((), lines) = logging::testing::capture(|| reload_into(&path, &hook));
+
+        let error = lines
+            .iter()
+            .find(|line| line.contains("[ERROR] config reload failed:"))
+            .unwrap_or_else(|| panic!("a reload error must reach the log; captured: {lines:?}"));
+        let physical: Vec<&str> = error.lines().collect();
+        assert_eq!(physical.len(), 3, "{error:?}");
+        for line in &physical {
+            assert!(
+                is_timestamped(line) && line[TIMESTAMP_LEN + 1..].starts_with("[ERROR] "),
+                "every line of the record starts with the timestamp and [ERROR]: {error:?}"
+            );
+        }
+        assert!(
+            physical[0].ends_with(" [ERROR] config reload failed:"),
+            "{error:?}"
+        );
+        assert!(
+            physical[1].ends_with(" [ERROR] config has 1 invalid binding(s):"),
+            "{error:?}"
+        );
+        assert!(
+            physical[2].contains(r#"PressKey: unknown key "Foo""#),
+            "{error:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.ends_with(" [INFO] keeping previous bindings live\n")),
+            "{lines:?}"
+        );
+        assert_eq!(hook.bindings().len(), 1, "the live bindings stay");
     }
 
     #[test]
