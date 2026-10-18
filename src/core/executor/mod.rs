@@ -7,15 +7,17 @@
 //! it into a bounded queue without waiting and posts a wake-up to the
 //! executor; a full queue drops the job and counts it
 //! (`executor_jobs_dropped`). The executor initialises COM as a
-//! single-threaded apartment, as `ShellExecuteW` asks, and waits in its own
-//! `GetMessageW` loop, so it pumps its queue as an STA must.
+//! single-threaded apartment, as `ShellExecuteW` asks, and waits for its
+//! messages and its `Delay` timer at once, so it pumps its queue as an STA
+//! must.
 //!
 //! Macros run side by side without a thread each: a `Sequence` is a run
 //! (`runs`) that goes up to its next `Delay`, stores the deadline and
-//! yields, and one thread timer wakes the loop for the nearest deadline. A
-//! `Delay` holds up no other job. Only a step that blocks inside Windows (a
-//! `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the
-//! other jobs and runs while it runs.
+//! yields, and one high-resolution waitable timer
+//! ([`WaitableTimer`]) wakes the loop for the nearest deadline, within about
+//! a millisecond. A `Delay` holds up no other job. Only a step that blocks
+//! inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows)
+//! holds up the other jobs and runs while it runs.
 //!
 //! [`ExecutorHandle::cancel_pending`] starts a new epoch (`swch off` or
 //! `on`, a reload, exit): every queued job and every run of the old epoch
@@ -43,7 +45,7 @@ use windows::Win32::{
     Foundation::*,
     System::{
         Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize},
-        Threading::GetCurrentThreadId,
+        Threading::{GetCurrentThreadId, INFINITE},
     },
     UI::WindowsAndMessaging::*,
 };
@@ -51,6 +53,7 @@ use windows::Win32::{
 use crate::core::windows_actions::{BindAction, launch_process, shell_open};
 use crate::data::sequence::{self, SequenceStep};
 use crate::logging::counters::{Counter, Counters};
+use crate::platform::timers::WaitableTimer;
 use runs::{Calls, Ctx, Job, Next, Runs};
 
 /// How many slow actions wait for the executor before the next one is
@@ -271,8 +274,9 @@ pub struct Executor {
 
 impl Executor {
     /// Starts the thread with `runner` and a queue of `capacity` jobs (at
-    /// least one), counting in `counters`. Returns once the thread has
-    /// created its message queue, so that no wake is posted before it.
+    /// least one), counting in `counters`. Returns once the thread has made
+    /// its `Delay` timer and its message queue, so that no wake is posted
+    /// before the queue exists; an error if it could not make either.
     pub fn start<R: Runner>(
         runner: R,
         capacity: usize,
@@ -293,9 +297,10 @@ impl Executor {
                 run_executor(runner, queue, &thread_shared, counters, &ready_tx);
                 let _ = done_tx.send(());
             })?;
-        let thread_id = ready.recv_timeout(START_TIMEOUT).map_err(|_| {
+        let started = ready.recv_timeout(START_TIMEOUT).map_err(|_| {
             io::Error::other("the action executor thread did not create its message queue")
         })?;
+        let thread_id = started?;
         Ok(Self {
             handle: Arc::new(ExecutorHandle {
                 jobs,
@@ -396,122 +401,101 @@ impl Drop for Apartment {
     }
 }
 
-/// The one thread timer that wakes the loop for the nearest `Delay`
-/// deadline. Created, killed and pumped on the executor thread, which owns
-/// it. `Instant` decides when a run goes on; the timer is only the wake-up,
-/// so an early, late, stale or repeated `WM_TIMER` only makes the loop
-/// poll and arm again.
+/// The timer that wakes the loop for the nearest `Delay` deadline: a
+/// high-resolution waitable timer, set, cancelled and waited on by the
+/// executor thread, which owns it. `Instant` decides when a run goes on;
+/// the timer is only the wake-up, so an early, late or stale signal only
+/// makes the loop poll and set it again.
 struct DelayTimer {
-    /// The timer's id and the deadline it was armed for.
-    armed: Option<(usize, Instant)>,
+    timer: WaitableTimer,
+    /// The deadline the timer is set for, until it signals or is
+    /// cancelled.
+    armed: Option<Instant>,
 }
 
 /// What [`DelayTimer::arm`] did.
 enum Arming {
-    /// No run waits for a deadline, and no timer is armed.
+    /// No run waits for a deadline, and the timer is not set.
     Idle,
-    /// A timer is armed for the nearest deadline.
+    /// The timer is set for the nearest deadline.
     Waiting,
     /// The nearest deadline has passed: poll again without waiting.
     Due,
-    /// No timer could be made.
+    /// The timer could not be set.
     Failed(windows::core::Error),
 }
 
 /// What to do with the timer, decided without a Win32 call.
 #[derive(Debug, PartialEq, Eq)]
 enum Plan {
-    Kill,
+    Cancel,
     Due,
     Keep,
-    Arm { ms: u32, at: Instant },
+    Arm { after: Duration, at: Instant },
 }
 
-/// The plan for a timer armed for `armed`, when the runs next wait for
-/// `next`. `code_ran` says whether code ran on this thread since the timer
-/// was armed: a runner call, or a message dispatched to a foreign window
-/// procedure, may have pumped the queue and eaten the timer's `WM_TIMER`,
-/// and since a thread timer repeats only after its full period, it is not
-/// trusted then.
-fn plan(armed: Option<Instant>, next: Next, now: Instant, code_ran: bool) -> Plan {
+/// The plan for a timer set for `armed`, when the runs next wait for
+/// `next`. A timer set for the nearest deadline stands: its signal is not a
+/// message, so no code that ran on this thread since (a runner call, a
+/// dispatched message) can have taken it.
+fn plan(armed: Option<Instant>, next: Next, now: Instant) -> Plan {
     match next {
-        Next::Idle => Plan::Kill,
+        Next::Idle => Plan::Cancel,
         Next::At(at) if at <= now => Plan::Due,
-        Next::At(at) if !code_ran && armed == Some(at) => Plan::Keep,
+        Next::At(at) if armed == Some(at) => Plan::Keep,
         Next::At(at) => Plan::Arm {
-            ms: timer_ms(now, at),
+            after: at.duration_since(now),
             at,
         },
     }
 }
 
 impl DelayTimer {
-    fn new() -> Self {
-        Self { armed: None }
+    fn new(timer: WaitableTimer) -> Self {
+        Self { timer, armed: None }
     }
 
-    fn arm(&mut self, next: Next, now: Instant, code_ran: bool) -> Arming {
-        match plan(self.armed.map(|(_, at)| at), next, now, code_ran) {
-            Plan::Kill => {
-                self.kill();
+    fn arm(&mut self, next: Next, now: Instant) -> Arming {
+        match plan(self.armed, next, now) {
+            Plan::Cancel => {
+                self.cancel();
                 Arming::Idle
             }
             Plan::Due => {
-                self.kill();
+                self.cancel();
                 Arming::Due
             }
             Plan::Keep => Arming::Waiting,
-            Plan::Arm { ms, at } => {
-                // Killed and made anew rather than replaced by its id:
-                // "SetTimer can reuse timer IDs in the case where hWnd is
-                // NULL".
-                self.kill();
-                // SAFETY: with no window and no TimerProc the call reads no
-                // memory of ours and only posts WM_TIMER to this thread's
-                // queue, which this thread pumps; the id it returns is
-                // killed on this thread too. No coalescing, so macro pacing
-                // does not depend on the system's default tolerance.
-                let id = unsafe { SetCoalescableTimer(None, 0, ms, None, TIMERV_NO_COALESCING) };
-                if id == 0 {
-                    return Arming::Failed(windows::core::Error::from_thread());
+            Plan::Arm { after, at } => {
+                // Setting the timer replaces the due time it had.
+                self.armed = None;
+                if let Err(error) = self.timer.set(after) {
+                    return Arming::Failed(error);
                 }
-                self.armed = Some((id, at));
+                self.armed = Some(at);
                 Arming::Waiting
             }
         }
     }
 
-    /// A `WM_TIMER` arrived for `id`. Ours is killed, so that its periodic
-    /// repeat never comes, and forgotten: the next `arm` makes a timer from
-    /// `Instant`. Another id (a stale or a foreign one) changes nothing.
-    fn fired(&mut self, id: usize) {
-        if self.armed.is_some_and(|(armed, _)| armed == id) {
-            self.kill();
+    /// The timer signalled and the wait took the signal: it is set for
+    /// nothing until the next `arm`.
+    fn fired(&mut self) {
+        self.armed = None;
+    }
+
+    fn cancel(&mut self) {
+        if self.armed.take().is_some() {
+            // A timer that fails to stop signals once more, and the loop
+            // takes that for a wake.
+            let _ = self.timer.cancel();
         }
     }
 
-    fn kill(&mut self) {
-        if let Some((id, _)) = self.armed.take() {
-            // SAFETY: KillTimer with no window and an id that
-            // SetCoalescableTimer returned on this thread reads no memory of
-            // ours; a timer that is gone only makes it fail. A WM_TIMER
-            // posted already stays queued, and the loop takes it for a wake.
-            let _ = unsafe { KillTimer(None, id) };
-        }
+    /// The handle the loop waits on.
+    fn handle(&self) -> HANDLE {
+        self.timer.handle()
     }
-}
-
-/// The time from `now` to `at` in whole milliseconds for a timer: rounded
-/// up, so that the timer does not fire before the deadline by its own
-/// count, and clamped to 1 ..= `USER_TIMER_MAXIMUM` (about 24.8 days).
-pub(crate) fn timer_ms(now: Instant, at: Instant) -> u32 {
-    let ms = at
-        .saturating_duration_since(now)
-        .as_nanos()
-        .div_ceil(1_000_000);
-    u32::try_from(ms)
-        .unwrap_or(u32::MAX)
-        .clamp(1, USER_TIMER_MAXIMUM)
 }
 
 /// Why the loop ended.
@@ -529,9 +513,18 @@ fn run_executor<R: Runner>(
     queue: Receiver<Job>,
     shared: &Shared,
     counters: &Counters,
-    ready: &SyncSender<u32>,
+    ready: &SyncSender<io::Result<u32>>,
 ) {
     let apartment = Apartment::enter_sta();
+    let mut timer = match WaitableTimer::new() {
+        Ok(timer) => DelayTimer::new(timer),
+        Err(error) => {
+            let _ = ready.send(Err(io::Error::other(format!(
+                "could not create the Delay timer: {error}"
+            ))));
+            return;
+        }
+    };
     let mut msg = MSG::default();
     // SAFETY: `msg` is a local that outlives the call, which only writes
     // it; the call creates this thread's message queue, as
@@ -542,12 +535,11 @@ fn run_executor<R: Runner>(
     let thread_id = unsafe { GetCurrentThreadId() };
     // A starter that gave up has dropped the queue's sender, so the loop
     // ends at its first drain.
-    let _ = ready.send(thread_id);
+    let _ = ready.send(Ok(thread_id));
 
     // The queue, the timer and the runs are owned out here, outside the
     // closure that can unwind, so that this epilogue also runs after a
     // panic of the loop itself.
-    let mut timer = DelayTimer::new();
     let mut runs = Runs::new();
     let end = panic::catch_unwind(AssertUnwindSafe(|| {
         run_loop(&mut runner, &queue, shared, &mut runs, &mut timer)
@@ -559,7 +551,8 @@ fn run_executor<R: Runner>(
         End::Died
     });
 
-    timer.kill();
+    // Closing the timer's only handle destroys it: it signals nothing more.
+    drop(timer);
     shared.active_runs.store(0, Ordering::Release);
     drop(runs);
     if end == End::Died {
@@ -581,12 +574,14 @@ fn report_panics(calls: Calls) {
 }
 
 /// The loop: drain the jobs and advance the due runs until a whole pass
-/// made no runner call, then arm the timer and wait.
+/// made no runner call, then set the timer and wait for it and for the
+/// thread's messages at once.
 ///
 /// A runner call can pump this thread's queue (a `ShellExecuteW` dialog, a
 /// DDE or COM wait) and eat the `WAKE` of a job queued meanwhile, so the
-/// last thing before `GetMessageW` is a drain that found the queue empty,
-/// with no runner call after it.
+/// last thing before the wait is a drain that found the queue empty, with
+/// no runner call after it. Such a pump cannot take the timer's signal,
+/// which is not a message.
 fn run_loop(
     runner: &mut dyn Runner,
     queue: &Receiver<Job>,
@@ -602,8 +597,6 @@ fn run_loop(
         now: &now,
     };
     let mut msg = MSG::default();
-    // Whether code ran on this thread since the timer was last armed.
-    let mut code_ran = false;
     loop {
         let next = loop {
             let mut calls = Calls::default();
@@ -633,10 +626,9 @@ fn run_loop(
             if calls.made == 0 {
                 break polled.next;
             }
-            code_ran = true;
         };
 
-        match timer.arm(next, Instant::now(), std::mem::take(&mut code_ran)) {
+        match timer.arm(next, Instant::now()) {
             Arming::Due => continue,
             Arming::Failed(error) => {
                 let stopped = runs.drop_timed();
@@ -648,40 +640,63 @@ fn run_loop(
             Arming::Idle | Arming::Waiting => {}
         }
 
-        // SAFETY: `msg` is a local that outlives the call, which only
-        // writes it.
-        let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-        if got.0 == -1 {
+        // SAFETY: the slice holds the Delay timer's handle, which `timer`
+        // keeps open across the call, and lives until the call returns; the
+        // call only reads it.
+        let woke = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[timer.handle()]),
+                INFINITE,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if woke == WAIT_OBJECT_0 {
+            timer.fired();
+            continue;
+        }
+        if woke == WAIT_FAILED {
             log::error!(
                 "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts",
                 windows::core::Error::from_thread()
             );
             return End::Died;
         }
-        if got.0 == 0 {
+        // A message waits. MWMO_INPUTAVAILABLE also counts one queued before
+        // the wait began, such as the messages behind a WAKE that `pump`
+        // left for after the drain.
+        if let Some(end) = pump(&mut msg) {
+            return end;
+        }
+    }
+}
+
+/// Takes this thread's messages until its queue is empty or a `WAKE` comes,
+/// which goes back to the drain at once. `Some(End::Died)` on `WM_QUIT`.
+fn pump(msg: &mut MSG) -> Option<End> {
+    // SAFETY: `msg` is the loop's local and outlives every call, which only
+    // writes it and removes the message from this thread's own queue.
+    while unsafe { PeekMessageW(msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if msg.message == WM_QUIT {
             // Nothing of ours posts WM_QUIT; foreign code on this thread
             // asked it to end its loop.
             log::error!(
                 "the action executor received WM_QUIT and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts"
             );
-            return End::Died;
+            return Some(End::Died);
         }
         if msg.hwnd.is_invalid() && msg.message == WAKE {
-            continue;
+            return None;
         }
-        if msg.hwnd.is_invalid() && msg.message == WM_TIMER && msg.lParam.0 == 0 {
-            timer.fired(msg.wParam.0);
-            continue;
-        }
-        // COM's hidden windows, or a foreign TimerProc's WM_TIMER.
-        // SAFETY: `msg` was filled by GetMessageW above and outlives both
+        // COM's hidden windows, or a TimerProc's WM_TIMER.
+        // SAFETY: `msg` was filled by PeekMessageW above and outlives both
         // calls, which only read it.
         unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let _ = TranslateMessage(msg);
+            DispatchMessageW(msg);
         }
-        code_ran = true;
     }
+    None
 }
 
 #[cfg(test)]
@@ -695,7 +710,6 @@ mod tests {
         APTTYPE, APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER, CoGetApartmentType,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
-    use windows::Win32::UI::WindowsAndMessaging::USER_TIMER_MAXIMUM;
 
     use super::runs::{Ctx, Job, Next, Runs};
     use super::testing::{
@@ -705,6 +719,7 @@ mod tests {
     use crate::core::windows_actions::BindAction;
     use crate::data::sequence::SequenceStep;
     use crate::logging::counters::{Counter, Counters};
+    use crate::platform::timers::{LONGEST, due_time};
 
     fn sequence(steps: Vec<SequenceStep>) -> BindAction {
         BindAction::Sequence(Arc::new(steps))
@@ -969,13 +984,18 @@ mod tests {
 
         match polled.next {
             Next::Idle => {}
-            Next::At(at) => {
-                let ms = timer_ms(base, at);
-                assert_eq!(ms, USER_TIMER_MAXIMUM);
-                assert!(ms < u32::MAX, "no timer longer than u32::MAX - 1 ms");
+            Next::At(_) => {
+                let Plan::Arm { after, .. } = plan(None, polled.next, base) else {
+                    panic!("a deadline in the future sets the timer");
+                };
+                assert_eq!(
+                    due_time(after),
+                    due_time(LONGEST),
+                    "the timer is set for at most LONGEST"
+                );
                 assert!(
-                    matches!(plan(None, polled.next, base, false), Plan::Arm { ms, .. } if ms == USER_TIMER_MAXIMUM),
-                    "the timer is armed for at most USER_TIMER_MAXIMUM ms"
+                    LONGEST < Duration::from_millis(u64::from(u32::MAX)),
+                    "no timer longer than u32::MAX - 1 ms"
                 );
             }
         }
@@ -994,47 +1014,36 @@ mod tests {
     }
 
     #[test]
-    fn timer_ms_rounds_up_and_clamps() {
-        let base = Instant::now();
-        assert_eq!(timer_ms(base, base + Duration::from_micros(400)), 1);
-        assert_eq!(timer_ms(base, base + Duration::from_micros(10_200)), 11);
-        assert_eq!(timer_ms(base, base), 1);
-        assert_eq!(timer_ms(base + Duration::from_millis(5), base), 1);
-        assert_eq!(
-            timer_ms(base, base + Duration::from_secs(30 * 86_400)),
-            USER_TIMER_MAXIMUM
-        );
-    }
-
-    #[test]
-    fn the_delay_timer_is_kept_only_while_nothing_ran() {
-        // Code that ran on the executor thread (a runner call, a dispatched
-        // message) may have pumped its queue and eaten the armed timer's
-        // WM_TIMER; only a timer nothing could have touched is kept.
+    fn the_delay_timer_is_set_again_only_for_another_deadline() {
+        // The timer's signal is not a message: code that ran on the executor
+        // thread since it was set (a runner call, a dispatched message)
+        // cannot have taken it, so a timer set for the nearest deadline
+        // stands.
         let now = Instant::now();
         let at = now + Duration::from_millis(100);
         let sooner = now + Duration::from_millis(50);
 
-        assert_eq!(plan(None, Next::Idle, now, false), Plan::Kill);
-        assert_eq!(plan(Some(at), Next::Idle, now, true), Plan::Kill);
-        assert_eq!(plan(Some(at), Next::At(now), now, false), Plan::Due);
+        assert_eq!(plan(None, Next::Idle, now), Plan::Cancel);
+        assert_eq!(plan(Some(at), Next::Idle, now), Plan::Cancel);
+        assert_eq!(plan(Some(at), Next::At(now), now), Plan::Due);
         assert_eq!(
-            plan(None, Next::At(at), now, false),
-            Plan::Arm { ms: 100, at }
+            plan(None, Next::At(at), now),
+            Plan::Arm {
+                after: Duration::from_millis(100),
+                at
+            }
         );
         assert_eq!(
-            plan(Some(at), Next::At(at), now, false),
+            plan(Some(at), Next::At(at), now),
             Plan::Keep,
-            "nothing ran: the armed timer stands"
+            "set for this deadline: the timer stands"
         );
         assert_eq!(
-            plan(Some(at), Next::At(at), now, true),
-            Plan::Arm { ms: 100, at },
-            "something ran: the timer is made again"
-        );
-        assert_eq!(
-            plan(Some(at), Next::At(sooner), now, false),
-            Plan::Arm { ms: 50, at: sooner }
+            plan(Some(at), Next::At(sooner), now),
+            Plan::Arm {
+                after: Duration::from_millis(50),
+                at: sooner
+            }
         );
     }
 
