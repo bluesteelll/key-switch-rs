@@ -36,7 +36,7 @@ key-switch-rs/
     │   ├── app.rs              - main application with binding management
     │   ├── constants.rs        - shared constants and per-process injected-event sentinel
     │   ├── executor/           - the action-executor thread: Launch, OpenUrl and Sequence off the hook
-    │   │   ├── mod.rs          - queue, STA COM, GetMessageW loop, Delay timer, epochs, Runner
+    │   │   ├── mod.rs          - queue, STA COM, message loop, Delay timer, epochs, Runner
     │   │   ├── runs.rs         - running macros: steps up to each Delay, deadlines, cancellation
     │   │   └── testing.rs      - test-only recording runner
     │   └── windows_actions.rs  - BindAction enum, FastAction (what runs on the hook thread)
@@ -64,6 +64,8 @@ key-switch-rs/
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
+    ├── platform/
+    │   └── timers.rs           - high-resolution waitable timer: the executor's Delay wake-up
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
     │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
@@ -147,8 +149,8 @@ Main application:
 The `action-executor` thread (roadmap item 2.1, KS-08):
 
 - Runs `Launch`, `OpenUrl` and `Sequence`, which the hook (or a Hold's timer thread) queues without waiting; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
-- Initialises COM as a single-threaded apartment, as `ShellExecuteW` asks, and waits in its own `GetMessageW` loop
-- Runs macros side by side on its one thread: a macro goes up to its next `Delay`, which waits on one thread timer and holds up no other action or macro. A step that blocks inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it runs
+- Initialises COM as a single-threaded apartment, as `ShellExecuteW` asks, and pumps its own messages, waiting for them and for its `Delay` timer at once
+- Runs macros side by side on its one thread: a macro goes up to its next `Delay`, which waits on one high-resolution timer, within about 1 ms as `thread::sleep` did, and holds up no other action or macro. A step that blocks inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it runs
 - `swch off`, `swch on` (a real change), a reload and exit stop every running macro within 100 ms, also inside a `Delay`, and drop the actions still queued; a step already running finishes first
 - An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl` and `Sequence` count in `executor_unavailable` until the daemon restarts
 
@@ -534,7 +536,7 @@ Eight step variants:
 
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `Delay(<ms>)`         | Wait at least `<ms>` milliseconds on the action executor's timer, which Windows fires on a system clock tick (about 15.6 ms): about 10 ms longer on average, and `Delay(1)` to `Delay(9)` last about 16 ms. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
+| `Delay(<ms>)`         | Wait `<ms>` milliseconds on the action executor's high-resolution timer, which ends the wait within about 1 ms of its time and never before. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
 | `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work. |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |

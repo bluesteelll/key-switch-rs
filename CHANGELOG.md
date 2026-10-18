@@ -368,16 +368,6 @@ minor version; such entries sit under **Changed** and start with
   `Maximize`, `Restore`). Manual check: with a `Window(Minimize)` macro
   fired at a Not Responding window, an `OpenUrl` hotkey pressed right after
   it opens its page at once.
-- A macro `Delay` is coarser (roadmap item 2.1): it waits on a thread timer
-  of the action executor, which Windows fires on a tick of the system clock
-  (about 15.6 ms) and raises to 10 ms when it is shorter. A `Delay` still
-  never ends early, but it now ends on average about 10 ms after its time
-  and up to about 30 ms (two ticks) after it, and `Delay(1)` to `Delay(9)`
-  last as long as `Delay(10)`, about 16 ms on average. It used to be a
-  `thread::sleep` on the macro's own thread, accurate to about 1 ms, so
-  macros that pace keys with many short Delays run slower: 100 steps of
-  `Delay(5)` take about 1.6 s instead of about 0.5 s. `Delay(0)` waits for
-  no timer.
 - `[ERROR] Post message error …`, `[ERROR] Language switch error: …` and
   `[ERROR] Language switch backward error: …` are no longer logged
   (roadmap item 2.1): those actions run on the hook thread, which never
@@ -499,10 +489,12 @@ minor version; such entries sit under **Changed** and start with
   stays in order with the keys typed after them; a `Hold` runs them on its
   timer thread as before and queues the others. Up to 32 actions wait; a
   further one is dropped and counted in `executor_jobs_dropped`. Macros
-  still run side by side: a `Delay` waits on a timer of the executor and
-  holds up no other action or macro, while a step that blocks inside
-  Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds
-  up the others while it runs. Manual checks: with
+  still run side by side: a `Delay` waits on a high-resolution timer of
+  the executor, which ends it within about 1 ms of its time and never
+  before, as the `thread::sleep` it replaces did, and holds up no other
+  action or macro, while a step that blocks inside Windows (a `Launch`, an
+  `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it
+  runs. Manual checks: with
   `( keys: "F13", action: OpenUrl("https://example.com") )` and every
   browser closed, 20 presses of F13 within a few seconds never pause
   typing; with a `Sequence([Text("1"), Delay(2000), Text("2")])` on F16

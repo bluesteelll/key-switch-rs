@@ -315,7 +315,7 @@ action: Sequence([ <step>, <step>, ... ])
 <a id="s14-3"></a>
 ### 14.3 `Delay(<ms>)`
 
-`Delay(250)`: the argument is a `u64` in milliseconds. The action executor keeps the deadline and goes on with the macro when a thread timer wakes it. Windows fires that timer on a tick of the system clock (about 15.6 ms) and raises a timer shorter than 10 ms to 10 ms, so a `Delay` ends on average about 10 ms after its deadline and up to about 30 ms (two ticks) after it, and `Delay(1)` to `Delay(9)` last as long as `Delay(10)`: about 16 ms on average. A `Delay` never ends early. Before `feat/action-executor` (roadmap [item 2.1](../roadmap.md#21-action-executor)) it was a `thread::sleep`, accurate to about 1 ms, so a macro that paces keys with many short `Delay`s now runs slower: 100 steps of `Delay(5)` take about 1.6 s instead of about 0.5 s.
+`Delay(250)`: the argument is a `u64` in milliseconds. Since roadmap [item 2.1](../roadmap.md#21-action-executor) the action executor keeps the deadline and goes on with the macro when its high-resolution waitable timer wakes it: within about 1 ms after the deadline, about 0.3 ms on average, as with the `thread::sleep` it replaces. A `Delay` never ends early, and short ones pace keys as written: 100 steps of `Delay(5)` take about 0.5 s. Windows 10 before version 1803 has no high-resolution timer; there the executor's timer, like `thread::sleep`, wakes on a tick of the system clock, about 15.6 ms apart.
 
 - All integer forms work ([§3.7](ron-syntax.md#s3-7)): `Delay(0x10)`, `Delay(1_000)`, `Delay(+5)`.
 - `Delay(0)` is allowed, and lets the other macros run first. There is no upper bound: `Delay(18446744073709551615)` loads and holds the macro until `swch off`, a reload or `swch exit` stops it.
