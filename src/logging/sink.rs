@@ -504,6 +504,32 @@ mod tests {
     }
 
     #[test]
+    fn a_line_longer_than_the_limit_does_not_rotate_an_empty_daemon_log() {
+        let temp = TempDir::new("log-long-empty");
+        let files = LogFiles::with_limit(temp.path().to_path_buf(), 10);
+        let long = format!("{}\n", "x".repeat(40));
+        fs::write(temp.path().join("daemon.1.log"), "keep\n").expect("write daemon.1.log");
+
+        files.write_line(&long).expect("the line is written");
+
+        assert_eq!(
+            read(&files.path()),
+            long,
+            "the long line goes into the empty daemon.log"
+        );
+        assert_eq!(
+            read(&temp.path().join("daemon.1.log")),
+            "keep\n",
+            "an empty daemon.log is not pushed down over daemon.1.log"
+        );
+        assert_eq!(
+            names_in(temp.path()),
+            ["daemon.1.log", "daemon.log"],
+            "nothing is rotated into daemon.2.log"
+        );
+    }
+
+    #[test]
     fn daemon_log_rotates_at_one_mebibyte() {
         let temp = TempDir::new("log-mebibyte");
         let files = LogFiles::new(temp.path().to_path_buf());
