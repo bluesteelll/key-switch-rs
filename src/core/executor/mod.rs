@@ -1285,6 +1285,51 @@ mod tests {
     }
 
     #[test]
+    fn every_job_still_queued_when_the_executor_dies_is_counted() {
+        use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+
+        let (tx, records) = mpsc::channel();
+        let (executor, counters) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let handle = executor.handle();
+
+        handle.submit(open("first"), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "open first");
+        // As in the single-job test: let the loop return to GetMessageW so
+        // that no pass is still draining when the jobs below are queued.
+        thread::sleep(Duration::from_millis(200));
+
+        let epoch = handle.shared.epoch.load(Ordering::Acquire);
+        for name in ["lost one", "lost two", "lost three"] {
+            handle
+                .jobs
+                .try_send(Job {
+                    action: open(name),
+                    target: TargetWindow::NONE,
+                    epoch,
+                })
+                .expect("the queue has room");
+        }
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; WM_QUIT carries no pointer, and
+        // the thread is this test's own executor.
+        unsafe { PostThreadMessageW(handle.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+            .expect("the executor thread has a message queue");
+        wait_until("the executor ends on WM_QUIT", || executor.is_finished());
+
+        let counts = take_counts(counters);
+        assert_eq!(
+            count_of(&counts, Counter::ExecutorUnavailable),
+            3,
+            "each of the three jobs left in the queue is counted once: {counts:?}"
+        );
+        assert!(
+            records.try_recv().is_err(),
+            "a dead executor runs nothing more"
+        );
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
     fn launch_and_open_url_carry_no_window_and_ask_for_none() {
         // Only a Sequence reads the foreground window; for the others the
         // hook thread makes no Win32 call and queues NONE. Where no window
