@@ -160,12 +160,12 @@ pub fn load(config: &ConfigPath) -> Result<Vec<Binding>, ConfigError> {
     let text = match (config, read_config(path)) {
         (ConfigPath::BesideExe(_), Err(ConfigError::Missing { .. })) => {
             write_default(path)?;
-            println!("[INFO] generated default config at {}", path.display());
+            log::info!("generated default config at {}", path.display());
             read_config(path)?
         }
         (_, read) => {
             let text = read?;
-            println!("[INFO] loading config from {}", path.display());
+            log::info!("loading config from {}", path.display());
             text
         }
     };
@@ -177,7 +177,7 @@ pub fn load(config: &ConfigPath) -> Result<Vec<Binding>, ConfigError> {
 /// keeps the bindings it has (KS-23).
 pub fn reload(path: &Path) -> Result<Vec<Binding>, ConfigError> {
     let text = read_config(path)?;
-    println!("[INFO] loading config from {}", path.display());
+    log::info!("loading config from {}", path.display());
     parse_config(path, &text)
 }
 
@@ -226,15 +226,15 @@ pub(crate) fn from_ron_str(text: &str) -> Result<Vec<Binding>, ConfigError> {
 /// [`from_ron_str`] with the system hotkeys taken from `system_combination`
 /// instead of the registry, so a test knows which auto-blockers to expect
 /// whatever hotkey the machine has set. Warnings about a config that loads
-/// go to stderr, on the thread that loads it: the main thread at startup,
-/// `config-watcher` on a reload.
+/// are logged with `log::warn!` on the thread that loads it: the main
+/// thread at startup, `config-watcher` on a reload.
 pub(crate) fn from_ron_str_with_hotkeys(
     text: &str,
     system_combination: &SystemCombination,
 ) -> Result<Vec<Binding>, ConfigError> {
     let parsed = parse_ron_str(text, system_combination)?;
     for warning in &parsed.warnings {
-        eprintln!("[WARN] {warning}");
+        log::warn!("{warning}");
     }
     Ok(parsed.bindings)
 }
@@ -246,8 +246,8 @@ struct ParsedConfig {
     warnings: Vec<String>,
 }
 
-/// [`from_ron_str_with_hotkeys`] without the printing, so that a test can
-/// read the warnings.
+/// [`from_ron_str_with_hotkeys`] without logging the warnings, so that a
+/// test can read them.
 fn parse_ron_str(
     text: &str,
     system_combination: &SystemCombination,
@@ -284,7 +284,7 @@ fn parse_ron_str(
     }
 
     if user_bindings.is_empty() {
-        eprintln!("[WARN] config contains no bindings");
+        log::warn!("config contains no bindings");
     }
 
     // Every entry converted (an error returned above), so `raw.bindings[k]`
@@ -374,7 +374,7 @@ fn expand_with_auto_blockers(
             .iter()
             .position(|b| b.combination() == Some(hotkey))
         {
-            println!("[INFO] no auto-blocker for {hotkey}: binding #{index} uses the same keys");
+            log::info!("no auto-blocker for {hotkey}: binding #{index} uses the same keys");
             continue;
         }
         let mut modes: Vec<BlockerMode> = Vec::new();

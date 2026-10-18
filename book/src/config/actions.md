@@ -79,7 +79,7 @@ No arguments. Code: [src/system/system_function.rs:42-79](https://github.com/blu
 
 - The window is obtained with `GetForegroundWindow()`. If there is no window, nothing happens.
 - Call: `PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST (0x0050), wParam, lParam = 0)`, where `wParam = INPUTLANGCHANGE_FORWARD (0x0002)` for `SwitchLanguage` and `INPUTLANGCHANGE_BACKWARD (0x0004)` for `SwitchLanguageBackward`.
-- Posting is asynchronous. A posting error is printed to the console: `Language switch error: ...` for `SwitchLanguage` and `Language switch backward error: ...` for `SwitchLanguageBackward`.
+- Posting is asynchronous. A posting error is logged to the console and to `daemon.log` ([Log file](../build-and-run.md#log-file)): `[ERROR] Language switch error: ...` for `SwitchLanguage` and `[ERROR] Language switch backward error: ...` for `SwitchLanguageBackward`.
 - The recipient is the top-level window, not the focused child control. Whether to switch the layout is up to the window itself; usually `DefWindowProc` accepts the request.
 - No OS hotkey is pressed, so the action does not depend on what is configured in Windows (Alt+Shift and so on).
 - Equivalent: `PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2)` (forward) or `wparam: 4` (backward).
@@ -141,7 +141,7 @@ The values are passed as is: on x64, `wparam` becomes `usize` and `lparam` becom
 
 - The recipient is `PostMessageW(GetForegroundWindow(), ...)` at the moment the binding fires: the top-level window of the active application, not the focused child control and not the window under the cursor.
 - If there is no foreground window, nothing happens.
-- Posting is asynchronous, and the result of the processing is unknown. Only an error of the posting itself is printed: `Post message error 0x10: ...`, for example when UIPI blocks it in a debug build.
+- Posting is asynchronous, and the result of the processing is unknown. Only an error of the posting itself is logged: `[ERROR] Post message error 0x10: ...`, for example when UIPI blocks it in a debug build.
 
 In practice:
 
@@ -163,7 +163,7 @@ In practice:
 
 - The argument is **one** key name, following the rules of [§6](keys.md#s6): case and all whitespace characters are ignored. An empty string is an error: `PressKey: unknown key ""`.
 - Combinations are not accepted: `PressKey("Ctrl+C")` → `PressKey: unknown key "Ctrl+C"`. A combination is sent like this: `Sequence([Combo("Ctrl+C")])`.
-- Code: [src/core/windows_actions.rs:163-202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163-L202). One `SendInput` call with two events: the press and the release of the VK; `wScan = 0`, and neither `KEYEVENTF_EXTENDEDKEY` nor `KEYEVENTF_SCANCODE` is set ([§6.8](keys.md#s6-8), [KS-36](../audit.md#ks-36)). If some of the events are lost, the console shows `SendInput dropped events for vk ...`.
+- Code: [src/core/windows_actions.rs:163-202](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L163-L202). One `SendInput` call with two events: the press and the release of the VK; `wScan = 0`, and neither `KEYEVENTF_EXTENDEDKEY` nor `KEYEVENTF_SCANCODE` is set ([§6.8](keys.md#s6-8), [KS-36](../audit.md#ks-36)). If some of the events are lost, the press is counted in `key_press_short`, which the `[WARN] counters since the last report: ...` line reports; no line names the key.
 - It is a **tap**, not a hold. With `Immediate`, a held trigger produces a series of taps at the auto-repeat rate, unless the binding sets `repeat: false`. `PressKey("LShift")` is one short Shift press, not a held Shift, and a held trigger of `PressKey("CapsLock")` toggles CapsLock on every repeat: write `repeat: false` for a toggle key or a modifier.
 - Output goes by VK, so the character depends on the current layout and on the held modifiers. `PressKey("Q")` in the Russian layout types "й". For layout-independent text use `Sequence([Text("...")])`.
 - Names with a side (`LShift`, `RAlt`, `RWin` …) are allowed here and send their own VK.
@@ -189,7 +189,7 @@ Code: `std::process::Command::new(exe).args(args).spawn()` ([src/core/windows_ac
   - the App Paths registry key is **not** used. Start programs known only from there (often `chrome.exe`) by full path or through `OpenUrl("chrome.exe")`.
 - std starts `.bat` and `.cmd` files through `cmd.exe`. Arguments that cannot be escaped safely for cmd (for example, ones containing a line break) are rejected by std with the error `batch file arguments are invalid`.
 - The child process inherits the daemon's environment and current directory ([KS-34](../audit.md#ks-34)). There is no `cwd` field: `cwd:` is a load error. Roadmap [item 3.3](../roadmap.md#33-launch-and-openurl-without-elevation) plans `cwd:` and `elevated:`.
-- Errors are visible only in the daemon console: `[ERROR] Launch "...": <text>`. The text is `program not found` when the program is not found, `program path has no file name` for `exe: ""`, and otherwise the OS message. The loader does not check that the file exists, so `Launch(exe: "")` loads.
+- Errors are logged to the daemon console and to `daemon.log`: `[ERROR] Launch "...": <text>`. The text is `program not found` when the program is not found, `program path has no file name` for `exe: ""`, and otherwise the OS message. The loader does not check that the file exists, so `Launch(exe: "")` loads.
 
 > [!WARNING]
 > **Known issue ([KS-09](../audit.md#ks-09)).** Processes are started elevated ([src/core/windows_actions.rs:225](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/windows_actions.rs#L225)). The release daemon runs with `requireAdministrator` ([build.rs:27-36](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/build.rs#L27-L36)), so every program it launches gets administrator rights without a UAC prompt. For example, dragging files into such a program from a normal Explorer window does not work. There is no de-elevation.
@@ -286,7 +286,7 @@ action: Sequence([ <step>, <step>, ... ])
 - `Window(...)` steps always act on the remembered HWND, even if the focus has already moved.
 - `Text`, `Key` and `Combo` go to the window that has the keyboard focus **at the time of the step**: `SendInput` is not addressed to a window.
 - `Launch`, `OpenUrl` and `Media` do not depend on a window.
-- A step error does not abort the macro: it is only printed to the console.
+- A step error does not abort the macro: it is only logged, to the console and to `daemon.log`.
 - `Launch` and `OpenUrl` inside `Sequence` run on the worker thread and **do not block the hook**. This is the recommended way to run them.
 
 > [!WARNING]

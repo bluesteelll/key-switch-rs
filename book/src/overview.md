@@ -81,7 +81,8 @@ The main thread owns both hooks and pumps messages, so the hook callback runs th
 - the `ipc-server` accept loop, which starts one short-lived worker per connection;
 - the `config-watcher` debounce thread, plus the internal thread of the `notify` backend;
 - one `hold-timer` thread per armed Hold; Tap and DoubleTap need none;
-- one worker per running `Sequence` macro.
+- one worker per running `Sequence` macro;
+- the `log-writer` thread, which writes every log line to the console and to `%LOCALAPPDATA%\key-switch-rs\daemon.log` (roadmap item 1.7).
 
 [Architecture](architecture.md) describes the threads in detail, and [Building, running and controlling the daemon](build-and-run.md) covers the commands.
 

@@ -11,6 +11,7 @@ use windows::{
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
 use crate::data::sequence::{SequenceStep, spawn_sequence};
+use crate::logging::counters::{self, Counter};
 use crate::system::system_function::SystemFunction;
 
 #[derive(Debug, Clone)]
@@ -185,8 +186,9 @@ impl BindAction {
     }
 }
 
-/// Synthesize a single key press (down + up). Shared between `PressKey`,
-/// `Media(...)`, and the sequence `Key(...)` step.
+/// Synthesize a single key press (down + up), for `PressKey` and
+/// `Media(...)`. It runs on the hook thread at every auto-repeat, so a short
+/// count is only counted (`key_press_short`), never logged.
 pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     let inputs = [
         INPUT {
@@ -219,12 +221,7 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     // we pass as cbSize.
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
-        eprintln!(
-            "SendInput dropped events for vk {:?}: sent {} of {}",
-            vk,
-            sent,
-            inputs.len()
-        );
+        counters::bump(Counter::KeyPressShort);
     }
 }
 
@@ -238,7 +235,7 @@ fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
         }
 
         if let Err(e) = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam)) {
-            eprintln!("Post message error {:#X}: {:?}", msg, e);
+            log::error!("Post message error {msg:#X}: {e:?}");
         }
     }
 }
@@ -254,7 +251,7 @@ pub(crate) fn launch_process(exe: &str, args: &[String]) {
             // We drop the Child handle; the OS keeps the process alive.
         }
         Err(e) => {
-            eprintln!("[ERROR] Launch {:?}: {}", exe, e);
+            log::error!("Launch {exe:?}: {e}");
         }
     }
 }
@@ -280,10 +277,7 @@ pub(crate) fn shell_open(target: &str) {
     // HINSTANCE-as-pointer convention is tagged-pointer-style on Windows).
     let val = result.0 as usize;
     if val <= 32 {
-        eprintln!(
-            "[ERROR] OpenUrl {:?}: ShellExecuteW returned error code {}",
-            target, val
-        );
+        log::error!("OpenUrl {target:?}: ShellExecuteW returned error code {val}");
     }
 }
 

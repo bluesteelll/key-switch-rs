@@ -81,7 +81,7 @@ The daemon parses no options. `ConfigPath::from_arg` ([src/config/loader.rs:110-
 > [!NOTE]
 > Any first argument still counts as a path: `key-switch-rs.exe --help` stops with `[FATAL] config file <current folder>\--help does not exist`. Until `1dfd80a` it created a file named `--help` with the default template and ran with it ([KS-41](audit.md#ks-41), not independently verified; partly fixed). Roadmap [item 4.2](roadmap.md#42-background-mode) adds argument parsing.
 
-A config error at startup is fatal, and so is any error that `App::run` returns, such as a failed hook install. `main` prints `[FATAL] <error>` and then `Press Enter to exit...`, and waits on stdin so that a double-clicked console window stays open ([src/main.rs:6-20](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/main.rs#L6-L20)). A config error during hot reload is not fatal (see the console lines below). The config format itself is covered in the [configuration reference](config/index.md).
+A config error at startup is fatal, and so is any error that `App::run` returns, such as a failed hook install. `main` logs `[FATAL] <error>`, on the console and in the [log file](#log-file), then prints `Press Enter to exit...` and waits on stdin so that a double-clicked console window stays open ([src/main.rs:47-62](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/main.rs#L47-L62)). A config error during hot reload is not fatal (see the console lines below). The config format itself is covered in the [configuration reference](config/index.md).
 
 ### Startup and shutdown
 
@@ -111,29 +111,52 @@ flowchart TD
     M -->|"WM_QUIT from Ctrl+C, console close or swch exit"| N["Remove hooks and exit"]
 ```
 
-The daemon logs only to its console. There is no log file, so when it was started by `swch open` or a Scheduled Task, look for errors in that console window. Roadmap [item 1.7](roadmap.md#17-file-logging) adds a log file.
+The daemon logs to its console and, once it owns its session, to the [log file](#log-file) `%LOCALAPPDATA%\key-switch-rs\daemon.log` (roadmap [item 1.7](roadmap.md#17-file-logging)). A daemon started by `swch open` or a Scheduled Task leaves its errors there too. The console lines below go to stderr; only the startup banner goes to stdout, and only the banner stays out of the file. In the file, each line starts with a UTC timestamp.
 
 | Console line | Printed when | Source |
 |---|---|---|
+| `[INFO] key-switch-rs <version> started (pid <n>), logging to <path>` | The daemon owns its session and attached the log file; the first line of a run in `daemon.log` | [main.rs:87-108](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/main.rs#L87-L108) |
+| `[WARN] no log file: the LocalAppData folder is unknown: <error>`, or `[WARN] no log file in <folder>: <error>` when the log writer is not running | The daemon logs to the console only | [main.rs:91-106](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/main.rs#L91-L106) |
 | `[INFO] generated default config at <path>` or `[INFO] loading config from <path>` | Config load, at startup and on every reload | [loader.rs:160-181](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L160-L181) |
 | `[INFO] <function>: registry combination <keys>` or `[INFO] <function>: using default combination` | Config load, for each `block_original_combo` binding whose action has an OS hotkey | [registry.rs:52-65](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/system/registry.rs#L52-L65) |
 | `[INFO] no auto-blocker for <keys>: binding #<n> uses the same keys` | Config load, when a binding uses the hotkey's keys | [loader.rs:303](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L303) |
 | `[WARN] config contains no bindings` | The config has `bindings: []` | [loader.rs:264-266](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/config/loader.rs#L264-L266) |
 | `Key Switch started`, then one line per binding, auto-blockers last | Before the hook is installed | [app.rs:99-112](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L99-L112) |
-| `✓ Hook installed successfully` | The hook is live | [app.rs:132](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L132) |
-| `` ✓ IPC server listening (use `swch on/off/exit`) `` | The pipe was created | [app.rs:140](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L140) |
+| `[INFO] Hook installed successfully` | The hook is live | [app.rs:158](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/core/app.rs#L158) |
+| `` [INFO] IPC server listening (use `swch on/off/exit`) `` | The pipe is served | [app.rs:175](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/core/app.rs#L175) |
 | `[WARN] could not create IPC listener at pipe "key-switch-rs.sock": <error>`, then `[INFO] another daemon instance may already be running. ...` | Creating the pipe failed, usually because the name is taken | [app.rs:141-152](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L141-L152) |
-| `✓ Watching <path> for changes` | The watcher started; the path is absolute | [app.rs:164](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L164) |
+| `[INFO] Watching <path> for changes` | The watcher started; the path is absolute | [app.rs:186](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/core/app.rs#L186) |
 | `[WARN] could not start config file watcher for <path>: <error>`, then `[INFO] continuing without hot-reload` | The watcher failed to start; the daemon keeps running | [app.rs:167-174](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L167-L174) |
 | `[INFO] config reloaded (<n> bindings live)` | A save was applied | [config_watcher.rs:163](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L163) |
-| `[ERROR] config reload failed:`, the error, then `[INFO] keeping previous bindings live` | A save did not parse or validate, or the file is gone | [config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L165-L168) |
-| `[WARN] could not start a hold timer, that Hold will not fire: <error>` | A `Hold` timer thread could not be started | [keyboard_hook_callback.rs:214-217](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook_callback.rs#L214-L217) |
+| `[ERROR] config reload failed:`, the error, then `[INFO] keeping previous bindings live` | A save did not parse or validate, or the file is gone. In `daemon.log` every line of the error carries the timestamp and `[ERROR]` | [config_watcher.rs:165-168](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/hook/config_watcher.rs#L165-L168) |
+| `[WARN] counters since the last report: menu_mask_short=<n> key_press_short=<n> hold_timer_not_started=<n> log_lines_dropped=<n>` | Every 60 s and at exit, while a count is not 0: a menu mask key or a key press that `SendInput` cut short, a `Hold` whose timer thread could not be started (that Hold never fires), log lines dropped from a full queue | [writer.rs:223-229](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/logging/writer.rs#L223-L229) |
+| `[WARN] log file <path>: could not write: <error>` or `[WARN] log file <path>: could not rotate, so daemon.log grows past its limit: <error>`, console only; later `[INFO] log file <path> works again` | The first of a run of failed writes to the log file, and the first success after it | [writer.rs:194-221](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/logging/writer.rs#L194-L221) |
 | `[WARN] IPC read error: <error>` or `[WARN] IPC write error: <error>` | A pipe client hung up without a complete exchange | [ipc_server.rs:139-153](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/ipc_server.rs#L139-L153) |
-| `Received shutdown signal...` | Ctrl+C, or the console window was closed | [app.rs:198](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L198) |
-| `Removing keyboard hook...` | The message loop ended | [app.rs:188](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/core/app.rs#L188) |
+| `[INFO] Received shutdown signal...` | Ctrl+C, or the console window was closed; the queued lines are written before the handler returns | [app.rs:241-262](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/core/app.rs#L241-L262) |
+| `[INFO] Removing keyboard hook...` | The message loop ended | [app.rs:213](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/core/app.rs#L213) |
 | `[WARN] could not remove the foreground hook: <error>` | Shutdown could not remove the WinEvent hook | [keyboard_hook.rs:235-237](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/keyboard_hook.rs#L235-L237) |
 
 Hot reload collapses a burst of file events into one reload after 250 ms of quiet ([config_watcher.rs:131-154](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L131-L154)). It watches the parent folder and keeps only create, modify and remove events for the config's file name, compared ignoring case ([config_watcher.rs:63-91](https://github.com/bluesteelll/key-switch-rs/blob/1dfd80a/src/hook/config_watcher.rs#L63-L91)). A reload never writes a file: deleting or renaming the config keeps the live bindings ([KS-23](audit.md#ks-23), fixed). Details are in [File location, reload and top-level structure](config/structure.md#s2-3).
+
+### Log file
+
+Once the file is attached, every console line above except the banner and the `[WARN] log file <path>: ...` lines also goes to `%LOCALAPPDATA%\key-switch-rs\daemon.log` (roadmap [item 1.7](roadmap.md#17-file-logging), [src/logging/](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/logging/mod.rs)):
+
+- **Where.** `SHGetKnownFolderPath(FOLDERID_LocalAppData)` gives the folder of the account the daemon runs as, which with UAC consent on your own account is your own ([src/system/known_folder.rs](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/system/known_folder.rs)). The `key-switch-rs` folder and the file are created with the first line, and again after you delete them.
+- **When.** `main` starts the logger first, with the console only. The file is attached after the single-instance guard, so a second start that finds a daemon running prints its `[ERROR] already running ...` line on the console and never writes to, or rotates, the running daemon's file ([KS-20](audit.md#ks-20)). A `[FATAL]` error before the guard, such as a failure to create the mutex, reaches the console only.
+- **Line format.** `2026-10-16T09:41:07.123Z [INFO] config reloaded (2 bindings live)`: the time in UTC, ISO 8601 with milliseconds, then the tag and the message. A message of several lines repeats the time and the tag on each of its lines, and its trailing line breaks are dropped:
+
+  ```text
+  2026-10-16T09:52:30.518Z [ERROR] config reload failed:
+  2026-10-16T09:52:30.518Z [ERROR] config has 1 invalid binding(s):
+  2026-10-16T09:52:30.518Z [ERROR]   - binding #0 [F13]: PressKey: unknown key "Foo"
+  2026-10-16T09:52:30.518Z [INFO] keeping previous bindings live
+  ```
+
+  The console shows the same record as `[ERROR] config reload failed:` followed by the error's lines as they are, without a blank line after them. A record of another crate, such as `notify`, names its target: `[WARN] notify::windows: ...`.
+- **Rotation.** Before a line would take `daemon.log` past 1 MiB, the file becomes `daemon.1.log`, `daemon.1.log` becomes `daemon.2.log`, and the old `daemon.2.log` is deleted; three files are kept. No handle stays open between lines. A program that holds one of the files open without delete sharing stops the rotation at the first rename that fails, so no file is overwritten before its content moved on; `daemon.log` then grows until that program closes the file, and the console shows `[WARN] log file <path>: could not rotate, ...` once.
+- **What is never logged.** No pressed key and no typed text. The hook callback logs nothing at all: what it would report per event is counted, and the `counters since the last report` line gives the counts. Lines about the config quote the config. The banner, whose binding lines can hold a macro's text, is not logged.
+- **Threads.** A thread that logs only formats its line and queues it with `try_send` on a queue of 1024 lines; a full queue drops the line and counts it in `log_lines_dropped`. The `log-writer` thread writes each line to the file first, then to the console. In a `conhost.exe` window with QuickEdit on, a held selection stops that thread at its next console write, so later lines reach the file only once the selection is released; the keyboard is not slowed down. At exit, after Ctrl+C and after a closed console window, the daemon waits at most 1 s for the queued lines.
 
 ### Stopping
 
@@ -416,7 +439,7 @@ flowchart TD
 | Alt, Shift, X arrives as Alt+X, or Shift, Alt, X as Shift+X | [KS-05](audit.md#ks-05), rest | Set `block_original_combo: false` on the CapsLock binding |
 | A binding stopped firing while a modifier is held | exact modifiers ([§7](config/kinds.md#s7)) | Add `allow_extra_modifiers: true` to that binding |
 | The left Shift no longer types capitals | `keys: "LShift"` with a deferred trigger ([§11.8](config/triggers-conditions.md#s11-8)) | Remove the binding until roadmap item 1.3 |
-| Saving the config changes nothing | a rejected reload | Read the `[ERROR] config reload failed:` lines in the daemon console |
+| Saving the config changes nothing | a rejected reload | Read the `[ERROR] config reload failed:` lines in the daemon console or in `daemon.log` |
 | Remapping stops working while `swch status` says `running` | [KS-08](audit.md#ks-08): Windows removed a slow hook | `swch exit`, then `swch open`; wrap `Launch` and `OpenUrl` in `Sequence([...])` |
 
 <a id="swch-says-access-is-denied-ks-02"></a>

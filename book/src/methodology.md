@@ -375,7 +375,9 @@ flowchart LR
 
 ### Validation harness
 
-`cfgcheck` is a tiny crate in the scratch directory. It loads one file through the real `key_switch_rs::config::load`, the only public loading function; the module re-exports just `load` and `default_config_path` ([src/config/mod.rs:15](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/mod.rs#L15)), and the in-memory `from_ron_str` is `pub(crate)` ([src/config/loader.rs:130](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L130)). It then prints every resulting binding. Its `Cargo.toml`, verbatim:
+`cfgcheck` is a tiny crate in the scratch directory. It loads one file through the real loader and then prints every resulting binding. At the audit that was `key_switch_rs::config::load`, the only public loading function; the module re-exported just `load` and `default_config_path` ([src/config/mod.rs:15](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/mod.rs#L15)), and the in-memory `from_ron_str` is `pub(crate)` ([src/config/loader.rs:130](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L130)). Since roadmap Workstream B, `load` takes a `config::ConfigPath`, and the harness calls `config::reload`, the loader that takes a path and never writes ([src/config/loader.rs:175-182](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/config/loader.rs#L175-L182)).
+
+Since roadmap [item 1.7](roadmap.md#17-file-logging) the loader reports through the `log` crate, so a program that installs no logger loses its `[INFO]` and `[WARN]` lines, a duplicate-binding warning among them. The harness therefore starts the daemon's logger first, `key_switch_rs::logging::init()`, which writes to stderr only and opens no log file, and calls `key_switch_rs::logging::flush()` before every exit: once after the load, so that the loader's lines are written and come above the result, and once before the exit for a missing file. Its `Cargo.toml`, verbatim:
 
 ```toml
 [package]
@@ -394,18 +396,28 @@ key-switch-rs = { path = "D:/key-switch-rs/key-switch-rs" }
 //! Usage: cfgcheck <path-to-config.ron>   (never creates the file)
 use std::path::PathBuf;
 
+use key_switch_rs::logging;
+
 fn main() {
+    // The loader reports through `log`: without a logger its [INFO] and
+    // [WARN] lines are lost. They go to stderr.
+    logging::init();
     let path = PathBuf::from(std::env::args().nth(1).expect("usage: cfgcheck <file>"));
     if !path.exists() {
-        eprintln!("ERR: file does not exist (refusing: loader would write the default)");
+        eprintln!("ERR: file does not exist");
+        logging::flush();
         std::process::exit(2);
     }
-    match key_switch_rs::config::load(&path) {
+    let loaded = key_switch_rs::config::reload(&path);
+    // Every exit below comes after this flush, so the loader's lines are
+    // written, and written above the result.
+    logging::flush();
+    match loaded {
         Ok(bindings) => {
             println!("OK: {} bindings (after auto-blocker expansion)", bindings.len());
             for (i, b) in bindings.iter().enumerate() {
                 println!(
-                    "  #{i}: kind={:?} action={:?} block_default={} block_original_combo={} condition={:?} trigger={:?}",
+                    "  #{i}: kind={:?} action={:?} block_default={} block_original_combo={:?} condition={:?} trigger={:?}",
                     b.kind, b.action, b.block_default, b.block_original_combo, b.condition, b.trigger
                 );
             }
@@ -418,29 +430,33 @@ fn main() {
 }
 ```
 
-The existence check matters because `load` writes the default config to any path that does not exist ([src/config/loader.rs:101-104](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L101-L104), see also [KS-41](audit.md#ks-41)). The exit codes are:
+At the audit the harness called `config::load(&path)`, printed `block_original_combo`, then a `bool`, with `{}`, and needed no logger, because the loader printed its own lines. The existence check dates from then: `load` wrote the default config to any path that did not exist ([src/config/loader.rs:101-104](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L101-L104), see also [KS-41](audit.md#ks-41)). `reload` never writes, and the check keeps exit code 2 for a missing file. The exit codes are:
 
 | Exit code | Meaning |
 |---|---|
-| 0 | The file loaded; `OK: N bindings` and one line per binding on stdout |
-| 1 | The loader returned an error; `ERR: <message>` on stdout |
-| 2 | The file does not exist; nothing was written |
+| 0 | The file loaded; `OK: N bindings` and one line per binding on stdout, after the loader's `[INFO]` and `[WARN]` lines on stderr |
+| 1 | The loader returned an error; `ERR: <message>` on stdout, after the loader's lines on stderr |
+| 2 | The file does not exist; `ERR: file does not exist` on stderr, and nothing was written |
 | 101 | No argument given (panic from `expect`) |
 
-A `cfgcheck` built against a tree after roadmap Workstream B calls `key_switch_rs::config::reload(&path)` in place of `config::load(&path)`: there `load` takes a `config::ConfigPath`, and `reload` is the loader that takes a path. The rest of the harness is unchanged.
-
-Output for the shipped `src/config/default_config.ron` on the audit machine:
+Output for the shipped `src/config/default_config.ron`, with stdout and stderr together (`2>&1`), from the harness above built against the branch `feat/file-logging` (roadmap item 1.7), on the machine of that lane:
 
 ```text
-[INFO] loading config from …\src\config\default_config.ron
+[INFO] loading config from D:/key-switch-rs/key-switch-rs/src/config/default_config.ron
 [INFO] SwitchLanguage: using default combination
 OK: 3 bindings (after auto-blocker expansion)
-  #0: kind=Combo(KeyCombination { keys: [VIRTUAL_KEY(18), VIRTUAL_KEY(16)] }) action=DoNothing block_default=true block_original_combo=false condition=Always trigger=Immediate
-  #1: kind=Combo(KeyCombination { keys: [VIRTUAL_KEY(20)] }) action=SwitchLanguage block_default=true block_original_combo=true condition=Always trigger=Immediate
-  #2: kind=Combo(KeyCombination { keys: [VIRTUAL_KEY(16), VIRTUAL_KEY(20)] }) action=ToggleCapsLock block_default=true block_original_combo=false condition=Always trigger=Immediate
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=Some(Swallow) condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(20))] }) action=ToggleCapsLock block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Alt), AnySide(Shift)] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate
 ```
 
-Binding `#0` is the auto-blocker (Alt = 18, Shift = 16) that `expand_with_auto_blockers` inserts for the CapsLock binding ([src/config/loader.rs:172-192](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/config/loader.rs#L172-L192)). Its keys come from the registry, with Alt+Shift as the fallback ([src/system/registry.rs:60-73](https://github.com/bluesteelll/key-switch-rs/blob/7cb3521/src/system/registry.rs#L60-L73)). The second `[INFO]` line shows that the audit machine's registry gave no combination, so the fallback was used. On another machine binding `#0` can differ.
+The two `[INFO]` lines come on stderr. Binding `#2` is the auto-blocker that `expand_with_auto_blockers` appends after the file's bindings for the CapsLock binding ([src/config/loader.rs:338-401](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/config/loader.rs#L338-L401)). Its keys come from the registry, with Alt+Shift as the fallback ([src/system/registry.rs:65-116](https://github.com/bluesteelll/key-switch-rs/blob/0dc008e/src/system/registry.rs#L65-L116)). The second `[INFO]` line shows that the machine's registry gave no combination, so the fallback was used. On another machine binding `#2` can differ. A file with a duplicate binding loads and shows the loader's warning:
+
+```text
+[INFO] loading config from dup.ron
+[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them
+OK: 3 bindings (after auto-blocker expansion)
+```
 
 The section writers returned their examples as a JSON list of `{ name, ron, expect, note }` records, where `expect` is `ok` or `error`. The runner below, used by two of the validators, wrote each record to its own `.ron` file, ran the harness, dropped the loader's `[INFO]` lines, and printed `PASS` or `MISMATCH`:
 

@@ -10,6 +10,7 @@ use windows::{
 
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
+use crate::logging::counters::{self, Counter};
 use crate::system::registry;
 
 #[allow(dead_code)] // Variants are part of the public surface; not every binary uses them all.
@@ -54,7 +55,7 @@ impl SystemFunction {
                 WPARAM(INPUTLANGCHANGE_FORWARD as usize),
                 LPARAM(0),
             ) {
-                eprintln!("Language switch error: {:?}", e);
+                log::error!("Language switch error: {e:?}");
             }
         }
     }
@@ -73,7 +74,7 @@ impl SystemFunction {
                 WPARAM(INPUTLANGCHANGE_BACKWARD as usize),
                 LPARAM(0),
             ) {
-                eprintln!("Language switch backward error: {:?}", e);
+                log::error!("Language switch backward error: {e:?}");
             }
         }
     }
@@ -85,7 +86,7 @@ impl SystemFunction {
             .args(["user32.dll,LockWorkStation"])
             .spawn()
         {
-            eprintln!("LockWorkStation spawn error ({}): {}", exe.display(), e);
+            log::error!("LockWorkStation spawn error ({}): {e}", exe.display());
         }
     }
 
@@ -95,13 +96,13 @@ impl SystemFunction {
             let hwnd = match FindWindowW(w!("Shell_TrayWnd"), None) {
                 Ok(h) if !h.is_invalid() => h,
                 _ => {
-                    eprintln!("[WARN] Shell_TrayWnd not found - cannot show desktop");
+                    log::warn!("Shell_TrayWnd not found - cannot show desktop");
                     return;
                 }
             };
 
             if let Err(e) = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(419), LPARAM(0)) {
-                eprintln!("Show desktop error: {:?}", e);
+                log::error!("Show desktop error: {e:?}");
             }
         }
     }
@@ -110,7 +111,7 @@ impl SystemFunction {
         use std::process::Command;
         let exe = system32_path("Taskmgr.exe");
         if let Err(e) = Command::new(&exe).spawn() {
-            eprintln!("Taskmgr spawn error ({}): {}", exe.display(), e);
+            log::error!("Taskmgr spawn error ({}): {e}", exe.display());
         }
     }
 
@@ -118,6 +119,8 @@ impl SystemFunction {
         Self::press_key(VK_CAPITAL);
     }
 
+    /// A key press (down + up). It can run on the hook thread, so a short
+    /// count is only counted (`key_press_short`), never logged.
     fn press_key(vk: VIRTUAL_KEY) {
         let inputs = [
             INPUT {
@@ -150,12 +153,7 @@ impl SystemFunction {
         // we pass as cbSize.
         let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
-            eprintln!(
-                "SendInput dropped events for vk {:?}: sent {} of {}",
-                vk,
-                sent,
-                inputs.len()
-            );
+            counters::bump(Counter::KeyPressShort);
         }
     }
 }

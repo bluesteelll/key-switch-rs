@@ -86,8 +86,99 @@ minor version; such entries sit under **Changed** and start with
   switches it, Alt+Shift+Tab steps back in the switcher, and Alt, Shift,
   release in Notepad activates no menu. If the layout still switches, the
   hypothesis does not hold: keep `true`.
+- File logging (roadmap item 1.7): the daemon writes the lines it logs also
+  to `%LOCALAPPDATA%\key-switch-rs\daemon.log`, so a daemon started by a
+  Scheduled Task leaves a record that nobody has to watch. The folder is
+  the one of the account the daemon runs as, found with
+  `SHGetKnownFolderPath`, and is created with the first line. Every line of
+  the file starts with the time in UTC (ISO 8601, with milliseconds) and
+  the level, for example
+  `2026-10-16T09:41:07.123Z [INFO] key-switch-rs 0.1.0 started (pid 4242), logging to <path>`;
+  the console keeps `[LEVEL] message`, on stderr. At 1 MiB the file rotates
+  into `daemon.1.log` and `daemon.2.log`, and three files are kept. Records
+  go through the `log` crate, the one new dependency, into an in-house sink:
+  one `log-writer` thread owns the console output and the files, and every
+  other thread only queues its line, without waiting. The file is attached
+  once the daemon owns its session, so a second start never writes to it.
+  The startup banner stays on the console. Manual checks: a first start
+  creates the folder and `daemon.log`, whose first line is the start line;
+  a second start in the same session prints its `[ERROR] already running`
+  line, leaves `$LASTEXITCODE` at 2 and adds no line to `daemon.log`;
+  `key-switch-rs.exe missing.ron` shows `[FATAL] config file ... does not
+  exist`, a blank line and `Press Enter to exit...`, and before Enter
+  `daemon.log` already ends with that `[FATAL]` line.
+- Counters for what the keyboard hook must not log per event (roadmap item
+  1.7): `menu_mask_short` (`SendInput` inserted fewer than the two events of
+  the menu mask key), `key_press_short` (fewer than the two events of a
+  `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
+  (a Hold whose timer thread could not be started, so that it never fired)
+  and `log_lines_dropped` (log lines lost to a full queue). While one of
+  them is not 0, the log writer reports all four every 60 s and at exit, in
+  one line on the console and in `daemon.log`:
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0`.
 
 ### Changed
+
+- The line of a second start in the same session (roadmap item 1.7) is
+  ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``;
+  it was ``key-switch-rs: already running in this session; ...``. The exit
+  code stays 2.
+- The lines of loading and reloading the config are log records (roadmap
+  item 1.7): `[INFO] loading config from ...`, `[INFO] generated default
+  config at ...`, `[INFO] config reloaded (N bindings live)`, the hotkey
+  lines such as `[INFO] SwitchLanguage: registry combination Alt+Shift`,
+  the `[WARN]` lines of a config that loads, and
+  `[ERROR] config reload failed:` with `[INFO] keeping previous bindings live`.
+  They also go into `daemon.log`, where every line of a reload error
+  carries its own time and `[ERROR]`, and the `[INFO]` lines go to stderr
+  instead of stdout. A reload or startup error no longer ends with a blank
+  line of its own on the console. Manual check: with the daemon running,
+  save `config.ron` with `bindngs:` instead of `bindings:`; `daemon.log`
+  gets `<time> [ERROR] config reload failed:`, the parse error on a line
+  with its own time and `[ERROR]`, and
+  `<time> [INFO] keeping previous bindings live`, and CapsLock still
+  switches the layout. After the fix and a save,
+  `[INFO] config reloaded (3 bindings live)`.
+- Three warnings became counts (roadmap item 1.7, see **Added**):
+  `[WARN] SendInput inserted <n> of 2 menu mask key events`,
+  `SendInput dropped events for vk <key>: sent <n> of 2` (a `PressKey`,
+  `Media` or `ToggleCapsLock` press) and
+  `[WARN] could not start a hold timer, that Hold will not fire: <error>`
+  are counted in `menu_mask_short`, `key_press_short` and
+  `hold_timer_not_started`. The keyboard hook's thread no longer formats a
+  line at every cut-short press, which at the auto-repeat rate filled the
+  console, and no line names the key that was cut short; the error of a
+  failed thread start is no longer shown.
+- Every other line the daemon printed is a log record too (roadmap item
+  1.7), so it also goes into `daemon.log`; only the startup banner stays
+  on stdout and out of the file. The console lines change:
+  - the `✓` lines are `[INFO] Hook installed successfully`,
+    ``[INFO] IPC server listening (use `swch on/off/exit`)`` and
+    `[INFO] Watching <path> for changes`, without the blank line after
+    them; `Removing keyboard hook...` and `Received shutdown signal...`
+    get `[INFO]`;
+  - errors that had no tag get `[ERROR]`: `Launch`, `OpenUrl` and
+    `PostMessage` failures, the language switch, `LockWorkStation`, show
+    desktop and Task Manager;
+  - the `[WARN]` of a macro `Key` step that `SendInput` cut short no
+    longer names the key: `[WARN] press_key: SendInput sent 1 of 2`;
+  - every `[INFO]` line goes to stderr instead of stdout, so a script that
+    reads the daemon's stdout sees the banner only.
+
+  On Ctrl+C or a closed console window the daemon writes the queued lines
+  before it ends. Manual checks: with
+  `( keys: "F13", action: Launch(exe: "no-such-program.exe") )`, pressing
+  F13 writes `<time> [ERROR] Launch "no-such-program.exe": program not found`
+  to `daemon.log` and typing is not delayed; with
+  `( keys: "F13", action: PressKey("A") )` in the default config, text typed
+  in Notepad and a layout switch with CapsLock leave no typed word in any of
+  the three log files (`Select-String`); under `conhost.exe` with QuickEdit
+  on, a selection held in the daemon's console while F13 is pressed five
+  times does not delay typing in Notepad, and the five `[ERROR] Launch`
+  lines appear once the selection is released (on `master` before this
+  change, typing stalls while the selection is held); a daemon started
+  by its Scheduled Task writes a reload error to `daemon.log` with a
+  timestamp although nobody watches its console.
 
 - The source is formatted with `cargo fmt`.
 - The keyboard decisions moved into a pure decision core, `src/engine`
@@ -452,8 +543,8 @@ minor version; such entries sit under **Changed** and start with
   Windows session. Before it reads or writes the config and before it
   installs any hook, the daemon creates the mutex `Local\key-switch-rs`;
   when another daemon of the session holds it, the new one prints
-  ``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
-  and exits with code 2, without the "Press Enter to exit" prompt. A
+  ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+  (see **Changed**) and exits with code 2, without the "Press Enter to exit" prompt. A
   double-click on `key-switch-rs.exe` while the Scheduled Task's daemon
   ran used to start a second elevated daemon: its hook ran first, keys
   were remapped twice, a double `SwitchLanguage` left the layout

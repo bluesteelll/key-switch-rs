@@ -45,6 +45,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Accessibility",
     "Win32_UI_Shell",
+    "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_Registry",
     "Win32_System_Threading",
@@ -55,3 +56,4 @@ ron = "0.10"
 arc-swap = "1"
 notify = "8"
 interprocess = "2"
+log = "0.4"

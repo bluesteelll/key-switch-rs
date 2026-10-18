@@ -156,9 +156,8 @@ fn type_text(s: &str) {
     // exactly `cbSize` bytes per entry.
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if (sent as usize) != inputs.len() {
-        eprintln!(
-            "[WARN] type_text: SendInput sent {} of {} inputs",
-            sent,
+        log::warn!(
+            "type_text: SendInput sent {sent} of {} inputs",
             inputs.len()
         );
     }
@@ -187,12 +186,8 @@ fn press_key(vk: VIRTUAL_KEY) {
     // SAFETY: see type_text.
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if (sent as usize) != inputs.len() {
-        eprintln!(
-            "[WARN] press_key: SendInput sent {} of {} for {:?}",
-            sent,
-            inputs.len(),
-            vk
-        );
+        // No key named: the log never records which keys were sent.
+        log::warn!("press_key: SendInput sent {sent} of {}", inputs.len());
     }
 }
 
@@ -227,9 +222,8 @@ fn press_combo(keys: &[VIRTUAL_KEY]) {
     // SAFETY: see type_text.
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if (sent as usize) != inputs.len() {
-        eprintln!(
-            "[WARN] press_combo: SendInput sent {} of {} inputs",
-            sent,
+        log::warn!(
+            "press_combo: SendInput sent {sent} of {} inputs",
             inputs.len()
         );
     }
@@ -269,7 +263,7 @@ fn is_modifier(vk: VIRTUAL_KEY) -> bool {
 
 fn apply_window_op(op: WindowOp, target: HWND) {
     if target.is_invalid() {
-        eprintln!("[WARN] window step skipped: no foreground HWND captured");
+        log::warn!("window step skipped: no foreground HWND captured");
         return;
     }
 
@@ -289,7 +283,7 @@ fn apply_window_op(op: WindowOp, target: HWND) {
             }
             WindowOp::Close => {
                 if let Err(e) = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)) {
-                    eprintln!("[WARN] window close PostMessage failed: {:?}", e);
+                    log::warn!("window close PostMessage failed: {e:?}");
                 }
             }
         }

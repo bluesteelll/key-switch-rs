@@ -147,7 +147,8 @@ without a restart.
 
 If the file does not load (a syntax error, an unknown or misspelled field,
 an unknown key name, a timing value outside 1 to 10000 ms, ...) or is
-deleted or renamed, the error is printed and the **previously-running
+deleted or renamed, the error is written to the console and to the
+[log file](#log-file), and the **previously-running
 bindings stay live** — a malformed save never
 bricks the daemon. Fix the file and save again to apply. The file is UTF-8,
 with or without a BOM.
@@ -619,7 +620,7 @@ every problem in one pass. Common cases:
 Bindings and steps are numbered from 0 in file order: `binding #1` is the
 second binding of the file.
 
-A warning does not stop the file from loading; it is printed at startup and
+A warning does not stop the file from loading; it is logged at startup and
 on every reload:
 
 - `[WARN] binding #2 [capslock] duplicates binding #0 [CapsLock]; remove one of them`
@@ -733,10 +734,63 @@ cleanly. `swch` commands continue to work against the directly-launched daemon.
 
 Only one daemon runs per Windows session. A second start, by double-click,
 from a console or from a Scheduled Task, prints
-``key-switch-rs: already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
-and exits with code 2 before it reads the config, without waiting for Enter.
+``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``
+and exits with code 2 before it reads the config, without waiting for Enter
+and without writing to the running daemon's log file.
 The check covers the Windows session the daemon starts in; a second
 signed-in user's daemon stops at the pipe instead (see above).
+
+### Log file
+
+The daemon writes the lines it logs on its console also to
+`%LOCALAPPDATA%\key-switch-rs\daemon.log`, so a daemon started by a
+Scheduled Task, whose console nobody watches, still leaves a record. The
+folder is the one of the account the daemon runs as: with UAC consent on
+your own account, your own `%LOCALAPPDATA%`. It is created with the first
+line, and again if you delete it. Every line of the file starts with the
+time in UTC (ISO 8601, with milliseconds) and the level:
+
+```text
+2026-10-16T09:41:07.123Z [INFO] key-switch-rs 0.1.0 started (pid 4242), logging to C:\Users\you\AppData\Local\key-switch-rs\daemon.log
+2026-10-16T09:52:30.517Z [INFO] loading config from C:\Tools\key-switch-rs\config.ron
+2026-10-16T09:52:30.518Z [ERROR] config reload failed:
+2026-10-16T09:52:30.518Z [ERROR] config has 1 invalid binding(s):
+2026-10-16T09:52:30.518Z [ERROR]   - binding #0 [F13]: PressKey: unknown key "Foo"
+2026-10-16T09:52:30.518Z [INFO] keeping previous bindings live
+```
+
+A message of several lines, such as the reload error above, repeats its
+time and level on every line, so that a search for `[ERROR]` finds all of
+it. The console shows the same lines without the time, on stderr, with the
+level on the first line of a message only. Only the startup banner (the
+list of bindings) goes to stdout, and it is never written to the file,
+because a binding can hold the text of a macro. The log never records the
+keys you press or the text you type; lines about the config quote the
+config, key names included. What the keyboard hook must not log at every
+key press, a `SendInput` that Windows cut short or a Hold whose timer
+could not start, it counts; while a count is not 0, one
+`[WARN] counters since the last report: ...` line every minute and at exit
+gives all of them.
+
+At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
+becomes `daemon.2.log`, and the oldest file is deleted: three files, about
+3 MiB, are kept. Read the file with Notepad or
+`Get-Content -Tail 50 "$env:LOCALAPPDATA\key-switch-rs\daemon.log"`. A
+program that keeps a log file open without letting others delete it holds
+up the rotation, and `daemon.log` then grows past 1 MiB until that program
+closes it.
+
+If the daemon cannot find the folder, the console says
+`[WARN] no log file: ...` and the daemon logs to the console only. If the
+file cannot be written, the console says `[WARN] log file <path>: ...` once,
+and every later line tries again.
+
+Lines reach the file and the console through one writer thread, the file
+first. In a window of the classic console host (`conhost.exe`) with
+QuickEdit on, a selection you hold in the daemon's console stops that
+thread at its next console write, so the lines after it reach the file
+only once you release the selection; the keyboard is not slowed down. At
+exit the daemon waits at most 1 s for the lines still queued.
 
 ### Avoiding the UAC prompt at every boot
 
@@ -753,7 +807,8 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_UI_WindowsAndMessaging`
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
-  - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`)
+  - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
+  - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns)
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
@@ -762,6 +817,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - `arc-swap` for lock-free, hot-reloadable binding list
 - `notify` for filesystem-driven config reload
 - `interprocess` for cross-platform local socket / Win32 named pipe IPC
+- `log` facade with an in-house sink: one writer thread for the console and the rotating `daemon.log`
 - Per-binary `requireAdministrator` manifest embedded via raw MSVC linker flag (`/MANIFESTUAC`) in `build.rs` — only the daemon binary gets it; `swch.exe` stays at default `asInvoker`
 - Low-level keyboard hook (`WH_KEYBOARD_LL`)
 - Foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`)

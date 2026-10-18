@@ -97,7 +97,11 @@ impl App {
         self
     }
 
+    /// Console only, never logged: a binding line can hold the text of a
+    /// macro's `Text(...)` step. The flush puts the records queued so far,
+    /// the loader's among them, above the banner.
     fn print_welcome(&self) {
+        crate::logging::flush();
         println!("Key Switch started");
         println!("─────────────────────────────────────");
 
@@ -151,7 +155,7 @@ impl App {
         // pipe; a failed foreground hook has already removed the keyboard
         // hook inside `install`.
         hook.install()?;
-        println!("✓ Hook installed successfully");
+        log::info!("Hook installed successfully");
 
         // Served only once the hooks are installed: a server started before
         // a failed install would answer `swch status` with `running` while
@@ -164,11 +168,11 @@ impl App {
         if let Err(error) = listener.serve(control) {
             // Here, on the thread that installed the hooks (KS-01).
             if let Err(error) = hook.uninstall() {
-                eprintln!("[WARN] could not remove the keyboard hook: {error}");
+                log::warn!("could not remove the keyboard hook: {error}");
             }
             return Err(format!("could not start the IPC server thread: {error}").into());
         }
-        println!("✓ IPC server listening (use `swch on/off/exit`)\n");
+        log::info!("IPC server listening (use `swch on/off/exit`)");
 
         // Spawn the file watcher AFTER the hook is live, and keep it alive
         // for the duration of the message loop by binding it to a local
@@ -179,16 +183,15 @@ impl App {
         let _watcher = match self.config_path.take() {
             Some(path) => match config_watcher::spawn_watcher(path.clone(), hook) {
                 Ok(w) => {
-                    println!("✓ Watching {} for changes\n", path.display());
+                    log::info!("Watching {} for changes", path.display());
                     Some(w)
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[WARN] could not start config file watcher for {}: {}",
-                        path.display(),
-                        e
+                    log::warn!(
+                        "could not start config file watcher for {}: {e}",
+                        path.display()
                     );
-                    eprintln!("[INFO] continuing without hot-reload");
+                    log::info!("continuing without hot-reload");
                     None
                 }
             },
@@ -207,7 +210,7 @@ impl App {
             }
         }
 
-        println!("Removing keyboard hook...");
+        log::info!("Removing keyboard hook...");
         hook.uninstall()?;
 
         Ok(())
@@ -238,7 +241,7 @@ fn pipe_error_message(pipe_path: &str, error: &io::Error) -> String {
 unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
     match ctrl_type {
         CTRL_C_EVENT | CTRL_CLOSE_EVENT => {
-            println!("\nReceived shutdown signal...");
+            log::info!("Received shutdown signal...");
 
             let main_thread_id = MAIN_THREAD_ID.load(Ordering::Acquire);
             if main_thread_id != 0 {
@@ -247,6 +250,11 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
                 }
             }
 
+            // On this thread, which the system created for the handler: for
+            // a closed console the process ends when the handler returns,
+            // so the queued lines are written first, within at most 1 s of
+            // the 5 s the system allows.
+            crate::logging::flush();
             BOOL(1)
         }
         _ => BOOL(0),
