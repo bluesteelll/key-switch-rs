@@ -95,6 +95,7 @@ use crate::core::constants;
 use crate::data::condition::ForegroundContext;
 use crate::engine::{Decision, Env, KeyEvent, TimerRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
+use crate::logging::counters::{self, Counter};
 
 /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
 /// rather than a plain `static` because `KeyboardHook::new()` allocates the
@@ -252,13 +253,14 @@ fn inject_menu_mask() -> u32 {
 
 /// Sends the menu mask key. `SendInput` inserts fewer events when another
 /// thread blocks input, and none when UIPI keeps it from the foreground
-/// window without saying so; a short count is logged and the event is
-/// decided as before.
+/// window without saying so; a short count is counted in
+/// `logging::counters` (`menu_mask_short`), which the log writer reports,
+/// and the event is decided as before. Nothing is logged here, on the hook
+/// thread, per event.
 #[cfg(not(test))]
 fn send_menu_mask() {
-    let sent = inject_menu_mask();
-    if sent != 2 {
-        eprintln!("[WARN] SendInput inserted {sent} of 2 menu mask key events");
+    if inject_menu_mask() != 2 {
+        counters::bump(Counter::MenuMaskShort);
     }
 }
 
@@ -279,10 +281,12 @@ thread_local! {
 /// Starts the timer for a Hold on its own `hold-timer` thread, which runs
 /// the Hold action if the engine still wants it.
 ///
-/// If the thread cannot be started, the failure is logged and the engine
-/// forgets the Hold, which then never fires. Panicking here would abort the
-/// daemon from inside the hook callback (KS-33), and firing the Hold later
-/// from a key-up would run it on the hook thread.
+/// If the thread cannot be started, the failure is counted in
+/// `logging::counters` (`hold_timer_not_started`), which the log writer
+/// reports, and the engine forgets the Hold, which then never fires.
+/// Panicking here would abort the daemon from inside the hook callback
+/// (KS-33), and firing the Hold later from a key-up would run it on the
+/// hook thread.
 fn start_hold_timer(request: TimerRequest) {
     let spawned = thread::Builder::new()
         .name("hold-timer".into())
@@ -293,8 +297,8 @@ fn start_hold_timer(request: TimerRequest) {
                 carry_out(decision);
             }
         });
-    if let Err(error) = spawned {
-        eprintln!("[WARN] could not start a hold timer, that Hold will not fire: {error}");
+    if spawned.is_err() {
+        counters::bump(Counter::HoldTimerNotStarted);
         get_hook().with_engine(|engine| engine.forget_timer(request.token));
     }
 }

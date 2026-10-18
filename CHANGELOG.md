@@ -107,6 +107,15 @@ minor version; such entries sit under **Changed** and start with
   `key-switch-rs.exe missing.ron` shows `[FATAL] config file ... does not
   exist`, a blank line and `Press Enter to exit...`, and before Enter
   `daemon.log` already ends with that `[FATAL]` line.
+- Counters for what the keyboard hook must not log per event (roadmap item
+  1.7): `menu_mask_short` (`SendInput` inserted fewer than the two events of
+  the menu mask key), `key_press_short` (fewer than the two events of a
+  `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
+  (a Hold whose timer thread could not be started, so that it never fired)
+  and `log_lines_dropped` (log lines lost to a full queue). While one of
+  them is not 0, the log writer reports all four every 60 s and at exit, in
+  one line on the console and in `daemon.log`:
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0`.
 
 ### Changed
 
@@ -130,6 +139,16 @@ minor version; such entries sit under **Changed** and start with
   `<time> [INFO] keeping previous bindings live`, and CapsLock still
   switches the layout. After the fix and a save,
   `[INFO] config reloaded (3 bindings live)`.
+- Three warnings became counts (roadmap item 1.7, see **Added**):
+  `[WARN] SendInput inserted <n> of 2 menu mask key events`,
+  `SendInput dropped events for vk <key>: sent <n> of 2` (a `PressKey`,
+  `Media` or `ToggleCapsLock` press) and
+  `[WARN] could not start a hold timer, that Hold will not fire: <error>`
+  are counted in `menu_mask_short`, `key_press_short` and
+  `hold_timer_not_started`. The keyboard hook's thread no longer formats a
+  line at every cut-short press, which at the auto-repeat rate filled the
+  console, and no line names the key that was cut short; the error of a
+  failed thread start is no longer shown.
 
 - The source is formatted with `cargo fmt`.
 - The keyboard decisions moved into a pure decision core, `src/engine`

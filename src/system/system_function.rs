@@ -10,6 +10,7 @@ use windows::{
 
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
+use crate::logging::counters::{self, Counter};
 use crate::system::registry;
 
 #[allow(dead_code)] // Variants are part of the public surface; not every binary uses them all.
@@ -118,6 +119,8 @@ impl SystemFunction {
         Self::press_key(VK_CAPITAL);
     }
 
+    /// A key press (down + up). It can run on the hook thread, so a short
+    /// count is only counted (`key_press_short`), never logged.
     fn press_key(vk: VIRTUAL_KEY) {
         let inputs = [
             INPUT {
@@ -150,12 +153,7 @@ impl SystemFunction {
         // we pass as cbSize.
         let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
-            eprintln!(
-                "SendInput dropped events for vk {:?}: sent {} of {}",
-                vk,
-                sent,
-                inputs.len()
-            );
+            counters::bump(Counter::KeyPressShort);
         }
     }
 }

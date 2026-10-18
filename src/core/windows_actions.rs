@@ -11,6 +11,7 @@ use windows::{
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
 use crate::data::sequence::{SequenceStep, spawn_sequence};
+use crate::logging::counters::{self, Counter};
 use crate::system::system_function::SystemFunction;
 
 #[derive(Debug, Clone)]
@@ -185,8 +186,9 @@ impl BindAction {
     }
 }
 
-/// Synthesize a single key press (down + up). Shared between `PressKey`,
-/// `Media(...)`, and the sequence `Key(...)` step.
+/// Synthesize a single key press (down + up), for `PressKey` and
+/// `Media(...)`. It runs on the hook thread at every auto-repeat, so a short
+/// count is only counted (`key_press_short`), never logged.
 pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     let inputs = [
         INPUT {
@@ -219,12 +221,7 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     // we pass as cbSize.
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
-        eprintln!(
-            "SendInput dropped events for vk {:?}: sent {} of {}",
-            vk,
-            sent,
-            inputs.len()
-        );
+        counters::bump(Counter::KeyPressShort);
     }
 }
 
