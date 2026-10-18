@@ -1028,6 +1028,43 @@ mod tests {
     }
 
     #[test]
+    fn a_job_queued_while_a_step_pumps_messages_runs_without_another_wake() {
+        // Ruling V2-I1: a step resumed after a Delay pumps the thread's
+        // queue (a ShellExecuteW dialog, a DDE wait) and eats the WAKE of a
+        // job queued meanwhile; the job must run once the step returns,
+        // with no further wake.
+        let (tx, records) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let (executor, _) = start(
+            FakeRunner::new(tx)
+                .with_gate(started_tx, release_rx)
+                .with_eat_wakes(),
+            QUEUE_CAPACITY,
+        );
+        let handle = executor.handle();
+        handle.submit(sequence(vec![delay(30), key(VK_F13)]), TargetWindow::NONE);
+        started
+            .recv_timeout(WAIT)
+            .expect("the step after the Delay runs");
+        assert_eq!(next(&records).text(), "key F13");
+
+        assert_eq!(
+            handle.submit(open("B"), TargetWindow::NONE),
+            Submitted::Queued
+        );
+        drop(release);
+
+        let ran = records.recv_timeout(Duration::from_secs(1));
+        assert_eq!(
+            ran.as_ref().map(Record::text).ok(),
+            Some("open B"),
+            "the job queued while a step pumped messages did not run within 1 s"
+        );
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
     fn a_full_queue_drops_the_job_and_counts_it() {
         let (tx, records) = mpsc::channel();
         let (started_tx, started) = mpsc::channel();

@@ -2,17 +2,18 @@
 //! and never runs a real action.
 //!
 //! Each call is recorded first, with the thread it ran on, and then the
-//! runner does what the test asked for: block, wait on a gate, panic or
-//! post `WM_QUIT` to its own thread. The only Win32 call it makes is that
-//! `PostQuitMessage`, on the executor thread of the test that asks for it.
+//! runner does what the test asked for: block, wait on a gate, panic, post
+//! `WM_QUIT` to its own thread, or remove the executor's own wake-ups from
+//! its queue. Its only Win32 calls are that `PostQuitMessage` and that
+//! `PeekMessageW`, on the executor thread of the test that asks for them.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use windows::Win32::UI::WindowsAndMessaging::PostQuitMessage;
+use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, PostQuitMessage};
 
-use super::{Runner, TargetWindow};
+use super::{Runner, TargetWindow, WAKE};
 use crate::core::windows_actions::BindAction;
 use crate::data::sequence::SequenceStep;
 use crate::logging::counters::Counters;
@@ -53,6 +54,7 @@ pub(crate) struct FakeRunner {
     records: Sender<Record>,
     block: Duration,
     gate: Option<(Sender<()>, Receiver<()>)>,
+    eat_wakes: bool,
     panic_on: Option<String>,
     quit_on: Option<String>,
 }
@@ -63,6 +65,7 @@ impl FakeRunner {
             records,
             block: Duration::ZERO,
             gate: None,
+            eat_wakes: false,
             panic_on: None,
             quit_on: None,
         }
@@ -79,6 +82,14 @@ impl FakeRunner {
     /// until `release` receives or its sender is dropped.
     pub(crate) fn with_gate(mut self, started: Sender<()>, release: Receiver<()>) -> Self {
         self.gate = Some((started, release));
+        self
+    }
+
+    /// Every call removes the executor's `WAKE` messages from its own
+    /// thread's queue before it returns (after the gate, if any), as a
+    /// modal loop inside a step (a `ShellExecuteW` dialog) would.
+    pub(crate) fn with_eat_wakes(mut self) -> Self {
+        self.eat_wakes = true;
         self
     }
 
@@ -119,6 +130,13 @@ impl FakeRunner {
         if let Some((started, release)) = &self.gate {
             let _ = started.send(());
             let _ = release.recv_timeout(GATE_LIMIT);
+        }
+        if self.eat_wakes {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a local that outlives every call, which only
+            // writes it; the filter removes only WAKE messages, and only
+            // from the calling thread's own queue.
+            while unsafe { PeekMessageW(&mut msg, None, WAKE, WAKE, PM_REMOVE) }.as_bool() {}
         }
     }
 }
