@@ -344,7 +344,10 @@ mod tests {
                 "executor_jobs_dropped",
                 "executor_unavailable",
                 "post_message_failed",
-                "main_state_refused"
+                "main_state_refused",
+                "raw_input_unread",
+                "watchdog_timer_not_set",
+                "watchdog_desktop_check_failed"
             ]
         );
     }

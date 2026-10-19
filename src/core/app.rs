@@ -422,6 +422,30 @@ mod tests {
     }
 
     #[test]
+    fn the_hook_watchdog_starts_before_the_hooks_and_stops_after_them() {
+        // Ruling I3: the main thread never waits for the watchdog thread
+        // while the keyboard hook is installed and the main loop does not
+        // run, so the watchdog starts before `install`, as the executor
+        // does, and stops after `uninstall` and after the control window
+        // is dropped.
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/app.rs"),
+        )
+        .expect("read src/core/app.rs");
+        let run = &text[text.find("pub fn run(").expect("App::run")..];
+        let position = |code: &str| {
+            run.find(code)
+                .unwrap_or_else(|| panic!("App::run has `{code}`"))
+        };
+        let start = position("HookWatchdog::start(");
+        let stop = position("stop_watchdog(watchdog)");
+        assert!(start < position("ControlWindow::create()"));
+        assert!(start < position("hook.install()"));
+        assert!(stop > position("hook.uninstall()?"));
+        assert!(stop > position("drop(control_window)"));
+    }
+
+    #[test]
     fn a_taken_pipe_name_is_reported_with_its_likely_owners() {
         let path = r"\\.\pipe\key-switch-rs.sock";
         let message = pipe_error_message(path, &io::Error::from_raw_os_error(5));
