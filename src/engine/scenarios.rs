@@ -710,6 +710,327 @@ fn four_quick_presses_double_tap_twice() {
     .expect_total_fired(&[BindAction::ToggleCapsLock, BindAction::ToggleCapsLock]);
 }
 
+// ---- One gesture per press (roadmap item 2.2, KS-25, known issue 74) ----
+
+/// A Tap(300) and a Hold(200) on CapsLock.
+const TAP_300_HOLD_200: &str = r#"( bindings: [
+    (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(300)),
+    (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+] )"#;
+
+/// A Tap(200) and a DoubleTap(300) on F13.
+const TAP_AND_DOUBLE_TAP_F13: &str = r#"( bindings: [
+    (keys: "F13", action: SwitchLanguage, trigger: Tap(200)),
+    (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+] )"#;
+
+#[test]
+fn tap_300_and_hold_200_released_at_250_fire_only_the_hold() {
+    // KS-25 for different terms: the Hold resolves the press at 200 ms, so
+    // the release at 250 ms, within the Tap's term, fires nothing more.
+    Scenario::from_ron(TAP_300_HOLD_200)
+        .down("CapsLock")
+        .advance_ms(200)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .advance_ms(50)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(500)
+        .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+
+    // The same with the Hold's timer late: the key-up at 250 ms leaves the
+    // Hold to its timer and fires no Tap.
+    Scenario::from_ron(TAP_300_HOLD_200)
+        .down("CapsLock")
+        .advance_ms_stalled(250)
+        .up("CapsLock")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(10)
+        .expect_fired(&[BindAction::PressKey(VK_LSHIFT)])
+        .expect_total_fired(&[BindAction::PressKey(VK_LSHIFT)]);
+}
+
+#[test]
+fn tap_100_and_hold_200_released_at_150_fire_nothing() {
+    // Too long for the Tap, too short for the Hold: a declared gap of
+    // unequal terms (triggers-conditions.md, 11.6).
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(100)),
+            (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(200)),
+        ] )"#,
+    )
+    .down("CapsLock")
+    .advance_ms(150)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(500)
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn a_hold_closes_the_double_tap_window() {
+    // A press that its Hold resolved opens no DoubleTap window: the next
+    // press is a first press.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, trigger: Hold(200)),
+            (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
+    )
+    .down("F13")
+    .advance_ms(200)
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .advance_ms(50)
+    .up("F13")
+    .expect_nothing_fired()
+    .advance_ms(30)
+    .down("F13")
+    .expect_nothing_fired()
+    .up("F13")
+    .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_double_tap_press_arms_no_hold() {
+    // The second press completes the DoubleTap and is spent: it arms no
+    // Hold of its own.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+            (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)),
+        ] )"#,
+    )
+    .down("F13")
+    .advance_ms(50)
+    .up("F13")
+    .advance_ms(50)
+    .down("F13")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .advance_ms(300)
+    .expect_nothing_fired()
+    .up("F13")
+    .expect_suppressed()
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn tap_and_double_tap_on_one_key_wait_for_the_double_tap_window_before_the_tap() {
+    // Open question 5 of the roadmap: with a DoubleTap on the same keys the
+    // Tap waits until the DoubleTap window closes, 300 ms after the press,
+    // and fires then, on its timer.
+    Scenario::from_ron(TAP_AND_DOUBLE_TAP_F13)
+        .down("F13")
+        .expect_suppressed()
+        .advance_ms(80)
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(219)
+        .expect_nothing_fired()
+        .advance_ms(1)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(500)
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_double_press_of_a_tap_and_double_tap_key_fires_only_the_double_tap() {
+    Scenario::from_ron(TAP_AND_DOUBLE_TAP_F13)
+        .down("F13")
+        .advance_ms(80)
+        .up("F13")
+        .expect_nothing_fired()
+        .advance_ms(70)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .advance_ms(50)
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(500)
+        .expect_nothing_fired()
+        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn another_key_fires_a_tap_that_waits_for_the_double_tap_window() {
+    // The waiting Tap completed before A went down, so it fires on A's
+    // key-down, ahead of A, as a Tap without a DoubleTap would have fired
+    // at its release; that closes the window, and the next F13 press is a
+    // first press, whose Tap waits for its own window.
+    Scenario::from_ron(TAP_AND_DOUBLE_TAP_F13)
+        .down("F13")
+        .advance_ms(80)
+        .up("F13")
+        .expect_nothing_fired()
+        .advance_ms(40)
+        .down("A")
+        .expect_passed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("A")
+        .expect_passed()
+        .advance_ms(80)
+        .down("F13")
+        .expect_nothing_fired()
+        .advance_ms(50)
+        .up("F13")
+        .expect_nothing_fired()
+        .advance_ms(249)
+        .expect_nothing_fired()
+        .advance_ms(1)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_stale_hold_timer_does_not_fire_a_tap_waiting_for_the_double_tap_window() {
+    // The key-up at 50 ms cancels the Hold, and the waiting press takes a
+    // new number: the Hold's timer at 200 ms finds nothing, and the Tap
+    // fires at the window's end, 300 ms.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, trigger: Tap(100)),
+            (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)),
+            (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
+    )
+    .down("F13")
+    .advance_ms(50)
+    .up("F13")
+    .expect_nothing_fired()
+    .advance_ms(150)
+    .expect_nothing_fired()
+    .advance_ms(99)
+    .expect_nothing_fired()
+    .advance_ms(1)
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_double_tap_entry_is_not_consumed_by_a_press_another_group_wins() {
+    // Known issue 74: the CapsLock press that Shift+CapsLock wins ends the
+    // CapsLock DoubleTap's window instead of completing it, and starts the
+    // window of its own group.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, trigger: DoubleTap(300)),
+            (keys: "Shift+CapsLock", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
+    )
+    .down("CapsLock")
+    .advance_ms(40)
+    .up("CapsLock")
+    .advance_ms(20)
+    .down("LShift")
+    .advance_ms(20)
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(40)
+    .up("CapsLock")
+    .advance_ms(40)
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("CapsLock")
+    .up("LShift")
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn a_tap_released_after_the_double_tap_window_closed_fires_at_its_key_up() {
+    // The window is shorter than the Tap: once it has closed, nothing can
+    // turn the press into a DoubleTap, so the Tap fires at its release.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage, trigger: Tap(300)),
+            (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(100)),
+        ] )"#,
+    )
+    .down("F13")
+    .advance_ms(150)
+    .up("F13")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .advance_ms(500)
+    .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_tap_whose_window_timer_is_lost_fires_at_the_next_key_down() {
+    // A waiting Tap whose timer could not be set is not dropped: the next
+    // key-down fires it, ahead of that key (orchestrator ruling M6).
+    Scenario::from_ron(TAP_AND_DOUBLE_TAP_F13)
+        .down("F13")
+        .advance_ms(80)
+        .up("F13")
+        .expect_nothing_fired()
+        .lose_timers()
+        .advance_ms(400)
+        .expect_nothing_fired()
+        .down("A")
+        .expect_passed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("A")
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_press_after_a_lost_key_up_replaces_the_stale_press_and_keeps_a_hold_due_by_the_clock() {
+    // Orchestrator ruling M6: the left Shift passes, its key-up goes
+    // unseen, and A's key-up resyncs it as up, with no key-down in between.
+    // The next LShift press replaces the stale one. The stale press's Hold
+    // was due by the clock before that, so it stays for its late timer
+    // (ruling I1), and the new press arms a Hold of its own.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "LShift", action: DoNothing, trigger: Hold(100)) ] )"#,
+    )
+    .down("A")
+    .advance_ms(10)
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(10)
+    .up_unseen("LShift")
+    .advance_ms_stalled(200)
+    .up("A")
+    .advance_ms_stalled(10)
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(10)
+    .expect_fired(&[BindAction::DoNothing])
+    .advance_ms(90)
+    .expect_fired(&[BindAction::DoNothing])
+    .up("LShift")
+    .expect_passed()
+    .expect_total_fired(&[BindAction::DoNothing, BindAction::DoNothing]);
+
+    // A stale Tap that is still live does not answer for the new press: the
+    // new press is timed from its own key-down, so its release 450 ms later,
+    // after the stale term but within its own, fires it.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "LShift", action: DoNothing, trigger: Tap(500)) ] )"#,
+    )
+    .down("A")
+    .advance_ms(10)
+    .down("LShift")
+    .advance_ms(10)
+    .up_unseen("LShift")
+    .up("A")
+    .advance_ms(80)
+    .down("LShift")
+    .advance_ms(450)
+    .up("LShift")
+    .expect_fired(&[BindAction::DoNothing])
+    .expect_total_fired(&[BindAction::DoNothing]);
+}
+
 // ---- Sequence ----
 
 #[test]

@@ -1010,6 +1010,45 @@ mod tests {
     }
 
     #[test]
+    fn a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes() {
+        // Orchestrator ruling M6: a Tap that waits for its DoubleTap window
+        // and whose timer the scheduler refused is not dropped. It fires at
+        // the next event, or, as here, at the next timer the caller hands
+        // back once its window has closed by that timer's clock.
+        let t0 = Instant::now();
+        let at = |ms: u64| FixedEnv(t0 + Duration::from_millis(ms));
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+                (keys: "F14", action: DoNothing, trigger: Hold(500)),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut queue = TimerQueue::new();
+
+        let mut hold = engine.on_key(KeyEvent::down(VK_F14), &bindings, &at(0));
+        let hold_token = hold.timers[0].token;
+        engine.start_timers(std::mem::take(&mut hold.timers), &mut queue);
+        let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &at(10));
+        let mut up = engine.on_key(KeyEvent::up(VK_F13), &bindings, &at(90));
+        assert!(up.fire.is_empty(), "the Tap waits for the window");
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
+            1,
+            "the window's timer is refused"
+        );
+
+        assert_eq!(
+            engine.on_timer(hold_token).fire,
+            [BindAction::SwitchLanguage, BindAction::DoNothing],
+            "the Hold's timer at 500 ms fires the waiting Tap first"
+        );
+    }
+
+    #[test]
     fn key_up_of_a_key_whose_down_passed_passes_even_with_a_tap_pending() {
         // A Tap with `block_default: false` arms under a key-down that
         // passes (roadmap item 1.3; scenario
