@@ -3721,12 +3721,11 @@ fn reload_during_a_passing_double_tap_keeps_each_press_whole() {
 }
 
 #[test]
-fn a_key_typed_between_two_passing_lshift_presses_still_completes_the_double_tap() {
-    // Known issue, pinned until an interrupt rule is decided (a follow-up of
-    // roadmap item 1.3): another key pressed between the two presses does
-    // not cancel a DoubleTap whose key passes. Typing `<T>` with the left
-    // Shift pressed again for the `T` toggles CapsLock with the template's
-    // example.
+fn a_key_typed_between_two_passing_lshift_presses_cancels_the_double_tap() {
+    // Known issue 67, fixed (owner decision, roadmap item 2.2): another key
+    // pressed while a gesture whose key passes is pending cancels it, as
+    // AutoHotkey does. Typing `<T>` with the left Shift pressed again for
+    // the `T` no longer toggles CapsLock with the template's example.
     Scenario::from_ron(LSHIFT_DOUBLE_TAP)
         .check_press_symmetry()
         .check_nothing_stuck()
@@ -3744,7 +3743,7 @@ fn a_key_typed_between_two_passing_lshift_presses_still_completes_the_double_tap
         .advance_ms(60)
         .down("LShift")
         .expect_passed()
-        .expect_fired(&[BindAction::ToggleCapsLock])
+        .expect_nothing_fired()
         .advance_ms(30)
         .down("T")
         .expect_passed()
@@ -3752,15 +3751,13 @@ fn a_key_typed_between_two_passing_lshift_presses_still_completes_the_double_tap
         .expect_passed()
         .up("LShift")
         .expect_passed()
-        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+        .expect_total_fired(&[]);
 }
 
 #[test]
-fn a_quick_ctrl_shortcut_still_fires_a_passing_ctrl_tap() {
-    // Known issue, pinned until an interrupt rule is decided (a follow-up of
-    // roadmap item 1.3): another key pressed while the key of a Tap that
-    // passes is held does not cancel the Tap. Ctrl+C released within the
-    // term also sends Escape.
+fn a_quick_ctrl_shortcut_cancels_a_passing_ctrl_tap() {
+    // Known issue 67, fixed: Ctrl+C released within the term no longer
+    // sends Escape too.
     Scenario::from_ron(
         r#"( bindings: [ (keys: "LCtrl", action: PressKey("Escape"), trigger: Tap(200)) ] )"#,
     )
@@ -3778,8 +3775,122 @@ fn a_quick_ctrl_shortcut_still_fires_a_passing_ctrl_tap() {
     .advance_ms(30)
     .up("LCtrl")
     .expect_passed()
-    .expect_fired(&[BindAction::PressKey(VK_ESCAPE)])
-    .expect_total_fired(&[BindAction::PressKey(VK_ESCAPE)]);
+    .expect_nothing_fired()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn selecting_words_with_ctrl_shift_held_cancels_a_passing_ctrl_shift_hold() {
+    // Known issue 67, fixed: holding Ctrl+Shift to select words with Right
+    // no longer switches the layout once the term has passed.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .expect_passed()
+    .advance_ms(20)
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(280)
+    .down("Right")
+    .expect_passed()
+    .expect_nothing_fired()
+    .advance_ms(30)
+    .up("Right")
+    .expect_passed()
+    .advance_ms(800)
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_passed()
+    .up("LCtrl")
+    .expect_passed()
+    .expect_total_fired(&[]);
+}
+
+#[test]
+fn a_passing_hold_past_its_term_fires_whether_its_timer_runs_before_or_after_another_key_down() {
+    // Orchestrator ruling I1: a Hold whose term has passed is resolved by
+    // the clock. A key-down that comes after the term but before the
+    // timer runs (a busy or late main thread) does not cancel it, so the
+    // outcome does not depend on which of the two the main loop sees first.
+    let config =
+        r#"( bindings: [ (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000)) ] )"#;
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .down("LShift")
+        .advance_ms(1001)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .down("Right")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("Right")
+        .up("LShift")
+        .up("LCtrl")
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+
+    Scenario::from_ron(config)
+        .check_press_symmetry()
+        .check_nothing_stuck()
+        .down("LCtrl")
+        .down("LShift")
+        .advance_ms_stalled(1001)
+        .down("Right")
+        .expect_passed()
+        .expect_nothing_fired()
+        .advance_ms(0)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("Right")
+        .up("LShift")
+        .up("LCtrl")
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_lone_passing_ctrl_tap_still_fires() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "LCtrl", action: PressKey("Escape"), trigger: Tap(200)) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .expect_passed()
+    .advance_ms(80)
+    .up("LCtrl")
+    .expect_passed()
+    .expect_fired(&[BindAction::PressKey(VK_ESCAPE)]);
+}
+
+#[test]
+fn another_key_does_not_cancel_a_swallowed_double_tap() {
+    // Only a gesture whose key passes is cancelled: F13's swallowed press
+    // keeps its DoubleTap window across A, as before roadmap item 2.2.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("F13")
+    .expect_suppressed()
+    .advance_ms(50)
+    .up("F13")
+    .expect_suppressed()
+    .advance_ms(30)
+    .down("A")
+    .expect_passed()
+    .advance_ms(20)
+    .up("A")
+    .expect_passed()
+    .advance_ms(50)
+    .down("F13")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("F13")
+    .expect_suppressed()
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
 }
 
 // ---- One winner per key event (roadmap item 1.6, KS-13) ----
