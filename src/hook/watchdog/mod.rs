@@ -32,8 +32,9 @@
 //! are typed, reads them all in one drain (`GetRawInputBuffer`, 76 keyboard
 //! records per call on x64). The first key event after the thread went
 //! idle ends its wait, once per burst of keys, and that pass runs on
-//! another core next to the key's own callback, which it can slow down
-//! (bench row R16); whether a key's raw input reaches this thread before or
+//! another core next to the key's own callback, which it slows down by
+//! about 50 us at the median on the developer's machine (bench row R16
+//! against R12); whether a key's raw input reaches this thread before or
 //! after its hook call is not documented (cut Q6). Idle, the thread waits
 //! with no wake-up.
 //!
