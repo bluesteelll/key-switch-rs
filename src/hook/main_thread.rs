@@ -1629,6 +1629,62 @@ mod tests {
         assert_eq!(take_pending_signals(), None, "the drain still took them");
     }
 
+    /// A [`WindowQuery`](crate::platform::foreground::WindowQuery) whose
+    /// foreground window the test moves; window `n` belongs to process `n`
+    /// and process `n` runs `p<n>.exe`.
+    struct MovingQuery(std::rc::Rc<Cell<usize>>);
+
+    impl crate::platform::foreground::WindowQuery for MovingQuery {
+        fn foreground(&self) -> HWND {
+            HWND(self.0.get() as *mut std::ffi::c_void)
+        }
+        fn owner(&self, window: HWND) -> u32 {
+            window.0 as usize as u32
+        }
+        fn image_name(&self, pid: u32) -> Option<String> {
+            Some(format!("p{pid}.exe"))
+        }
+        fn title(&self, _window: HWND) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_return_signal_reads_the_foreground_window_again() {
+        // Roadmap 2.3, ruling M3: the foreground hook reports nothing while
+        // input is on another desktop, so the drain of a return signal
+        // reads the window that has the foreground now.
+        for signal in [
+            InputSignal::SessionUnlocked,
+            InputSignal::DesktopSwitchedBack,
+        ] {
+            let main = MainThread::new().expect("the main thread is set up");
+            let hook = KeyboardHook::new();
+            let window = std::rc::Rc::new(Cell::new(0x1000));
+            with_main(|state| {
+                state.foreground =
+                    ForegroundCache::with_query(Box::new(MovingQuery(window.clone())));
+                state.foreground_changed(HWND(0x1000 as *mut std::ffi::c_void));
+            })
+            .expect("the main state is free");
+            window.set(0x2000);
+            assert_eq!(
+                with_main(|state| state.foreground.app().map(str::to_owned)),
+                Some(Some("p4096.exe".to_owned())),
+                "the cache still names the window of before the {signal}"
+            );
+
+            note_input_signal(signal);
+            main.drain(&hook);
+
+            assert_eq!(
+                with_main(|state| state.foreground.app().map(str::to_owned)),
+                Some(Some("p8192.exe".to_owned())),
+                "the drain of {signal} reads the foreground window again"
+            );
+        }
+    }
+
     #[test]
     fn a_switch_request_to_an_ended_main_thread_fails_at_once() {
         let handle = thread::spawn(|| {
