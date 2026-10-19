@@ -6,3 +6,4 @@ pub mod ipc_server;
 pub mod keyboard_hook;
 pub mod keyboard_hook_callback;
 pub(crate) mod main_thread;
+pub(crate) mod watchdog;
