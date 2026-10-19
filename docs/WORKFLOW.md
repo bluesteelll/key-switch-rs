@@ -72,6 +72,7 @@ Notes on the stages:
   Only the items it cannot refute are CONFIRMED and go to the fix.
 - **Rounds 2-3 are delta-scoped**: the fix's diff, the confirmed items' red-first on the parent and on HEAD,
   two NEW mutations at the fix, and one full `cargo test --locked` on HEAD. A lane runs at most 3 verify rounds.
+- **Rulings.** When a cut or critique leaves questions, the orchestrator writes `rulings.md` in the lane dir before the developer starts (and a second round after a cut revision). A ruling that needs live-daemon evidence becomes a manual check for the owner from the start, never an item in `impl.md`, because agents may not run the daemon.
 - **Results** decides ACCEPT, REWORK (and the stage to return to) or RETHINK.
 - **Merge** happens only on ACCEPT: `--no-ff` into `master`, the full gate on the merge commit, `git push origin master`,
   and deletion of the lane branch.

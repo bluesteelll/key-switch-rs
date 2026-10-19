@@ -143,7 +143,7 @@ What / Why / Alternatives rejected and why / Cost
 - **No product code.** Signatures, type sketches and test scenario tables are fine. Function bodies are not.
 - **No unanchored claims.** Every statement about the current code has a `path:line`. Every Win32 claim has a doc link or is marked `(unverified)`.
 - **No "X or Y".** Decide, and put real uncertainty into Questions with your recommendation.
-- **No work on the hook thread** beyond deciding: no lock held across an action, no blocking call, no per-key-down allocation.
+- **No work on the hook thread** beyond deciding: no lock held across an action, no blocking call, no per-key-down allocation, no process query (`when:` reads the foreground cache). A window procedure or WinEvent callback only notes a signal and posts `MAIN_WAKE`; resets run in the drain. State the latency of every addition on the key path (the bench rows of CLAUDE.md).
 - **No hidden behaviour change.** Every change that is visible in the config or to users is listed with its README, default-config and CHANGELOG edits.
 - **No scope creep.** Stay inside the roadmap item. Note neighbouring defects as follow-ups with their KS id.
 

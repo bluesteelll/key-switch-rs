@@ -85,6 +85,7 @@ The callback blocks all desktop keyboard input until it returns; past `LowLevelH
 
 - [ ] No allocation per key-down (`Vec::new`, `vec!`, `collect`, `format!`, `String`, `to_string`, `clone` of a `Vec`/`String`, `Box::new`, `Arc::new`); `engine/chords.rs` already allocates when a chord key goes down, so do not add more
 - [ ] No blocking: no file or registry I/O, no `Command::spawn`, no `ShellExecuteW`, no sleeps, no action executed while the engine lock is held (KS-08)
+- [ ] The hook path never queries a process (`when:` reads the foreground cache); a window procedure or WinEvent callback only notes a signal and posts `MAIN_WAKE`; a reset never runs inside a callback, and a lost-input reset reads no OS state; the OS witness at a swallowed key-up is the only read of the event's own key
 - [ ] The engine is reached only through `with_main` on the main thread: no action, `SendInput`, thread spawn or message pump under the borrow (one `SetWaitableTimer` is allowed); a re-entrant call is refused, never a panic
 - [ ] Foreground-context lookups stay lazy and are skipped when no binding has `when:`
 - [ ] `log` calls on the hot path are level-gated and do not format eagerly
