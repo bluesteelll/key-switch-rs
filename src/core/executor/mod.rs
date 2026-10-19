@@ -2,8 +2,9 @@
 //! thread that runs the slow actions, `Launch`, `OpenUrl` and `Sequence`,
 //! so that the keyboard hook never waits for them.
 //!
-//! The thread that fires such an action (the hook thread, or a Hold's
-//! `hold-timer` thread) hands it to [`ExecutorHandle::submit`], which moves
+//! The thread that fires such an action (the hook callback, or the main
+//! loop's timer drain for a Hold or a waiting Tap, both on the daemon's main
+//! thread) hands it to [`ExecutorHandle::submit`], which moves
 //! it into a bounded queue without waiting and posts a wake-up to the
 //! executor; a full queue drops the job and counts it
 //! (`executor_jobs_dropped`). The executor initialises COM as a

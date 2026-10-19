@@ -31,7 +31,7 @@
 //! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
 //! FFI, because every Win32 call through the `windows` crate is `unsafe`.
 //! It does not rule out safe wrappers that do Win32 work or read the clock,
-//! such as `ForegroundContext::capture`, `FastAction::run` or
+//! such as `ForegroundCache::resync`, `FastAction::run` or
 //! `Instant::now()`. Outside tests the engine calls none of them, and
 //! review keeps it that way. The engine uses [`BindAction`] only as data
 //! (actions to fire, cloned into pending gestures) and never executes one.
@@ -43,8 +43,9 @@
 //! - `keys` (`keys::KeyState`): the keys the engine believes are held
 //!   (also the auto-repeat detector), and whether each key's latest
 //!   key-down was suppressed or passed, so that its auto-repeats and key-up
-//!   are treated the same way. A foreground change marks the suppressed
-//!   ones as forgotten: their key-ups are no longer due to be suppressed.
+//!   are treated the same way. Nothing but the key's own next key-down or
+//!   its key-up replaces a swallowed key-down's record: not a foreground
+//!   change, not a reset (rule L, roadmap item 2.3).
 //! - `gestures` (`gestures::Gestures`): the pending press of each key, one
 //!   machine for its `Tap`, `Hold` and `DoubleTap` (roadmap item 2.2), and
 //!   the Holds left to a late timer.
@@ -52,14 +53,19 @@
 //! - `mask_owed`: a `MaskOnly` auto-blocker matched the last key-down, so
 //!   the next key event asks for the menu mask key too.
 //!
-//! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry and
-//! an owed mask, starts a new timer generation, and takes the held keys
-//! from the OS key state.
+//! [`Engine::reset`] drops every pending entry and an owed mask and starts
+//! a new timer generation, for a [`ResetReason`]: `swch off` or `swch on`,
+//! which also takes the held keys from the OS key state, a config reload,
+//! which leaves the keys as they are, or keyboard input leaving this
+//! desktop ([`InputSignal`]), which releases every key held (roadmap item
+//! 2.3).
 //!
 //! The binding list is not engine state. The caller passes a snapshot on
-//! every call, already sorted with [`sort_by_specificity`], so a hot reload
-//! never has to touch the engine. Pending gestures keep clones of the
-//! actions they were armed with and fire those, even after a reload.
+//! every call, already sorted with [`sort_by_specificity`]. Pending
+//! gestures keep clones of the actions they were armed with, so a reload
+//! resets the engine in the same main-thread step that swaps the list
+//! ([`ResetReason::Reloaded`], roadmap item 2.3): no gesture armed with the
+//! old list fires after it.
 //!
 //! ## Time
 //!
@@ -92,9 +98,10 @@
 //! it on its main thread (`hook::main_thread`, roadmap item 2.2), the
 //! thread that installs the hooks and pumps their messages, in a
 //! thread-local reached only through `with_main`. Every caller runs there:
-//! both hook callbacks, the main loop's timers and `swch on` and `swch off`,
-//! which call [`Engine::reset`]. `with_main` refuses a nested call on the
-//! same thread (the event then passes) instead of panicking.
+//! both hook callbacks, the main loop's timers, and `swch on`, `swch off`,
+//! config reloads and the input signals that the main loop serves, which
+//! call [`Engine::reset`]. `with_main` refuses a nested call on the same thread
+//! (the event then passes) instead of panicking.
 //!
 //! The adapter's [`Env::now`] reads the clock once per event, and the main
 //! loop hands a token to [`Engine::on_timer`] only once `Instant::now()` has
@@ -110,9 +117,8 @@
 //!
 //! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
 //!    the key being delivered and every modifier whose key-down was
-//!    suppressed, even one a foreground change forgot: Windows never saw
-//!    that key go down, so it stays held for matching and its auto-repeats
-//!    stay auto-repeats (KS-14).
+//!    suppressed: Windows never saw that key go down, so it stays held for
+//!    matching and its auto-repeats stay auto-repeats (KS-14).
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
 //! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
 //!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
@@ -196,10 +202,12 @@
 //! for the window on a timer of its own (roadmap item 2.2, open question
 //! 5). A DoubleTap window opens if the key-up comes before it closes. The
 //! key-up of a key marked passed always passes. Otherwise it is suppressed
-//! if the key was marked blocked or if a Tap or Hold was pending. A
-//! foreground change forgets which key-ups were due to be suppressed: such
-//! a key-up passes unless a Tap or Hold of its press is pending (roadmap
-//! item 2.3).
+//! if the key was marked blocked or if a Tap or Hold was pending, unless
+//! [`Env::os_key_down`] reports the key down before the event: Windows then
+//! saw a key-down the hook did not, and the key-up passes so that the key
+//! does not stay down there (the witness, roadmap item 2.3). A foreground
+//! change or a reset keeps the record, so no key-up reaches Windows alone
+//! (rule L, the KS-06 status).
 //!
 //! On every key event, once its record is updated, the decision asks for
 //! the menu mask key (`Decision::mask`, roadmap item 1.2, KS-12) if the
@@ -236,6 +244,7 @@ mod scenarios;
 mod properties;
 
 use std::cmp::Reverse;
+use std::fmt;
 use std::time::Instant;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
@@ -367,6 +376,91 @@ pub struct Decision {
     pub mask: bool,
 }
 
+/// Why [`Engine::reset`] starts over (roadmap item 2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetReason {
+    /// `swch off` or `swch on` really changed the switch.
+    RemappingSwitched,
+    /// The config was reloaded: the main thread swapped the binding list
+    /// in the same step.
+    Reloaded,
+    /// Keyboard input left this desktop: the session was locked, or input
+    /// switched to another desktop (Ctrl+Alt+Del, a UAC prompt on the
+    /// secure desktop). Key-ups may be lost there.
+    InputLeft,
+}
+
+impl fmt::Display for ResetReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ResetReason::RemappingSwitched => "remapping switched",
+            ResetReason::Reloaded => "config reloaded",
+            ResetReason::InputLeft => "keyboard input left this desktop",
+        })
+    }
+}
+
+/// A signal about where keyboard input is, noted by the daemon's main
+/// thread from its control window (the session notifications) and its
+/// desktop-switch hook (roadmap item 2.3).
+///
+/// Only a signal that input left this desktop resets the engine (ruling
+/// R2): once input is on another desktop the hook sees nothing, so nothing
+/// a key event creates can come between the departure and its reset, and a
+/// second departure signal of one episode finds nothing more to drop. A
+/// signal that input came back resets nothing, however late it arrives, so
+/// no reset discards a press, a gesture or a macro made after the return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputSignal {
+    /// `WTS_SESSION_LOCK`.
+    SessionLocked,
+    /// `WTS_SESSION_UNLOCK`.
+    SessionUnlocked,
+    /// `EVENT_SYSTEM_DESKTOPSWITCH` while another desktop has input.
+    DesktopSwitchedAway,
+    /// `EVENT_SYSTEM_DESKTOPSWITCH` while this desktop has input.
+    DesktopSwitchedBack,
+}
+
+impl InputSignal {
+    /// Every signal, in the order the main thread logs them.
+    pub const ALL: [InputSignal; 4] = [
+        InputSignal::SessionLocked,
+        InputSignal::SessionUnlocked,
+        InputSignal::DesktopSwitchedAway,
+        InputSignal::DesktopSwitchedBack,
+    ];
+
+    /// The reset this signal asks for, if any.
+    pub fn reset(self) -> Option<ResetReason> {
+        match self {
+            InputSignal::SessionLocked | InputSignal::DesktopSwitchedAway => {
+                Some(ResetReason::InputLeft)
+            }
+            InputSignal::SessionUnlocked | InputSignal::DesktopSwitchedBack => None,
+        }
+    }
+
+    /// Whether this signal says that input came back to this desktop.
+    pub fn input_returned(self) -> bool {
+        matches!(
+            self,
+            InputSignal::SessionUnlocked | InputSignal::DesktopSwitchedBack
+        )
+    }
+}
+
+impl fmt::Display for InputSignal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            InputSignal::SessionLocked => "session locked",
+            InputSignal::SessionUnlocked => "session unlocked",
+            InputSignal::DesktopSwitchedAway => "keyboard input switched to another desktop",
+            InputSignal::DesktopSwitchedBack => "keyboard input switched back to this desktop",
+        })
+    }
+}
+
 /// Sorts a binding list into the order the engine visits it: more keys
 /// first. The sort is stable, so bindings with the same key count keep
 /// their config order, and the auto-blockers the loader appends stay after
@@ -461,7 +555,9 @@ impl Engine {
     /// Hands the timers of a decision to `scheduler`, after dropping every
     /// timer it holds that is no longer live, so that it keeps no stale
     /// timer for long. A timer the scheduler refuses is forgotten
-    /// ([`forget_timer`](Self::forget_timer)). Returns how many it refused.
+    /// ([`forget_timer`](Self::forget_timer)). Returns how many Holds were
+    /// dropped with the refused timers: a refused window or expiry timer
+    /// drops nothing.
     pub fn start_timers(
         &mut self,
         timers: Vec<TimerRequest>,
@@ -471,71 +567,90 @@ impl Engine {
             return 0;
         }
         scheduler.retain(&|token| self.is_live(token));
-        let mut refused = 0;
+        let mut dropped = 0;
         for request in timers {
-            if !scheduler.start(request) {
-                self.forget_timer(request.token);
-                refused += 1;
+            if !scheduler.start(request) && self.forget_timer(request.token) {
+                dropped += 1;
             }
         }
-        refused
+        dropped
     }
 
     /// The caller could not start the timer for `token`. A Hold is dropped:
     /// it never fires, and its key can arm a new Hold on the next press
     /// (KS-33). A Tap that waits for its DoubleTap window is kept: it fires
     /// at the next key-down, or with the next timer handed back after its
-    /// window closed.
-    pub fn forget_timer(&mut self, token: TimerToken) {
+    /// window closed. Returns whether a Hold was dropped.
+    pub fn forget_timer(&mut self, token: TimerToken) -> bool {
         if token.generation != self.ids.generation {
-            return;
+            return false;
         }
         match token.slot {
             TimerSlot::Gesture(vk) => self.gestures.forget(vk, token.seq),
             // The next key-down drops an expired entry anyway.
-            TimerSlot::Chord | TimerSlot::Sequence => {}
+            TimerSlot::Chord | TimerSlot::Sequence => false,
         }
     }
 
     /// The foreground window changed. Key-ups may have been lost while a
-    /// higher-integrity window had focus: resync the modifiers from the OS
-    /// and forget which key-downs were swallowed, so that no key-up stays
-    /// due to be swallowed. Keys whose key-down passed keep that record.
-    /// A swallowed key-down stays on record as not seen by Windows, so the
-    /// key's auto-repeats stay swallowed.
+    /// higher-integrity window had focus, so the modifiers are resynced
+    /// from the OS. Every record stays (roadmap item 2.3): a swallowed
+    /// key-down keeps its auto-repeats and its key-up swallowed, so Windows
+    /// gets no key-up whose press it never saw (the KS-06 status), and the
+    /// key-up still reaches Windows if Windows has the key down by then
+    /// (the witness at the key-up).
     ///
     /// The resync skips a modifier whose key-down was swallowed: Windows
     /// never saw it go down, so its key state says nothing (KS-14). Such a
     /// key whose key-up was lost stays held for the engine until its next
-    /// press, which reads as an auto-repeat and is swallowed, and its
-    /// release (roadmap item 2.3 owns that repair).
+    /// press, which reads as an auto-repeat and is swallowed, unless
+    /// keyboard input left the desktop meanwhile, which releases every key.
     pub fn on_foreground_changed(&mut self, env: &dyn Env) {
         self.keys.sync_modifiers(env, None);
-        self.keys.forget_blocked();
     }
 
-    /// Remapping was switched off or on (`swch off`, `swch on`; KS-31).
+    /// Starts over for `reason` (roadmap item 2.3; KS-31).
     ///
     /// Every pending Tap, Hold, DoubleTap, chord and sequence is dropped, so
-    /// none completes across the switch, and the reset starts a new
+    /// none completes across the reset, and the reset starts a new
     /// generation: a timer started before it is stale ([`is_live`](Self::is_live))
     /// and fires nothing, also against an entry armed after it (KS-11).
     ///
-    /// The held keys are taken from [`Env::os_key_down`], each on record as
-    /// passed: while remapping was off the engine saw no event and Windows
-    /// saw every key-down, so a key still held keeps its auto-repeats and
-    /// its key-up. A key whose key-down the engine swallowed before `off`
-    /// reads as up, since Windows never saw it go down.
+    /// The held keys, by reason:
     ///
-    /// Call it only when the switch really changes: a repeated `swch on`
-    /// would wipe the records of keys held and swallowed right now, and
-    /// their key-ups would reach Windows.
-    pub fn reset(&mut self, env: &dyn Env) {
+    /// - [`ResetReason::RemappingSwitched`]: taken from
+    ///   [`Env::os_key_down`], each on record as passed. While remapping was
+    ///   off the engine saw no event and Windows saw every key-down, so a
+    ///   key still held keeps its auto-repeats and its key-up. A key whose
+    ///   key-down the engine swallowed reads as up, since Windows never saw
+    ///   it go down, and keeps its record: its key-up stays swallowed, or
+    ///   reaches Windows if Windows has the key down by then.
+    /// - [`ResetReason::Reloaded`]: unchanged. A reload loses no key event,
+    ///   and reading the OS would race the key state of a key-down that has
+    ///   just passed (the state of the delivered key lags until the hook
+    ///   returns): such a key held would read as up and its next repeat as
+    ///   a press.
+    /// - [`ResetReason::InputLeft`]: every key is released and every record
+    ///   kept, and the OS is not asked: while input is on another desktop
+    ///   the OS state is no witness, and a reset that ran before the switch
+    ///   would read keys that are about to lose their key-ups as held. The
+    ///   next key-down of each key is a first press (owner decision on open
+    ///   question 9). A second reset of one episode changes nothing more.
+    ///
+    /// Call it only when something really changes: a repeated `swch on`
+    /// would drop the gestures pending right now.
+    pub fn reset(&mut self, env: &dyn Env, reason: ResetReason) {
         self.gestures.clear();
         self.chords = Chords::new();
         self.sequences = Sequences::new();
         self.mask_owed = false;
-        self.keys.reset_from_os(env);
+        match reason {
+            ResetReason::RemappingSwitched => self.keys.resync_from_os(env),
+            // No key event is lost on a reload, and the OS state of a key
+            // whose key-down has just passed may still lag behind it.
+            ResetReason::Reloaded => {}
+            ResetReason::InputLeft => self.keys.release_all(),
+        }
         self.ids.generation = self.ids.generation.wrapping_add(1);
     }
 
@@ -557,7 +672,7 @@ impl Engine {
             // of another key whose key-down passed is cancelled, since this
             // key makes it a shortcut (owner decision, roadmap item 2.2).
             self.gestures
-                .other_key_down(vk.0, &self.keys, now, &mut decision.fire);
+                .other_key_down(vk, &self.keys, now, &mut decision.fire);
 
             // A deferred winner's group arms one press, which resolves to
             // one of its gestures (KS-25). The press also ends this key's
@@ -589,9 +704,9 @@ impl Engine {
                         // key-down fires wherever the blocker sits in the
                         // list (KS-18). Its `when:`, taken from the bindings
                         // that asked for it (KS-35), is asked only once the
-                        // hotkey matches: on the hook thread it may capture
-                        // the foreground window (KS-08). `Always` asks the
-                        // Env nothing.
+                        // hotkey matches: on the hook thread a title
+                        // condition reads the foreground window's title
+                        // (KS-08). `Always` asks the Env nothing.
                         if matching::blocker_matches(combo, vk, &self.keys, |key| {
                             env.os_key_down(key)
                         }) && binding.condition.evaluate(&foreground)
@@ -700,12 +815,10 @@ impl Engine {
             // Otherwise a binding that stops matching mid-hold leaks repeats
             // after a swallowed key-down, and one that starts matching (a
             // modifier released under exact matching) swallows the repeats
-            // and the key-up of a key-down the OS saw (KS-06).
-            //
-            // A key-down that a foreground change forgot still counts as
-            // swallowed here: Windows never saw it, so a repeat that reached
-            // Windows would be the first key-down it sees, in whatever
-            // window took the foreground.
+            // and the key-up of a key-down the OS saw (KS-06). A foreground
+            // change keeps the record: Windows never saw a swallowed
+            // key-down, so a repeat that reached Windows would be the first
+            // key-down it sees, in whatever window took the foreground.
             //
             // The resync can find a modifier held whose key-down the hook
             // never saw, so Windows has it down. A repeat without a record
@@ -754,10 +867,22 @@ impl Engine {
         // A key-up whose key-down reached Windows always reaches it too, or
         // the key stays held there. Otherwise it is suppressed if the
         // key-down is on record as suppressed, or if a Tap or Hold of the
-        // press was pending: a focus change may have forgotten the record,
-        // and the gesture is still evidence of a swallowed press.
+        // press was pending, which is evidence of a swallowed press even
+        // where no record is left. The record is consumed either way.
         let was_blocked = self.keys.take_blocked(vk.0);
-        decision.suppress = was_blocked || (released.gesture_bound && !was_passed);
+        let swallow = was_blocked || (released.gesture_bound && !was_passed);
+        // The witness (roadmap item 2.3, ruling R1): Windows has this key
+        // down although the engine swallowed its latest key-down, so
+        // Windows saw a key-down the hook did not (a higher-integrity
+        // window, the secure desktop, a press while remapping was off, an
+        // injector). Swallowing the key-up would leave the key down there
+        // for good. The hook runs before the key state takes this event, so
+        // the read is the state before the key-up. The `&&` keeps every
+        // key-up that passes from asking the OS anything. A generic modifier
+        // code (an injector's `VK_SHIFT`) reads the generic state, either
+        // side, because Windows applies it to a side the event does not
+        // name.
+        decision.suppress = swallow && !env.os_key_down(vk);
         self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
@@ -782,7 +907,7 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::engine::{Scheduler, TimerQueue};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_SHIFT,
+        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_RSHIFT, VK_SHIFT,
     };
 
     /// An [`Env`] stopped at one instant with nothing held and no
@@ -825,9 +950,9 @@ mod tests {
 
     #[test]
     fn a_when_condition_is_asked_only_for_a_binding_whose_keys_match() {
-        // On the hook thread a `when:` may capture the foreground window
-        // (GetForegroundWindow, OpenProcess, GetWindowTextW): a binding on
-        // other keys must not pay for it on every key press (KS-08).
+        // On the hook thread a title condition reads the foreground
+        // window's title (GetWindowTextW): a binding on other keys must not
+        // pay for it on every key press (KS-08).
         let mut bindings = crate::config::from_ron_str(
             r#"( bindings: [
                 (keys: "F13", action: SwitchLanguage, when: AppEquals("code.exe")),
@@ -850,8 +975,9 @@ mod tests {
     #[test]
     fn a_blocker_when_condition_is_asked_only_once_its_hotkey_matches() {
         // An auto-blocker takes the `when:` of the bindings that ask for it
-        // (KS-35). Asked before its hotkey matches, it would capture the
-        // foreground window on the hook thread for every key press (KS-08).
+        // (KS-35). Asked before its hotkey matches, a title condition would
+        // read the foreground window's title on the hook thread for every
+        // key press (KS-08).
         let mut bindings = vec![
             Binding::new(KeyCombination::new(VK_F14), BindAction::ToggleCapsLock),
             Binding::new_auto_blocker(
@@ -928,7 +1054,10 @@ mod tests {
             .timers[0]
             .token;
         assert!(engine.is_live(before));
-        engine.reset(&FixedEnv(t0 + Duration::from_millis(50)));
+        engine.reset(
+            &FixedEnv(t0 + Duration::from_millis(50)),
+            ResetReason::RemappingSwitched,
+        );
         assert!(!engine.is_live(before), "the reset makes the token stale");
         assert_eq!(engine.on_timer(before), Decision::default());
 
@@ -1058,14 +1187,184 @@ mod tests {
         assert!(up.fire.is_empty(), "the Tap waits for the window");
         assert_eq!(
             engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
-            1,
-            "the window's timer is refused"
+            0,
+            "the window's timer is refused, and no Hold is dropped with it"
         );
 
         assert_eq!(
             engine.on_timer(hold_token).fire,
             [BindAction::SwitchLanguage, BindAction::DoNothing],
             "the Hold's timer at 500 ms fires the waiting Tap first"
+        );
+    }
+
+    /// An [`Env`] stopped at one instant with nothing held, which records
+    /// every key it is asked about.
+    struct CountingEnv {
+        now: Instant,
+        asked: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl CountingEnv {
+        fn asked(&self, vk: VIRTUAL_KEY) -> usize {
+            self.asked.borrow().iter().filter(|&&key| key == vk).count()
+        }
+    }
+
+    impl Env for CountingEnv {
+        fn now(&self) -> Instant {
+            self.now
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.asked.borrow_mut().push(vk);
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key() {
+        // Roadmap item 2.3, ruling R1: the witness costs one OS read, and
+        // only at a key-up the engine would swallow. A key-up that passes
+        // asks nothing.
+        let bindings = loaded(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing),
+                (keys: "F14", action: DoNothing, block_default: false),
+            ] )"#,
+        );
+        let env = CountingEnv {
+            now: Instant::now(),
+            asked: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut engine = Engine::new();
+
+        for vk in [VK_F13, VK_F14] {
+            let _ = engine.on_key(KeyEvent::down(vk), &bindings, &env);
+            let _ = engine.on_key(KeyEvent::up(vk), &bindings, &env);
+        }
+        assert_eq!(
+            env.asked(VK_F13),
+            1,
+            "a swallowed key-up asks the OS about its key once"
+        );
+        assert_eq!(env.asked(VK_F14), 0, "a key-up that passes asks nothing");
+    }
+
+    /// An [`Env`] stopped at one instant in which Windows has the right
+    /// Shift down, so the generic Shift reads as down too.
+    struct RightShiftDown(Instant);
+
+    impl Env for RightShiftDown {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            vk == VK_RSHIFT || vk == VK_SHIFT
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_witness_of_a_generic_shift_key_up_reads_the_generic_state() {
+        // Critic OQ2 of roadmap item 2.3: a real keyboard reports sided
+        // codes, but another program can inject the generic VK_SHIFT, which
+        // Windows applies to a side the event does not name. The witness
+        // then asks about either side: with nothing down the swallowed
+        // key-up stays swallowed; with a Shift down in Windows it passes.
+        let bindings = loaded(r#"( bindings: [ (keys: "Shift", action: DoNothing) ] )"#);
+        let t0 = Instant::now();
+
+        let mut engine = Engine::new();
+        let down = engine.on_key(KeyEvent::down(VK_SHIFT), &bindings, &FixedEnv(t0));
+        assert!(down.suppress, "the generic Shift key-down is swallowed");
+        let up = engine.on_key(KeyEvent::up(VK_SHIFT), &bindings, &FixedEnv(t0));
+        assert!(
+            up.suppress,
+            "no Shift is down in Windows: the key-up stays swallowed"
+        );
+
+        let mut engine = Engine::new();
+        let down = engine.on_key(KeyEvent::down(VK_SHIFT), &bindings, &RightShiftDown(t0));
+        assert!(down.suppress, "the generic Shift key-down is swallowed");
+        let up = engine.on_key(KeyEvent::up(VK_SHIFT), &bindings, &RightShiftDown(t0));
+        assert!(
+            !up.suppress,
+            "a Shift is down in Windows: the generic key-up passes"
+        );
+    }
+
+    #[test]
+    fn only_a_signal_that_input_left_asks_for_a_reset() {
+        // Ruling R2 of roadmap item 2.3: a signal that input came back
+        // resets nothing, however late it arrives.
+        for signal in InputSignal::ALL {
+            assert_eq!(
+                signal.reset().is_some(),
+                !signal.input_returned(),
+                "{signal}"
+            );
+        }
+        assert_eq!(
+            InputSignal::SessionLocked.reset(),
+            Some(ResetReason::InputLeft)
+        );
+        assert_eq!(
+            InputSignal::DesktopSwitchedAway.reset(),
+            Some(ResetReason::InputLeft)
+        );
+        assert_eq!(InputSignal::SessionUnlocked.reset(), None);
+        assert_eq!(InputSignal::DesktopSwitchedBack.reset(), None);
+        assert_eq!(
+            InputSignal::DesktopSwitchedAway.to_string(),
+            "keyboard input switched to another desktop"
+        );
+        assert_eq!(
+            ResetReason::InputLeft.to_string(),
+            "keyboard input left this desktop"
+        );
+    }
+
+    #[test]
+    fn a_refused_window_timer_drops_no_gesture() {
+        // Review m2 of roadmap item 2.2: the count that the adapter bumps
+        // `hold_timer_not_started` with is the number of Holds dropped. A
+        // Tap that waits for its DoubleTap window is kept when its timer is
+        // refused, so it counts nothing.
+        let t0 = Instant::now();
+        let bindings = loaded(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+            ] )"#,
+        );
+        let mut engine = Engine::new();
+
+        let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let mut up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(80)),
+        );
+        assert_eq!(
+            up.timers.len(),
+            1,
+            "the waiting Tap asks for its window's timer"
+        );
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
+            0,
+            "a refused window timer drops no gesture"
         );
     }
 

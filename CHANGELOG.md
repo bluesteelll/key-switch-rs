@@ -139,6 +139,37 @@ minor version; such entries sit under **Changed** and start with
   while every core is busy, with the loop thread at normal and at highest
   priority. Not part of the default `cargo test` run, which still prints
   nothing.
+- A hidden control window owned by the daemon's main thread (roadmap item
+  2.3): it receives the session notifications (lock, unlock) and the
+  session end, and a second WinEvent hook, `EVENT_SYSTEM_DESKTOPSWITCH`,
+  reports a switch of the input desktop. When keyboard input leaves the
+  desktop (a lock, the Ctrl+Alt+Del screen, or a UAC prompt while
+  "Switch to the secure desktop when prompting for elevation" is on, the
+  default), the daemon drops the pending gestures, stops the running
+  macros and releases every held key; it does that when input leaves, not
+  when it returns, so nothing done after the return is lost, however late
+  the return signals arrive. Each signal is logged:
+  `[INFO] session locked`, `[INFO] keyboard input switched to another desktop`,
+  `[INFO] state reset: keyboard input left this desktop`,
+  `[INFO] keyboard input switched back to this desktop`,
+  `[INFO] session unlocked`. At sign-out or shutdown the daemon removes its
+  hook, writes `[INFO] the session is ending; removing the keyboard hook and exiting`,
+  flushes the log and exits. New startup errors:
+  `[FATAL] could not create the control window: ...` and
+  `[FATAL] SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH`; a
+  session registration that fails is a warning. The window is never shown
+  and is destroyed right after the hooks are removed. New `windows`
+  features: `Win32_Graphics_Gdi`, `Win32_System_LibraryLoader`,
+  `Win32_System_RemoteDesktop`, `Win32_System_StationsAndDesktops`
+  (`Cargo.lock` is unchanged). Bench row R13 measures the main loop with
+  the window on its thread. Tests:
+  `hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop`,
+  `the_session_messages_note_the_lock_and_the_unlock`,
+  `the_session_end_messages_are_answered_and_end_the_loop`,
+  `hook::main_thread::tests::the_drain_logs_one_line_per_input_signal`,
+  `a_late_return_signal_keeps_a_running_macro_and_an_armed_hold`. Manual
+  checks: lock and unlock with Win+L, Ctrl+Alt+Del and a UAC prompt, and
+  sign out, with the timestamps in `daemon.log`.
 
 ### Changed
 
@@ -456,6 +487,54 @@ minor version; such entries sit under **Changed** and start with
   (roadmap item 2.1): those actions run on the hook thread, which never
   logs, so a failed post is counted in `post_message_failed` and the error
   text is no longer shown.
+- When the gesture timer cannot be set, the log line and the
+  `hold_timer_not_started` counter count only the `Hold`s that were
+  dropped: the line reads
+  `[ERROR] could not set the gesture timer (...); N pending Holds dropped`.
+  A `Tap` that waits for its DoubleTap window and whose timer was refused
+  is kept and fires at the next key event, and a chord or sequence still
+  expires by its deadline, so neither is counted (roadmap item 2.3, 2.2
+  review m2). Tests:
+  `engine::tests::a_refused_window_timer_drops_no_gesture`,
+  `hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops`.
+- `swch off` and `swch on` keep a swallowed key's release swallowed: the
+  reset still takes the keys Windows holds as pressed, but a key whose
+  key-down the daemon swallowed keeps that record. A foreground change no
+  longer forgets swallowed key-downs, in every daemon, elevated or not
+  (roadmap item 2.3). Such a release reaches Windows only when Windows has
+  the key down (known issue 78). Tests:
+  `engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed`,
+  `engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes`.
+- A config reload is applied on the daemon's main thread, between two key
+  events, and drops the pending `Tap`, `Hold`, `DoubleTap`, chord and
+  sequence entries in the same step (roadmap item 2.3; known issue 77). It
+  does not re-read the keys from Windows, as `swch on` does: no key event
+  is lost on a reload, and reading the keys right after a key-down passed
+  could miss it, so the keys held stay held and a key whose press the old
+  bindings swallowed keeps its release swallowed. The watcher thread waits
+  at most 2 s for the main thread; new lines:
+  `[WARN] config reload: the daemon's main thread did not answer within 2 s; the new bindings go live when it does`,
+  `[INFO] config reload carried out late: N bindings live`,
+  `[INFO] config reload skipped: the daemon is shutting down` and
+  `[ERROR] config reload failed: the daemon is busy; try again`. Tests:
+  `hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold`,
+  `a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands`,
+  `engine::scenarios::a_reload_drops_a_pending_double_tap_and_keeps_each_press_whole`.
+- A `when:` condition reads the foreground window's executable name from a
+  per-window cache that the foreground event fills on the daemon's main
+  thread, so no process is queried in the keyboard callback; a title is
+  read once per key-down that needs one, and never for a window of the
+  daemon's own process, whose title read would send it a message (roadmap
+  item 2.3, the latency bullet moved from 3.5). A key that a program sends
+  right after it activates a window can be decided against the previous
+  window (known issue 80). Tests:
+  `hook::keyboard_hook_callback::tests::a_hundred_conditional_presses_in_one_window_query_its_process_once`,
+  `a_title_condition_reads_the_cached_windows_title_on_each_key_down`,
+  `a_window_of_this_process_is_never_asked_for_its_title`,
+  `platform::foreground::tests::the_cache_queries_again_only_for_another_window`.
+  Manual check:
+  `cargo test --locked -- --ignored --exact platform::foreground::tests::the_foreground_cache_names_the_focused_notepad`,
+  then focus Notepad within 5 s.
 
 ### Fixed
 
@@ -780,6 +859,61 @@ minor version; such entries sit under **Changed** and start with
   capitals again. Pressing it twice within 250 ms for two capitals toggles
   CapsLock too (see the **Breaking** entry for `block_default` under
   **Changed**).
+- A gesture timer that Windows refused to move to an earlier `Hold` no
+  longer leaves the main loop waiting on the old deadline: the loop sets
+  it again for the earliest gesture left (roadmap item 2.3, 2.2 review
+  OQ3). Test:
+  `hook::main_thread::tests::a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop`.
+- A passing multi-key `DoubleTap` such as `Ctrl+Shift` is no longer
+  cancelled by its own keys going down again: the second press may begin
+  with Ctrl (roadmap item 2.3, 2.2 review OQ2). A `Tap` that waits for
+  that window fires at the next key outside the combination, while that
+  modifier is down in Windows (known issue 68). Tests:
+  `engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys`,
+  `a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows`.
+- The config watcher reports a `config-watcher` thread it cannot start
+  instead of panicking: the daemon logs
+  `[WARN] could not start config file watcher for <path>: ...` and
+  `[INFO] continuing without hot-reload` and runs on (roadmap item 2.3, a
+  leftover of item 2.2). Test:
+  `hook::config_watcher::tests::the_watcher_thread_has_no_panic_path`.
+- The release of a key whose press the daemon swallowed reaches Windows
+  when Windows has that key down: a key released and pressed again where
+  the daemon cannot see it (a higher-integrity window while the daemon is
+  not elevated, the secure desktop) no longer stays stuck. The hook reads
+  the key's state in Windows once, and only at a key-up it would swallow
+  (roadmap item 2.3, ruling R1; known issue 78). Tests:
+  `engine::scenarios::a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_is_released_in_windows`,
+  `a_swallowed_lshift_key_up_stays_swallowed_while_the_right_shift_is_down_in_windows`,
+  `engine::tests::only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key`,
+  `the_witness_of_a_generic_shift_key_up_reads_the_generic_state`,
+  `engine::properties::nothing_is_left_down_in_windows_when_the_hook_misses_key_downs`.
+- The release of a key whose press the daemon swallowed no longer reaches
+  Windows alone after a foreground change or `swch on`: holding Win+Alt+T
+  while the terminal it opens takes the foreground keeps the T repeats and
+  the T release from Windows (KS-06 status, known issue 55, roadmap item
+  2.3). Tests:
+  `engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed`,
+  `win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed`.
+- KS-31 (an unverified report): a `Tap` armed before a config reload no
+  longer fires the old action at its key-up, and no `Hold`, `DoubleTap`,
+  chord or sequence of the old bindings completes after the reload
+  (roadmap item 2.3). Tests:
+  `engine::scenarios::a_tap_armed_before_a_reload_fires_nothing_at_its_key_up`,
+  `hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing`.
+- KS-29 (an unverified report): after Win+L, Ctrl+Alt+Del or a UAC prompt
+  on the secure desktop, the next press of a key held when input left is a
+  press: a swallowed, non-repeating trigger such as the template's
+  CapsLock switches the layout again, and after Win+L the first L of a
+  `Ctrl+Alt+L` binding is a press that the binding swallows, not an
+  auto-repeat that reaches Windows too (known issue 63, owner decision
+  2026-10-18, roadmap item 2.3). A key held through the whole lock and still auto-repeating reads
+  its first repeat as a press (known issue 76). Tests:
+  `engine::scenarios::nothing_is_stuck_after_win_l`,
+  `after_a_lock_the_next_press_of_a_swallowed_non_repeating_key_fires`,
+  `after_a_lock_the_next_press_of_a_passing_key_is_a_new_press`,
+  `hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key`,
+  `engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches`.
 
 ## [0.1.0] - 2026-05-20
 

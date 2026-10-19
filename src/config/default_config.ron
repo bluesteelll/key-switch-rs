@@ -4,7 +4,8 @@
 // 250 ms after the save, without a restart. If the new version does not
 // load, the error is written to the console and to
 // %LOCALAPPDATA%\key-switch-rs\daemon.log, and the previous bindings
-// stay active.
+// stay active. A save that loads drops the Tap, Hold, DoubleTap, chord and
+// sequence presses still pending and stops the macros still running.
 // Deleting or renaming this file keeps the current bindings. The daemon
 // writes this template only when it starts and finds no config.ron next to
 // key-switch-rs.exe; a config path given on the command line must exist.

@@ -16,8 +16,10 @@
 //! 5. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
 //!    thread's state (`hook::main_thread::with_main`), with one snapshot of
 //!    the binding list and a `HookEnv` that answers the engine's questions
-//!    with live Win32 calls, and hands the timers the decision asks for to
-//!    the main thread's gesture timers, under the same borrow;
+//!    (the foreground window's executable name from the main thread's
+//!    foreground cache, with no call; its title and the OS key state with
+//!    live Win32 calls), and hands the timers the decision asks for to the
+//!    main thread's gesture timers, under the same borrow;
 //! 6. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
@@ -31,14 +33,20 @@
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
-//! `foreground_changed` hands foreground switches to
-//! [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed)
+//! `desktop_switched` notes a switch of the input desktop for the main
+//! loop, which resets the transient state when keyboard input left this
+//! desktop (roadmap item 2.3). It does nothing while remapping is off.
+//!
+//! `foreground_changed` hands foreground switches to the main thread's
+//! foreground cache, which reads the new window's executable name there
+//! and not on the key path (`platform::foreground`, roadmap item 2.3), and
+//! to [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed),
 //! the same way, and does nothing while remapping is off.
 //!
 //! # Threads
 //!
-//! Both callbacks run on the main thread, which installed the hooks, pumps
-//! their messages and owns the engine and every gesture timer
+//! The three callbacks run on the main thread, which installed the hooks,
+//! pumps their messages and owns the engine and every gesture timer
 //! (`hook::main_thread`, roadmap item 2.2). A gesture that must fire while
 //! no event arrives, a `Hold` or a `Tap` that waits for its DoubleTap
 //! window, asks for a timer, and so does a pending chord or sequence for its
@@ -50,8 +58,10 @@
 //!
 //! `swch on` and `swch off` are requests that the main loop serves between
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is
-//! reset with no event decided in between. They never install or remove a
-//! hook; only the main thread does.
+//! reset with no event decided in between. So are a config reload and the
+//! input signals that `desktop_switched` and the control window note
+//! (roadmap item 2.3). None of them installs or removes a hook; only the
+//! main thread does.
 //!
 //! The engine reads the clock once per event, here, and the loop takes a
 //! timer only once its due time has passed. The engine decides by
@@ -81,9 +91,11 @@
 //! suppressed: the key-up would pass and the engine would keep the key held
 //! and blocked, so the key's next press would count as an auto-repeat and
 //! its release would be swallowed. No such re-entry exists today. A change
-//! that injects input or pumps messages under the borrow (for example a
-//! foreground lookup that sends `WM_GETTEXT` to a window of this process)
-//! must deal with it first.
+//! that injects input or pumps messages under the borrow must deal with it
+//! first. The title read of a `when:` (`GetWindowTextW`) is the one Win32
+//! lookup under the borrow that could send a message: it never asks a
+//! window of this process, whose title read would send `WM_GETTEXT`
+//! (`platform::foreground`).
 
 use std::cell::OnceCell;
 use std::sync::LazyLock;
@@ -93,15 +105,19 @@ use windows::Win32::{
     Foundation::*,
     UI::{Accessibility::HWINEVENTHOOK, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+use windows::core::HRESULT;
 
 use crate::core::constants;
 use crate::core::executor::TargetWindow;
 use crate::core::windows_actions::BindAction;
-use crate::data::condition::ForegroundContext;
-use crate::engine::{Decision, Env, KeyEvent};
+use crate::engine::{Decision, Env, InputSignal, KeyEvent};
 use crate::hook::keyboard_hook::KeyboardHook;
-use crate::hook::main_thread::with_main;
+use crate::hook::main_thread::{
+    MainState, note_input_signal, note_unknown_desktop_switch, with_main,
+};
 use crate::logging::counters::{self, Counter};
+use crate::platform::desktop;
+use crate::platform::foreground::ForegroundCache;
 
 /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
 /// rather than a plain `static` because `KeyboardHook::new()` allocates the
@@ -117,28 +133,33 @@ pub fn get_hook() -> &'static KeyboardHook {
     &KEYBOARD_HOOK
 }
 
-/// The engine's [`Env`], backed by live Win32 calls. One is created on the
-/// stack per event, and one per reset in `MainState::set_enabled`. The
-/// foreground window is captured at most once, on the first question about
-/// it, so bindings without a `when:` condition never cause a foreground
-/// lookup.
-pub(super) struct HookEnv {
-    foreground: OnceCell<ForegroundContext>,
+/// Taken by every test that drives the process-wide hook through
+/// `get_hook()`, in this file and in `hook::control_window`. One of them
+/// turns remapping off, which would break the swallow asserts of another
+/// running at the same time.
+#[cfg(test)]
+pub(crate) static GLOBAL_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The engine's [`Env`], backed by the OS key state and the main thread's
+/// foreground cache. One is created on the stack per event, and one per
+/// reset. The executable name comes from the cache, with no Win32 call; the
+/// title is read at most once, on the first question about it, so a binding
+/// without a title condition never reads it (roadmap item 2.3).
+pub(super) struct HookEnv<'a> {
+    foreground: &'a ForegroundCache,
+    title: OnceCell<Option<String>>,
 }
 
-impl HookEnv {
-    pub(super) fn new() -> Self {
+impl<'a> HookEnv<'a> {
+    pub(super) fn new(foreground: &'a ForegroundCache) -> Self {
         Self {
-            foreground: OnceCell::new(),
+            foreground,
+            title: OnceCell::new(),
         }
     }
-
-    fn foreground(&self) -> &ForegroundContext {
-        self.foreground.get_or_init(ForegroundContext::capture)
-    }
 }
 
-impl Env for HookEnv {
+impl Env for HookEnv<'_> {
     fn now(&self) -> Instant {
         Instant::now()
     }
@@ -152,11 +173,13 @@ impl Env for HookEnv {
     }
 
     fn foreground_app(&self) -> Option<&str> {
-        self.foreground().app()
+        self.foreground.app()
     }
 
     fn foreground_title(&self) -> Option<&str> {
-        self.foreground().title()
+        self.title
+            .get_or_init(|| self.foreground.read_title())
+            .as_deref()
     }
 }
 
@@ -199,11 +222,16 @@ pub(super) fn decide_event(
     // One snapshot for the whole decision, even if a reload swaps the list
     // meanwhile. It is dropped on return, before any action runs.
     let bindings = hook.bindings();
-    let env = HookEnv::new();
     let (decision, refused) = with_main(|main| {
-        let mut decision = main.engine.on_key(event, &bindings, &env);
-        let timers = std::mem::take(&mut decision.timers);
-        let refused = main.engine.start_timers(timers, &mut main.timers);
+        let MainState {
+            engine,
+            timers,
+            foreground,
+        } = main;
+        let env = HookEnv::new(foreground);
+        let mut decision = engine.on_key(event, &bindings, &env);
+        let requests = std::mem::take(&mut decision.timers);
+        let refused = engine.start_timers(requests, timers);
         (decision, refused)
     })?;
     // The engine has forgotten a timer the main thread could not set: that
@@ -357,17 +385,17 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 }
 
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
-/// engine resyncs the modifiers and forgets which key-ups were due to be
-/// swallowed, repairing what the keyboard hook may have missed while a
-/// higher-integrity window had focus. A modifier whose key-down the engine
-/// swallowed is not resynced (Windows never saw it go down, KS-14), so a
-/// lost key-up of such a modifier is not repaired here. While remapping is
-/// off it does nothing: the reset at `swch on` takes every held key from the
-/// OS anyway.
+/// main thread's foreground cache reads the new window's executable name,
+/// and the engine resyncs the modifiers, repairing what the keyboard hook
+/// may have missed while a higher-integrity window had focus. A modifier
+/// whose key-down the engine swallowed is not resynced (Windows never saw it
+/// go down, KS-14), so a lost key-up of such a modifier is not repaired
+/// here. While remapping is off it does nothing: the reset at `swch on`
+/// reads the foreground and every held key from the OS anyway.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
-    _hwnd: HWND,
+    hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
     _thread: u32,
@@ -377,15 +405,59 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     if !hook.is_enabled() {
         return;
     }
-    let env = HookEnv::new();
     // `None` only on re-entry, which nothing triggers today (module docs).
-    let _ = with_main(|main| main.engine.on_foreground_changed(&env));
+    let _ = with_main(|main| main.foreground_changed(hwnd));
+}
+
+/// What a desktop switch tells the main loop (roadmap item 2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DesktopSwitchNote {
+    /// Keyboard input left this desktop or came back to it.
+    Signal(InputSignal),
+    /// Windows would not say where input is now.
+    Unknown(HRESULT),
+}
+
+/// Classifies a desktop switch by whether this thread's desktop has
+/// keyboard input after it (`platform::desktop::input_is_on_this_desktop`).
+/// Asked when the switch is delivered, so a late switch event reads where
+/// input is now, never where it was.
+pub(crate) fn desktop_switch_note(input_here: windows::core::Result<bool>) -> DesktopSwitchNote {
+    match input_here {
+        Ok(true) => DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedBack),
+        Ok(false) => DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedAway),
+        Err(error) => DesktopSwitchNote::Unknown(error.code()),
+    }
+}
+
+/// `EVENT_SYSTEM_DESKTOPSWITCH` callback installed via `SetWinEventHook`,
+/// on the main thread: notes where keyboard input went for the main loop's
+/// drain, which resets when it left this desktop (roadmap item 2.3). Two
+/// user32 reads and a flag here, nothing on the keyboard path; while
+/// remapping is off it does nothing.
+pub(crate) unsafe extern "system" fn desktop_switched(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if !get_hook().is_enabled() {
+        return;
+    }
+    match desktop_switch_note(desktop::input_is_on_this_desktop()) {
+        DesktopSwitchNote::Signal(signal) => note_input_signal(signal),
+        DesktopSwitchNote::Unknown(error) => note_unknown_desktop_switch(error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::sync::{Arc, Mutex, PoisonError, mpsc};
+    use std::rc::Rc;
+    use std::sync::{Arc, PoisonError, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -395,10 +467,13 @@ mod tests {
     use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
+    use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
-    use crate::hook::main_thread::{MainThread, REFUSED, with_main};
+    use crate::engine::InputSignal;
+    use crate::hook::main_thread::{MainThread, REFUSED, take_pending_signals, with_main};
+    use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
     // No test installs a hook. Every test that reaches the engine makes its
     // thread a main thread (`MainThread::new`), which owns the engine and
@@ -414,18 +489,13 @@ mod tests {
     // modifier the user happens to hold while the tests run would otherwise
     // stop it matching.
 
-    /// Taken by every test that drives the process-wide hook through
-    /// `get_hook()`. One of them turns remapping off, which would break the
-    /// swallow asserts of another running at the same time.
-    static GLOBAL_HOOK: Mutex<()> = Mutex::new(());
-
     /// Turns the process-wide hook's remapping back on when dropped, also on
     /// unwind, so a failed test leaves the next one remapping on.
     struct RemappingOnAtEnd;
 
     impl Drop for RemappingOnAtEnd {
         fn drop(&mut self) {
-            let _ = with_main(|main| main.set_enabled(get_hook(), true, &HookEnv::new()));
+            let _ = with_main(|main| main.set_enabled(get_hook(), true));
         }
     }
 
@@ -433,7 +503,7 @@ mod tests {
     /// state, as the main thread serves `swch on` and `off`, and returns
     /// whether the switch changed.
     fn set_enabled(hook: &KeyboardHook, enabled: bool) -> bool {
-        with_main(|main| main.set_enabled(hook, enabled, &HookEnv::new()))
+        with_main(|main| main.set_enabled(hook, enabled))
             .expect("this thread has a free main state")
     }
 
@@ -497,6 +567,144 @@ mod tests {
             .expect("an unbound key-down reaches the engine");
         assert!(!unbound.suppress);
         assert!(unbound.fire.is_empty());
+    }
+
+    /// What a [`CountingQuery`] was asked.
+    #[derive(Default)]
+    struct Asked {
+        image_names: Cell<u32>,
+        titles: Cell<u32>,
+    }
+
+    /// A [`WindowQuery`] for one window, `FAKE_WINDOW`, of process `pid`,
+    /// named `x.exe`, whose title the test sets. No Win32 call sees it.
+    struct CountingQuery {
+        pid: u32,
+        title: Rc<std::cell::RefCell<String>>,
+        asked: Rc<Asked>,
+    }
+
+    const FAKE_WINDOW: usize = 0x4242;
+
+    fn fake_window() -> HWND {
+        HWND(FAKE_WINDOW as *mut std::ffi::c_void)
+    }
+
+    impl WindowQuery for CountingQuery {
+        fn foreground(&self) -> HWND {
+            fake_window()
+        }
+        fn owner(&self, _window: HWND) -> u32 {
+            self.pid
+        }
+        fn image_name(&self, _pid: u32) -> Option<String> {
+            self.asked.image_names.set(self.asked.image_names.get() + 1);
+            Some("x.exe".to_owned())
+        }
+        fn title(&self, _window: HWND) -> Option<String> {
+            self.asked.titles.set(self.asked.titles.get() + 1);
+            Some(self.title.borrow().clone())
+        }
+    }
+
+    /// Makes `FAKE_WINDOW` of process `pid` this thread's foreground, as the
+    /// foreground hook reports it, through a counting query. Returns what
+    /// the query is asked and the title it answers with.
+    fn fake_foreground(pid: u32, title: &str) -> (Rc<Asked>, Rc<std::cell::RefCell<String>>) {
+        let asked = Rc::new(Asked::default());
+        let title = Rc::new(std::cell::RefCell::new(title.to_owned()));
+        let query = CountingQuery {
+            pid,
+            title: Rc::clone(&title),
+            asked: Rc::clone(&asked),
+        };
+        with_main(|main| {
+            main.foreground = ForegroundCache::with_query(Box::new(query));
+            main.foreground_changed(fake_window());
+        })
+        .expect("the main state is free");
+        (asked, title)
+    }
+
+    #[test]
+    fn a_hundred_conditional_presses_in_one_window_query_its_process_once() {
+        // Roadmap item 2.3's latency acceptance: the executable name is
+        // cached per window from the foreground event, so a `when:` on the
+        // hook path never queries the process.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, _) = fake_foreground(4242, "Untitled");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::AppEquals("x.exe".to_owned()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        for _ in 0..100 {
+            let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0)
+                .expect("a key-down reaches the engine");
+            assert_eq!(down.fire, [BindAction::DoNothing], "the when: holds");
+            let up = decide_event(&hook, message(WM_KEYUP), f13, 0)
+                .expect("a key-up reaches the engine");
+            assert!(up.suppress, "the key-up follows its swallowed key-down");
+        }
+        assert_eq!(
+            asked.image_names.get(),
+            1,
+            "one process-name query for a hundred presses in one window"
+        );
+    }
+
+    #[test]
+    fn a_title_condition_reads_the_cached_windows_title_on_each_key_down() {
+        // A title changes inside one window (a browser tab): it is read at
+        // the key-down that evaluates a title condition, once.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, title) = fake_foreground(4242, "GitHub - Mozilla Firefox");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::TitleContains("GitHub".to_owned()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert_eq!(down.fire, [BindAction::DoNothing], "the GitHub tab");
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
+        *title.borrow_mut() = "Inbox - Mozilla Firefox".to_owned();
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert!(down.fire.is_empty(), "another tab of the same window");
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(!up.suppress, "the key-up follows its passed key-down");
+
+        assert_eq!(asked.titles.get(), 2, "one title read per key-down");
+        assert_eq!(asked.image_names.get(), 1);
+    }
+
+    #[test]
+    fn a_window_of_this_process_is_never_asked_for_its_title() {
+        // GetWindowTextW on a window of this process sends it WM_GETTEXT,
+        // which would run this thread's window procedures under the main
+        // state's borrow (module docs, Re-entry).
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, _) = fake_foreground(std::process::id(), "key-switch-rs");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::TitleContains(String::new()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert!(
+            down.fire.is_empty(),
+            "a window of this process has no title"
+        );
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(!up.suppress, "the key-up follows its passed key-down");
+        assert_eq!(asked.titles.get(), 0);
+        assert_eq!(asked.image_names.get(), 0);
     }
 
     #[test]
@@ -838,6 +1046,12 @@ mod tests {
             refused, 0,
             "with remapping off neither callback asked for the main state"
         );
+        call_desktop_switched();
+        assert_eq!(
+            take_pending_signals(),
+            None,
+            "with remapping off the desktop-switch callback notes nothing"
+        );
 
         assert!(set_enabled(get_hook(), true));
         let refused = with_main(|_| {
@@ -851,6 +1065,68 @@ mod tests {
             refused, 1,
             "with remapping on the keyboard callback asks for the main state"
         );
+    }
+
+    #[test]
+    fn a_desktop_switch_is_classified_by_where_input_is() {
+        // Roadmap item 2.3 (cut D16): `UOI_IO` of this thread's desktop says
+        // where keyboard input is after the switch.
+        assert_eq!(
+            desktop_switch_note(Ok(true)),
+            DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedBack)
+        );
+        assert_eq!(
+            desktop_switch_note(Ok(false)),
+            DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedAway)
+        );
+        assert_eq!(
+            desktop_switch_note(Err(E_ACCESSDENIED.into())),
+            DesktopSwitchNote::Unknown(E_ACCESSDENIED)
+        );
+    }
+
+    /// Calls the extern desktop-switch callback as the WinEvent dispatcher
+    /// would.
+    fn call_desktop_switched() {
+        // SAFETY: `desktop_switched` reads none of its handle arguments, so
+        // the null handles are never dereferenced or passed on. It asks only
+        // where this thread's desktop's input is, which reads.
+        unsafe {
+            desktop_switched(
+                HWINEVENTHOOK::default(),
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+    }
+
+    #[test]
+    fn a_desktop_switch_notes_a_signal_only_while_remapping_is_on() {
+        // The callback reads the process-wide hook's switch, hence
+        // `GLOBAL_HOOK`. Which signal it notes depends on whether this
+        // machine's desktop has input now: either direction, or unknown if
+        // Windows refuses the question; all three are accepted.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+
+        call_desktop_switched();
+        let pending = take_pending_signals().expect("a switch is noted");
+        let signals: Vec<InputSignal> = pending.signals().collect();
+        match (signals.as_slice(), pending.unknown()) {
+            ([InputSignal::DesktopSwitchedBack], None)
+            | ([InputSignal::DesktopSwitchedAway], None)
+            | ([], Some(_)) => {}
+            other => panic!("one note of a desktop switch, got {other:?}"),
+        }
+
+        assert!(set_enabled(get_hook(), false));
+        call_desktop_switched();
+        assert_eq!(take_pending_signals(), None, "remapping off: nothing noted");
     }
 
     #[test]
@@ -990,8 +1266,9 @@ mod tests {
     /// the thread count does not grow with the presses. The non-test lines
     /// of every file under `src/hook` but the IPC server and the config
     /// watcher (which start their own threads once, at startup), of every
-    /// file under `src/engine`, and of the files the fast actions and the
-    /// gesture timer run in, name no way to start a thread. The tokens are
+    /// file under `src/engine`, and of the files the fast actions, the
+    /// gesture timer and the foreground cache run in, name no way to start a
+    /// thread. The tokens are
     /// assembled, so this test does not match itself.
     #[test]
     fn the_gesture_path_starts_no_thread() {
@@ -1018,6 +1295,8 @@ mod tests {
             "src/core/windows_actions.rs",
             "src/system/system_function.rs",
             "src/platform/timers.rs",
+            "src/platform/foreground.rs",
+            "src/platform/desktop.rs",
         ] {
             files.push(root.join(file));
         }

@@ -1,11 +1,13 @@
 //! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
-//! thread that installs both hooks and pumps their messages also owns the
-//! engine and every gesture timer, and serves `swch on` and `swch off`.
+//! thread that installs the hooks and pumps their messages also owns the
+//! engine and every gesture timer, and serves `swch on` and `swch off` and
+//! config reloads (roadmap item 2.3).
 //!
 //! # State
 //!
-//! The engine and the gesture timers live in this thread's [`MainState`], a
-//! thread-local that only [`with_main`] reaches. Every caller of the engine
+//! The engine, the gesture timers and the foreground cache of `when:`
+//! (`platform::foreground`, roadmap item 2.3) live in this thread's
+//! [`MainState`], a thread-local that only [`with_main`] reaches. Every caller of the engine
 //! runs on this thread: the keyboard and foreground hook callbacks, which
 //! Windows dispatches inside this thread's message calls, and the loop's
 //! timer drain and requests. So no lock guards the engine, and none can be
@@ -13,8 +15,10 @@
 //! borrows the state with `try_borrow_mut`: a callback that runs while the
 //! state is borrowed is refused and its event passes, so a re-entered
 //! callback neither panics nor hangs the keyboard. Under the borrow only
-//! the engine decides and the gesture timer is set (`SetWaitableTimer`); no
-//! action runs, nothing is injected or submitted and no message is pumped.
+//! the engine decides, the gesture timer is set (`SetWaitableTimer`), the
+//! foreground cache reads a process name (in the foreground callback) and
+//! a title condition reads a title of another process's window; no action
+//! runs, nothing is injected or submitted and no message is pumped or sent.
 //!
 //! # The loop
 //!
@@ -22,15 +26,18 @@
 //! in the shape of the action executor's loop (roadmap item 2.1):
 //!
 //! 1. Drain, until a whole pass finds nothing: the requests (`swch on` and
-//!    `off`), then every gesture timer whose due time has passed by the
-//!    clock, each decided under the borrow and carried out after it.
+//!    `off`, a config reload), then the input signals noted since the last
+//!    pass (keyboard input left this desktop or came back), then every
+//!    gesture timer whose due time has passed by the clock, each decided
+//!    under the borrow and carried out after it.
 //! 2. Plan: drop the timers no entry waits for, then set the wake for the
 //!    earliest one left unless it is set for it already, or cancel it.
 //! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
 //!    message (`QS_ALLINPUT`, which has `QS_SENDMESSAGE`), also one already
 //!    seen but not removed (`MWMO_INPUTAVAILABLE`).
 //! 4. Pump: `PeekMessageW` until the queue is empty, a `MAIN_WAKE` comes (a
-//!    request waits: back to 1) or `WM_QUIT` (the loop ends).
+//!    request or a noted input signal waits: back to 1) or `WM_QUIT` (the
+//!    loop ends).
 //!
 //! The hook callbacks run inside those `PeekMessageW` calls. Windows calls a
 //! low-level hook by sending a message to the thread that installed it, a
@@ -45,22 +52,27 @@
 //! (`platform::timers`), so a deadline is met within about a millisecond,
 //! not on the 15.6 ms tick of the system clock.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
-    Foundation::{E_UNEXPECTED, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
+    Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::WindowsAndMessaging::*,
 };
-use windows::core::Error;
+use windows::core::{Error, HRESULT};
 
-use crate::engine::{Decision, Engine, Env, Scheduler, TimerQueue, TimerRequest, TimerToken};
+use crate::data::binding::Binding;
+use crate::engine::{
+    Decision, Engine, InputSignal, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
+};
+use crate::hook::config_watcher::ApplyReload;
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
 use crate::logging::counters::{self, Counter};
+use crate::platform::foreground::ForegroundCache;
 use crate::platform::timers::WaitableTimer;
 
 /// The thread message that wakes the loop for a request.
@@ -76,6 +88,90 @@ const REQUEST_CAPACITY: usize = 8;
 thread_local! {
     /// The main state of this thread, if it is the daemon's main thread.
     static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+
+    /// The input signals noted on this thread since the last drain
+    /// (roadmap item 2.3). A `Cell` of plain data: the control window's
+    /// procedure and the desktop-switch callback note one, which needs no
+    /// borrow, whatever message call they run in.
+    static PENDING_SIGNALS: Cell<PendingSignals> = const { Cell::new(PendingSignals::NONE) };
+}
+
+/// The input signals that wait for the drain (roadmap item 2.3): one flag
+/// per [`InputSignal`], so that a signal noted twice before a drain is
+/// logged and acted on once, and the error of a desktop switch whose
+/// destination could not be told.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PendingSignals {
+    /// Indexed by the position of the signal in [`InputSignal::ALL`].
+    seen: [bool; 4],
+    unknown: Option<HRESULT>,
+}
+
+impl PendingSignals {
+    const NONE: PendingSignals = PendingSignals {
+        seen: [false; 4],
+        unknown: None,
+    };
+
+    /// The signals noted, in [`InputSignal::ALL`] order.
+    pub(crate) fn signals(self) -> impl Iterator<Item = InputSignal> {
+        InputSignal::ALL
+            .into_iter()
+            .zip(self.seen)
+            .filter_map(|(signal, seen)| seen.then_some(signal))
+    }
+
+    /// The error of a desktop switch whose destination could not be told.
+    pub(crate) fn unknown(self) -> Option<HRESULT> {
+        self.unknown
+    }
+}
+
+/// Notes `signal` for the next drain of this thread's main loop and wakes
+/// the loop. Main thread only: called from the control window's procedure
+/// and the desktop-switch callback, which may run inside any message call,
+/// so it only sets a flag and posts a wake, never resets anything here.
+pub(crate) fn note_input_signal(signal: InputSignal) {
+    // `ALL` lists every signal, so the position is always found; nothing
+    // here may panic inside a window procedure.
+    let Some(index) = InputSignal::ALL.iter().position(|&known| known == signal) else {
+        return;
+    };
+    let _ = PENDING_SIGNALS.try_with(|pending| {
+        let mut noted = pending.get();
+        noted.seen[index] = true;
+        pending.set(noted);
+    });
+    wake_this_thread();
+}
+
+/// Notes a desktop switch whose destination Windows would not tell
+/// (`error`), for the next drain, which logs it and resets nothing.
+pub(crate) fn note_unknown_desktop_switch(error: HRESULT) {
+    let _ = PENDING_SIGNALS.try_with(|pending| {
+        let mut noted = pending.get();
+        noted.unknown = Some(error);
+        pending.set(noted);
+    });
+    wake_this_thread();
+}
+
+/// The signals noted since the last call, if any, which it clears.
+pub(crate) fn take_pending_signals() -> Option<PendingSignals> {
+    PENDING_SIGNALS
+        .try_with(|pending| pending.replace(PendingSignals::NONE))
+        .ok()
+        .filter(|noted| *noted != PendingSignals::NONE)
+}
+
+/// Posts `MAIN_WAKE` to the calling thread, so that a wait that a noted
+/// signal came in returns to the drain. A post that fails loses no signal:
+/// the drain also runs when `pump` empties the queue.
+fn wake_this_thread() {
+    // SAFETY: GetCurrentThreadId takes no arguments; PostThreadMessageW
+    // takes the thread id and the message by value, reads no memory of ours
+    // and returns without waiting; MAIN_WAKE carries no pointer.
+    let _ = unsafe { PostThreadMessageW(GetCurrentThreadId(), MAIN_WAKE, WPARAM(0), LPARAM(0)) };
 }
 
 #[cfg(test)]
@@ -89,6 +185,9 @@ thread_local! {
 pub(crate) struct MainState {
     pub(super) engine: Engine,
     pub(super) timers: GestureTimers,
+    /// The foreground window's executable name for `when:`, filled from the
+    /// foreground hook and never in the keyboard callback (roadmap item 2.3).
+    pub(super) foreground: ForegroundCache,
 }
 
 /// Runs `f` on this thread's main state and returns what it returns.
@@ -114,25 +213,64 @@ impl MainState {
     /// Turns remapping on or off (`swch on`, `swch off`; KS-31) and returns
     /// whether the switch changed. On the main thread, between callbacks:
     /// an event is decided either before the flip with the old state or
-    /// after it with the reset one. A real change resets the engine, which
-    /// makes every queued gesture timer stale, drops those timers, and stops
-    /// every macro running and every slow action still queued (roadmap item
-    /// 2.1). A change that is no change resets nothing: it would wipe the
-    /// records of keys held and swallowed right now.
-    pub(crate) fn set_enabled(
-        &mut self,
-        hook: &KeyboardHook,
-        enabled: bool,
-        env: &dyn Env,
-    ) -> bool {
+    /// after it with the reset one. A real change resets the transient
+    /// state ([`reset_transient_state`](Self::reset_transient_state)). A
+    /// change that is no change resets nothing: it would drop the gestures
+    /// pending right now.
+    pub(crate) fn set_enabled(&mut self, hook: &KeyboardHook, enabled: bool) -> bool {
         if !hook.switch_enabled(enabled, self) {
             return false;
         }
-        self.engine.reset(env);
+        self.reset_transient_state(hook, ResetReason::RemappingSwitched);
+        true
+    }
+
+    /// Drops every pending gesture, chord, sequence and owed mask, starts a
+    /// new timer generation and drops the timers it made stale, takes the
+    /// held keys as `reason` says ([`Engine::reset`]), and stops every macro
+    /// running and every slow action still queued (roadmap items 2.1 and
+    /// 2.3). On the main thread, between two events.
+    pub(crate) fn reset_transient_state(&mut self, hook: &KeyboardHook, reason: ResetReason) {
+        self.reset_engine(reason);
+        hook.cancel_actions();
+    }
+
+    /// Makes `bindings` the live list and resets the engine with it, on the
+    /// main thread, between two events (roadmap item 2.3, KS-31): no key
+    /// event is decided with the new list and a gesture of the old one.
+    /// `update_bindings` sorts the list, stores it and stops the macros of
+    /// the old list, so the reset here only resets the engine.
+    pub(crate) fn reload(&mut self, hook: &KeyboardHook, bindings: Vec<Binding>) {
+        hook.update_bindings(bindings);
+        self.reset_engine(ResetReason::Reloaded);
+    }
+
+    /// The engine half of [`reset_transient_state`](Self::reset_transient_state).
+    fn reset_engine(&mut self, reason: ResetReason) {
+        // The foreground hook reports nothing while remapping is off, so a
+        // window that took the foreground meanwhile is read here.
+        if reason == ResetReason::RemappingSwitched {
+            self.foreground.resync();
+        }
+        self.engine.reset(&HookEnv::new(&self.foreground), reason);
         let engine = &self.engine;
         self.timers.retain(&|token| engine.is_live(token));
-        hook.cancel_actions();
-        true
+    }
+
+    /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
+    /// reads its executable once, here and not in the keyboard callback,
+    /// and the engine resyncs the modifiers.
+    pub(crate) fn foreground_changed(&mut self, window: HWND) {
+        self.foreground.window_changed(window);
+        let env = HookEnv::new(&self.foreground);
+        self.engine.on_foreground_changed(&env);
+    }
+
+    /// Keyboard input came back to this desktop: the window that has the
+    /// foreground now is read again, since the foreground hook may have
+    /// reported nothing meanwhile. Nothing is reset (ruling R2).
+    pub(crate) fn input_returned(&mut self) {
+        self.foreground.resync();
     }
 }
 
@@ -152,7 +290,8 @@ enum Wake {
     Wait,
     /// The earliest timer is due: drain without waiting.
     Due,
-    /// The waitable timer could not be set; `dropped` timers were forgotten.
+    /// The waitable timer could not be set: every queued timer was
+    /// forgotten, and `dropped` Holds with them.
     Failed { error: Error, dropped: usize },
 }
 
@@ -230,14 +369,12 @@ impl GestureTimers {
                             lost.borrow_mut().push(token);
                             false
                         });
-                        let lost = lost.into_inner();
-                        for token in &lost {
-                            engine.forget_timer(*token);
-                        }
-                        Wake::Failed {
-                            error,
-                            dropped: lost.len(),
-                        }
+                        let dropped = lost
+                            .into_inner()
+                            .into_iter()
+                            .filter(|token| engine.forget_timer(*token))
+                            .count();
+                        Wake::Failed { error, dropped }
                     }
                 }
             }
@@ -258,6 +395,10 @@ impl Scheduler for GestureTimers {
             if self.wake.set(after).is_err() {
                 let token = request.token;
                 self.queue.retain(&|queued| queued != token);
+                // A failed set leaves the timer set for no deadline the loop
+                // can name, so the next plan sets it again for the earliest
+                // one left instead of keeping it.
+                self.armed = None;
                 return false;
             }
             self.armed = Some(request.due);
@@ -276,6 +417,12 @@ enum Request {
     SetEnabled {
         enabled: bool,
         reply: SyncSender<bool>,
+    },
+    /// A config reload from the watcher thread: the new list, swapped in
+    /// together with an engine reset (roadmap item 2.3).
+    Reload {
+        bindings: Vec<Binding>,
+        reply: SyncSender<()>,
     },
 }
 
@@ -303,6 +450,12 @@ impl std::fmt::Display for MainThreadError {
 
 impl std::error::Error for MainThreadError {}
 
+impl ApplyReload for MainThreadHandle {
+    fn apply(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        self.reload(bindings)
+    }
+}
+
 /// How another thread reaches the main thread: the IPC connection workers,
 /// and a test's helper thread.
 #[derive(Clone)]
@@ -320,6 +473,26 @@ impl MainThreadHandle {
             .requests
             .try_send(Request::SetEnabled { enabled, reply })
         {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
+            Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
+        }
+        self.wake();
+        answer
+            .recv_timeout(REPLY_TIMEOUT)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => MainThreadError::NoAnswer,
+                RecvTimeoutError::Disconnected => MainThreadError::ShuttingDown,
+            })
+    }
+
+    /// Asks the main thread to make `bindings` the live list, with the
+    /// engine reset that goes with it (`MainState::reload`), and waits up
+    /// to [`REPLY_TIMEOUT`] for it. On `NoAnswer` the reload stays queued
+    /// and goes live when the main thread reaches it.
+    pub(crate) fn reload(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        match self.requests.try_send(Request::Reload { bindings, reply }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
             Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
@@ -391,6 +564,7 @@ impl MainThread {
         let state = MainState {
             engine: Engine::new(),
             timers,
+            foreground: ForegroundCache::new(),
         };
         let installed = MAIN.with(|main| match main.try_borrow_mut() {
             Ok(mut slot) if slot.is_none() => {
@@ -405,6 +579,9 @@ impl MainThread {
                 "this thread is the daemon's main thread already",
             ));
         }
+        // A signal noted on this thread before it was a main thread is no
+        // signal for this loop.
+        let _ = take_pending_signals();
         let mut msg = MSG::default();
         // SAFETY: `msg` is a local that outlives the call, which only writes
         // it; the call creates this thread's message queue, as
@@ -430,6 +607,14 @@ impl MainThread {
         self.handle.clone()
     }
 
+    /// Reads the foreground window into the cache (roadmap item 2.3).
+    /// `App::run` calls it right after the hooks are installed: a window
+    /// change from then on is a foreground event, so no change falls
+    /// between this read and the hook.
+    pub(crate) fn refresh_foreground(&self) {
+        let _ = with_main(|main| main.foreground.resync());
+    }
+
     /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
     /// out every decision on `hook`. An error if the wait fails; the caller
     /// then removes the hooks.
@@ -446,7 +631,7 @@ impl MainThread {
             match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
                 Some(Wake::Due) => continue,
                 Some(Wake::Failed { error, dropped }) => log::error!(
-                    "could not set the gesture timer ({error}); {dropped} pending gestures dropped"
+                    "could not set the gesture timer ({error}); {dropped} pending Holds dropped"
                 ),
                 Some(Wake::Wait) | None => {}
             }
@@ -479,13 +664,18 @@ impl MainThread {
         }
     }
 
-    /// Step 1 of the loop: serves the requests and carries out the due
-    /// timers until a whole pass finds neither.
+    /// Step 1 of the loop: serves the requests, answers the noted input
+    /// signals and carries out the due timers until a whole pass finds none
+    /// of them.
     fn drain(&self, hook: &KeyboardHook) {
         loop {
             let mut busy = false;
             while let Ok(request) = self.requests.try_recv() {
                 serve(hook, request);
+                busy = true;
+            }
+            if let Some(signals) = take_pending_signals() {
+                answer_input_signals(hook, signals);
                 busy = true;
             }
             while let Some(decision) = with_main(take_due_timer).flatten() {
@@ -508,6 +698,39 @@ impl Drop for MainThread {
                 slot.take();
             }
         });
+        let _ = take_pending_signals();
+    }
+}
+
+/// Step 1 of the loop, for the input signals noted since the last drain
+/// (roadmap item 2.3, ruling R2). While remapping is off they are dropped:
+/// the reset of `swch on` reads the keys and the foreground anyway.
+/// Otherwise each is logged once, in [`InputSignal::ALL`] order; a signal
+/// that keyboard input left this desktop resets the transient state once,
+/// however many such signals there are; a signal that input came back
+/// reads the foreground window again and resets nothing, however late it
+/// comes. The logging and the reset run outside the main state's borrow
+/// and outside every callback, between two events.
+fn answer_input_signals(hook: &KeyboardHook, signals: PendingSignals) {
+    if !hook.is_enabled() {
+        return;
+    }
+    for signal in signals.signals() {
+        log::info!("{signal}");
+    }
+    if let Some(error) = signals.unknown() {
+        log::warn!(
+            "keyboard input switched desktops, but the daemon could not tell where it went ({}); nothing was reset",
+            Error::from(error)
+        );
+    }
+    if let Some(reason) = signals.signals().find_map(InputSignal::reset)
+        && with_main(|main| main.reset_transient_state(hook, reason)).is_some()
+    {
+        log::info!("state reset: {reason}");
+    }
+    if signals.signals().any(InputSignal::input_returned) {
+        let _ = with_main(MainState::input_returned);
     }
 }
 
@@ -528,11 +751,20 @@ fn take_due_timer(main: &mut MainState) -> Option<Decision> {
 fn serve(hook: &KeyboardHook, request: Request) {
     match request {
         Request::SetEnabled { enabled, reply } => {
-            let env = HookEnv::new();
             // `None` only if the loop itself ran inside `with_main`, which it
             // never does; the requester then hears that the daemon stops.
-            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled, &env)) {
+            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled)) {
                 let _ = reply.try_send(changed);
+            }
+        }
+        Request::Reload { bindings, reply } => {
+            let count = bindings.len();
+            if with_main(|main| main.reload(hook, bindings)).is_some()
+                && reply.try_send(()).is_err()
+            {
+                // The watcher stopped waiting after 2 s and logged that the
+                // bindings go live later; this is when (critic OQ4).
+                log::info!("config reload carried out late: {count} bindings live");
             }
         }
     }
@@ -573,14 +805,16 @@ mod tests {
     use windows::core::w;
 
     use super::*;
-    use crate::core::executor::testing::{FakeRunner, Record, leaked_counters};
-    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
+    use crate::core::executor::testing::{
+        FakeRunner, Record, leaked_counters, next_record, wait_until,
+    };
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Submitted, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
-    use crate::engine::{Engine, Env, KeyEvent, sort_by_specificity};
+    use crate::engine::{Engine, Env, InputSignal, KeyEvent, sort_by_specificity};
     use crate::hook::keyboard_hook::KeyboardHook;
     use crate::hook::keyboard_hook_callback::decide_event;
 
@@ -767,6 +1001,110 @@ mod tests {
         press(VK_F15, &mut timers);
         assert_eq!(timers.armed, Some(earlier), "a later one leaves it");
         assert_eq!(timers.queue.len(), 3);
+    }
+
+    #[test]
+    fn a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop() {
+        // Review OQ3 of roadmap item 2.2: after a failed set the waitable
+        // timer is set for no deadline the loop can name. If `armed` still
+        // named the old one, the plan would keep it, and the loop could wait
+        // for a wake that never comes.
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing, trigger: Hold(10000)),
+                (keys: "F14", action: DoNothing, trigger: Hold(5000)),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut timers = GestureTimers::new().expect("the gesture timer is made");
+        let env = QuietEnv(Instant::now());
+
+        let mut f13 = engine.on_key(KeyEvent::down(VK_F13), &bindings, &env);
+        let f13_due = f13.timers[0].due;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut f13.timers), &mut timers),
+            0
+        );
+        assert_eq!(timers.armed, Some(f13_due));
+
+        timers.wake = WaitableTimer::not_a_timer();
+        assert!(
+            WaitableTimer::not_a_timer().set(ms(10)).is_err(),
+            "precondition: Windows refuses to set an event as a timer"
+        );
+        let mut f14 = engine.on_key(KeyEvent::down(VK_F14), &bindings, &env);
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut f14.timers), &mut timers),
+            1,
+            "the earlier deadline could not be set"
+        );
+        assert_eq!(
+            timers.armed, None,
+            "a failed set leaves the timer set for no deadline the loop knows"
+        );
+
+        timers.wake = WaitableTimer::new().expect("the gesture timer is made");
+        assert!(matches!(
+            timers.plan_wake(&mut engine, Instant::now()),
+            Wake::Wait
+        ));
+        assert_eq!(
+            timers.armed,
+            Some(f13_due),
+            "the loop sets the wake again for the Hold that is left"
+        );
+    }
+
+    #[test]
+    fn a_wake_that_cannot_be_set_counts_only_the_holds_it_drops() {
+        // Review m2 of roadmap item 2.2: a wake that cannot be set forgets
+        // every queued timer, but only a Hold is dropped with it. The Tap
+        // that waits for its DoubleTap window stays and fires at the next
+        // key-down; a chord's expiry drops nothing.
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing, trigger: Hold(10000)),
+                (keys: "F14", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F14", action: ToggleCapsLock, trigger: DoubleTap(6000)),
+                (chord: (keys: ["J", "K"], window_ms: 5000), action: ToggleCapsLock),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut timers = GestureTimers::new().expect("the gesture timer is made");
+        let env = QuietEnv(Instant::now());
+        // J before F14: a first key-down fires a Tap that waits for its
+        // window, so the window must open last.
+        for event in [
+            KeyEvent::down(VK_F13),
+            KeyEvent::down(VK_J),
+            KeyEvent::down(VK_F14),
+            KeyEvent::up(VK_F14),
+        ] {
+            let mut decision = engine.on_key(event, &bindings, &env);
+            assert_eq!(
+                engine.start_timers(std::mem::take(&mut decision.timers), &mut timers),
+                0
+            );
+        }
+        assert_eq!(timers.queue.len(), 3, "a Hold, a window and a chord expiry");
+
+        timers.wake = WaitableTimer::not_a_timer();
+        timers.armed = None;
+        let Wake::Failed { dropped, .. } = timers.plan_wake(&mut engine, Instant::now()) else {
+            panic!("a wake that cannot be set fails");
+        };
+        assert_eq!(dropped, 1, "only the Hold is dropped");
+
+        let decision = engine.on_key(KeyEvent::down(VK_F15), &bindings, &env);
+        assert_eq!(
+            decision.fire,
+            [BindAction::SwitchLanguage],
+            "the waiting Tap fires at the next key-down"
+        );
     }
 
     #[test]
@@ -983,6 +1321,372 @@ mod tests {
             .expect("the loop ends on WM_QUIT without an error");
         hook.attach_executor(None);
         assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing() {
+        // Roadmap item 2.3's acceptance (KS-31): the swap and the reset are
+        // one step on the main thread, between two events, so the key-up
+        // that follows a reload finds no Tap of the old bindings to fire.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::SwitchLanguage)
+                .with_trigger(Trigger::Tap(10_000)),
+        );
+        let (wparam, vk) = f13(WM_KEYDOWN);
+        let down = decide_event(&hook, wparam, vk, 0).expect("the key-down reaches the engine");
+        assert!(down.suppress, "the Tap swallows its key-down");
+
+        with_main(|main| {
+            main.reload(
+                &hook,
+                vec![
+                    Binding::new(KeyCombination::new(VK_F13), BindAction::ToggleCapsLock)
+                        .with_trigger(Trigger::Tap(10_000))
+                        .with_allow_extra_modifiers(true),
+                ],
+            );
+        })
+        .expect("the main state is free");
+        assert_eq!(
+            hook.bindings()[0].action,
+            BindAction::ToggleCapsLock,
+            "the new bindings are live"
+        );
+
+        let (wparam, vk) = f13(WM_KEYUP);
+        let up = decide_event(&hook, wparam, vk, 0).expect("the key-up reaches the engine");
+        assert!(up.fire.is_empty(), "the old Tap fired: {:?}", up.fire);
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
+    }
+
+    #[test]
+    fn a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold() {
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        // Leaked, so that the loop thread and this one share it, as the
+        // daemon's threads share the process-wide hook.
+        let hook: &'static KeyboardHook =
+            Box::leak(Box::new(hook_with(f13_hold(300, key_macro()))));
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            let armed = decide_event(hook, wparam, vk, 0).is_some();
+            let _ = ready_tx.send((main.handle(), armed));
+            main.run(hook)
+        });
+        let (handle, armed) = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert!(armed, "a 300 ms Hold is armed");
+
+        assert_eq!(
+            handle.reload(vec![f13_hold(300, BindAction::DoNothing)]),
+            Ok(())
+        );
+        assert_eq!(
+            hook.bindings()[0].action,
+            BindAction::DoNothing,
+            "the new bindings are live once the main thread answers"
+        );
+        assert!(
+            records.recv_timeout(ms(500)).is_err(),
+            "a Hold armed before the reload never fires"
+        );
+
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands() {
+        // Critic OQ4: a reload that the main thread reaches after the
+        // watcher's 2 s wait still goes live, and says so.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        let (reply, answer) = mpsc::sync_channel(1);
+        drop(answer);
+        let ((), lines) = crate::logging::testing::capture(|| {
+            serve(
+                &hook,
+                Request::Reload {
+                    bindings: vec![f13_hold(300, BindAction::DoNothing)],
+                    reply,
+                },
+            );
+        });
+        assert_eq!(hook.bindings().len(), 1, "the reload went live");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("config reload carried out late: 1 bindings live")),
+            "{lines:?}"
+        );
+    }
+
+    /// `[F15, Delay(10000), F16]`: a macro that runs until it is stopped.
+    fn long_macro() -> BindAction {
+        BindAction::Sequence(Arc::new(vec![
+            SequenceStep::PressKey(VK_F15),
+            SequenceStep::Delay(10_000),
+            SequenceStep::PressKey(VK_F16),
+        ]))
+    }
+
+    /// The bindings of the lock tests: an F13 Hold(300) of `key_macro()`
+    /// and an F14 `SwitchLanguage` that swallows F14 and does not repeat.
+    fn lock_test_hook() -> &'static KeyboardHook {
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![
+            f13_hold(300, key_macro()).with_allow_extra_modifiers(true),
+            Binding::new(KeyCombination::new(VK_F14), BindAction::SwitchLanguage)
+                .with_allow_extra_modifiers(true),
+        ]);
+        Box::leak(Box::new(hook))
+    }
+
+    #[test]
+    fn a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key() {
+        // Roadmap item 2.3's acceptance "nothing is stuck after Win+L",
+        // through the request path and without a session change: the lock
+        // signal, as the control window notes it, is drained by the loop,
+        // which drops the armed Hold, stops the running macro and releases
+        // F14, swallowed and held when the session locked.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let runs = executor.handle();
+        let hook = lock_test_hook();
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let pressed = [
+                f13(WM_KEYDOWN),
+                (WPARAM(WM_KEYDOWN as usize), u32::from(VK_F14.0)),
+            ]
+            .map(|(wparam, vk)| decide_event(hook, wparam, vk, 0));
+            assert!(
+                pressed.iter().all(Option::is_some),
+                "both key-downs reach the engine"
+            );
+            assert_eq!(
+                hook.submit(long_macro(), TargetWindow::NONE),
+                Submitted::Queued
+            );
+            let _ = ready_tx.send(main.handle());
+            wait_until("the macro waits in its Delay", || runs.active_runs() == 1);
+            note_input_signal(InputSignal::SessionLocked);
+            main.run(hook).expect("the loop ends on WM_QUIT");
+            let down = decide_event(hook, WPARAM(WM_KEYDOWN as usize), u32::from(VK_F14.0), 0)
+                .expect("the key-down reaches the engine");
+            let up = decide_event(hook, WPARAM(WM_KEYUP as usize), u32::from(VK_F14.0), 0)
+                .expect("the key-up reaches the engine");
+            (down, up)
+        });
+        let handle = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert_eq!(next_record(&records).text(), "key F15", "the macro runs");
+
+        let begun = Instant::now();
+        wait_until("the macro is gone", || executor.handle().active_runs() == 0);
+        let stopped = begun.elapsed();
+        assert!(
+            records.recv_timeout(ms(500)).is_err(),
+            "neither the Hold armed before the lock nor the macro's F16 runs"
+        );
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        let (down, up) = looper.join().expect("the loop thread does not panic");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert!(
+            stopped < ms(100),
+            "the macro stopped {stopped:?} after the lock"
+        );
+        assert_eq!(
+            down.fire,
+            [BindAction::SwitchLanguage],
+            "the first F14 after the lock is a press, not a repeat (owner decision, open question 9)"
+        );
+        assert!(down.suppress);
+        assert!(up.suppress, "its key-up follows its swallowed key-down");
+    }
+
+    #[test]
+    fn a_late_return_signal_keeps_a_running_macro_and_an_armed_hold() {
+        // Ruling R2 at the adapter: signals that input came back reset
+        // nothing, so a Hold armed and a macro started after the return
+        // survive them.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let runs = executor.handle();
+        let hook = lock_test_hook();
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            note_input_signal(InputSignal::SessionLocked);
+            main.drain(hook);
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            assert!(decide_event(hook, wparam, vk, 0).is_some(), "the Hold arms");
+            assert_eq!(
+                hook.submit(long_macro(), TargetWindow::NONE),
+                Submitted::Queued
+            );
+            wait_until("the macro waits in its Delay", || runs.active_runs() == 1);
+            note_input_signal(InputSignal::SessionUnlocked);
+            note_input_signal(InputSignal::DesktopSwitchedBack);
+            let _ = ready_tx.send(main.handle());
+            main.run(hook)
+        });
+        let handle = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert_eq!(next_record(&records).text(), "key F15", "the macro runs");
+        thread::sleep(ms(100));
+        let running = executor.handle().active_runs();
+        let held = records.recv_timeout(ms(500));
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert_eq!(running, 1, "the macro started after the return still runs");
+        assert_eq!(
+            held.expect("the Hold armed after the return fires").text(),
+            "key F13"
+        );
+    }
+
+    #[test]
+    fn the_drain_logs_one_line_per_input_signal() {
+        // Critique M1 and ruling R2: one timestamped line per signal, in
+        // `InputSignal::ALL` order within one drain, and one reset however
+        // many departure signals the drain finds.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        let ((), lines) = crate::logging::testing::capture(|| {
+            for signal in InputSignal::ALL {
+                note_input_signal(signal);
+            }
+            note_unknown_desktop_switch(E_ACCESSDENIED);
+            main.drain(&hook);
+        });
+        let expected = [
+            "[INFO] session locked",
+            "[INFO] session unlocked",
+            "[INFO] keyboard input switched to another desktop",
+            "[INFO] keyboard input switched back to this desktop",
+            "[WARN] keyboard input switched desktops, but the daemon could not tell where it went",
+            "[INFO] state reset: keyboard input left this desktop",
+        ];
+        for text in expected {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(text)).count(),
+                1,
+                "{text:?} once in {lines:?}"
+            );
+        }
+        assert_eq!(take_pending_signals(), None, "the drain took them");
+    }
+
+    #[test]
+    fn a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain() {
+        // Ruling R2 and the drain's own gate: signals still pending when
+        // `swch off` lands are dropped, not logged and not answered, since
+        // the reset of `swch on` reads the keys again anyway.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        note_input_signal(InputSignal::SessionLocked);
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, false)),
+            Some(true),
+            "remapping goes off"
+        );
+        let ((), lines) = crate::logging::testing::capture(|| main.drain(&hook));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("session locked") && !line.contains("state reset")),
+            "a drain with remapping off logs and resets nothing: {lines:?}"
+        );
+        assert_eq!(take_pending_signals(), None, "the drain still took them");
+    }
+
+    /// A [`WindowQuery`](crate::platform::foreground::WindowQuery) whose
+    /// foreground window the test moves; window `n` belongs to process `n`
+    /// and process `n` runs `p<n>.exe`.
+    struct MovingQuery(std::rc::Rc<Cell<usize>>);
+
+    impl crate::platform::foreground::WindowQuery for MovingQuery {
+        fn foreground(&self) -> HWND {
+            HWND(self.0.get() as *mut std::ffi::c_void)
+        }
+        fn owner(&self, window: HWND) -> u32 {
+            window.0 as usize as u32
+        }
+        fn image_name(&self, pid: u32) -> Option<String> {
+            Some(format!("p{pid}.exe"))
+        }
+        fn title(&self, _window: HWND) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_return_signal_reads_the_foreground_window_again() {
+        // Roadmap 2.3, ruling M3: the foreground hook reports nothing while
+        // input is on another desktop, so the drain of a return signal
+        // reads the window that has the foreground now.
+        for signal in [
+            InputSignal::SessionUnlocked,
+            InputSignal::DesktopSwitchedBack,
+        ] {
+            let main = MainThread::new().expect("the main thread is set up");
+            let hook = KeyboardHook::new();
+            let window = std::rc::Rc::new(Cell::new(0x1000));
+            with_main(|state| {
+                state.foreground =
+                    ForegroundCache::with_query(Box::new(MovingQuery(window.clone())));
+                state.foreground_changed(HWND(0x1000 as *mut std::ffi::c_void));
+            })
+            .expect("the main state is free");
+            window.set(0x2000);
+            assert_eq!(
+                with_main(|state| state.foreground.app().map(str::to_owned)),
+                Some(Some("p4096.exe".to_owned())),
+                "the cache still names the window of before the {signal}"
+            );
+
+            note_input_signal(signal);
+            main.drain(&hook);
+
+            assert_eq!(
+                with_main(|state| state.foreground.app().map(str::to_owned)),
+                Some(Some("p8192.exe".to_owned())),
+                "the drain of {signal} reads the foreground window again"
+            );
+        }
     }
 
     #[test]

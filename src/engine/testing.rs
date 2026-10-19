@@ -31,19 +31,23 @@
 //! transcript of the scenario, and with the context set by
 //! [`Scenario::with_context`], such as the seed of a generated script.
 //!
-//! Four checks can also run on every later step:
+//! Five checks can also run on every later step:
 //! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
 //! press are suppressed or passed like its key-down),
 //! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
-//! while the script has it up), [`Scenario::check_repeats_fire_only`] (an
-//! auto-repeat fires only actions from a given list) and
-//! [`Scenario::check_mask_rule`] (a key event asks for the menu mask exactly
-//! when it is suppressed while Windows has Alt or Win down). A timer never
-//! asks for the mask: [`Scenario::advance_ms`] asserts it.
+//! while the script has it up), [`Scenario::check_no_lone_key_up`] (no
+//! key-up passes while the modelled OS has its key up),
+//! [`Scenario::check_repeats_fire_only`] (an auto-repeat fires only actions
+//! from a given list) and [`Scenario::check_mask_rule`] (a key event asks
+//! for the menu mask exactly when it is suppressed while Windows has Alt or
+//! Win down). A timer never asks for the mask: [`Scenario::advance_ms`]
+//! asserts it.
 //!
-//! [`Scenario::reload`] models a hot reload: the bindings are replaced, and
-//! the engine keeps its state, pending gestures and held keys included, as
-//! `KeyboardHook::update_bindings` leaves it.
+//! [`Scenario::reload`] models a hot reload as the daemon's main thread
+//! carries it out, in one step between two events (roadmap item 2.3): the
+//! bindings are replaced and the engine is reset with
+//! [`ResetReason::Reloaded`], which drops every pending gesture, chord and
+//! sequence and keeps the held keys and their records.
 //!
 //! [`Scenario::remapping_off`] and [`Scenario::remapping_on`] model `swch
 //! off` and `swch on`: each resets the engine and drops the timers the
@@ -51,6 +55,15 @@
 //! off every key event passes without reaching the engine, so the modelled
 //! OS sees it, and a foreground change is a script error, because the
 //! adapter does not report one then.
+//!
+//! [`Scenario::session_locked`], [`Scenario::session_unlocked`],
+//! [`Scenario::desktop_switched_away`] and
+//! [`Scenario::desktop_switched_back`] model the input signals the daemon's
+//! main thread notes (roadmap item 2.3), through [`InputSignal::reset`] as
+//! the daemon's drain does: a lock or a switch to another desktop resets
+//! the engine with [`ResetReason::InputLeft`], and the two signals that
+//! input came back reset nothing. Like a foreground change, each is a
+//! script error while remapping is off.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -59,7 +72,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::{
-    Decision, Engine, Env, KeyDirection, KeyEvent, Scheduler, TimerQueue, sort_by_specificity,
+    Decision, Engine, Env, InputSignal, KeyDirection, KeyEvent, ResetReason, Scheduler, TimerQueue,
+    sort_by_specificity,
 };
 use crate::config::{from_ron_str, from_ron_str_with_hotkeys};
 use crate::core::windows_actions::BindAction;
@@ -168,6 +182,8 @@ pub(crate) struct Scenario {
     repeat_fire_allowed: Option<Vec<BindAction>>,
     /// Whether [`check_mask_rule`](Self::check_mask_rule) is on.
     check_mask: bool,
+    /// Whether [`check_no_lone_key_up`](Self::check_no_lone_key_up) is on.
+    check_lone: bool,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
 }
@@ -216,6 +232,7 @@ impl Scenario {
             check_stuck: false,
             repeat_fire_allowed: None,
             check_mask: false,
+            check_lone: false,
             enabled: true,
         }
     }
@@ -258,15 +275,30 @@ impl Scenario {
         self
     }
 
+    /// From now on, every key-up that passes while remapping is on must
+    /// find its key down in the modelled OS before the event: no key-up
+    /// reaches Windows without its key-down (the lone key-up of the KS-06
+    /// status, roadmap item 2.3). While remapping is off every event passes
+    /// unread, so a key swallowed before `swch off` and released while off
+    /// is not checked (known issue 59).
+    pub(crate) fn check_no_lone_key_up(mut self) -> Self {
+        self.check_lone = true;
+        self
+    }
+
     /// Replaces the bindings with those of `text`, loaded like
     /// [`from_ron`](Self::from_ron) and sorted, as a hot reload does through
-    /// `KeyboardHook::update_bindings`. The engine is not reset.
+    /// `KeyboardHook::update_bindings`, and resets the engine with
+    /// [`ResetReason::Reloaded`], dropping the timers that made stale, as the
+    /// daemon's main thread does in the same step.
     #[track_caller]
     pub(crate) fn reload(mut self, text: &str) -> Self {
         let mut bindings =
             from_ron_str(text).unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
         sort_by_specificity(&mut bindings);
         self.bindings = bindings;
+        self.engine.reset(&self.env, ResetReason::Reloaded);
+        self.drop_stale_timers();
         let label = format!("reload at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -357,6 +389,57 @@ impl Scenario {
         self
     }
 
+    /// The session was locked (`WTS_SESSION_LOCK`): keyboard input leaves
+    /// this desktop, and the engine is reset as the daemon's main thread
+    /// resets it. The script then releases the keys held there with
+    /// [`up_unseen`](Self::up_unseen).
+    #[track_caller]
+    pub(crate) fn session_locked(self) -> Self {
+        self.input_signal(InputSignal::SessionLocked)
+    }
+
+    /// The session was unlocked (`WTS_SESSION_UNLOCK`): keyboard input is
+    /// back on this desktop.
+    #[track_caller]
+    pub(crate) fn session_unlocked(self) -> Self {
+        self.input_signal(InputSignal::SessionUnlocked)
+    }
+
+    /// Keyboard input switched to another desktop
+    /// (`EVENT_SYSTEM_DESKTOPSWITCH` while another desktop has input: the
+    /// Ctrl+Alt+Del screen, a UAC prompt on the secure desktop).
+    #[track_caller]
+    pub(crate) fn desktop_switched_away(self) -> Self {
+        self.input_signal(InputSignal::DesktopSwitchedAway)
+    }
+
+    /// Keyboard input switched back to this desktop.
+    #[track_caller]
+    pub(crate) fn desktop_switched_back(self) -> Self {
+        self.input_signal(InputSignal::DesktopSwitchedBack)
+    }
+
+    /// One input signal, which resets the engine as the main thread's
+    /// drain does: [`InputSignal::reset`] decides. Like a foreground change,
+    /// a script error while remapping is off: the daemon drops the signals
+    /// then.
+    #[track_caller]
+    fn input_signal(mut self, signal: InputSignal) -> Self {
+        if !self.enabled {
+            self.fail(&format!(
+                "{signal} at {}: the daemon acts on none while remapping is off",
+                self.clock()
+            ));
+        }
+        if let Some(reason) = signal.reset() {
+            self.engine.reset(&self.env, reason);
+            self.drop_stale_timers();
+        }
+        let label = format!("{signal} at {}", self.clock());
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
     /// Turns remapping off, as `swch off` does: the engine is reset, and
     /// until [`remapping_on`](Self::remapping_on) every key event passes
     /// without reaching it. The symmetry check forgets every press: a key
@@ -370,7 +453,7 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.reset(&self.env);
+        self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = false;
         self.press_suppressed = [None; 256];
@@ -391,7 +474,7 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.reset(&self.env);
+        self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = true;
         let label = format!("remapping on at {}", self.clock());
@@ -537,6 +620,7 @@ impl Scenario {
         let suppressed = decision.suppress;
         let masked = decision.mask;
         let down = direction == KeyDirection::Down;
+        let lone = self.check_lone && self.enabled && !down && !suppressed && !self.env.os_down(vk);
         // The OS only learns about events the hook passes on.
         if !suppressed {
             self.env.os_down[vk.0 as usize] = down;
@@ -546,6 +630,10 @@ impl Scenario {
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
         self.push_step(label, Some(suppressed), Some(masked), fire);
+        if lone {
+            let label = &self.last_step().label;
+            self.fail(&format!("{label}: Windows got a lone key-up of {key}"));
+        }
         if self.check_symmetry {
             self.check_press(vk, key, what, suppressed);
         }

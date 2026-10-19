@@ -31,6 +31,10 @@ pub struct KeyboardHook {
     bindings: ArcSwap<Vec<Binding>>,
     hook_handle: AtomicPtr<std::ffi::c_void>,
     foreground_hook: AtomicPtr<std::ffi::c_void>,
+    /// The `EVENT_SYSTEM_DESKTOPSWITCH` hook (roadmap item 2.3). Stored with
+    /// `Release` in `install` and taken with `swap(AcqRel)` in `uninstall`,
+    /// both on the main thread, like the other two handles.
+    desktop_hook: AtomicPtr<std::ffi::c_void>,
     /// Whether remapping is on (`swch on`, `swch off`). While it is off the
     /// hooks stay installed and their callbacks pass every event untouched.
     ///
@@ -55,6 +59,7 @@ impl KeyboardHook {
             bindings: ArcSwap::from_pointee(Vec::new()),
             hook_handle: AtomicPtr::new(std::ptr::null_mut()),
             foreground_hook: AtomicPtr::new(std::ptr::null_mut()),
+            desktop_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
             executor: ArcSwapOption::empty(),
         }
@@ -66,7 +71,10 @@ impl KeyboardHook {
     /// between two `keys` bindings of equal precedence (roadmap item 1.6).
     ///
     /// A reload also stops every macro running and every slow action still
-    /// queued (roadmap item 2.1): they belong to the old list.
+    /// queued (roadmap item 2.1): they belong to the old list. The daemon
+    /// reloads on its main thread, in `MainState::reload`, which resets the
+    /// engine in the same step (roadmap item 2.3); at startup it stores the
+    /// first list before the hooks are installed.
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
         // A stable sort, so bindings with the same key count keep their
         // config order.
@@ -124,10 +132,11 @@ impl KeyboardHook {
         self.enabled.swap(enabled, Ordering::AcqRel) != enabled
     }
 
-    /// Installs the keyboard hook and the foreground hook.
+    /// Installs the keyboard hook, the foreground hook and the
+    /// desktop-switch hook.
     ///
     /// Main thread only: the thread that runs the main loop
-    /// (`hook::main_thread`), because both hooks belong to the thread that
+    /// (`hook::main_thread`), because the hooks belong to the thread that
     /// installs them and are called through its message loop (KS-01).
     pub(crate) fn install(&self) -> Result<()> {
         if !self.hook_handle.load(Ordering::Acquire).is_null() {
@@ -180,6 +189,34 @@ impl KeyboardHook {
         }
         self.foreground_hook.store(we_hook.0, Ordering::Release);
 
+        // A switch of the input desktop (a lock, Ctrl+Alt+Del, a UAC prompt
+        // on the secure desktop, and back) is noted for the main loop, which
+        // resets when keyboard input left this desktop (roadmap item 2.3).
+        //
+        // SAFETY: as for the foreground hook: WINEVENT_OUTOFCONTEXT delivers
+        // the events to this thread's message queue, which the main loop
+        // pumps, and the callback is a 'static extern "system" fn with no
+        // captured state.
+        let desktop_hook = unsafe {
+            SetWinEventHook(
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                None,
+                Some(keyboard_hook_callback::desktop_switched),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+        };
+        if desktop_hook.is_invalid() {
+            let _ = self.uninstall();
+            return Err(Error::new(
+                windows::Win32::Foundation::E_FAIL,
+                "SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH",
+            ));
+        }
+        self.desktop_hook.store(desktop_hook.0, Ordering::Release);
+
         Ok(())
     }
 
@@ -188,12 +225,25 @@ impl KeyboardHook {
         !self.hook_handle.load(Ordering::Acquire).is_null()
     }
 
-    /// Removes both hooks. A foreground hook that cannot be removed is
+    /// Removes the three hooks. A WinEvent hook that cannot be removed is
     /// logged; the keyboard hook's failure is returned.
     ///
     /// Main thread only, like [`install`](Self::install):
     /// `UnhookWinEvent` fails on any other thread.
     pub(crate) fn uninstall(&self) -> Result<()> {
+        let desktop_handle = self
+            .desktop_hook
+            .swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !desktop_handle.is_null() {
+            // SAFETY: the handle came from SetWinEventHook in `install`, and
+            // the swap above took it out of the field, so it is unhooked at
+            // most once.
+            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(desktop_handle)) };
+            if let Err(error) = removed.ok() {
+                log::warn!("could not remove the desktop-switch hook: {error}");
+            }
+        }
+
         let we_handle = self
             .foreground_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
@@ -249,7 +299,6 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
-    use crate::hook::keyboard_hook_callback::HookEnv;
     use crate::hook::main_thread::{MainThread, with_main};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -257,7 +306,7 @@ mod tests {
     /// state, as the main thread serves `swch on` and `off`, and returns
     /// whether the switch changed.
     fn set_enabled(hook: &KeyboardHook, enabled: bool) -> bool {
-        with_main(|main| main.set_enabled(hook, enabled, &HookEnv::new()))
+        with_main(|main| main.set_enabled(hook, enabled))
             .expect("this thread has a free main state")
     }
 
@@ -545,8 +594,7 @@ mod tests {
         std::thread::spawn(move || {
             let _main = MainThread::new().expect("the main thread is set up");
             let hook = KeyboardHook::new();
-            let env = HookEnv::new();
-            let nested = with_main(|_| with_main(|main| main.set_enabled(&hook, false, &env)));
+            let nested = with_main(|_| with_main(|main| main.set_enabled(&hook, false)));
             let _ = tx.send((nested, hook.is_enabled()));
         });
         let (nested, enabled) = rx

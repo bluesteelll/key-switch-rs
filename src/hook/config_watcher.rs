@@ -13,8 +13,11 @@
 //!      compared, so its letter case or a relative form cannot hide a save
 //!      (KS-21).
 //!   3. A worker thread debounces those events (editors fire several per
-//!      save) and reloads the config, atomically swapping the binding list
-//!      via `KeyboardHook::update_bindings`.
+//!      save), parses the config and hands the list to an `ApplyReload`
+//!      sink: the daemon's main thread (`MainThreadHandle`), which swaps
+//!      the list with `KeyboardHook::update_bindings` and resets the engine
+//!      in one step, between two key events (roadmap item 2.3, KS-31). The
+//!      worker waits at most 2 s for the answer.
 //!   4. Errors during reload are logged and the previously-running
 //!      binding list stays live, so a broken save never bricks the daemon.
 //!      That includes a deleted or renamed file: a reload never writes the
@@ -30,7 +33,33 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 
 use crate::config;
+use crate::data::binding::Binding;
+#[cfg(test)]
 use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::main_thread::MainThreadError;
+
+/// Where a reload goes: the daemon's main thread, which swaps the list and
+/// resets the engine between two key events (roadmap item 2.3).
+pub(crate) trait ApplyReload: Send + Sync + 'static {
+    /// Makes `bindings` the live list, or says why it could not.
+    fn apply(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError>;
+}
+
+impl<T: ApplyReload + ?Sized> ApplyReload for &'static T {
+    fn apply(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        (**self).apply(bindings)
+    }
+}
+
+/// The watcher tests swap the list on a hook of their own. The daemon has
+/// no reload without the engine reset, so this exists only under test.
+#[cfg(test)]
+impl ApplyReload for KeyboardHook {
+    fn apply(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        self.update_bindings(bindings);
+        Ok(())
+    }
+}
 
 /// Coalescing window: any save burst that completes within this many ms is
 /// reduced to a single reload. 250 ms covers VS Code / Notepad++ / vim save
@@ -92,10 +121,11 @@ fn same_file_name(a: &[u16], b: &[u16]) -> bool {
 
 /// Install a watcher on the parent directory of `config_path` and spawn the
 /// debounce + reload worker. Returns the watcher handle — caller MUST keep it
-/// alive (drop = stop watching, debounce thread exits cleanly).
-pub fn spawn_watcher(
+/// alive (drop = stop watching, debounce thread exits cleanly). An error if
+/// the folder cannot be watched or the worker thread cannot be started.
+pub(crate) fn spawn_watcher(
     config_path: PathBuf,
-    hook: &'static KeyboardHook,
+    sink: impl ApplyReload,
 ) -> notify::Result<RecommendedWatcher> {
     let target = WatchTarget::new(&config_path).ok_or_else(|| {
         notify::Error::generic("the config path has no parent folder or file name")
@@ -120,15 +150,17 @@ pub fn spawn_watcher(
     // events. A non-recursive directory watch is robust to that.
     watcher.watch(&dir, RecursiveMode::NonRecursive)?;
 
+    // A thread that cannot be started is the caller's error to log: the
+    // daemon goes on without hot reload. The watcher is dropped with it.
     thread::Builder::new()
         .name("config-watcher".into())
-        .spawn(move || debounce_loop(rx, config_path, hook))
-        .expect("spawn config-watcher thread");
+        .spawn(move || debounce_loop(rx, config_path, &sink))
+        .map_err(notify::Error::io)?;
 
     Ok(watcher)
 }
 
-fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, hook: &'static KeyboardHook) {
+fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, sink: &dyn ApplyReload) {
     let debounce = Duration::from_millis(DEBOUNCE_MS);
 
     loop {
@@ -149,21 +181,32 @@ fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, hook: &'static Keyboard
             }
         }
 
-        reload_into(&config_path, hook);
+        reload_into(&config_path, sink);
     }
 }
 
-/// Loads the config at `config_path` into `hook`. On an error the bindings
-/// already live stay live.
-fn reload_into(config_path: &Path, hook: &KeyboardHook) {
-    match config::reload(config_path) {
-        Ok(new_bindings) => {
-            let count = new_bindings.len();
-            hook.update_bindings(new_bindings);
-            log::info!("config reloaded ({count} bindings live)");
-        }
+/// Loads the config at `config_path` and hands it to `sink`, then logs one
+/// outcome. On an error the bindings already live stay live.
+fn reload_into(config_path: &Path, sink: &dyn ApplyReload) {
+    let new_bindings = match config::reload(config_path) {
+        Ok(new_bindings) => new_bindings,
         Err(e) => {
             log::error!("config reload failed:\n{e}");
+            log::info!("keeping previous bindings live");
+            return;
+        }
+    };
+    let count = new_bindings.len();
+    match sink.apply(new_bindings) {
+        Ok(()) => log::info!("config reloaded ({count} bindings live)"),
+        Err(MainThreadError::NoAnswer) => log::warn!(
+            "config reload: the daemon's main thread did not answer within 2 s; the new bindings go live when it does"
+        ),
+        Err(MainThreadError::ShuttingDown) => {
+            log::info!("config reload skipped: the daemon is shutting down");
+        }
+        Err(MainThreadError::Busy) => {
+            log::error!("config reload failed: the daemon is busy; try again");
             log::info!("keeping previous bindings live");
         }
     }
@@ -395,6 +438,43 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(hook.bindings().len(), 1, "the live bindings stay");
+    }
+
+    /// Roadmap item 2.3 (a leftover of item 2.2, like KS-33): a watcher
+    /// thread that cannot be started is an error the daemon logs, not a
+    /// panic. The non-test lines of this file, those before its
+    /// `#[cfg(test)]` and `mod tests {` pair, name no panicking unwrap. A
+    /// lone `#[cfg(test)]` above the tests module (a test-only import or
+    /// impl) does not end them, and they must hold `spawn_watcher`, so a
+    /// scan that stops early fails instead of passing. The tokens are
+    /// assembled, so the test does not match itself.
+    #[test]
+    fn the_watcher_thread_has_no_panic_path() {
+        let tokens = [concat!(".exp", "ect("), concat!(".unw", "rap()")];
+        let text = include_str!("config_watcher.rs");
+        let lines: Vec<&str> = text.lines().collect();
+        let tests_at = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .expect("src/hook/config_watcher.rs has a tests module");
+        let region = &lines[..tests_at];
+        let spawner = concat!("fn spawn", "_watcher(");
+        assert!(
+            region.iter().any(|line| line.contains(spawner)),
+            "the scan of src/hook/config_watcher.rs ends after line {} and misses `{spawner}`",
+            region.len()
+        );
+        let sites: Vec<String> = region
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| tokens.iter().any(|token| line.contains(token)))
+            .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+            .collect();
+        assert!(
+            sites.is_empty(),
+            "panic paths in src/hook/config_watcher.rs:\n{}",
+            sites.join("\n")
+        );
     }
 
     #[test]

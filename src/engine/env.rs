@@ -16,9 +16,11 @@ use crate::data::condition::ForegroundInfo;
 /// key state and a configurable foreground app and title. The engine never
 /// reads time or OS state any other way, so a scenario is deterministic.
 ///
-/// Implementations may cache per event: the adapter creates a fresh `Env`
-/// for every hook invocation and captures the foreground window at most
-/// once, on the first `foreground_*` call.
+/// Implementations may cache: the adapter creates a fresh `Env` for every
+/// hook invocation, answers `foreground_app` from the main thread's
+/// per-window cache, which the foreground event fills (roadmap item 2.3),
+/// and reads the title at most once per event, on the first
+/// `foreground_title` call.
 pub trait Env {
     /// Monotonic time of the event being decided. The engine calls it once
     /// per event; every deadline it stores is derived from it.
@@ -35,13 +37,18 @@ pub trait Env {
     ///
     /// The OS state only changes for events the hook lets through, and the
     /// state of the key being delivered lags until the hook returns. The
-    /// engine therefore never asks about the key of the current event. Its
-    /// resync asks about modifiers, leaving out every modifier whose
-    /// key-down it swallowed. An auto-blocker asks, without overwriting
-    /// anything, about the held keys outside its hotkey, to learn whether
-    /// Windows would see more than the hotkey. A reset (`swch off`, `swch
-    /// on`), which has no event, asks about every keyboard code to learn
-    /// which keys Windows has down.
+    /// engine therefore never asks about the key of the current event,
+    /// except at a key-up it would swallow, where the state before the
+    /// event is exactly the question: down means Windows holds a key-down
+    /// of it that the engine did not swallow, so the key-up passes (roadmap
+    /// item 2.3). Its resync asks about modifiers, leaving out every
+    /// modifier whose key-down it swallowed. An auto-blocker asks, without
+    /// overwriting anything, about the held keys outside its hotkey, to
+    /// learn whether Windows would see more than the hotkey. The reset of
+    /// `swch off` and `swch on`, which has no event, asks about every
+    /// keyboard code to learn which keys Windows has down; the reset of
+    /// keyboard input leaving this desktop asks nothing, because the OS
+    /// state is no witness then.
     fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool;
 
     /// Base name of the foreground window's executable (`"code.exe"`), or

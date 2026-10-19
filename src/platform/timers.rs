@@ -58,6 +58,23 @@ impl WaitableTimer {
         }
     }
 
+    /// A value whose handle is an event, not a timer, so that Windows
+    /// refuses to set it: the seam for a gesture timer that cannot be set.
+    #[cfg(test)]
+    pub(crate) fn not_a_timer() -> Self {
+        // SAFETY: no security attributes and a null name, so the call reads
+        // no memory of ours; the handle goes straight into the value that
+        // closes it.
+        let handle = unsafe {
+            windows::Win32::System::Threading::CreateEventW(None, false, false, PCWSTR::null())
+        }
+        .expect("an event is made");
+        Self {
+            handle,
+            high_resolution: false,
+        }
+    }
+
     /// Whether this is a high-resolution timer rather than one on the
     /// system clock tick.
     pub fn is_high_resolution(&self) -> bool {

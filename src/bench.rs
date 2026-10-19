@@ -42,6 +42,20 @@
 //!   at `THREAD_PRIORITY_NORMAL` and then at `THREAD_PRIORITY_HIGHEST`, and
 //!   the round trips of the same sends. It loads every core for a few
 //!   seconds, as a build does, which is why it is opt-in.
+//! - R9: the key-down callback of F13 bound to `DoNothing` with
+//!   `when: AppEquals("no-such.exe")`, which the bench machine's real
+//!   foreground window does not satisfy (read only): the cost of a `when:`
+//!   on the executable name. Each key-up is called, not timed.
+//! - R10: the same with `when: TitleContains("no-such-title")`: the cost
+//!   of a `when:` on the title.
+//! - R11: the key-up callback of a swallowed F13 press bound to
+//!   `DoNothing`; each key-down is called, not timed.
+//! - R12: the key-down and key-up callbacks of the unbound A: an ordinary
+//!   key.
+//! - R13: R7 with the daemon's control window, and so the thread's default
+//!   IME window, created on the loop thread before it runs (roadmap item
+//!   2.3). It may write a session-notification warning to the log, which
+//!   the bench does not show.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -65,11 +79,13 @@ use crate::core::executor::testing::{FakeRunner, leaked_counters};
 use crate::core::executor::{Executor, QUEUE_CAPACITY};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
+use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
 use crate::data::sequence::SequenceStep;
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 use crate::engine::{Engine, Env, KeyDirection, KeyEvent, sort_by_specificity};
+use crate::hook::control_window::{CONTROL_CLASS, ControlWindow};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
 use crate::hook::main_thread::MainThread;
@@ -333,6 +349,58 @@ fn r5_hold_press(count: usize) -> Vec<Duration> {
     samples
 }
 
+/// R9 and R10: the key-down callback of F13 bound to `DoNothing` under
+/// `condition`, which does not hold, so the binding's keys match, its
+/// `when:` is asked and the key passes; each key-up is called, not timed.
+fn r9_conditional_key_down(condition: Condition, count: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_condition(condition)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_F13, WM_KEYUP);
+    }
+    samples
+}
+
+/// R11: the key-up callback of a swallowed F13 press bound to `DoNothing`;
+/// each key-down is called, not timed.
+fn r11_swallowed_key_up(count: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        call_keyboard_callback(VK_F13, WM_KEYDOWN);
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYUP));
+        samples.push(begun.elapsed());
+    }
+    samples
+}
+
+/// R12: every key-down and key-up of the unbound A, with F13 bound to
+/// `DoNothing`, through the extern callback: an ordinary key.
+fn r12_ordinary_key(events: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(events);
+    for msg in [WM_KEYDOWN, WM_KEYUP].iter().cycle().take(events) {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_A, *msg));
+        samples.push(begun.elapsed());
+    }
+    samples
+}
+
 /// R6: how late an F13 Hold(`ms`) fires its macro, `count` times, with
 /// `main` the bench thread's main state, whose loop runs until a helper
 /// ends it at each record.
@@ -448,6 +516,34 @@ fn r7_round_trip(count: usize) -> Vec<Duration> {
     let (hwnd, main) = ready
         .recv_timeout(Duration::from_secs(5))
         .expect("the helper made its window");
+    let samples = round_trips(hwnd, count);
+    main.request_exit().expect("the helper has a message queue");
+    helper.join().expect("the helper does not panic");
+    samples
+}
+
+/// R13: R7 with the daemon's control window, and with it the thread's
+/// default IME window, on the loop thread (roadmap item 2.3). The window's
+/// class exists once per process, so the row takes the class lock.
+fn r13_round_trip_with_the_control_window(count: usize) -> Vec<Duration> {
+    let _class = CONTROL_CLASS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (ready_tx, ready) = mpsc::channel();
+    let helper = thread::spawn(move || {
+        let main = MainThread::new().expect("invariant: the helper's main thread is set up");
+        let control =
+            ControlWindow::create().expect("invariant: the helper's control window is created");
+        let hook = KeyboardHook::new();
+        let hwnd = message_only_window();
+        let _ = ready_tx.send((hwnd, main.handle()));
+        main.run(&hook)
+            .expect("invariant: the main loop ends on WM_QUIT");
+        // SAFETY: `hwnd` is this thread's own window, destroyed once here.
+        let _ = unsafe { DestroyWindow(HWND(hwnd as *mut std::ffi::c_void)) };
+        drop(control);
+    });
+    let (hwnd, main) = ready
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the helper made its windows");
     let samples = round_trips(hwnd, count);
     main.request_exit().expect("the helper has a message queue");
     helper.join().expect("the helper does not panic");
@@ -668,6 +764,39 @@ fn latency_bench() {
     if std::env::var_os("KS_BENCH_LOAD").is_some_and(|load| load == "1") {
         rows.extend(r8_under_load(300));
     }
+    // R9 and R10 read the foreground window from the main thread's cache,
+    // as the daemon does once its hooks are installed; outside the timing.
+    main.refresh_foreground();
+    rows.extend([
+        Row {
+            id: "R9",
+            what: "keyboard_hook_callback, F13 key-down, when: AppEquals (no match)",
+            samples: r9_conditional_key_down(Condition::AppEquals("no-such.exe".to_owned()), 2_000),
+        },
+        Row {
+            id: "R10",
+            what: "keyboard_hook_callback, F13 key-down, when: TitleContains (no match)",
+            samples: r9_conditional_key_down(
+                Condition::TitleContains("no-such-title".to_owned()),
+                2_000,
+            ),
+        },
+        Row {
+            id: "R11",
+            what: "keyboard_hook_callback, key-up of a swallowed F13",
+            samples: r11_swallowed_key_up(2_000),
+        },
+        Row {
+            id: "R12",
+            what: "keyboard_hook_callback, unbound A down and up",
+            samples: r12_ordinary_key(2_000),
+        },
+        Row {
+            id: "R13",
+            what: "SendMessageTimeoutW(WM_NULL) round trip to the loop with the control window",
+            samples: r13_round_trip_with_the_control_window(1_000),
+        },
+    ]);
     get_hook().update_bindings(Vec::new());
 
     let mut table = format!(
