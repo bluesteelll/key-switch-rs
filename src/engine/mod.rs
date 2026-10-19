@@ -752,7 +752,7 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::engine::{Scheduler, TimerQueue};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_F13, VK_F14, VK_LSHIFT, VK_MENU, VK_SHIFT,
+        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_SHIFT,
     };
 
     /// An [`Env`] stopped at one instant with nothing held and no
@@ -1036,6 +1036,99 @@ mod tests {
             engine.on_timer(hold_token).fire,
             [BindAction::SwitchLanguage, BindAction::DoNothing],
             "the Hold's timer at 500 ms fires the waiting Tap first"
+        );
+    }
+
+    fn loaded(ron: &str) -> Vec<Binding> {
+        let mut bindings = crate::config::from_ron_str(ron).expect("config parses");
+        sort_by_specificity(&mut bindings);
+        bindings
+    }
+
+    const JK_CHORD: &str =
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: SwitchLanguage) ] )"#;
+
+    #[test]
+    fn a_chord_start_asks_for_a_timer_at_the_end_of_its_window() {
+        // Roadmap item 2.2 (D8): a pending chord expires on its own timer.
+        let t0 = Instant::now();
+        let bindings = loaded(JK_CHORD);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(KeyEvent::down(VK_J), &bindings, &FixedEnv(t0));
+        let [timer] = decision.timers[..] else {
+            panic!("one expiry timer, got {:?}", decision.timers)
+        };
+        assert_eq!(timer.due, t0 + Duration::from_millis(50));
+        assert!(engine.is_live(timer.token));
+    }
+
+    #[test]
+    fn a_chord_expiry_timer_drops_the_pending_chord() {
+        let t0 = Instant::now();
+        let bindings = loaded(JK_CHORD);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(KeyEvent::down(VK_J), &bindings, &FixedEnv(t0));
+        let [timer] = decision.timers[..] else {
+            panic!("one expiry timer, got {:?}", decision.timers)
+        };
+        assert_eq!(
+            engine.on_timer(timer.token),
+            Decision::default(),
+            "an expiry fires nothing"
+        );
+        assert!(!engine.is_live(timer.token), "the entry is gone");
+
+        let _ = engine.on_key(
+            KeyEvent::up(VK_J),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(55)),
+        );
+        let k = engine.on_key(
+            KeyEvent::down(VK_K),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(60)),
+        );
+        assert!(k.fire.is_empty(), "K after the window starts a new chord");
+        assert_eq!(k.timers.len(), 1, "with a timer of its own");
+    }
+
+    #[test]
+    fn each_sequence_step_asks_for_a_new_expiry_timer_and_the_old_one_goes_stale() {
+        let t0 = Instant::now();
+        let at = |ms: u64| FixedEnv(t0 + Duration::from_millis(ms));
+        let bindings = loaded(
+            r#"( bindings: [ (sequence: (steps: ["F13", "F14", "F15"], max_gap_ms: 500), action: SwitchLanguage) ] )"#,
+        );
+        let mut engine = Engine::new();
+
+        let first = engine.on_key(KeyEvent::down(VK_F13), &bindings, &at(0));
+        let [start] = first.timers[..] else {
+            panic!("one expiry timer, got {:?}", first.timers)
+        };
+        assert_eq!(start.due, t0 + Duration::from_millis(500));
+        let _ = engine.on_key(KeyEvent::up(VK_F13), &bindings, &at(50));
+
+        let second = engine.on_key(KeyEvent::down(VK_F14), &bindings, &at(100));
+        let [advance] = second.timers[..] else {
+            panic!("one expiry timer, got {:?}", second.timers)
+        };
+        assert_eq!(advance.due, t0 + Duration::from_millis(600));
+        assert!(!engine.is_live(start.token), "the step took a new number");
+        assert!(engine.is_live(advance.token));
+        assert_eq!(
+            engine.on_timer(start.token),
+            Decision::default(),
+            "the stale token neither fires nor drops the sequence"
+        );
+        let _ = engine.on_key(KeyEvent::up(VK_F14), &bindings, &at(150));
+
+        let last = engine.on_key(KeyEvent::down(VK_F15), &bindings, &at(200));
+        assert_eq!(last.fire, [BindAction::SwitchLanguage]);
+        assert!(
+            !engine.is_live(advance.token),
+            "a completed sequence is gone"
         );
     }
 
