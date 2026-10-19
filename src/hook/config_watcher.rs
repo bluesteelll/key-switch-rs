@@ -442,16 +442,31 @@ mod tests {
 
     /// Roadmap item 2.3 (a leftover of item 2.2, like KS-33): a watcher
     /// thread that cannot be started is an error the daemon logs, not a
-    /// panic. The non-test lines of this file name no panicking unwrap; the
-    /// tokens are assembled, so the test does not match itself.
+    /// panic. The non-test lines of this file, those before its
+    /// `#[cfg(test)]` and `mod tests {` pair, name no panicking unwrap. A
+    /// lone `#[cfg(test)]` above the tests module (a test-only import or
+    /// impl) does not end them, and they must hold `spawn_watcher`, so a
+    /// scan that stops early fails instead of passing. The tokens are
+    /// assembled, so the test does not match itself.
     #[test]
     fn the_watcher_thread_has_no_panic_path() {
         let tokens = [concat!(".exp", "ect("), concat!(".unw", "rap()")];
         let text = include_str!("config_watcher.rs");
-        let sites: Vec<String> = text
-            .lines()
+        let lines: Vec<&str> = text.lines().collect();
+        let tests_at = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .expect("src/hook/config_watcher.rs has a tests module");
+        let region = &lines[..tests_at];
+        let spawner = concat!("fn spawn", "_watcher(");
+        assert!(
+            region.iter().any(|line| line.contains(spawner)),
+            "the scan of src/hook/config_watcher.rs ends after line {} and misses `{spawner}`",
+            region.len()
+        );
+        let sites: Vec<String> = region
+            .iter()
             .enumerate()
-            .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
             .filter(|(_, line)| tokens.iter().any(|token| line.contains(token)))
             .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
             .collect();
