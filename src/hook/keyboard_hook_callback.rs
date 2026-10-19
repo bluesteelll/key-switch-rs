@@ -385,6 +385,7 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::rc::Rc;
     use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -395,10 +396,12 @@ mod tests {
     use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
+    use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::hook::main_thread::{MainThread, REFUSED, with_main};
+    use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
     // No test installs a hook. Every test that reaches the engine makes its
     // thread a main thread (`MainThread::new`), which owns the engine and
@@ -497,6 +500,139 @@ mod tests {
             .expect("an unbound key-down reaches the engine");
         assert!(!unbound.suppress);
         assert!(unbound.fire.is_empty());
+    }
+
+    /// What a [`CountingQuery`] was asked.
+    #[derive(Default)]
+    struct Asked {
+        image_names: Cell<u32>,
+        titles: Cell<u32>,
+    }
+
+    /// A [`WindowQuery`] for one window, `FAKE_WINDOW`, of process `pid`,
+    /// named `x.exe`, whose title the test sets. No Win32 call sees it.
+    struct CountingQuery {
+        pid: u32,
+        title: Rc<std::cell::RefCell<String>>,
+        asked: Rc<Asked>,
+    }
+
+    const FAKE_WINDOW: usize = 0x4242;
+
+    fn fake_window() -> HWND {
+        HWND(FAKE_WINDOW as *mut std::ffi::c_void)
+    }
+
+    impl WindowQuery for CountingQuery {
+        fn foreground(&self) -> HWND {
+            fake_window()
+        }
+        fn owner(&self, _window: HWND) -> u32 {
+            self.pid
+        }
+        fn image_name(&self, _pid: u32) -> Option<String> {
+            self.asked.image_names.set(self.asked.image_names.get() + 1);
+            Some("x.exe".to_owned())
+        }
+        fn title(&self, _window: HWND) -> Option<String> {
+            self.asked.titles.set(self.asked.titles.get() + 1);
+            Some(self.title.borrow().clone())
+        }
+    }
+
+    /// Makes `FAKE_WINDOW` of process `pid` this thread's foreground, as the
+    /// foreground hook reports it, through a counting query. Returns what
+    /// the query is asked and the title it answers with.
+    fn fake_foreground(pid: u32, title: &str) -> (Rc<Asked>, Rc<std::cell::RefCell<String>>) {
+        let asked = Rc::new(Asked::default());
+        let title = Rc::new(std::cell::RefCell::new(title.to_owned()));
+        let query = CountingQuery {
+            pid,
+            title: Rc::clone(&title),
+            asked: Rc::clone(&asked),
+        };
+        with_main(|main| {
+            main.foreground = ForegroundCache::with_query(Box::new(query));
+            main.foreground_changed(fake_window());
+        })
+        .expect("the main state is free");
+        (asked, title)
+    }
+
+    #[test]
+    fn a_hundred_conditional_presses_in_one_window_query_its_process_once() {
+        // Roadmap item 2.3's latency acceptance: the executable name is
+        // cached per window from the foreground event, so a `when:` on the
+        // hook path never queries the process.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, _) = fake_foreground(4242, "Untitled");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::AppEquals("x.exe".to_owned()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        for _ in 0..100 {
+            let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0)
+                .expect("a key-down reaches the engine");
+            assert_eq!(down.fire, [BindAction::DoNothing], "the when: holds");
+            decide_event(&hook, message(WM_KEYUP), f13, 0).expect("a key-up reaches the engine");
+        }
+        assert_eq!(
+            asked.image_names.get(),
+            1,
+            "one process-name query for a hundred presses in one window"
+        );
+    }
+
+    #[test]
+    fn a_title_condition_reads_the_cached_windows_title_on_each_key_down() {
+        // A title changes inside one window (a browser tab): it is read at
+        // the key-down that evaluates a title condition, once.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, title) = fake_foreground(4242, "GitHub - Mozilla Firefox");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::TitleContains("GitHub".to_owned()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert_eq!(down.fire, [BindAction::DoNothing], "the GitHub tab");
+        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        *title.borrow_mut() = "Inbox - Mozilla Firefox".to_owned();
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert!(down.fire.is_empty(), "another tab of the same window");
+        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+
+        assert_eq!(asked.titles.get(), 2, "one title read per key-down");
+        assert_eq!(asked.image_names.get(), 1);
+    }
+
+    #[test]
+    fn a_window_of_this_process_is_never_asked_for_its_title() {
+        // GetWindowTextW on a window of this process sends it WM_GETTEXT,
+        // which would run this thread's window procedures under the main
+        // state's borrow (module docs, Re-entry).
+        let _main = MainThread::new().expect("the main thread is set up");
+        let (asked, _) = fake_foreground(std::process::id(), "key-switch-rs");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_condition(Condition::TitleContains(String::new()))
+                .with_allow_extra_modifiers(true),
+        );
+        let f13 = u32::from(VK_F13.0);
+
+        let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
+        assert!(
+            down.fire.is_empty(),
+            "a window of this process has no title"
+        );
+        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert_eq!(asked.titles.get(), 0);
+        assert_eq!(asked.image_names.get(), 0);
     }
 
     #[test]
