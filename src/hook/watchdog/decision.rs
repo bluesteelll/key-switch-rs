@@ -466,6 +466,30 @@ mod tests {
     }
 
     #[test]
+    fn failed_reinstalls_are_spaced_out_like_reinstalls() {
+        // A reinstall that Windows refused is an attempt too: asking again
+        // after 1 s each time would be the loop the anti-loop rule forbids.
+        let mut f = Feeder::new();
+        f.run(0, 20_000, |ms, f| {
+            typing(ms, f);
+            if f.last_request().is_some_and(|at| ms == at + 10) {
+                f.answer(ms, ReinstallOutcome::Failed);
+            }
+        });
+        let times = f.request_times();
+        assert_eq!(times.len(), 4, "{times:?}");
+        for (index, gap) in times.windows(2).map(|pair| pair[1] - pair[0]).enumerate() {
+            let window = 1000 * (1 << (index + 1)) as u64;
+            assert!(
+                (window..window + 500).contains(&gap),
+                "gap {index}: {gap} ms, window {window} ms: {times:?}"
+            );
+        }
+        let attempts: Vec<u32> = f.requests.iter().map(|(_, r)| r.attempt).collect();
+        assert_eq!(attempts, [1, 2, 3, 4], "each failed attempt counts");
+    }
+
+    #[test]
     fn the_silence_resets_to_1_s_once_a_callback_is_seen() {
         let mut f = Feeder::new();
         let mut callback_tick = None;
