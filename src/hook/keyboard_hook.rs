@@ -3,17 +3,18 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use arc_swap::{ArcSwap, ArcSwapOption, Guard};
 use windows::{
-    Win32::UI::{
-        Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
-        WindowsAndMessaging::*,
+    Win32::{
+        Foundation::{E_FAIL, E_UNEXPECTED},
+        UI::WindowsAndMessaging::{EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND},
     },
-    core::*,
+    core::{Error, Result},
 };
 
 use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
 use crate::engine;
+use crate::hook::installer::{self, Installer};
 use crate::hook::keyboard_hook_callback;
 use crate::hook::main_thread::MainState;
 
@@ -139,83 +140,54 @@ impl KeyboardHook {
     /// (`hook::main_thread`), because the hooks belong to the thread that
     /// installs them and are called through its message loop (KS-01).
     pub(crate) fn install(&self) -> Result<()> {
+        self.install_with(&installer::SYSTEM)
+    }
+
+    /// [`install`](Self::install) through `installer`: the system's in the
+    /// daemon, a fake in the tests (ruling S1).
+    pub(crate) fn install_with(&self, installer: &impl Installer) -> Result<()> {
         if !self.hook_handle.load(Ordering::Acquire).is_null() {
             return Err(Error::new(
-                windows::Win32::Foundation::E_UNEXPECTED,
+                E_UNEXPECTED,
                 "keyboard hook is already installed",
             ));
         }
 
-        // SAFETY: SetWindowsHookExW is the documented installer for WH_KEYBOARD_LL;
-        // we pass a 'static extern "system" callback and no module handle (NULL is
-        // permitted for low-level hooks per MSDN).
-        let hook = unsafe {
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(keyboard_hook_callback::keyboard_hook_callback),
-                None,
-                0,
-            )?
-        };
-        self.hook_handle.store(hook.0, Ordering::Release);
+        let hook = installer.set_keyboard_hook()?;
+        self.hook_handle.store(hook, Ordering::Release);
 
         // Foreground-change hook re-syncs modifier state after focus returns from
         // a higher-integrity window (Task Manager, UAC, lock screen, etc.) that
         // ate our key-up events, except for modifiers whose key-down the engine
         // swallowed. See keyboard_hook_callback::foreground_changed.
-        //
-        // SAFETY: WINEVENT_OUTOFCONTEXT delivers events to this thread's message
-        // queue, which the App message loop pumps. The callback is a 'static
-        // extern "system" fn with no captured state.
-        let we_hook = unsafe {
-            SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_FOREGROUND,
-                None,
-                Some(keyboard_hook_callback::foreground_changed),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-            )
-        };
-        if we_hook.is_invalid() {
+        let Some(we_hook) = installer.set_win_event_hook(
+            EVENT_SYSTEM_FOREGROUND,
+            Some(keyboard_hook_callback::foreground_changed),
+        ) else {
             // The keyboard hook is already installed; tear it down to keep state
             // consistent with the failure being reported.
-            let _ = self.uninstall();
+            let _ = self.uninstall_with(installer);
             return Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
+                E_FAIL,
                 "SetWinEventHook failed for EVENT_SYSTEM_FOREGROUND",
             ));
-        }
-        self.foreground_hook.store(we_hook.0, Ordering::Release);
+        };
+        self.foreground_hook.store(we_hook, Ordering::Release);
 
         // A switch of the input desktop (a lock, Ctrl+Alt+Del, a UAC prompt
         // on the secure desktop, and back) is noted for the main loop, which
         // resets when keyboard input left this desktop (roadmap item 2.3).
-        //
-        // SAFETY: as for the foreground hook: WINEVENT_OUTOFCONTEXT delivers
-        // the events to this thread's message queue, which the main loop
-        // pumps, and the callback is a 'static extern "system" fn with no
-        // captured state.
-        let desktop_hook = unsafe {
-            SetWinEventHook(
-                EVENT_SYSTEM_DESKTOPSWITCH,
-                EVENT_SYSTEM_DESKTOPSWITCH,
-                None,
-                Some(keyboard_hook_callback::desktop_switched),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-            )
-        };
-        if desktop_hook.is_invalid() {
-            let _ = self.uninstall();
+        let Some(desktop_hook) = installer.set_win_event_hook(
+            EVENT_SYSTEM_DESKTOPSWITCH,
+            Some(keyboard_hook_callback::desktop_switched),
+        ) else {
+            let _ = self.uninstall_with(installer);
             return Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
+                E_FAIL,
                 "SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH",
             ));
-        }
-        self.desktop_hook.store(desktop_hook.0, Ordering::Release);
+        };
+        self.desktop_hook.store(desktop_hook, Ordering::Release);
 
         Ok(())
     }
@@ -231,40 +203,36 @@ impl KeyboardHook {
     /// Main thread only, like [`install`](Self::install):
     /// `UnhookWinEvent` fails on any other thread.
     pub(crate) fn uninstall(&self) -> Result<()> {
+        self.uninstall_with(&installer::SYSTEM)
+    }
+
+    /// [`uninstall`](Self::uninstall) through `installer`. Each handle is
+    /// taken out of its field before it is removed, so it is removed at most
+    /// once, and a hook that is not installed is not asked about.
+    pub(crate) fn uninstall_with(&self, installer: &impl Installer) -> Result<()> {
         let desktop_handle = self
             .desktop_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
-        if !desktop_handle.is_null() {
-            // SAFETY: the handle came from SetWinEventHook in `install`, and
-            // the swap above took it out of the field, so it is unhooked at
-            // most once.
-            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(desktop_handle)) };
-            if let Err(error) = removed.ok() {
-                log::warn!("could not remove the desktop-switch hook: {error}");
-            }
+        if !desktop_handle.is_null()
+            && let Err(error) = installer.unhook_win_event(desktop_handle)
+        {
+            log::warn!("could not remove the desktop-switch hook: {error}");
         }
 
         let we_handle = self
             .foreground_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
-        if !we_handle.is_null() {
-            // SAFETY: the handle came from SetWinEventHook in `install`, and
-            // the swap above took it out of the field, so it is unhooked at
-            // most once.
-            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(we_handle)) };
-            if let Err(error) = removed.ok() {
-                log::warn!("could not remove the foreground hook: {error}");
-            }
+        if !we_handle.is_null()
+            && let Err(error) = installer.unhook_win_event(we_handle)
+        {
+            log::warn!("could not remove the foreground hook: {error}");
         }
 
         let handle = self
             .hook_handle
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !handle.is_null() {
-            // SAFETY: handle was obtained from SetWindowsHookExW above.
-            unsafe {
-                UnhookWindowsHookEx(HHOOK(handle))?;
-            }
+            installer.unhook_keyboard(handle)?;
         }
         Ok(())
     }
