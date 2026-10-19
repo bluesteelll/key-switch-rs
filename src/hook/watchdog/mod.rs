@@ -2111,6 +2111,25 @@ mod tests {
     }
 
     #[test]
+    fn a_batchs_key_codes_do_not_outlive_its_count() {
+        // Ruling L2 (R-m2): no key data is kept longer than the count needs.
+        // The buffer lives as long as the thread, and a later, smaller batch
+        // overwrites only its own records, so a batch left in it would keep
+        // a larger batch's key codes for the thread's life.
+        let nonzero = |buffer: &RawBuffer| buffer.0.iter().filter(|&&byte| byte != 0).count();
+        let mut buffer = empty_buffer();
+        let mut at = 0;
+        for _ in 0..3 {
+            at = put_key(&mut buffer.0, at, 0x1E, VK_A.0);
+        }
+        assert_eq!(buffer.take(3), records(3, 0));
+        assert_eq!(nonzero(&buffer), 0, "bytes of a counted batch are left");
+        put_key(&mut buffer.0, 0, 0x1E, VK_A.0);
+        assert_eq!(buffer.take(u32::MAX), Read::Failed);
+        assert_eq!(nonzero(&buffer), 0, "bytes of a failed read are left");
+    }
+
+    #[test]
     fn the_buffer_holds_64_records_aligned_for_the_buffered_read() {
         // Cut L1.3 E11: "Pointer should be aligned on a DWORD (32-bit)
         // boundary" (GetRawInputBuffer); 8, for the WOW64 note.
