@@ -49,8 +49,8 @@
 //!   the next key event asks for the menu mask key too.
 //!
 //! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry and
-//! an owed mask, keeps only the Hold generation counter, and takes the held
-//! keys from the OS key state.
+//! an owed mask, starts a new timer generation, and takes the held keys
+//! from the OS key state.
 //!
 //! The binding list is not engine state. The caller passes a snapshot on
 //! every call, already sorted with [`sort_by_specificity`], so a hot reload
@@ -64,10 +64,12 @@
 //! lazily: the next event compares its time with the stored deadline.
 //! `Hold` must fire while no event arrives, so arming one returns a
 //! [`TimerRequest`]; the caller starts a timer and hands the
-//! [`TimerToken`] back to [`Engine::on_timer`] when it is due. Every token
-//! carries the generation of the entry it was armed for, and a token whose
-//! entry is gone or was re-armed does nothing. A late timer from an earlier
-//! press therefore cannot fire or delete a newer press (KS-11).
+//! [`TimerToken`] back to [`Engine::on_timer`] when it is due, through a
+//! [`Scheduler`] ([`Engine::start_timers`]). Every token carries the number
+//! of its arming and the engine's generation, which each reset moves on,
+//! and a token whose entry is gone, was re-armed or predates a reset is
+//! stale ([`Engine::is_live`]) and does nothing. A late timer from an
+//! earlier press therefore cannot fire or delete a newer press (KS-11).
 //!
 //! A timer can also wake late relative to the key-up. A key-up before a
 //! Hold's deadline cancels it; a key-up at or after the deadline does not,
@@ -227,6 +229,7 @@ use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::trigger::Trigger;
 
 pub use env::Env;
+pub use schedule::{Scheduler, TimerQueue};
 
 use chords::{ChordOutcome, Chords};
 use env::EnvForeground;
@@ -266,12 +269,54 @@ impl KeyEvent {
     }
 }
 
-/// Identifies the pending gesture a timer was started for. Opaque: the
-/// caller only hands it back to [`Engine::on_timer`].
+/// Identifies the pending entry a timer was started for. Opaque: the caller
+/// only hands it back to [`Engine::on_timer`] and asks [`Engine::is_live`]
+/// about it.
+///
+/// `generation` counts [`Engine::reset`] calls, `slot` names the table the
+/// entry is in, and `seq` is the engine-wide number of the arming, so two
+/// armings never share a token, across resets included (KS-11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerToken {
-    vk: u16,
-    generation: u64,
+    generation: u32,
+    slot: TimerSlot,
+    seq: u64,
+}
+
+/// The table a timer's entry is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimerSlot {
+    /// The gesture pending on the press of this virtual-key code.
+    Gesture(u16),
+}
+
+/// Where the engine's tokens come from.
+#[derive(Default)]
+struct Ids {
+    /// How many resets there were, wrapping.
+    generation: u32,
+    /// The `seq` of the latest arming, wrapping; never reset.
+    last_seq: u64,
+}
+
+impl Ids {
+    /// A number no earlier arming has.
+    fn next_seq(&mut self) -> u64 {
+        self.last_seq = self.last_seq.wrapping_add(1);
+        self.last_seq
+    }
+
+    /// The timer for the entry armed in `slot` as `seq`, due at `due`.
+    fn request(&self, slot: TimerSlot, seq: u64, due: Instant) -> TimerRequest {
+        TimerRequest {
+            token: TimerToken {
+                generation: self.generation,
+                slot,
+                seq,
+            },
+            due,
+        }
+    }
 }
 
 /// A timer the caller must start: call [`Engine::on_timer`] with `token`
@@ -322,6 +367,7 @@ pub struct Engine {
     /// A `MaskOnly` auto-blocker matched the last key-down: the next key
     /// event asks for the menu mask key too.
     mask_owed: bool,
+    ids: Ids,
 }
 
 impl Default for Engine {
@@ -338,6 +384,7 @@ impl Engine {
             chords: Chords::new(),
             sequences: Sequences::new(),
             mask_owed: false,
+            ids: Ids::default(),
         }
     }
 
@@ -365,20 +412,65 @@ impl Engine {
     }
 
     /// Decides a timer that the caller started for a [`TimerRequest`]. A
-    /// token whose gesture was cancelled or re-armed fires nothing.
+    /// token whose entry was cancelled, re-armed or reset fires nothing.
     pub fn on_timer(&mut self, token: TimerToken) -> Decision {
         let mut decision = Decision::default();
-        if let Some(action) = self.gestures.fire_hold(token) {
-            decision.fire.push(action);
+        if token.generation != self.ids.generation {
+            return decision;
+        }
+        match token.slot {
+            TimerSlot::Gesture(vk) => {
+                if let Some(action) = self.gestures.fire_hold(vk, token.seq) {
+                    decision.fire.push(action);
+                }
+            }
         }
         decision
     }
 
-    /// The caller could not start the timer for `token` (for example, a
-    /// thread could not be spawned). Its Hold is dropped: it never fires,
-    /// and its key can arm a new Hold on the next press.
+    /// Whether an entry still waits for the timer of `token`: one from this
+    /// generation, armed as that `seq`. A stale token does nothing in
+    /// [`on_timer`](Self::on_timer), so a caller may drop it from its queue.
+    pub fn is_live(&self, token: TimerToken) -> bool {
+        token.generation == self.ids.generation
+            && match token.slot {
+                TimerSlot::Gesture(vk) => self.gestures.is_live(vk, token.seq),
+            }
+    }
+
+    /// Hands the timers of a decision to `scheduler`, after dropping every
+    /// timer it holds that is no longer live, so that it keeps no stale
+    /// timer for long. A timer the scheduler refuses is forgotten
+    /// ([`forget_timer`](Self::forget_timer)). Returns how many it refused.
+    pub fn start_timers(
+        &mut self,
+        timers: Vec<TimerRequest>,
+        scheduler: &mut dyn Scheduler,
+    ) -> u32 {
+        if timers.is_empty() {
+            return 0;
+        }
+        scheduler.retain(&|token| self.is_live(token));
+        let mut refused = 0;
+        for request in timers {
+            if !scheduler.start(request) {
+                self.forget_timer(request.token);
+                refused += 1;
+            }
+        }
+        refused
+    }
+
+    /// The caller could not start the timer for `token`. Its Hold is
+    /// dropped: it never fires, and its key can arm a new Hold on the next
+    /// press.
     pub fn forget_timer(&mut self, token: TimerToken) {
-        self.gestures.forget_hold(token);
+        if token.generation != self.ids.generation {
+            return;
+        }
+        match token.slot {
+            TimerSlot::Gesture(vk) => self.gestures.forget_hold(vk, token.seq),
+        }
     }
 
     /// The foreground window changed. Key-ups may have been lost while a
@@ -401,9 +493,9 @@ impl Engine {
     /// Remapping was switched off or on (`swch off`, `swch on`; KS-31).
     ///
     /// Every pending Tap, Hold, DoubleTap, chord and sequence is dropped, so
-    /// none completes across the switch, and a Hold timer still running
-    /// finds nothing to fire. The Hold generation keeps counting, so such a
-    /// timer cannot match a Hold armed after the reset either (KS-11).
+    /// none completes across the switch, and the reset starts a new
+    /// generation: a timer started before it is stale ([`is_live`](Self::is_live))
+    /// and fires nothing, also against an entry armed after it (KS-11).
     ///
     /// The held keys are taken from [`Env::os_key_down`], each on record as
     /// passed: while remapping was off the engine saw no event and Windows
@@ -420,6 +512,7 @@ impl Engine {
         self.sequences = Sequences::new();
         self.mask_owed = false;
         self.keys.reset_from_os(env);
+        self.ids.generation = self.ids.generation.wrapping_add(1);
     }
 
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
@@ -501,13 +594,19 @@ impl Engine {
                             if was_repeat || !arms.claim(binding.trigger) {
                                 continue;
                             }
-                            if let Some(timer) = self.gestures.arm_hold(
+                            let seq = self.ids.next_seq();
+                            if let Some(due) = self.gestures.arm_hold(
                                 vk,
                                 &binding.action,
                                 Duration::from_millis(term_ms),
                                 now,
+                                seq,
                             ) {
-                                decision.timers.push(timer);
+                                decision.timers.push(self.ids.request(
+                                    TimerSlot::Gesture(vk.0),
+                                    seq,
+                                    due,
+                                ));
                             }
                             if binding.block_default {
                                 decision.suppress = true;

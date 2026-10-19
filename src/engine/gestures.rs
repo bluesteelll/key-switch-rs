@@ -11,11 +11,12 @@
 //!   what the per-press cleanup timer used to achieve by deleting it.
 //! - **DoubleTap** stores a deadline the same way. A second key-down before
 //!   it fires the stored action; a later one arms afresh.
-//! - **Hold** must fire without an event, so arming it returns a
-//!   [`TimerRequest`]. Each armed entry gets a new generation number, and the
-//!   timer token carries it: a timer only fires the entry it was started
-//!   for. A timer left over from an earlier press of the same key finds a
-//!   different generation and does nothing (KS-11).
+//! - **Hold** must fire without an event, so arming it returns its due
+//!   time, and the engine asks for a timer. Each armed entry keeps the
+//!   engine-wide sequence number of its arming, which the timer token
+//!   carries: a timer only fires the entry it was started for. A timer left
+//!   over from an earlier press of the same key finds a different number and
+//!   does nothing (KS-11).
 //!
 //!   A key-up before the term cancels the Hold. A key-up at or after the
 //!   term does not: the key was held for the whole term, so the Hold stays
@@ -30,7 +31,6 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
-use super::{TimerRequest, TimerToken};
 use crate::core::windows_actions::BindAction;
 
 struct PendingTap {
@@ -43,7 +43,8 @@ struct PendingTap {
 struct PendingHold {
     vk: u16,
     action: BindAction,
-    generation: u64,
+    /// The engine's number of this arming, which its timer token carries.
+    seq: u64,
     /// The term ends here; a key-up from this moment on no longer cancels.
     due: Instant,
     /// The key went up at or after `due`. The entry only waits for its
@@ -77,8 +78,6 @@ pub(super) struct Gestures {
     taps: Vec<PendingTap>,
     holds: Vec<PendingHold>,
     double_taps: Vec<PendingDoubleTap>,
-    /// Generation of the most recently armed Hold.
-    last_generation: u64,
 }
 
 impl Gestures {
@@ -122,35 +121,30 @@ impl Gestures {
 
     // ---- Hold ----
 
-    /// Arms a hold for `vk` and returns the timer to start, or `None` if a
-    /// hold is already pending on the key (the first one wins). A released
-    /// entry that still waits for its timer does not count.
+    /// Arms a hold for `vk` as the engine's arming `seq` and returns the
+    /// time its timer is due, or `None` if a hold is already pending on the
+    /// key (the first one wins). A released entry that still waits for its
+    /// timer does not count.
     pub(super) fn arm_hold(
         &mut self,
         vk: VIRTUAL_KEY,
         action: &BindAction,
         term: Duration,
         now: Instant,
-    ) -> Option<TimerRequest> {
+        seq: u64,
+    ) -> Option<Instant> {
         if self.pending_hold_index(vk).is_some() {
             return None;
         }
-        self.last_generation = self.last_generation.wrapping_add(1);
         let due = now + term;
         self.holds.push(PendingHold {
             vk: vk.0,
             action: action.clone(),
-            generation: self.last_generation,
+            seq,
             due,
             released: false,
         });
-        Some(TimerRequest {
-            token: TimerToken {
-                vk: vk.0,
-                generation: self.last_generation,
-            },
-            due,
-        })
+        Some(due)
     }
 
     /// Resolves the hold pending on `vk` at its key-up: cancelled before
@@ -168,23 +162,23 @@ impl Gestures {
         }
     }
 
-    /// Fires the hold that `token` was started for, if it is still pending
-    /// or was released after its term.
-    pub(super) fn fire_hold(&mut self, token: TimerToken) -> Option<BindAction> {
-        let index = self
-            .holds
-            .iter()
-            .position(|p| p.vk == token.vk && p.generation == token.generation)?;
+    /// Fires the hold of `vk` armed as `seq`, if it is still pending or was
+    /// released after its term.
+    pub(super) fn fire_hold(&mut self, vk: u16, seq: u64) -> Option<BindAction> {
+        let index = self.holds.iter().position(|p| p.vk == vk && p.seq == seq)?;
         Some(self.holds.swap_remove(index).action)
     }
 
-    /// Drops the hold that `token` was started for, without firing it,
-    /// because the caller could not start its timer. Without this a Hold
-    /// released after its term would wait forever for a timer that never
-    /// runs.
-    pub(super) fn forget_hold(&mut self, token: TimerToken) {
-        self.holds
-            .retain(|p| !(p.vk == token.vk && p.generation == token.generation));
+    /// Whether the hold of `vk` armed as `seq` still waits for its timer.
+    pub(super) fn is_live(&self, vk: u16, seq: u64) -> bool {
+        self.holds.iter().any(|p| p.vk == vk && p.seq == seq)
+    }
+
+    /// Drops the hold of `vk` armed as `seq`, without firing it, because
+    /// the caller could not start its timer. Without this a Hold released
+    /// after its term would wait forever for a timer that never runs.
+    pub(super) fn forget_hold(&mut self, vk: u16, seq: u64) {
+        self.holds.retain(|p| !(p.vk == vk && p.seq == seq));
     }
 
     /// The key's pending (not yet released) hold.
@@ -220,9 +214,9 @@ impl Gestures {
 
     // ---- All ----
 
-    /// Drops every pending entry. The Hold generation keeps counting: if it
-    /// restarted, a timer started before the clear could match a Hold armed
-    /// after it, because a token is a key and a generation (KS-11).
+    /// Drops every pending entry. The engine starts a new generation with
+    /// it, so a timer started before the clear matches nothing armed after
+    /// it (KS-11).
     pub(super) fn clear(&mut self) {
         self.taps.clear();
         self.holds.clear();
@@ -303,8 +297,8 @@ mod tests {
     fn arm_hold_inserts_then_cancel_removes() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let timer = state.arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0);
-        assert_eq!(timer.map(|t| t.due), Some(t0 + LONG));
+        let due = state.arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0, 1);
+        assert_eq!(due, Some(t0 + LONG));
         assert!(state.hold_pending(VK_F13));
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(10)),
@@ -326,14 +320,16 @@ mod tests {
     fn hold_timer_fires_its_own_entry_once() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0, 2)
+                .is_some()
+        );
         assert_eq!(
-            state.fire_hold(timer.token),
+            state.fire_hold(VK_F13.0, 2),
             Some(BindAction::SwitchLanguage)
         );
-        assert_eq!(state.fire_hold(timer.token), None);
+        assert_eq!(state.fire_hold(VK_F13.0, 2), None);
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(250)),
             HoldRelease::NotPending
@@ -346,22 +342,31 @@ mod tests {
         // press 1's timer wakes up.
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0)
-            .unwrap();
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0, 3)
+                .is_some()
+        );
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(80)),
             HoldRelease::Cancelled
         );
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(150))
-            .unwrap();
-        assert_ne!(first.token, second.token);
+        assert!(
+            state
+                .arm_hold(
+                    VK_F13,
+                    &BindAction::SwitchLanguage,
+                    ms(200),
+                    t0 + ms(150),
+                    4
+                )
+                .is_some()
+        );
 
-        assert_eq!(state.fire_hold(first.token), None);
+        assert_eq!(state.fire_hold(VK_F13.0, 3), None);
         assert!(state.hold_pending(VK_F13));
         assert_eq!(
-            state.fire_hold(second.token),
+            state.fire_hold(VK_F13.0, 4),
             Some(BindAction::SwitchLanguage)
         );
     }
@@ -370,9 +375,11 @@ mod tests {
     fn hold_released_at_or_after_its_due_is_left_to_its_timer() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0, 5)
+                .is_some()
+        );
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(200)),
             HoldRelease::Overdue
@@ -385,42 +392,54 @@ mod tests {
         );
         // Its own timer still fires it, once.
         assert_eq!(
-            state.fire_hold(timer.token),
+            state.fire_hold(VK_F13.0, 5),
             Some(BindAction::SwitchLanguage)
         );
-        assert_eq!(state.fire_hold(timer.token), None);
+        assert_eq!(state.fire_hold(VK_F13.0, 5), None);
 
         // One millisecond before the term the key-up cancels it.
-        let timer = state
-            .arm_hold(VK_F14, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
+        assert!(
+            state
+                .arm_hold(VK_F14, &BindAction::SwitchLanguage, ms(200), t0, 6)
+                .is_some()
+        );
         assert_eq!(
             state.release_hold(VK_F14, t0 + ms(199)),
             HoldRelease::Cancelled
         );
-        assert_eq!(state.fire_hold(timer.token), None);
+        assert_eq!(state.fire_hold(VK_F14.0, 6), None);
     }
 
     #[test]
     fn hold_left_to_its_timer_does_not_block_a_new_arm() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0)
-            .unwrap();
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0, 7)
+                .is_some()
+        );
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(250)),
             HoldRelease::Overdue
         );
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(260))
-            .expect("a released hold must not block the next press");
-        assert_ne!(first.token, second.token);
+        assert!(
+            state
+                .arm_hold(
+                    VK_F13,
+                    &BindAction::SwitchLanguage,
+                    ms(200),
+                    t0 + ms(260),
+                    8
+                )
+                .is_some(),
+            "a released hold must not block the next press"
+        );
 
-        assert_eq!(state.fire_hold(first.token), Some(BindAction::DoNothing));
+        assert_eq!(state.fire_hold(VK_F13.0, 7), Some(BindAction::DoNothing));
         assert!(state.hold_pending(VK_F13));
         assert_eq!(
-            state.fire_hold(second.token),
+            state.fire_hold(VK_F13.0, 8),
             Some(BindAction::SwitchLanguage)
         );
     }
@@ -430,19 +449,27 @@ mod tests {
         // The caller could not start the timer for the first press.
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
-        state.forget_hold(timer.token);
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0, 9)
+                .is_some()
+        );
+        state.forget_hold(VK_F13.0, 9);
         assert!(!state.hold_pending(VK_F13));
-        assert_eq!(state.fire_hold(timer.token), None);
+        assert_eq!(state.fire_hold(VK_F13.0, 9), None);
         assert_eq!(
             state.release_hold(VK_F13, t0 + ms(300)),
             HoldRelease::NotPending
         );
         assert!(
             state
-                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(400))
+                .arm_hold(
+                    VK_F13,
+                    &BindAction::SwitchLanguage,
+                    ms(200),
+                    t0 + ms(400),
+                    10
+                )
                 .is_some()
         );
     }
@@ -511,7 +538,7 @@ mod tests {
         let t0 = Instant::now();
         let mut state = Gestures::new();
         state.arm_tap(VK_CAPITAL, &BindAction::DoNothing, LONG, t0);
-        state.arm_hold(VK_CAPITAL, &BindAction::DoNothing, LONG, t0);
+        state.arm_hold(VK_CAPITAL, &BindAction::DoNothing, LONG, t0, 11);
         assert!(state.tap_pending(VK_CAPITAL));
         assert!(state.hold_pending(VK_CAPITAL));
 
@@ -526,34 +553,36 @@ mod tests {
     }
 
     #[test]
-    fn clear_drops_every_entry_and_keeps_the_generation() {
+    fn clear_drops_every_entry_and_an_old_timer_finds_nothing() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
         state.arm_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
         state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0)
-            .expect("nothing pending yet");
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0, 12)
+                .is_some(),
+            "nothing pending yet"
+        );
 
         state.clear();
 
         assert!(!state.tap_pending(VK_F13));
         assert!(!state.double_tap_pending(VK_F13));
         assert!(!state.hold_pending(VK_F13));
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10))
-            .expect("the cleared Hold no longer blocks a new arm");
-        assert_ne!(
-            first.token, second.token,
-            "a Hold armed after a clear gets a new generation"
+        assert!(
+            state
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10), 13)
+                .is_some(),
+            "the cleared Hold no longer blocks a new arm"
         );
         assert_eq!(
-            state.fire_hold(first.token),
+            state.fire_hold(VK_F13.0, 12),
             None,
             "a timer from before the clear fires nothing"
         );
         assert_eq!(
-            state.fire_hold(second.token),
+            state.fire_hold(VK_F13.0, 13),
             Some(BindAction::SwitchLanguage)
         );
     }
@@ -568,12 +597,12 @@ mod tests {
         state.arm_tap(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10));
         assert!(
             state
-                .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0)
+                .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0, 14)
                 .is_some()
         );
         assert!(
             state
-                .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10))
+                .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10), 15)
                 .is_none()
         );
         assert_eq!(
