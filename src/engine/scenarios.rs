@@ -2337,6 +2337,74 @@ fn a_swallowed_key_pressed_again_on_the_lock_screen_is_released_in_windows() {
         .expect_passed();
 }
 
+// ---- A reinstalled keyboard hook (roadmap item 2.4, KS-08) ----
+
+#[test]
+fn a_swallowed_key_released_while_the_hook_was_gone_fires_at_its_next_press_after_the_reinstall() {
+    // While Windows had removed the hook, the engine saw no event and
+    // Windows saw every one, as while remapping is off: the reset reads the
+    // held keys from the OS, so F13, released unseen, is up again and its
+    // next press fires (owner decision, roadmap item 2.3).
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up_unseen("F13")
+        .hook_reinstalled()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_passed_key_held_through_a_reinstall_keeps_its_repeats_and_key_up_passing() {
+    // Windows has LShift down, so the reset keeps it held and on record as
+    // passed: its auto-repeat and its release still reach Windows.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .check_press_symmetry()
+        .down("LShift")
+        .expect_passed()
+        .hook_reinstalled()
+        .repeat("LShift")
+        .expect_passed()
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_hold_armed_before_the_hook_was_gone_fires_nothing_after_the_reinstall() {
+    // The reset drops the pending Hold and starts a new timer generation
+    // (KS-11), so its timer fires nothing after the repair.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: SwitchLanguage, trigger: Hold(200)) ] )"#,
+    )
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(50)
+    .hook_reinstalled()
+    .advance_ms(300)
+    .expect_nothing_fired();
+}
+
+#[test]
+fn a_key_pressed_while_the_hook_was_gone_passes_its_key_up_after_the_reinstall() {
+    // Windows saw A go down while the hook was gone: the reset takes A as
+    // held and passed, so its release reaches Windows with its press.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .check_nothing_stuck()
+        .down_unseen("A")
+        .hook_reinstalled()
+        .up("A")
+        .expect_passed()
+        .expect_nothing_stuck();
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the

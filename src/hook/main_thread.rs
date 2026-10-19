@@ -26,7 +26,8 @@
 //! in the shape of the action executor's loop (roadmap item 2.1):
 //!
 //! 1. Drain, until a whole pass finds nothing: the requests (`swch on` and
-//!    `off`, a config reload), then the input signals noted since the last
+//!    `off`, a config reload, a reinstall of the keyboard hook that the hook
+//!    watchdog asks for), then the input signals noted since the last
 //!    pass (keyboard input left this desktop or came back), then every
 //!    gesture timer whose due time has passed by the clock, each decided
 //!    under the borrow and carried out after it.
@@ -51,11 +52,24 @@
 //! The gesture timer is a high-resolution waitable timer
 //! (`platform::timers`), so a deadline is met within about a millisecond,
 //! not on the 15.6 ms tick of the system clock.
+//!
+//! # The reinstall
+//!
+//! The hook watchdog (`hook::watchdog`, roadmap item 2.4) runs on a thread
+//! of its own and asks this thread, through the request queue, to reinstall
+//! the keyboard hook when keys arrive and the keyboard callback stays
+//! silent: Windows removes a hook whose callback ran past
+//! `LowLevelHooksTimeout` (KS-08), and only the thread that installed the
+//! hook may install it again (KS-01). The drain first dispatches the hook
+//! calls that wait for this thread, then reinstalls only if the heartbeat
+//! has not moved since the watchdog read it, so a busy main thread whose
+//! hook answers once it is free changes nothing. A reinstall resets the
+//! engine as `swch on` does and keeps the running macros.
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use windows::Win32::{
     Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
@@ -69,7 +83,8 @@ use crate::engine::{
     Decision, Engine, InputSignal, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
 };
 use crate::hook::config_watcher::ApplyReload;
-use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
+use crate::hook::keyboard_hook::{KeyboardHook, Reinstalled};
 use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
 use crate::logging::counters::{self, Counter};
 use crate::platform::foreground::ForegroundCache;
@@ -194,11 +209,15 @@ pub(crate) struct MainState {
 ///
 /// `None`, without running `f`, if this thread has no main state, or if the
 /// state is borrowed already: a callback re-entered under the borrow then
-/// passes its event, and nothing panics or waits. `f` must only decide,
-/// reset or set the gesture timer (see the module docs).
+/// passes its event, and nothing panics or waits. Such a refusal is counted
+/// in `main_state_refused` (roadmap item 2.4); a thread without a main
+/// state is no refusal. `f` must only decide, reset or set the gesture
+/// timer (see the module docs).
 pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
     MAIN.try_with(|main| {
         let Ok(mut state) = main.try_borrow_mut() else {
+            // Counted, never logged: this runs in the hook callback.
+            counters::bump(Counter::MainStateRefused);
             #[cfg(test)]
             REFUSED.with(|refused| refused.set(refused.get() + 1));
             return None;
@@ -271,6 +290,15 @@ impl MainState {
     /// reported nothing meanwhile. Nothing is reset (ruling R2).
     pub(crate) fn input_returned(&mut self) {
         self.foreground.resync();
+    }
+
+    /// The keyboard hook was reinstalled (roadmap item 2.4): the engine is
+    /// reset with the held keys read from the OS, which saw every key event
+    /// while the hook was gone. No macro is stopped: a macro's keys carry the
+    /// sentinel and pass whatever the hook's state, and nobody asked to stop
+    /// it. The foreground cache stays: the foreground hook was not affected.
+    pub(crate) fn hook_reinstalled(&mut self) {
+        self.reset_engine(ResetReason::HookReinstalled);
     }
 }
 
@@ -424,6 +452,13 @@ enum Request {
         bindings: Vec<Binding>,
         reply: SyncSender<()>,
     },
+    /// The hook watchdog saw keys arrive while the keyboard callback stayed
+    /// silent (roadmap item 2.4): reinstall the keyboard hook if it is still
+    /// silent, and answer what was done.
+    ReinstallHook {
+        request: ReinstallRequest,
+        reply: SyncSender<ReinstallOutcome>,
+    },
 }
 
 /// Why a request to the main thread got no answer.
@@ -504,6 +539,26 @@ impl MainThreadHandle {
                 RecvTimeoutError::Timeout => MainThreadError::NoAnswer,
                 RecvTimeoutError::Disconnected => MainThreadError::ShuttingDown,
             })
+    }
+
+    /// Asks the main thread to reinstall the keyboard hook if it is still
+    /// silent, without waiting: the answer comes on the receiver once the
+    /// main thread reaches the request, which the watchdog polls.
+    pub(crate) fn request_reinstall(
+        &self,
+        request: ReinstallRequest,
+    ) -> Result<Receiver<ReinstallOutcome>, MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        match self
+            .requests
+            .try_send(Request::ReinstallHook { request, reply })
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
+            Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
+        }
+        self.wake();
+        Ok(answer)
     }
 
     /// Ends the main loop: posts `WM_QUIT` to the main thread, which then
@@ -767,7 +822,67 @@ fn serve(hook: &KeyboardHook, request: Request) {
                 log::info!("config reload carried out late: {count} bindings live");
             }
         }
+        Request::ReinstallHook { request, reply } => {
+            let outcome = reinstall_if_silent(hook, request, || hook.reinstall_keyboard_hook());
+            let _ = reply.try_send(outcome);
+        }
     }
+}
+
+/// Serves a reinstall request of the hook watchdog (roadmap item 2.4, cut
+/// D4), in the drain, outside the main state's borrow and every callback.
+/// The hook calls that wait for this thread are dispatched first; if one of
+/// them, or any call since the watchdog's snapshot, moved the heartbeat, the
+/// hook is alive and kept. Otherwise `replace` replaces it
+/// ([`KeyboardHook::reinstall_keyboard_hook`] in the daemon), and a
+/// replaced hook resets the engine. Every outcome but a hook that is not
+/// installed is logged.
+fn reinstall_if_silent(
+    hook: &KeyboardHook,
+    request: ReinstallRequest,
+    replace: impl FnOnce() -> windows::core::Result<Reinstalled>,
+) -> ReinstallOutcome {
+    dispatch_sent_messages();
+    if hook.health().callbacks() != request.seen {
+        log::info!("the keyboard hook answered before its reinstall; it was kept");
+        return ReinstallOutcome::Alive;
+    }
+    match replace() {
+        // The daemon is shutting down, or the session ends: no hook to
+        // replace, and nothing to say.
+        Ok(Reinstalled::NotInstalled) => ReinstallOutcome::NotInstalled,
+        Ok(Reinstalled::Replaced { old }) => {
+            hook.health().record_reinstall(SystemTime::now());
+            log::warn!(
+                "the keyboard hook got no key event for {} ms while keys were typed; reinstalled it ({old}; longest_callback_us={})",
+                request.silent_for.as_millis(),
+                counters::COUNTERS.longest_callback().as_micros()
+            );
+            if with_main(MainState::hook_reinstalled).is_some() {
+                log::info!("state reset: {}", ResetReason::HookReinstalled);
+            }
+            ReinstallOutcome::Reinstalled
+        }
+        Err(error) => {
+            hook.health().record_failed_attempt();
+            log::error!("could not reinstall the keyboard hook ({error}); the old one is kept");
+            ReinstallOutcome::Failed
+        }
+    }
+}
+
+/// Lets the hook calls that wait for this thread run before the heartbeat
+/// is read: `PeekMessageW` with `PM_QS_SENDMESSAGE` dispatches the pending
+/// sent messages, and `PM_NOREMOVE` takes no posted one. Whether that covers
+/// a pending low-level hook call is not documented; the check stands
+/// without it, since every call dispatched before also moved the heartbeat.
+fn dispatch_sent_messages() {
+    let mut msg = MSG::default();
+    // SAFETY: `msg` is a local that outlives the call, which only writes it;
+    // PM_NOREMOVE leaves every posted message in this thread's queue, and the
+    // sent messages it dispatches run this thread's own hook callbacks and
+    // window procedures, outside the main state's borrow.
+    let _ = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE) };
 }
 
 /// Step 4 of the loop: takes this thread's messages until its queue is
@@ -814,9 +929,11 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
-    use crate::engine::{Engine, Env, InputSignal, KeyEvent, sort_by_specificity};
-    use crate::hook::keyboard_hook::KeyboardHook;
+    use crate::engine::{Engine, Env, InputSignal, KeyEvent, TimerToken, sort_by_specificity};
+    use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
+    use crate::hook::keyboard_hook::{KeyboardHook, OldHook, Reinstalled};
     use crate::hook::keyboard_hook_callback::decide_event;
+    use crate::logging::testing::capture;
 
     // No test installs a hook or injects input. The loop tests run
     // `MainThread::run` on a thread of their own with a local hook, send
@@ -914,6 +1031,30 @@ mod tests {
             .expect("re-entry panicked or hung");
         assert_eq!(nested, Some(None));
         assert_eq!(refused, 1, "the refusal is counted");
+    }
+
+    #[test]
+    fn a_refused_reentry_is_counted_in_main_state_refused() {
+        // Roadmap item 2.4: a refusal is counted in the daemon's counters,
+        // never logged on the hook path. Other tests refuse too, so the
+        // count may rise by more; the one test that takes the counters
+        // holds `GLOBAL_HOOK`, so this one does too (ruling M4).
+        let _global = crate::hook::keyboard_hook_callback::GLOBAL_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _main = MainThread::new().expect("the main thread is set up");
+            let before = counters::COUNTERS.get(Counter::MainStateRefused);
+            let nested = with_main(|_| with_main(|_| ()));
+            let after = counters::COUNTERS.get(Counter::MainStateRefused);
+            let _ = tx.send((nested, after.saturating_sub(before)));
+        });
+        let (nested, refused) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("re-entry panicked or hung");
+        assert_eq!(nested, Some(None));
+        assert!(refused >= 1, "the refusal is counted: {refused}");
     }
 
     #[test]
@@ -1635,7 +1776,10 @@ mod tests {
 
     /// A [`WindowQuery`](crate::platform::foreground::WindowQuery) whose
     /// foreground window the test moves; window `n` belongs to process `n`
-    /// and process `n` runs `p<n>.exe`.
+    /// and process `n` runs `p<n>.exe`. The tests use odd window numbers:
+    /// a real process id is a multiple of 4, so an odd one can never be
+    /// this test process's own, which the cache would take for the daemon's
+    /// and name no executable for.
     struct MovingQuery(std::rc::Rc<Cell<usize>>);
 
     impl crate::platform::foreground::WindowQuery for MovingQuery {
@@ -1664,17 +1808,17 @@ mod tests {
         ] {
             let main = MainThread::new().expect("the main thread is set up");
             let hook = KeyboardHook::new();
-            let window = std::rc::Rc::new(Cell::new(0x1000));
+            let window = std::rc::Rc::new(Cell::new(0x1001));
             with_main(|state| {
                 state.foreground =
                     ForegroundCache::with_query(Box::new(MovingQuery(window.clone())));
-                state.foreground_changed(HWND(0x1000 as *mut std::ffi::c_void));
+                state.foreground_changed(HWND(0x1001 as *mut std::ffi::c_void));
             })
             .expect("the main state is free");
-            window.set(0x2000);
+            window.set(0x2001);
             assert_eq!(
                 with_main(|state| state.foreground.app().map(str::to_owned)),
-                Some(Some("p4096.exe".to_owned())),
+                Some(Some("p4097.exe".to_owned())),
                 "the cache still names the window of before the {signal}"
             );
 
@@ -1683,7 +1827,7 @@ mod tests {
 
             assert_eq!(
                 with_main(|state| state.foreground.app().map(str::to_owned)),
-                Some(Some("p8192.exe".to_owned())),
+                Some(Some("p8193.exe".to_owned())),
                 "the drain of {signal} reads the foreground window again"
             );
         }
@@ -1706,5 +1850,275 @@ mod tests {
         );
         let took = begun.elapsed();
         assert!(took < ms(100), "the request waited {took:?}");
+    }
+
+    /// A reinstall request of a watchdog that read `seen` on the heartbeat.
+    fn reinstall_request(seen: u64) -> ReinstallRequest {
+        ReinstallRequest {
+            seen,
+            silent_for: ms(1250),
+            attempt: 1,
+        }
+    }
+
+    /// Runs the main loop for `hook` on a thread of its own and returns its
+    /// handle and the thread.
+    fn looping(
+        hook: &'static KeyboardHook,
+    ) -> (
+        MainThreadHandle,
+        thread::JoinHandle<windows::core::Result<()>>,
+    ) {
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let _ = ready_tx.send(main.handle());
+            main.run(hook)
+        });
+        let handle = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        (handle, looper)
+    }
+
+    /// Asks the loop behind `handle` for `request`, waits for its answer and
+    /// ends the loop.
+    fn answer_of_the_loop(
+        handle: &MainThreadHandle,
+        looper: thread::JoinHandle<windows::core::Result<()>>,
+        request: ReinstallRequest,
+    ) -> ReinstallOutcome {
+        let reply = handle
+            .request_reinstall(request)
+            .expect("the main thread takes the request");
+        let outcome = reply
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the main thread answers within 5 s");
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        outcome
+    }
+
+    #[test]
+    fn a_reinstall_request_finds_a_hook_that_answered_and_changes_nothing() {
+        // Rule 3 of the anti-loop rule (cut D3): the main thread reinstalls
+        // only if the heartbeat has not moved since the watchdog read it. A
+        // hook that answered once the main thread was free is kept.
+        let hook: &'static KeyboardHook = Box::leak(Box::new(KeyboardHook::new()));
+        let (handle, looper) = looping(hook);
+        hook.health().callback_seen();
+        assert_eq!(
+            answer_of_the_loop(&handle, looper, reinstall_request(0)),
+            ReinstallOutcome::Alive
+        );
+        assert!(!hook.is_installed());
+    }
+
+    #[test]
+    fn a_reinstall_request_for_a_hook_that_is_not_installed_installs_nothing() {
+        // Through `serve` and the system installer, which panics at any call
+        // under test (ruling S1): the null handle stops the reinstall first,
+        // as after `uninstall` at exit or at the session end.
+        let hook: &'static KeyboardHook = Box::leak(Box::new(KeyboardHook::new()));
+        let (handle, looper) = looping(hook);
+        assert_eq!(
+            answer_of_the_loop(&handle, looper, reinstall_request(0)),
+            ReinstallOutcome::NotInstalled
+        );
+        assert!(!hook.is_installed());
+    }
+
+    #[test]
+    fn a_reinstall_request_to_an_ended_main_thread_fails_at_once() {
+        let handle = thread::spawn(|| {
+            MainThread::new()
+                .expect("the main thread is set up")
+                .handle()
+        })
+        .join()
+        .expect("the scratch thread does not panic");
+
+        let begun = Instant::now();
+        assert_eq!(
+            handle.request_reinstall(reinstall_request(0)).err(),
+            Some(MainThreadError::ShuttingDown)
+        );
+        let took = begun.elapsed();
+        assert!(took < ms(100), "the request waited {took:?}");
+    }
+
+    /// The bindings of the reinstall tests: an F13 Hold(10000) that does
+    /// nothing, and an F14 `SwitchLanguage` that swallows F14 and does not
+    /// repeat. No action runs: the tests never carry a decision out.
+    fn reinstall_test_hook() -> KeyboardHook {
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![
+            f13_hold(10_000, BindAction::DoNothing).with_allow_extra_modifiers(true),
+            Binding::new(KeyCombination::new(VK_F14), BindAction::SwitchLanguage)
+                .with_allow_extra_modifiers(true),
+        ]);
+        hook
+    }
+
+    /// The tokens of the timers queued on this thread's main state.
+    fn queued_tokens() -> Vec<TimerToken> {
+        with_main(|main| {
+            let tokens = RefCell::new(Vec::new());
+            main.timers.queue.retain(&|token| {
+                tokens.borrow_mut().push(token);
+                true
+            });
+            tokens.into_inner()
+        })
+        .expect("the main state is free")
+    }
+
+    fn is_live(token: TimerToken) -> bool {
+        with_main(|main| main.engine.is_live(token)).expect("the main state is free")
+    }
+
+    /// Arms the F13 Hold of `hook` on this thread and returns its timer.
+    fn armed_hold(hook: &KeyboardHook) -> TimerToken {
+        let (wparam, vk) = f13(WM_KEYDOWN);
+        assert!(decide_event(hook, wparam, vk, 0).is_some());
+        let tokens = queued_tokens();
+        assert_eq!(tokens.len(), 1, "the F13 Hold is armed");
+        tokens[0]
+    }
+
+    #[test]
+    fn a_reinstall_resets_the_engine_and_keeps_the_macros() {
+        // Cut D4 and D13 (Q2): after the replace the main thread drops the
+        // pending gestures and reads the held keys from the OS, as `swch on`
+        // does, and keeps the running macros.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = reinstall_test_hook();
+        hook.attach_executor(Some(executor.handle()));
+        let f14 = |msg: u32| {
+            decide_event(&hook, WPARAM(msg as usize), u32::from(VK_F14.0), 0)
+                .expect("the F14 event reaches the engine")
+        };
+        assert_eq!(f14(WM_KEYDOWN).fire, [BindAction::SwitchLanguage]);
+        // F14's key-up is lost while the hook is gone.
+        let hold = armed_hold(&hook);
+        assert_eq!(
+            hook.submit(long_macro(), TargetWindow::NONE),
+            Submitted::Queued
+        );
+        assert_eq!(next_record(&records).text(), "key F15", "the macro runs");
+        wait_until("the macro waits in its Delay", || {
+            executor.handle().active_runs() == 1
+        });
+
+        let (outcome, lines) = capture(|| {
+            reinstall_if_silent(&hook, reinstall_request(hook.health().callbacks()), || {
+                Ok(Reinstalled::Replaced {
+                    old: OldHook::StillInstalled,
+                })
+            })
+        });
+
+        assert_eq!(outcome, ReinstallOutcome::Reinstalled);
+        assert_eq!(
+            hook.health().snapshot().reinstalls,
+            1,
+            "swch status counts it"
+        );
+        assert!(hook.health().snapshot().last_reinstall.is_some());
+        assert!(
+            !is_live(hold),
+            "the Hold armed before the loss fires nothing"
+        );
+        assert_eq!(
+            f14(WM_KEYDOWN).fire,
+            [BindAction::SwitchLanguage],
+            "F14, released while the hook was gone, is a press again"
+        );
+        thread::sleep(ms(100));
+        assert_eq!(executor.handle().active_runs(), 1, "the macro still runs");
+        for text in [
+            "[WARN] the keyboard hook got no key event for 1250 ms while keys were typed; reinstalled it (the old hook was still installed; longest_callback_us=",
+            "[INFO] state reset: the keyboard hook was reinstalled",
+        ] {
+            assert!(
+                lines.iter().any(|line| line.contains(text)),
+                "{text:?} in {lines:?}"
+            );
+        }
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_failed_reinstall_keeps_the_old_hook_and_resets_nothing() {
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = reinstall_test_hook();
+        let hold = armed_hold(&hook);
+
+        let (outcome, lines) = capture(|| {
+            reinstall_if_silent(&hook, reinstall_request(hook.health().callbacks()), || {
+                Err(E_ACCESSDENIED.into())
+            })
+        });
+
+        assert_eq!(outcome, ReinstallOutcome::Failed);
+        assert!(hook.health().snapshot().last_attempt_failed);
+        assert_eq!(hook.health().snapshot().reinstalls, 0);
+        assert!(is_live(hold), "nothing was reset");
+        assert!(
+            lines.iter().any(|line| {
+                line.contains("[ERROR] could not reinstall the keyboard hook (")
+                    && line.contains("); the old one is kept")
+            }),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_reinstall_that_finds_no_hook_resets_nothing() {
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = reinstall_test_hook();
+        let hold = armed_hold(&hook);
+
+        let (outcome, lines) = capture(|| {
+            reinstall_if_silent(&hook, reinstall_request(hook.health().callbacks()), || {
+                Ok(Reinstalled::NotInstalled)
+            })
+        });
+
+        assert_eq!(outcome, ReinstallOutcome::NotInstalled);
+        assert!(is_live(hold), "nothing was reset");
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn a_hook_that_answered_is_kept_without_a_replace() {
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = reinstall_test_hook();
+        let hold = armed_hold(&hook);
+        let seen = hook.health().callbacks();
+        hook.health().callback_seen();
+
+        let (outcome, lines) = capture(|| {
+            reinstall_if_silent(&hook, reinstall_request(seen), || {
+                panic!("a hook that answered is not replaced")
+            })
+        });
+
+        assert_eq!(outcome, ReinstallOutcome::Alive);
+        assert!(is_live(hold), "nothing was reset");
+        assert!(
+            lines.iter().any(|line| line
+                .contains("[INFO] the keyboard hook answered before its reinstall; it was kept")),
+            "{lines:?}"
+        );
     }
 }

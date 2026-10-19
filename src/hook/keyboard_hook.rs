@@ -1,26 +1,29 @@
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use arc_swap::{ArcSwap, ArcSwapOption, Guard};
 use windows::{
-    Win32::UI::{
-        Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
-        WindowsAndMessaging::*,
+    Win32::{
+        Foundation::{E_FAIL, E_UNEXPECTED},
+        UI::WindowsAndMessaging::{EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND},
     },
-    core::*,
+    core::{Error, HRESULT, Result},
 };
 
 use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
 use crate::engine;
+use crate::hook::health::HealthState;
+use crate::hook::installer::{self, Installer};
 use crate::hook::keyboard_hook_callback;
 use crate::hook::main_thread::MainState;
 
 /// What the hooks share with the other threads: the binding list, the hook
-/// handles, the remapping switch and the action executor. The engine is not
-/// here: it belongs to the main thread (`hook::main_thread`, roadmap item
-/// 2.2).
+/// handles, the remapping switch, the action executor and the keyboard
+/// hook's health. The engine is not here: it belongs to the main thread
+/// (`hook::main_thread`, roadmap item 2.2).
 pub struct KeyboardHook {
     /// Bindings list. Hot path reads via `ArcSwap::load()` which is
     /// effectively lock-free (no atomic CAS on the read side). Hot-reload
@@ -49,6 +52,9 @@ pub struct KeyboardHook {
     /// lifetime ([`attach_executor`](Self::attach_executor)); read with one
     /// lock-free load per slow action, like `bindings`.
     executor: ArcSwapOption<ExecutorHandle>,
+    /// The keyboard callback's heartbeat, which the hook watchdog reads
+    /// (roadmap item 2.4).
+    health: HealthState,
 }
 
 impl KeyboardHook {
@@ -62,6 +68,7 @@ impl KeyboardHook {
             desktop_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
             executor: ArcSwapOption::empty(),
+            health: HealthState::new(),
         }
     }
 
@@ -116,6 +123,11 @@ impl KeyboardHook {
         self.bindings.load()
     }
 
+    /// The keyboard hook's health: the heartbeat the callback bumps.
+    pub(crate) fn health(&self) -> &HealthState {
+        &self.health
+    }
+
     /// Whether remapping is on. See `switch_enabled`.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
@@ -139,88 +151,63 @@ impl KeyboardHook {
     /// (`hook::main_thread`), because the hooks belong to the thread that
     /// installs them and are called through its message loop (KS-01).
     pub(crate) fn install(&self) -> Result<()> {
+        self.install_with(&installer::SYSTEM)
+    }
+
+    /// [`install`](Self::install) through `installer`: the system's in the
+    /// daemon, a fake in the tests (ruling S1).
+    pub(crate) fn install_with(&self, installer: &impl Installer) -> Result<()> {
         if !self.hook_handle.load(Ordering::Acquire).is_null() {
             return Err(Error::new(
-                windows::Win32::Foundation::E_UNEXPECTED,
+                E_UNEXPECTED,
                 "keyboard hook is already installed",
             ));
         }
 
-        // SAFETY: SetWindowsHookExW is the documented installer for WH_KEYBOARD_LL;
-        // we pass a 'static extern "system" callback and no module handle (NULL is
-        // permitted for low-level hooks per MSDN).
-        let hook = unsafe {
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(keyboard_hook_callback::keyboard_hook_callback),
-                None,
-                0,
-            )?
-        };
-        self.hook_handle.store(hook.0, Ordering::Release);
+        let hook = installer.set_keyboard_hook()?;
+        self.hook_handle.store(hook, Ordering::Release);
+        self.health.set_hook_installed(true);
 
         // Foreground-change hook re-syncs modifier state after focus returns from
         // a higher-integrity window (Task Manager, UAC, lock screen, etc.) that
         // ate our key-up events, except for modifiers whose key-down the engine
         // swallowed. See keyboard_hook_callback::foreground_changed.
-        //
-        // SAFETY: WINEVENT_OUTOFCONTEXT delivers events to this thread's message
-        // queue, which the App message loop pumps. The callback is a 'static
-        // extern "system" fn with no captured state.
-        let we_hook = unsafe {
-            SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_FOREGROUND,
-                None,
-                Some(keyboard_hook_callback::foreground_changed),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-            )
-        };
-        if we_hook.is_invalid() {
+        let Some(we_hook) = installer.set_win_event_hook(
+            EVENT_SYSTEM_FOREGROUND,
+            Some(keyboard_hook_callback::foreground_changed),
+        ) else {
             // The keyboard hook is already installed; tear it down to keep state
             // consistent with the failure being reported.
-            let _ = self.uninstall();
+            let _ = self.uninstall_with(installer);
             return Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
+                E_FAIL,
                 "SetWinEventHook failed for EVENT_SYSTEM_FOREGROUND",
             ));
-        }
-        self.foreground_hook.store(we_hook.0, Ordering::Release);
+        };
+        self.foreground_hook.store(we_hook, Ordering::Release);
 
         // A switch of the input desktop (a lock, Ctrl+Alt+Del, a UAC prompt
         // on the secure desktop, and back) is noted for the main loop, which
         // resets when keyboard input left this desktop (roadmap item 2.3).
-        //
-        // SAFETY: as for the foreground hook: WINEVENT_OUTOFCONTEXT delivers
-        // the events to this thread's message queue, which the main loop
-        // pumps, and the callback is a 'static extern "system" fn with no
-        // captured state.
-        let desktop_hook = unsafe {
-            SetWinEventHook(
-                EVENT_SYSTEM_DESKTOPSWITCH,
-                EVENT_SYSTEM_DESKTOPSWITCH,
-                None,
-                Some(keyboard_hook_callback::desktop_switched),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-            )
-        };
-        if desktop_hook.is_invalid() {
-            let _ = self.uninstall();
+        let Some(desktop_hook) = installer.set_win_event_hook(
+            EVENT_SYSTEM_DESKTOPSWITCH,
+            Some(keyboard_hook_callback::desktop_switched),
+        ) else {
+            let _ = self.uninstall_with(installer);
             return Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
+                E_FAIL,
                 "SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH",
             ));
-        }
-        self.desktop_hook.store(desktop_hook.0, Ordering::Release);
+        };
+        self.desktop_hook.store(desktop_hook, Ordering::Release);
 
         Ok(())
     }
 
-    /// True if the low-level keyboard hook is currently installed.
+    /// True while the daemon holds a keyboard hook handle. Windows removes a
+    /// hook whose callback ran past `LowLevelHooksTimeout` without a word
+    /// (KS-08), so this does not say that the hook is still called: the hook
+    /// watchdog finds that out, from raw keyboard input (roadmap item 2.4).
     pub fn is_installed(&self) -> bool {
         !self.hook_handle.load(Ordering::Acquire).is_null()
     }
@@ -231,42 +218,107 @@ impl KeyboardHook {
     /// Main thread only, like [`install`](Self::install):
     /// `UnhookWinEvent` fails on any other thread.
     pub(crate) fn uninstall(&self) -> Result<()> {
+        self.uninstall_with(&installer::SYSTEM)
+    }
+
+    /// [`uninstall`](Self::uninstall) through `installer`. Each handle is
+    /// taken out of its field before it is removed, so it is removed at most
+    /// once, and a hook that is not installed is not asked about.
+    pub(crate) fn uninstall_with(&self, installer: &impl Installer) -> Result<()> {
         let desktop_handle = self
             .desktop_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
-        if !desktop_handle.is_null() {
-            // SAFETY: the handle came from SetWinEventHook in `install`, and
-            // the swap above took it out of the field, so it is unhooked at
-            // most once.
-            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(desktop_handle)) };
-            if let Err(error) = removed.ok() {
-                log::warn!("could not remove the desktop-switch hook: {error}");
-            }
+        if !desktop_handle.is_null()
+            && let Err(error) = installer.unhook_win_event(desktop_handle)
+        {
+            log::warn!("could not remove the desktop-switch hook: {error}");
         }
 
         let we_handle = self
             .foreground_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
-        if !we_handle.is_null() {
-            // SAFETY: the handle came from SetWinEventHook in `install`, and
-            // the swap above took it out of the field, so it is unhooked at
-            // most once.
-            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(we_handle)) };
-            if let Err(error) = removed.ok() {
-                log::warn!("could not remove the foreground hook: {error}");
-            }
+        if !we_handle.is_null()
+            && let Err(error) = installer.unhook_win_event(we_handle)
+        {
+            log::warn!("could not remove the foreground hook: {error}");
         }
 
         let handle = self
             .hook_handle
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
+        self.health.set_hook_installed(false);
         if !handle.is_null() {
-            // SAFETY: handle was obtained from SetWindowsHookExW above.
-            unsafe {
-                UnhookWindowsHookEx(HHOOK(handle))?;
-            }
+            installer.unhook_keyboard(handle)?;
         }
         Ok(())
+    }
+
+    /// Replaces the keyboard hook with a new one, for the hook watchdog
+    /// (roadmap item 2.4, KS-08). Main thread only, outside every callback:
+    /// the main loop's drain serves the watchdog's request, so `install`,
+    /// `uninstall` and this never overlap.
+    ///
+    /// - No keyboard hook installed (before `install`, or after `uninstall`
+    ///   at exit or at the session end): `NotInstalled`, and no call.
+    /// - Otherwise the new hook goes in first, at the head of the chain, and
+    ///   only then the old one comes off. Windows calls a low-level hook only
+    ///   inside a message call of this thread, and none happens between the
+    ///   two calls, so every key event sees exactly one hook of ours: never
+    ///   two, and never none.
+    /// - A new hook that Windows refuses is an error, and the old one stays
+    ///   installed and held: the daemon never has fewer hooks than before.
+    pub(crate) fn reinstall_keyboard_hook(&self) -> Result<Reinstalled> {
+        self.reinstall_keyboard_hook_with(&installer::SYSTEM)
+    }
+
+    /// [`reinstall_keyboard_hook`](Self::reinstall_keyboard_hook) through
+    /// `installer`.
+    pub(crate) fn reinstall_keyboard_hook_with(
+        &self,
+        installer: &impl Installer,
+    ) -> Result<Reinstalled> {
+        if self.hook_handle.load(Ordering::Acquire).is_null() {
+            return Ok(Reinstalled::NotInstalled);
+        }
+        let new = installer.set_keyboard_hook()?;
+        let previous = self.hook_handle.swap(new, Ordering::AcqRel);
+        let old = match installer.unhook_keyboard(previous) {
+            Ok(()) => OldHook::StillInstalled,
+            Err(error) => OldHook::Gone(error.code()),
+        };
+        Ok(Reinstalled::Replaced { old })
+    }
+}
+
+/// What [`KeyboardHook::reinstall_keyboard_hook`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reinstalled {
+    /// No keyboard hook is installed, so none was installed either.
+    NotInstalled,
+    /// A new hook replaced the old one, which went as `old` says.
+    Replaced { old: OldHook },
+}
+
+/// What became of the old keyboard hook in a reinstall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OldHook {
+    /// It was still installed, and is removed now.
+    StillInstalled,
+    /// Removing it failed with this error: Windows had removed it already,
+    /// as it does after a callback that ran past `LowLevelHooksTimeout`.
+    Gone(HRESULT),
+}
+
+impl fmt::Display for OldHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OldHook::StillInstalled => f.write_str("the old hook was still installed"),
+            OldHook::Gone(code) => write!(
+                f,
+                "Windows had removed the old hook: {}",
+                Error::from(*code)
+            ),
+        }
     }
 }
 
@@ -299,7 +351,9 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
+    use crate::hook::installer::{Call, FakeInstaller};
     use crate::hook::main_thread::{MainThread, with_main};
+    use windows::Win32::Foundation::{E_ACCESSDENIED, ERROR_INVALID_HOOK_HANDLE};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     /// Turns remapping on or off on `hook` through this thread's main
@@ -582,6 +636,181 @@ mod tests {
                 TargetWindow::NONE
             ),
             Submitted::Closed
+        );
+    }
+
+    /// A hook that is never dropped: one that holds the handles of a fake
+    /// would remove them through the system installer, which panics under
+    /// test.
+    fn leaked() -> &'static KeyboardHook {
+        Box::leak(Box::new(KeyboardHook::new()))
+    }
+
+    /// A leaked hook installed through `fake`, whose calls are taken: the
+    /// keyboard hook is handle 1, the two WinEvent hooks 2 and 3.
+    fn installed(fake: &FakeInstaller) -> &'static KeyboardHook {
+        let hook = leaked();
+        hook.install_with(fake)
+            .expect("the fake installs every hook");
+        assert_eq!(
+            fake.take_calls(),
+            [
+                Call::InstallKeyboard(1),
+                Call::InstallWinEvent(2),
+                Call::InstallWinEvent(3)
+            ]
+        );
+        hook
+    }
+
+    /// Removes `hook`'s hooks through `fake` and returns the keyboard
+    /// handle it removed.
+    fn removed_keyboard_hook(hook: &KeyboardHook, fake: &FakeInstaller) -> Option<usize> {
+        hook.uninstall_with(fake)
+            .expect("the fake removes the keyboard hook");
+        fake.take_calls().into_iter().find_map(|call| match call {
+            Call::RemoveKeyboard(handle) => Some(handle),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_reinstall_installs_the_new_hook_before_it_removes_the_old_one() {
+        // Ruling S3, critique I2: a key event sees exactly one hook of
+        // ours, never none, so the new hook goes in first, then the old one
+        // comes off, and the hook keeps the new handle.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::Replaced {
+                old: OldHook::StillInstalled
+            })
+        );
+        assert_eq!(
+            fake.keyboard_counts(),
+            [2, 1],
+            "one keyboard hook was installed at every step, never none"
+        );
+        assert_eq!(
+            fake.take_calls(),
+            [Call::InstallKeyboard(4), Call::RemoveKeyboard(1)],
+            "the new hook first, then the old one off"
+        );
+        assert_eq!(fake.keyboard_hooks(), [4], "one keyboard hook, the new one");
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(4));
+    }
+
+    #[test]
+    fn a_failed_reinstall_keeps_the_old_hook() {
+        // Ruling S3: a new hook that Windows refuses leaves the old one
+        // installed and in the hook, so the daemon never has fewer hooks
+        // than before.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        fake.refuse_next_keyboard_hook();
+
+        let error = hook
+            .reinstall_keyboard_hook_with(&fake)
+            .expect_err("the fake refuses the new hook");
+        assert_eq!(error.code(), E_ACCESSDENIED);
+        assert_eq!(
+            fake.take_calls(),
+            [Call::KeyboardRefused],
+            "the old hook is left alone"
+        );
+        assert_eq!(fake.keyboard_hooks(), [1]);
+        assert!(hook.is_installed());
+        assert_eq!(
+            removed_keyboard_hook(hook, &fake),
+            Some(1),
+            "the hook still holds the old handle"
+        );
+    }
+
+    #[test]
+    fn a_reinstall_of_a_hook_that_is_not_installed_installs_nothing() {
+        // Ruling S3: before the first install and after `uninstall` (exit,
+        // or the session end) a late request installs no hook.
+        let fake = FakeInstaller::new();
+        assert_eq!(
+            leaked().reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::NotInstalled)
+        );
+        assert_eq!(fake.take_calls(), [], "never installed: no call");
+
+        let hook = installed(&fake);
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(1));
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::NotInstalled)
+        );
+        assert_eq!(fake.take_calls(), [], "removed: no call");
+        assert!(!hook.is_installed());
+        assert_eq!(fake.keyboard_hooks(), [] as [usize; 0]);
+    }
+
+    #[test]
+    fn a_reinstall_reports_an_old_hook_that_windows_removed_as_gone() {
+        // KS-08: Windows removes a hook whose callback ran past
+        // `LowLevelHooksTimeout`, so removing the old one fails; the new one
+        // stays, and the failure is only reported.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        fake.remove_on_its_own(1);
+
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::Replaced {
+                old: OldHook::Gone(ERROR_INVALID_HOOK_HANDLE.into())
+            })
+        );
+        assert_eq!(
+            fake.take_calls(),
+            [Call::InstallKeyboard(4), Call::RemoveKeyboard(1)]
+        );
+        assert_eq!(fake.keyboard_hooks(), [4]);
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(4));
+    }
+
+    #[test]
+    fn the_daemons_reinstall_of_a_hook_never_installed_makes_no_call() {
+        // The daemon's path, through the system installer, which panics at
+        // any call under test: this returns only because the null handle
+        // stops it first.
+        assert_eq!(
+            KeyboardHook::new().reinstall_keyboard_hook(),
+            Ok(Reinstalled::NotInstalled)
+        );
+    }
+
+    #[test]
+    fn the_install_marks_the_hook_installed_and_the_removal_clears_it() {
+        // Ruling I3: the watchdog counts raw input only while this flag
+        // says the keyboard hook is installed.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        assert!(
+            hook.health().hook_installed(),
+            "an installed hook is marked installed"
+        );
+        removed_keyboard_hook(hook, &fake);
+        assert!(
+            !hook.health().hook_installed(),
+            "a removed hook is no longer marked installed"
+        );
+    }
+
+    #[test]
+    fn a_refused_install_leaves_the_hook_unmarked() {
+        let fake = FakeInstaller::new();
+        fake.refuse_next_keyboard_hook();
+        let hook = leaked();
+        assert!(hook.install_with(&fake).is_err(), "the install is refused");
+        assert!(
+            !hook.health().hook_installed(),
+            "no hook, no mark: the watchdog counts no raw input"
         );
     }
 

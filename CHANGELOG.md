@@ -117,7 +117,7 @@ minor version; such entries sit under **Changed** and start with
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=12`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
@@ -170,6 +170,91 @@ minor version; such entries sit under **Changed** and start with
   `a_late_return_signal_keeps_a_running_macro_and_an_armed_hold`. Manual
   checks: lock and unlock with Win+L, Ctrl+Alt+Del and a UAC prompt, and
   sign out, with the timestamps in `daemon.log`.
+- A `main_state_refused` counter in the
+  `[WARN] counters since the last report: ...` line (roadmap item 2.4): a
+  hook callback that found the daemon's decision state in use passes its
+  event undecided and is counted, never logged on the hook path. Nothing
+  re-enters that state today, so a count is a defect worth reporting.
+  Test: `hook::main_thread::tests::a_refused_reentry_is_counted_in_main_state_refused`.
+- A hook watchdog (roadmap item 2.4, KS-08). Windows removes a low-level
+  keyboard hook whose callback runs past `LowLevelHooksTimeout`, without a
+  word, and remapping then stopped while `swch status` still said
+  `running`. A `hook-watchdog` thread now receives the raw input of every
+  keyboard on a message-only window of its own (`RIDEV_INPUTSINK`) and
+  compares it, four times a second while keys are typed, with a heartbeat
+  that the keyboard callback bumps at every call (one atomic increment, the
+  only per-key cost on the main thread). It reads the raw input queued
+  since the last tick in one batch (`GetRawInputBuffer`), so it does not
+  wake up per key: the first key after 2 s without keys wakes it once,
+  and a backlog is read until the queue is empty. Callbacks are matched
+  against raw key events as totals, so a burst of injected keys whose raw
+  input is read over several ticks draws no reinstall. When keys arrive and the callback
+  stays silent for more than 1 s, it asks the main thread, which installed
+  the hook, to reinstall it: the new hook goes in first, then the old one
+  comes off, so a key never sees two hooks of the daemon or none; a hook
+  that answers once a busy main thread is free is kept; a reinstall that
+  does not help is asked again after 2, 4 ... up to 64 s of silence. The
+  reinstall resets the pending gestures and reads the held keys from
+  Windows, as `swch on` does, and keeps the running macros. Raw input
+  counts only while the keyboard hook is installed, and only for keys the
+  hook can see; the watchdog keeps counts and times, never key data, and
+  never injects input, so the idle timer and the screen saver work as
+  before. Idle, it does not wake up. New lines:
+  `[WARN] the keyboard hook got no key event for N ms while keys were typed; reinstalled it (...)`,
+  `[INFO] state reset: the keyboard hook was reinstalled`,
+  `[INFO] the keyboard hook answered before its reinstall; it was kept`,
+  `[ERROR] could not reinstall the keyboard hook (...); the old one is kept`,
+  `[INFO] hook watchdog: raw keyboard input arrives`,
+  `[INFO] hook watchdog stopped after N wakes for M raw key events` (once,
+  at exit) and the watchdog's startup and exit lines; new counters `raw_input_unread`,
+  `watchdog_timer_not_set` and `watchdog_desktop_check_failed`. The
+  `windows` feature `Win32_UI_Input` is named (it was on already;
+  `Cargo.lock` is unchanged). No test can install a hook or register for
+  raw input: those calls are compiled only outside tests
+  (`hook::installer`). Tests: `hook::watchdog::decision::tests` (a fake
+  clock), `hook::watchdog::tests` (the loop on a fake timer, and the thread
+  with synthetic raw input), `hook::keyboard_hook::tests::a_reinstall_installs_the_new_hook_before_it_removes_the_old_one`,
+  `a_failed_reinstall_keeps_the_old_hook`,
+  `hook::main_thread::tests::a_reinstall_resets_the_engine_and_keeps_the_macros`,
+  `engine::scenarios::a_swallowed_key_released_while_the_hook_was_gone_fires_at_its_next_press_after_the_reinstall`.
+  Manual checks: a debug build's 1.5 s hold of the callback, 10 minutes of
+  idle, typing in an elevated window, a lock and a UAC prompt.
+- `swch status` reports the keyboard hook's health after the binding count
+  (roadmap item 2.4): `hook ok`, `hook not watched` (the watchdog does not
+  run), `hook reinstall failed` (until the hook answers again or a later
+  reinstall succeeds) or `hook watchdog timer failing`, then
+  `reinstalls: N` and, after a reinstall, `last <UTC time>`:
+  `OK: running (3 bindings live; hook ok, reinstalls: 1, last 2026-10-19T09:41:07.123Z)`.
+  The IPC workers read it from atomics, so the answer comes also while the
+  main thread is stuck. Tests:
+  `hook::health::tests::the_hook_health_reads_ok_not_watched_or_failed_with_its_reinstalls`,
+  `hook::ipc_server::tests::dispatch_status_appends_the_hook_health`,
+  `tests/ipc_roundtrip.rs::status_reports_the_hook_health_over_the_pipe`.
+- A panic hook (roadmap item 2.4, roadmap 1.7 question 4): a thread that
+  panics logs
+  `[ERROR] thread '<name>' panicked at <file>:<line>:<column>: <message>`
+  through the log writer, so the line reaches `daemon.log`, and waits at
+  most 250 ms for it; a second panic of the thread within a second shares
+  that wait. A panic in the keyboard callback then ends the daemon, so the
+  keyboard waits at most about 250 ms for it. Tests:
+  `logging::panic::tests::a_stuck_writer_holds_a_panic_report_at_most_its_budget`,
+  `a_panic_report_reaches_the_log_file_before_it_returns`,
+  `a_panicking_thread_of_a_child_process_is_logged_through_the_installed_hook`.
+- Debug builds only: `KS_DEBUG_HOOK_HOLD=<key>` at startup (for example
+  `ScrollLock`) makes the keyboard callback hold 1.5 s at each key-down of
+  that key, past the largest `LowLevelHooksTimeout`, so that the hook
+  watchdog can be checked by hand (roadmap item 2.4). It logs
+  `[WARN] debug build: the keyboard callback holds 1.5 s at each ScrollLock key-down (KS_DEBUG_HOOK_HOLD)`.
+  A release build has no code for it
+  (`hook::keyboard_hook_callback::tests::the_debug_hold_is_compiled_only_into_debug_builds`).
+- Bench rows R14, R14c, R15 and R16 (roadmap item 2.4): the keyboard
+  callback of an ordinary key in steady typing, one key event every
+  millisecond, with the hook watchdog ticking and reading the raw input in
+  batches (R14); the same pacing and post with no watchdog (R14c, R14's
+  baseline); what raw input read on the main thread would have cost per
+  key event (R15), the design the watchdog's own thread replaces; and the
+  key-down callback of the first key of a burst, which wakes the idle
+  watchdog once (R16).
 
 ### Changed
 
@@ -535,6 +620,14 @@ minor version; such entries sit under **Changed** and start with
   Manual check:
   `cargo test --locked -- --ignored --exact platform::foreground::tests::the_foreground_cache_names_the_focused_notepad`,
   then focus Notepad within 5 s.
+- The reply of `swch status` goes on after the binding count with the
+  hook's health: `running (3 bindings live; hook ok, reinstalls: 0)` instead
+  of `running (3 bindings live)` (roadmap item 2.4). It still starts the
+  same way, so `swch open` and scripts that look for `running (` are not
+  affected; one that compares the whole line must follow.
+- Rust's own panic message (`thread 'main' panicked at ...` on stderr, from
+  the panicking thread, with no bound) is replaced by the panic hook's log
+  line, on the console and in `daemon.log` (roadmap item 2.4).
 
 ### Fixed
 
@@ -914,6 +1007,11 @@ minor version; such entries sit under **Changed** and start with
   `after_a_lock_the_next_press_of_a_passing_key_is_a_new_press`,
   `hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key`,
   `engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches`.
+- KS-08, its last half: a keyboard hook that Windows removed after a slow
+  callback is found and reinstalled within about 1.5 s of typing, instead
+  of leaving every binding dead until the daemon restarts (roadmap item
+  2.4; the action half was fixed by roadmap item 2.1). The keys typed
+  before the reinstall reach Windows unremapped.
 
 ## [0.1.0] - 2026-05-20
 

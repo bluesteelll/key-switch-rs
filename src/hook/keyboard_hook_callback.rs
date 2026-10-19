@@ -4,23 +4,26 @@
 //! For every `WH_KEYBOARD_LL` event, `keyboard_hook_callback`:
 //!
 //! 1. passes `code < 0` on untouched, as the hook contract requires;
-//! 2. passes every event untouched, without reading it, while remapping is
+//! 2. bumps the keyboard hook's heartbeat (`hook::health`, one atomic RMW),
+//!    which the hook watchdog compares with the raw keyboard input that
+//!    Windows reports (roadmap item 2.4, KS-08);
+//! 3. passes every event untouched, without reading it, while remapping is
 //!    off (`swch off`, `KeyboardHook::is_enabled`); the hooks stay
 //!    installed;
-//! 3. passes the daemon's own injected events (the sentinel in
+//! 4. passes the daemon's own injected events (the sentinel in
 //!    `dwExtraInfo`, see `crate::core::constants`) before any state is
 //!    touched, so a synthesized key never feeds back into the engine;
-//! 4. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
+//! 5. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
-//! 5. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
+//! 6. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
 //!    thread's state (`hook::main_thread::with_main`), with one snapshot of
 //!    the binding list and a `HookEnv` that answers the engine's questions
 //!    (the foreground window's executable name from the main thread's
 //!    foreground cache, with no call; its title and the OS key state with
 //!    live Win32 calls), and hands the timers the decision asks for to the
 //!    main thread's gesture timers, under the same borrow;
-//! 6. carries out the [`Decision`] after the borrow and the snapshot are
+//! 7. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
 //!    one `SendInput`, tagged with the sentinel; roadmap item 1.2, KS-12),
@@ -30,8 +33,13 @@
 //!    so that its output stays in order with the keys typed after it;
 //!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
 //!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
-//! 7. returns `LRESULT(1)` if the decision suppresses the event, and
+//! 8. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
+//!
+//! In debug builds only, `KS_DEBUG_HOOK_HOLD` set to a key name at startup
+//! makes the callback hold 1.5 s at each key-down of that key, after the
+//! timing starts, for the hook watchdog's manual check (`hook::debug_hold`,
+//! roadmap item 2.4); a release build has no code for it.
 //!
 //! `desktop_switched` notes a switch of the input desktop for the main
 //! loop, which resets the transient state when keyboard input left this
@@ -60,8 +68,11 @@
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is
 //! reset with no event decided in between. So are a config reload and the
 //! input signals that `desktop_switched` and the control window note
-//! (roadmap item 2.3). None of them installs or removes a hook; only the
-//! main thread does.
+//! (roadmap item 2.3), and a reinstall of the keyboard hook that the hook
+//! watchdog asks for (`hook::watchdog`, roadmap item 2.4): the watchdog runs
+//! on a thread of its own, reads only the heartbeat this callback bumps, and
+//! the main thread replaces the hook between two callbacks. Only the main
+//! thread installs or removes a hook.
 //!
 //! The engine reads the clock once per event, here, and the loop takes a
 //! timer only once its due time has passed. The engine decides by
@@ -351,6 +362,9 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     }
 
     let hook = get_hook();
+    // Before the switch: the hook watchdog compares every call with the raw
+    // keyboard input, also while remapping is off (roadmap item 2.4).
+    hook.health().callback_seen();
     if !hook.is_enabled() {
         // SAFETY: passes the event on with the exact arguments the system
         // gave this hook procedure. Remapping is off (`swch off`): the event
@@ -366,6 +380,8 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
     // this call; two fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    #[cfg(debug_assertions)]
+    crate::hook::debug_hold::hold_if_asked(wparam, event.vkCode);
     let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
         Some(decision) => {
             let suppress = decision.suppress;
@@ -833,6 +849,49 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_callback_counts_every_call_also_while_remapping_is_off() {
+        // Roadmap item 2.4: the hook watchdog compares raw keyboard input
+        // with this heartbeat, so every call with code >= 0 counts: an
+        // injected event and one while remapping is off too, or a hook that
+        // dies under `swch off` would go unnoticed. The callback reads the
+        // process-wide hook, hence `GLOBAL_HOOK`, which also makes the
+        // difference exact; the binding is `DoNothing`.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+        let before = get_hook().health().callbacks();
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+        let injected = KBDLLHOOKSTRUCT {
+            vkCode: f13,
+            dwExtraInfo: injected_sentinel(),
+            ..Default::default()
+        };
+        // SAFETY: code 0 is HC_ACTION, and lparam points to `injected`, a
+        // KBDLLHOOKSTRUCT on this stack frame that outlives the call; no
+        // hook is installed, so the pass path's CallNextHookEx calls no
+        // next hook procedure.
+        unsafe {
+            keyboard_hook_callback(
+                0,
+                WPARAM(WM_KEYDOWN as usize),
+                LPARAM(&injected as *const KBDLLHOOKSTRUCT as isize),
+            )
+        };
+        assert!(set_enabled(get_hook(), false));
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert_eq!(get_hook().health().callbacks() - before, 5);
+    }
+
+    #[test]
     fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
         let inputs = menu_mask_inputs();
         for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {
@@ -1268,8 +1327,9 @@ mod tests {
     /// watcher (which start their own threads once, at startup), of every
     /// file under `src/engine`, and of the files the fast actions, the
     /// gesture timer and the foreground cache run in, name no way to start a
-    /// thread. The tokens are
-    /// assembled, so this test does not match itself.
+    /// thread. The folder `src/hook/watchdog` is not entered, on purpose: it
+    /// starts the hook watchdog's thread once, at startup (roadmap item
+    /// 2.4). The tokens are assembled, so this test does not match itself.
     #[test]
     fn the_gesture_path_starts_no_thread() {
         let tokens = [
@@ -1322,6 +1382,50 @@ mod tests {
             "threads started on the gesture path:\n{}",
             sites.join("\n")
         );
+    }
+
+    /// Roadmap item 2.4 (cut D10, Q3): the hold of the keyboard callback for
+    /// the watchdog's manual check exists only in debug builds. Its module is
+    /// declared under `#[cfg(debug_assertions)]`, and so is every call of it
+    /// in the callback and in `App::run`, so a release build, the elevated
+    /// daemon, has no code for it.
+    #[test]
+    fn the_debug_hold_is_compiled_only_into_debug_builds() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read =
+            |file: &str| std::fs::read_to_string(root.join(file)).expect("read a source file");
+        let cfg = "#[cfg(debug_assertions)]";
+
+        let modules = read("src/hook/mod.rs");
+        let lines: Vec<&str> = modules.lines().collect();
+        let declared = lines
+            .iter()
+            .position(|line| line.trim().ends_with("mod debug_hold;"))
+            .expect("src/hook/mod.rs declares debug_hold");
+        assert!(
+            declared > 0 && lines[declared - 1].trim() == cfg,
+            "the line before `mod debug_hold;` is {cfg}"
+        );
+
+        let mut report = Vec::new();
+        for file in ["src/hook/keyboard_hook_callback.rs", "src/core/app.rs"] {
+            let text = read(file);
+            let lines = non_test_lines(&text);
+            let mut calls = 0;
+            for (index, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains("debug_hold::") {
+                    continue;
+                }
+                calls += 1;
+                if index == 0 || lines[index - 1].trim() != cfg {
+                    report.push(format!("{file}:{}: {}", index + 1, line.trim()));
+                }
+            }
+            if calls == 0 {
+                report.push(format!("no call site of debug_hold:: in {file}"));
+            }
+        }
+        assert!(report.is_empty(), "{}", report.join("\n"));
     }
 
     #[test]

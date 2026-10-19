@@ -11,7 +11,7 @@ use std::num::NonZeroU8;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use interprocess::local_socket::{GenericNamespaced, Listener, ListenerOptions, prelude::*};
 use interprocess::os::windows::ToWtf16;
@@ -19,6 +19,7 @@ use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use interprocess::os::windows::named_pipe::{DuplexPipeStream, PipeListenerOptions, pipe_mode};
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 
+use key_switch_rs::hook::health::HookHealth;
 use key_switch_rs::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use key_switch_rs::ipc::{Command, REPLY_TIMEOUT, RequestError, pipe_path, request};
 
@@ -45,12 +46,33 @@ fn listener(name: &str) -> Listener {
         .expect("the test pipe can be created")
 }
 
-/// A stand-in for the daemon: a remapping flag, two bindings, and a record
-/// of every switch it was asked for.
+/// A stand-in for the daemon: a remapping flag, two bindings, the hook's
+/// health, and a record of every switch it was asked for.
 struct TestControl {
     enabled: AtomicBool,
     bindings: usize,
+    hook: HookHealth,
     toggles: Mutex<Vec<bool>>,
+}
+
+/// A watched hook that was never reinstalled.
+const HOOK_OK: HookHealth = HookHealth {
+    watched: true,
+    reinstalls: 0,
+    last_reinstall: None,
+    last_attempt_failed: false,
+    timer_failing: false,
+};
+
+impl TestControl {
+    fn new(hook: HookHealth) -> Self {
+        Self {
+            enabled: AtomicBool::new(true),
+            bindings: 2,
+            hook,
+            toggles: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl DaemonControl for TestControl {
@@ -67,6 +89,7 @@ impl DaemonControl for TestControl {
         DaemonStatus {
             enabled: self.enabled.load(Ordering::Acquire),
             bindings: self.bindings,
+            hook: self.hook,
         }
     }
 
@@ -78,11 +101,7 @@ impl DaemonControl for TestControl {
 #[test]
 fn status_off_on_status_round_trip_without_a_hook() {
     let name = unique_pipe_name("server");
-    let control = Arc::new(TestControl {
-        enabled: AtomicBool::new(true),
-        bindings: 2,
-        toggles: Mutex::new(Vec::new()),
-    });
+    let control = Arc::new(TestControl::new(HOOK_OK));
     ipc_server::bind(&name)
         .expect("the pipe can be created under its own name")
         .serve(control.clone())
@@ -94,18 +113,27 @@ fn status_off_on_status_round_trip_without_a_hook() {
 
     assert_eq!(
         send(Command::Status),
-        (true, "running (2 bindings live)".to_owned())
+        (
+            true,
+            "running (2 bindings live; hook ok, reinstalls: 0)".to_owned()
+        )
     );
     assert_eq!(send(Command::Off), (true, "disabled".to_owned()));
     assert!(!control.enabled.load(Ordering::Acquire));
     assert_eq!(
         send(Command::Status),
-        (true, "disabled (2 bindings live)".to_owned())
+        (
+            true,
+            "disabled (2 bindings live; hook ok, reinstalls: 0)".to_owned()
+        )
     );
     assert_eq!(send(Command::On), (true, "enabled".to_owned()));
     assert_eq!(
         send(Command::Status),
-        (true, "running (2 bindings live)".to_owned())
+        (
+            true,
+            "running (2 bindings live; hook ok, reinstalls: 0)".to_owned()
+        )
     );
     assert_eq!(
         *control
@@ -113,6 +141,32 @@ fn status_off_on_status_round_trip_without_a_hook() {
             .lock()
             .unwrap_or_else(PoisonError::into_inner),
         [false, true]
+    );
+}
+
+#[test]
+fn status_reports_the_hook_health_over_the_pipe() {
+    // Roadmap item 2.4: one reinstall with its time. The reply is still one
+    // line that starts as swch and the probe of `swch open` expect.
+    let name = unique_pipe_name("health");
+    let at = UNIX_EPOCH + Duration::from_millis(1_760_866_867_123);
+    let control = Arc::new(TestControl::new(HookHealth {
+        reinstalls: 1,
+        last_reinstall: Some(at),
+        ..HOOK_OK
+    }));
+    ipc_server::bind(&name)
+        .expect("the pipe can be created under its own name")
+        .serve(control)
+        .expect("the server thread starts");
+
+    let (ok, message) =
+        request(&name, &Command::Status, REPLY_TIMEOUT).expect("the server answers");
+    assert!(ok);
+    assert!(message.starts_with("running (2 bindings live"), "{message}");
+    assert_eq!(
+        message,
+        "running (2 bindings live; hook ok, reinstalls: 1, last 2025-10-19T09:41:07.123Z)"
     );
 }
 

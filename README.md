@@ -65,12 +65,15 @@ key-switch-rs/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, remapping switch
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── control_window.rs   - hidden control window: session notifications, session end
-    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals
+    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals, hook reinstall
+    │   ├── health.rs           - the keyboard callback's heartbeat, what the watchdog asks the main thread
+    │   ├── installer.rs        - the Win32 calls that install hooks and raw input, compiled only outside tests
+    │   ├── watchdog/           - the hook watchdog: raw keyboard input against the heartbeat (mod.rs), the pure decision (decision.rs)
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── platform/
     │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
-    │   ├── foreground.rs       - the foreground window for when:: executable cached per window, title read live
+    │   ├── foreground.rs       - the foreground window for when: executable cached per window, title read live
     │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
     ├── system/
@@ -773,7 +776,7 @@ Release builds ship two binaries:
 
 ```text
 > swch open      # swch: daemon launched (UAC prompt on every launch)
-> swch status    # running (3 bindings live) with the default config
+> swch status    # running (3 bindings live; hook ok, reinstalls: 0) with the default config
 > swch off       # disabled       (remapping off; every key reaches Windows)
 > swch on        # enabled        (remapping on again)
 > swch exit      # shutting down  (daemon process terminates)
@@ -786,7 +789,7 @@ Release builds ship two binaries:
 | `swch open`   | Launch the daemon (a UAC prompt on every launch of a release build). Does nothing if a daemon already answers, refuses this console, is busy, or does not answer within 5 s. |
 | `swch on`     | Turn remapping back on (idempotent). |
 | `swch off`    | Turn remapping off (idempotent): the hook stays installed and passes every key through; pending Tap/Hold/DoubleTap, chords and sequences are dropped, and a running macro stops within 100 ms (a step already running finishes first). Useful for games or temporarily passing the OS's defaults through. |
-| `swch status` | Print "running" or "disabled" (remapping on or off) and the live binding count. |
+| `swch status` | Print "running" or "disabled" (remapping on or off), the live binding count and the keyboard hook's health: `hook ok`, `hook not watched` (the hook watchdog does not run), `hook reinstall failed` (Windows refused a new hook until the hook answers again) or `hook watchdog timer failing`, then how many times the watchdog had the hook reinstalled and when it did last, in UTC: `running (3 bindings live; hook ok, reinstalls: 1, last 2026-10-19T09:41:07.123Z)`. |
 | `swch exit`   | Cleanly shut down the daemon (`PostThreadMessageW(WM_QUIT)`). |
 | `swch help`   | Print usage.                                                |
 
@@ -853,8 +856,10 @@ keys you press or the text you type; lines about the config quote the
 config, key names included. What the keyboard hook must not log at every
 key press, a `SendInput` that Windows cut short, a `PostMessage` or
 language switch that Windows refused, a Hold whose timer could not be set,
-or a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
-queue dropped or that found the executor stopped, it counts. It also records how long its longest callback ran. While a count
+a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
+queue dropped or that found the executor stopped, or a key event that found
+the daemon's decision state in use and passed undecided
+(`main_state_refused`), it counts. It also records how long its longest callback ran. While a count
 is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
 gives all of them, ending with `longest_callback_us=<microseconds>`.
@@ -871,6 +876,10 @@ If the daemon cannot find the folder, the console says
 `[WARN] no log file: ...` and the daemon logs to the console only. If the
 file cannot be written, the console says `[WARN] log file <path>: ...` once,
 and every later line tries again.
+
+A panic, a defect of the daemon, is logged the same way, as
+`[ERROR] thread '<name>' panicked at <file>:<line>:<column>: <message>`;
+the panicking thread waits at most 250 ms for the line to be written.
 
 Lines reach the file and the console through one writer thread, the file
 first. In a window of the classic console host (`conhost.exe`) with
@@ -893,6 +902,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_Globalization` (`CompareStringOrdinal`: the config watcher compares file names the way the file system does)
   - `Win32_Graphics_Gdi` (`RegisterClassW` and `WNDCLASSW` for the control window)
   - `Win32_UI_WindowsAndMessaging`
+  - `Win32_UI_Input` (`RegisterRawInputDevices`, `GetRawInputBuffer`, `GetRawInputData`: the hook watchdog's raw keyboard input)
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
   - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
@@ -926,6 +936,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles and the remapping switch, and the decision core owned by the main thread, which runs the hooks and every gesture timer, so no lock is taken on the key path; binding list can be hot-swapped atomically; a reload stops the macros still running, which belong to the old list
 - **Timers on the main thread**: a `Hold` sets the main thread's one high-resolution waitable timer instead of starting a thread, and fires within about 1 ms of its term
+- **Hook watchdog**: Windows removes a low-level keyboard hook whose callback runs past `LowLevelHooksTimeout`, without a word (KS-08). A `hook-watchdog` thread receives the raw input of every keyboard on a message-only window of its own and compares it with a heartbeat the keyboard callback bumps; when keys arrive and the callback stays silent for more than 1 s, the main thread reinstalls the hook (the new one first, then the old one off), logs it, and `swch status` counts it. The main thread pays one atomic increment per key. Windows queues one `WM_INPUT` per key event for the watchdog thread, never for the main thread; while keys are typed the thread reads them four times a second in one batch, and the first key after 2 s without keys wakes it once, on another core. A keyboard callback that runs during that wake is about 50 microseconds slower at the median than one that does not (bench row R16 against R12, on the developer's machine): at most once per burst of keys, and only in the worst order. Whether Windows hands a key's raw input to the watchdog before or after it calls the hook for that key is not documented; if after, the key's own callback never meets the wake, and only a key event that follows within those microseconds can. Idle, it does not wake up. It keeps no key data and never injects input. A debug build started with `KS_DEBUG_HOOK_HOLD=<key>` (for example `ScrollLock`) holds the keyboard callback 1.5 s at each key-down of that key, to check the watchdog by hand; a release build has no code for it
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
@@ -964,6 +975,21 @@ What still cannot be intercepted:
   is released. Its release reaches Windows, because the hook finds the key
   down in Windows, so it does not stay stuck (roadmap item 2.3, known
   issue 78).
+
+The hook watchdog (roadmap item 2.4) has limits of its own:
+
+- The keys typed between the hook's loss and its reinstall, about 1 to 1.5
+  s, reach Windows unremapped, and a `Hold` armed just before the loss can
+  still fire on its timer.
+- Another program's low-level hook installed after the daemon that
+  swallows every key for more than 1 s can draw one reinstall, which puts
+  the daemon's hook first again, if Windows reports raw input for the keys
+  that hook swallows (not verified).
+- A daemon that is not elevated gets no hook calls while an elevated
+  window has the focus, but may get its raw input: it then asks for a
+  reinstall after 1, 2, 4 ... up to 64 s of typing there.
+- Raw keyboard input in the daemon's process belongs to the watchdog:
+  Windows allows one registration per device class and process.
 
 For a fully unattended/no-UAC-prompt setup, the alternative is
 `uiAccess="true"` in the manifest — but that requires a binary signed with a

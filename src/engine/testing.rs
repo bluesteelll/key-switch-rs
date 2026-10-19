@@ -64,6 +64,11 @@
 //! the engine with [`ResetReason::InputLeft`], and the two signals that
 //! input came back reset nothing. Like a foreground change, each is a
 //! script error while remapping is off.
+//!
+//! [`Scenario::hook_reinstalled`] models the reset after the hook watchdog
+//! had the keyboard hook reinstalled (roadmap item 2.4): the engine is reset
+//! with [`ResetReason::HookReinstalled`], which reads the held keys from the
+//! OS as `swch on` does.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -478,6 +483,22 @@ impl Scenario {
         self.drop_stale_timers();
         self.enabled = true;
         let label = format!("remapping on at {}", self.clock());
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    /// The keyboard hook was reinstalled after Windows had removed it, as
+    /// the hook watchdog has the main thread do (roadmap item 2.4): the
+    /// engine is reset with [`ResetReason::HookReinstalled`], which reads the
+    /// held keys from the OS, and the timers the reset made stale are
+    /// dropped. The script models the keys typed while the hook was gone
+    /// with [`down_unseen`](Self::down_unseen) and
+    /// [`up_unseen`](Self::up_unseen).
+    #[track_caller]
+    pub(crate) fn hook_reinstalled(mut self) -> Self {
+        self.engine.reset(&self.env, ResetReason::HookReinstalled);
+        self.drop_stale_timers();
+        let label = format!("keyboard hook reinstalled at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
     }

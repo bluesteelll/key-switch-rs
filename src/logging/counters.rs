@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How many counters there are.
-const SLOTS: usize = 7;
+const SLOTS: usize = 11;
 
 /// A condition that is counted instead of logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,24 @@ pub enum Counter {
     /// The `PostMessageW` of a `SwitchLanguage`, `SwitchLanguageBackward` or
     /// `PostMessage` action failed.
     PostMessageFailed,
+    /// A callback found the main thread's state borrowed and passed its
+    /// event without deciding it (`hook::main_thread::with_main`, roadmap
+    /// item 2.4). Nothing re-enters the state today, so a count is a defect.
+    MainStateRefused,
+    /// The hook watchdog could not read raw keyboard input, so it did not
+    /// count it (roadmap item 2.4): a `GetRawInputData` or a
+    /// `GetRawInputBuffer` that failed, a record of a buffered read that
+    /// could not be read, or a queue that reports raw input that no read
+    /// returns.
+    RawInputUnread,
+    /// The hook watchdog could not set its tick timer; its wait then times
+    /// out at the tick, and the pass sets the timer again (roadmap item
+    /// 2.4).
+    WatchdogTimerNotSet,
+    /// The hook watchdog could not tell whether keyboard input is on the
+    /// daemon's desktop when it decided to ask for a reinstall, so it did
+    /// not ask (roadmap item 2.4).
+    WatchdogDesktopCheckFailed,
 }
 
 impl Counter {
@@ -53,6 +71,10 @@ impl Counter {
         Counter::ExecutorJobsDropped,
         Counter::ExecutorUnavailable,
         Counter::PostMessageFailed,
+        Counter::MainStateRefused,
+        Counter::RawInputUnread,
+        Counter::WatchdogTimerNotSet,
+        Counter::WatchdogDesktopCheckFailed,
     ];
 }
 
@@ -66,6 +88,10 @@ impl fmt::Display for Counter {
             Counter::ExecutorJobsDropped => "executor_jobs_dropped",
             Counter::ExecutorUnavailable => "executor_unavailable",
             Counter::PostMessageFailed => "post_message_failed",
+            Counter::MainStateRefused => "main_state_refused",
+            Counter::RawInputUnread => "raw_input_unread",
+            Counter::WatchdogTimerNotSet => "watchdog_timer_not_set",
+            Counter::WatchdogDesktopCheckFailed => "watchdog_desktop_check_failed",
         })
     }
 }
@@ -110,6 +136,10 @@ impl Counters {
             Counter::ExecutorJobsDropped => &self.counts[4],
             Counter::ExecutorUnavailable => &self.counts[5],
             Counter::PostMessageFailed => &self.counts[6],
+            Counter::MainStateRefused => &self.counts[7],
+            Counter::RawInputUnread => &self.counts[8],
+            Counter::WatchdogTimerNotSet => &self.counts[9],
+            Counter::WatchdogDesktopCheckFailed => &self.counts[10],
         }
     }
 
@@ -118,6 +148,13 @@ impl Counters {
         // AcqRel, the house default for an RMW; the counts publish no other
         // data, and on x86-64 every RMW is a locked instruction anyway.
         self.slot(counter).fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The count of `counter` since the last `take`, without taking it, so
+    /// that a test can read one slot while others are bumped.
+    #[cfg(test)]
+    pub fn get(&self, counter: Counter) -> u64 {
+        self.slot(counter).load(Ordering::Acquire)
     }
 
     /// Counts one more `counter` if `result` is an error, without reading
@@ -224,12 +261,12 @@ mod tests {
     fn the_summary_names_every_counter_once_one_is_non_zero() {
         assert_eq!(
             summary(&Snapshot {
-                counts: [3, 0, 1, 0, 0, 2, 0],
+                counts: [3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0],
                 longest_callback: Duration::from_micros(42),
             })
             .as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 longest_callback_us=42"
+                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=42"
             )
         );
     }
@@ -241,7 +278,7 @@ mod tests {
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::LogLinesDropped);
 
-        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0]);
+        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             counters.take().counts,
             [0; SLOTS],
@@ -283,7 +320,7 @@ mod tests {
         assert_eq!(
             summary(&slow).as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=5000"
+                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=5000"
             )
         );
     }
@@ -329,7 +366,11 @@ mod tests {
                 "log_lines_dropped",
                 "executor_jobs_dropped",
                 "executor_unavailable",
-                "post_message_failed"
+                "post_message_failed",
+                "main_state_refused",
+                "raw_input_unread",
+                "watchdog_timer_not_set",
+                "watchdog_desktop_check_failed"
             ]
         );
     }

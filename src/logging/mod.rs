@@ -25,6 +25,7 @@ use std::sync::mpsc::SyncSender;
 use std::time::{Duration, SystemTime};
 
 pub mod counters;
+pub(crate) mod panic;
 mod sink;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -103,9 +104,11 @@ fn write_to_stderr(line: &LogLine) {
 fn write_to_stderr(_line: &LogLine) {}
 
 /// Installs the logger, at level [`MAX_LEVEL`], and starts the `log-writer`
-/// thread with the console (stderr) as its only output. Once per process; a
-/// later call, or a call after another logger was installed, does nothing.
-/// If the thread cannot be started, records go to stderr directly.
+/// thread with the console (stderr) as its only output, and installs the
+/// panic hook, which logs a panic through that writer (`panic`). Once per
+/// process; a later call, or a call after another logger was installed,
+/// does nothing. If the thread cannot be started, records go to stderr
+/// directly.
 pub fn init() {
     let Some(spawned) = start_logging(
         || log::set_logger(&LOGGER).is_ok(),
@@ -114,6 +117,9 @@ pub fn init() {
         return;
     };
     log::set_max_level(MAX_LEVEL);
+    // A panic's message goes through the writer from now on, with a
+    // bounded wait (roadmap item 2.4).
+    panic::install();
     match spawned {
         Ok(tx) => {
             let _ = LOGGER.writer.set(tx);
@@ -164,6 +170,13 @@ pub fn flush() -> bool {
         Some(tx) => writer::flush_on(tx, FLUSH_TIMEOUT),
         None => true,
     }
+}
+
+/// `at` in UTC, as the log writes it: `2026-10-16T09:41:07.123Z`.
+pub(crate) fn utc_timestamp(at: SystemTime) -> String {
+    let mut text = String::new();
+    sink::write_timestamp(&mut text, at);
+    text
 }
 
 /// The folder of the log files for the account whose `%LOCALAPPDATA%` is
@@ -446,6 +459,11 @@ mod tests {
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),
+            // The heartbeat of every keyboard callback (roadmap item 2.4).
+            ("src/hook/health.rs", Some("fn callback_seen(")),
+            // A debug build's hold of the callback (roadmap item 2.4).
+            ("src/hook/debug_hold.rs", Some("fn hold_if_asked(")),
+            ("src/hook/debug_hold.rs", Some("fn should_hold(")),
         ];
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut sites = Vec::new();

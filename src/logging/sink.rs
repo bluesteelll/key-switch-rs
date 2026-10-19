@@ -117,7 +117,7 @@ fn is_own_target(target: &str) -> bool {
 
 /// `now` in UTC as ISO 8601 with milliseconds: `2026-10-16T09:41:07.123Z`.
 /// A time before 1970 is written as the epoch.
-fn write_timestamp(out: &mut String, now: SystemTime) {
+pub(crate) fn write_timestamp(out: &mut String, now: SystemTime) {
     let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
     let seconds = since_epoch.as_secs();
     let (year, month, day) = civil_from_days(seconds / 86_400);

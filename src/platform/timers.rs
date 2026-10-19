@@ -68,7 +68,7 @@ impl WaitableTimer {
         let handle = unsafe {
             windows::Win32::System::Threading::CreateEventW(None, false, false, PCWSTR::null())
         }
-        .expect("an event is made");
+        .expect("invariant: CreateEventW with no name and no security attributes makes an event");
         Self {
             handle,
             high_resolution: false,

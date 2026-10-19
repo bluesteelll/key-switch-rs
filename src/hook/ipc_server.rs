@@ -26,6 +26,7 @@ use interprocess::os::windows::{
     ToWtf16, local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
 
+use crate::hook::health::HookHealth;
 use crate::ipc::{Command, format_err, format_ok};
 
 /// What the IPC commands do to the daemon. Called on the connection
@@ -49,6 +50,8 @@ pub struct DaemonStatus {
     pub enabled: bool,
     /// How many bindings are live.
     pub bindings: usize,
+    /// The keyboard hook's health (roadmap item 2.4).
+    pub hook: HookHealth,
 }
 
 /// The pipe's security descriptor (KS-02), in the security descriptor
@@ -184,9 +187,15 @@ fn dispatch(cmd: Command, control: &dyn DaemonControl) -> String {
             Err(e) => format_err(&format!("could not turn remapping off: {e}")),
         },
         Command::Status => {
-            let DaemonStatus { enabled, bindings } = control.status();
+            let DaemonStatus {
+                enabled,
+                bindings,
+                hook,
+            } = control.status();
             let state = if enabled { "running" } else { "disabled" };
-            format_ok(&format!("{state} ({bindings} bindings live)"))
+            // The start stays "running (N bindings live", which swch and the
+            // probe of `swch open` read; the hook's health follows.
+            format_ok(&format!("{state} ({bindings} bindings live; {hook})"))
         }
         Command::Exit => match control.request_exit() {
             Ok(()) => format_ok("shutting down"),
@@ -211,7 +220,17 @@ mod tests {
         enabled: AtomicBool,
         fail: bool,
         exits: AtomicU32,
+        hook: HookHealth,
     }
+
+    /// A watched hook that was never reinstalled.
+    const HOOK_OK: HookHealth = HookHealth {
+        watched: true,
+        reinstalls: 0,
+        last_reinstall: None,
+        last_attempt_failed: false,
+        timer_failing: false,
+    };
 
     impl FakeControl {
         fn new(fail: bool) -> Self {
@@ -219,6 +238,7 @@ mod tests {
                 enabled: AtomicBool::new(true),
                 fail,
                 exits: AtomicU32::new(0),
+                hook: HOOK_OK,
             }
         }
     }
@@ -236,6 +256,7 @@ mod tests {
             DaemonStatus {
                 enabled: self.enabled.load(Ordering::Acquire),
                 bindings: 3,
+                hook: self.hook,
             }
         }
 
@@ -253,12 +274,12 @@ mod tests {
         let control = FakeControl::new(false);
         assert_eq!(
             dispatch(Command::Status, &control),
-            "OK: running (3 bindings live)\n"
+            "OK: running (3 bindings live; hook ok, reinstalls: 0)\n"
         );
         assert_eq!(dispatch(Command::Off, &control), "OK: disabled\n");
         assert_eq!(
             dispatch(Command::Status, &control),
-            "OK: disabled (3 bindings live)\n"
+            "OK: disabled (3 bindings live; hook ok, reinstalls: 0)\n"
         );
         assert_eq!(
             dispatch(Command::Off, &control),
@@ -268,8 +289,30 @@ mod tests {
         assert_eq!(dispatch(Command::On, &control), "OK: enabled\n");
         assert_eq!(
             dispatch(Command::Status, &control),
-            "OK: running (3 bindings live)\n"
+            "OK: running (3 bindings live; hook ok, reinstalls: 0)\n"
         );
+    }
+
+    #[test]
+    fn dispatch_status_appends_the_hook_health() {
+        // Roadmap item 2.4: the reply still starts the way swch and the
+        // probe of `swch open` expect, and ends with the hook's health.
+        let control = FakeControl {
+            hook: HookHealth {
+                reinstalls: 1,
+                last_reinstall: Some(
+                    std::time::UNIX_EPOCH + Duration::from_millis(1_760_866_867_123),
+                ),
+                ..HOOK_OK
+            },
+            ..FakeControl::new(false)
+        };
+        let reply = dispatch(Command::Status, &control);
+        assert_eq!(
+            reply,
+            "OK: running (3 bindings live; hook ok, reinstalls: 1, last 2025-10-19T09:41:07.123Z)\n"
+        );
+        assert!(reply.starts_with("OK: running (3 bindings live"));
     }
 
     #[test]

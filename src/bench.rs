@@ -56,6 +56,30 @@
 //!   IME window, created on the loop thread before it runs (roadmap item
 //!   2.3). It may write a session-notification warning to the log, which
 //!   the bench does not show.
+//! - R14: steady typing with the hook watchdog ticking (roadmap item 2.4,
+//!   ruling L1): the callbacks of R12, one every millisecond, each right
+//!   after one synthetic raw key event that the watchdog's thread, started
+//!   on the process-wide hook's heartbeat, leaves queued and reads at its
+//!   ticks, four times a second, on another core. The callback's own extra
+//!   work is the heartbeat's one atomic increment, which R12 pays too.
+//! - R14c: R14's control (ruling V3-I2): the same pacing and the same
+//!   posted message right before each call, to a thread that never reads
+//!   its queue, and no watchdog. R14 less R14c is what the ticking watchdog
+//!   costs a callback; R14 less R12 adds the pacing and the post.
+//! - R15: what the rejected design would have added per key event on the
+//!   main thread (cut D1): `PostMessageW`, `PeekMessageW` and
+//!   `DispatchMessageW` of one message to a window of the bench thread
+//!   whose procedure calls `GetRawInputData` (on a null handle, which fails
+//!   at once) and `DefWindowProcW`. An in-thread lower bound: no wake-up and
+//!   no copy of real raw input.
+//! - R16: the key-down callback of the first key of a burst, which wakes
+//!   the idle watchdog: a raw key event right before the call, so that the
+//!   thread's one wake and first pass run next to it, on another core. A
+//!   watchdog per sample, started and stopped outside the timing; it takes
+//!   about a quarter of a second per sample. A declared row, measured and
+//!   reported, not gated (ruling L2): it times the worst order of cut Q6,
+//!   a key's raw input before its hook call, and the wake happens once per
+//!   burst of keys.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -66,11 +90,19 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::{
     Foundation::*,
-    System::Threading::{
-        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_HIGHEST,
-        THREAD_PRIORITY_NORMAL,
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        Threading::{
+            GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY,
+            THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL,
+        },
     },
-    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{
+        Input::{
+            GetRawInputData, HRAWINPUT, KeyboardAndMouse::*, RAWINPUT, RAWINPUTHEADER, RID_INPUT,
+        },
+        WindowsAndMessaging::*,
+    },
 };
 use windows::core::w;
 
@@ -86,9 +118,11 @@ use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 use crate::engine::{Engine, Env, KeyDirection, KeyEvent, sort_by_specificity};
 use crate::hook::control_window::{CONTROL_CLASS, ControlWindow};
+use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
-use crate::hook::main_thread::MainThread;
+use crate::hook::main_thread::{MainThread, MainThreadError};
+use crate::hook::watchdog::{HookWatchdog, RequestReinstall, SYNTHETIC_RAW};
 
 /// One row of the table: its label, what it measures and its samples.
 struct Row {
@@ -397,6 +431,286 @@ fn r12_ordinary_key(events: usize) -> Vec<Duration> {
         let begun = Instant::now();
         std::hint::black_box(call_keyboard_callback(VK_A, *msg));
         samples.push(begun.elapsed());
+    }
+    samples
+}
+
+/// A requester for the watchdog rows that keeps every request unanswered;
+/// with the heartbeat moving at every call, none is expected.
+struct Unanswered(Mutex<Vec<mpsc::SyncSender<ReinstallOutcome>>>);
+
+impl RequestReinstall for Unanswered {
+    fn request(
+        &self,
+        _request: ReinstallRequest,
+    ) -> Result<mpsc::Receiver<ReinstallOutcome>, MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(reply);
+        Ok(answer)
+    }
+}
+
+/// Binds F13 to `DoNothing`, as R12 does, so that the unbound A is an
+/// ordinary key.
+fn bind_f13_to_do_nothing() {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_allow_extra_modifiers(true),
+    ]);
+}
+
+/// Busy-waits for `wait`, so that the bench thread keeps its core.
+fn spin_for(wait: Duration) {
+    let begun = Instant::now();
+    while begun.elapsed() < wait {
+        std::hint::spin_loop();
+    }
+}
+
+/// `events` timed callbacks of the unbound A, down and up in turn, each
+/// `pace` after the previous one began, as steady typing comes, with
+/// `before` right before each, outside the timing.
+fn paced_calls(events: usize, pace: Duration, before: impl Fn()) -> Vec<Duration> {
+    let mut samples = Vec::with_capacity(events);
+    let mut previous: Option<Instant> = None;
+    for msg in [WM_KEYDOWN, WM_KEYUP].iter().cycle().take(events) {
+        if let Some(previous) = previous {
+            while previous.elapsed() < pace {
+                std::hint::spin_loop();
+            }
+        }
+        before();
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_A, *msg));
+        samples.push(begun.elapsed());
+        previous = Some(begun);
+    }
+    samples
+}
+
+/// R14: steady typing with the hook watchdog ticking. Its thread watches
+/// the process-wide hook's heartbeat with synthetic raw input; the first
+/// raw key event of the burst (R16's) and 5 ms let it start ticking, then
+/// one raw key event comes right before each paced call, outside the
+/// timing. The ticking watchdog leaves them queued and reads them at its
+/// ticks. The hook counts as installed for the watchdog while the row
+/// runs; no hook is installed.
+fn r14_steady_typing_with_the_watchdog(events: usize, pace: Duration) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let health = get_hook().health();
+    health.set_hook_installed(true);
+    let watchdog = HookWatchdog::start_synthetic(
+        health,
+        Unanswered(Mutex::new(Vec::new())),
+        leaked_counters(),
+    )
+    .expect("invariant: the bench's watchdog starts");
+    watchdog.post_synthetic_raw();
+    spin_for(Duration::from_millis(5));
+    let samples = paced_calls(events, pace, || watchdog.post_synthetic_raw());
+    // A ticking synthetic watchdog sees its WM_QUIT at its next tick.
+    assert!(watchdog.stop(), "the bench's watchdog stops within 1 s");
+    health.set_hook_installed(false);
+    samples
+}
+
+/// A thread with a message queue that it never reads: where R14c posts
+/// the raw key events that R14 posts to the watchdog. It ends when
+/// dropped, and its queue with it.
+struct ParkedQueue {
+    thread_id: u32,
+    release: Option<mpsc::Sender<()>>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ParkedQueue {
+    fn start() -> Self {
+        let (ready_tx, ready) = mpsc::channel();
+        let (release, parked) = mpsc::channel::<()>();
+        let join = thread::spawn(move || {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a local that outlives the call, which only
+            // writes it; the call makes this thread's queue, as
+            // PostThreadMessageW asks of the receiving thread, and removes
+            // nothing.
+            let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+            // SAFETY: GetCurrentThreadId reads no memory of ours.
+            let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
+            // Blocked on the channel, not on its queue, until dropped.
+            let _ = parked.recv();
+        });
+        let thread_id = ready.recv().expect("invariant: the parked thread starts");
+        Self {
+            thread_id,
+            release: Some(release),
+            join: Some(join),
+        }
+    }
+
+    fn post(&self) {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; the message carries no pointer.
+        let _ = unsafe { PostThreadMessageW(self.thread_id, SYNTHETIC_RAW, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+impl Drop for ParkedQueue {
+    fn drop(&mut self) {
+        drop(self.release.take());
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// R14c: R14's control (ruling V3-I2): the same pacing and the same posted
+/// message right before each call, to a thread that never reads its queue,
+/// and no watchdog. R14 against R14c is the cost of the ticking watchdog
+/// alone.
+fn r14c_paced_control(events: usize, pace: Duration) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let parked = ParkedQueue::start();
+    paced_calls(events, pace, || parked.post())
+}
+
+/// R16: the key-down callback of the first key of a burst. Each sample
+/// starts a watchdog, lets its thread reach its idle wait, posts one raw
+/// key event and at once makes the timed call, so that the watchdog's one
+/// wake and first pass run next to it, the pessimistic order of cut Q6.
+/// The hook counts as installed for the watchdog, as in the daemon, so the
+/// first pass counts the event and sets the tick timer. Each key-up is
+/// called, not timed; the thread's start and stop are outside the timing.
+fn r16_first_key_of_a_burst(count: usize) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let health = get_hook().health();
+    health.set_hook_installed(true);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        let watchdog = HookWatchdog::start_synthetic(
+            health,
+            Unanswered(Mutex::new(Vec::new())),
+            leaked_counters(),
+        )
+        .expect("invariant: the bench's watchdog starts");
+        spin_for(Duration::from_millis(2));
+        watchdog.post_synthetic_raw();
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_A, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_A, WM_KEYUP);
+        // It ticks now, so it sees its WM_QUIT at its first tick.
+        assert!(watchdog.stop(), "the bench's watchdog stops within 1 s");
+    }
+    health.set_hook_installed(false);
+    samples
+}
+
+/// The message R15 posts to its window.
+const R15_MESSAGE: u32 = WM_APP + 0x15;
+
+/// The class of R15's window, registered for the row only.
+const R15_CLASS: windows::core::PCWSTR = w!("ks-bench-r15");
+
+/// R15's window procedure: at `R15_MESSAGE` the work a raw input window
+/// does per key event, a `GetRawInputData` (here on a null handle, which
+/// fails at once and writes nothing) and the `DefWindowProcW` that frees
+/// the input.
+unsafe extern "system" fn r15_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == R15_MESSAGE {
+        let mut raw = RAWINPUT::default();
+        let mut size = size_of::<RAWINPUT>() as u32;
+        // SAFETY: a null HRAWINPUT makes the call fail before it touches
+        // the buffer; `raw` and `size` are locals that outlive the call and
+        // `size` is the size of `raw`.
+        let read = unsafe {
+            GetRawInputData(
+                HRAWINPUT(std::ptr::null_mut()),
+                RID_INPUT,
+                Some(&mut raw as *mut RAWINPUT as *mut std::ffi::c_void),
+                &mut size,
+                size_of::<RAWINPUTHEADER>() as u32,
+            )
+        };
+        std::hint::black_box(read);
+    }
+    // SAFETY: passes the message on with the exact arguments the system
+    // gave this window procedure.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// R15: `count` rounds of post, peek and dispatch of `R15_MESSAGE` to a
+/// message-only window of the bench thread, each timed whole.
+fn r15_raw_input_dispatch(count: usize) -> Vec<Duration> {
+    // SAFETY: a null module name asks for the handle of the file that made
+    // this process; the call reads no memory of ours.
+    let instance = HINSTANCE::from(
+        unsafe { GetModuleHandleW(None) }.expect("invariant: the module handle is known"),
+    );
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(r15_proc),
+        hInstance: instance,
+        lpszClassName: R15_CLASS,
+        ..Default::default()
+    };
+    // SAFETY: `class` is a local that outlives the call, which only reads
+    // it; its procedure is a 'static extern "system" fn and its name a
+    // static wide literal.
+    assert_ne!(
+        unsafe { RegisterClassW(&class) },
+        0,
+        "the R15 class is registered"
+    );
+    // SAFETY: the class was registered above with this module handle; the
+    // window name is null and no creation data is passed; HWND_MESSAGE makes
+    // a message-only window that no other process enumerates or sends input
+    // to.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            R15_CLASS,
+            None,
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(instance),
+            None,
+        )
+    }
+    .expect("invariant: the R15 window is created");
+    let mut msg = MSG::default();
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        let begun = Instant::now();
+        // SAFETY: `hwnd` is this thread's own window, alive until it is
+        // destroyed below; the message carries no pointer. `msg` is a local
+        // that outlives the calls, which write and read it and take the
+        // message from this thread's own queue.
+        unsafe {
+            PostMessageW(Some(hwnd), R15_MESSAGE, WPARAM(0), LPARAM(0))
+                .expect("invariant: the R15 window takes a posted message");
+            while PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE).as_bool() {
+                DispatchMessageW(&msg);
+            }
+        }
+        samples.push(begun.elapsed());
+    }
+    // SAFETY: `hwnd` is this thread's window, destroyed once, here; the
+    // class has no window left once it is, so it can be unregistered.
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+        let _ = UnregisterClassW(R15_CLASS, Some(instance));
     }
     samples
 }
@@ -795,6 +1109,26 @@ fn latency_bench() {
             id: "R13",
             what: "SendMessageTimeoutW(WM_NULL) round trip to the loop with the control window",
             samples: r13_round_trip_with_the_control_window(1_000),
+        },
+        Row {
+            id: "R14",
+            what: "keyboard_hook_callback, unbound A down and up every 1 ms, hook watchdog ticking",
+            samples: r14_steady_typing_with_the_watchdog(2_000, Duration::from_millis(1)),
+        },
+        Row {
+            id: "R14c",
+            what: "R14 with no watchdog: same pacing, same post to a queue nobody reads",
+            samples: r14c_paced_control(2_000, Duration::from_millis(1)),
+        },
+        Row {
+            id: "R15",
+            what: "post + peek + dispatch of one message whose procedure reads raw input (rejected design)",
+            samples: r15_raw_input_dispatch(2_000),
+        },
+        Row {
+            id: "R16",
+            what: "keyboard_hook_callback, A key-down that wakes the idle hook watchdog",
+            samples: r16_first_key_of_a_burst(1_000),
         },
     ]);
     get_hook().update_bindings(Vec::new());
