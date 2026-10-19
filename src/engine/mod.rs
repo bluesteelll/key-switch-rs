@@ -55,14 +55,17 @@
 //!
 //! [`Engine::reset`] drops every pending entry and an owed mask and starts
 //! a new timer generation, for a [`ResetReason`]: `swch off` or `swch on`,
-//! which also takes the held keys from the OS key state, or keyboard input
-//! leaving this desktop ([`InputSignal`]), which releases every key held
-//! (roadmap item 2.3).
+//! which also takes the held keys from the OS key state, a config reload,
+//! which leaves the keys as they are, or keyboard input leaving this
+//! desktop ([`InputSignal`]), which releases every key held (roadmap item
+//! 2.3).
 //!
 //! The binding list is not engine state. The caller passes a snapshot on
-//! every call, already sorted with [`sort_by_specificity`], so a hot reload
-//! never has to touch the engine. Pending gestures keep clones of the
-//! actions they were armed with and fire those, even after a reload.
+//! every call, already sorted with [`sort_by_specificity`]. Pending
+//! gestures keep clones of the actions they were armed with, so a reload
+//! resets the engine in the same main-thread step that swaps the list
+//! ([`ResetReason::Reloaded`], roadmap item 2.3): no gesture armed with the
+//! old list fires after it.
 //!
 //! ## Time
 //!
@@ -95,9 +98,9 @@
 //! it on its main thread (`hook::main_thread`, roadmap item 2.2), the
 //! thread that installs the hooks and pumps their messages, in a
 //! thread-local reached only through `with_main`. Every caller runs there:
-//! both hook callbacks, the main loop's timers, `swch on` and `swch off`,
-//! and the input signals the main loop drains, which call
-//! [`Engine::reset`]. `with_main` refuses a nested call on the same thread
+//! both hook callbacks, the main loop's timers, and `swch on`, `swch off`,
+//! config reloads and the input signals that the main loop serves, which
+//! call [`Engine::reset`]. `with_main` refuses a nested call on the same thread
 //! (the event then passes) instead of panicking.
 //!
 //! The adapter's [`Env::now`] reads the clock once per event, and the main
@@ -378,6 +381,9 @@ pub struct Decision {
 pub enum ResetReason {
     /// `swch off` or `swch on` really changed the switch.
     RemappingSwitched,
+    /// The config was reloaded: the main thread swapped the binding list
+    /// in the same step.
+    Reloaded,
     /// Keyboard input left this desktop: the session was locked, or input
     /// switched to another desktop (Ctrl+Alt+Del, a UAC prompt on the
     /// secure desktop). Key-ups may be lost there.
@@ -388,6 +394,7 @@ impl fmt::Display for ResetReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ResetReason::RemappingSwitched => "remapping switched",
+            ResetReason::Reloaded => "config reloaded",
             ResetReason::InputLeft => "keyboard input left this desktop",
         })
     }
@@ -618,6 +625,11 @@ impl Engine {
     ///   key-down the engine swallowed reads as up, since Windows never saw
     ///   it go down, and keeps its record: its key-up stays swallowed, or
     ///   reaches Windows if Windows has the key down by then.
+    /// - [`ResetReason::Reloaded`]: unchanged. A reload loses no key event,
+    ///   and reading the OS would race the key state of a key-down that has
+    ///   just passed (the state of the delivered key lags until the hook
+    ///   returns): such a key held would read as up and its next repeat as
+    ///   a press.
     /// - [`ResetReason::InputLeft`]: every key is released and every record
     ///   kept, and the OS is not asked: while input is on another desktop
     ///   the OS state is no witness, and a reset that ran before the switch
@@ -634,6 +646,9 @@ impl Engine {
         self.mask_owed = false;
         match reason {
             ResetReason::RemappingSwitched => self.keys.resync_from_os(env),
+            // No key event is lost on a reload, and the OS state of a key
+            // whose key-down has just passed may still lag behind it.
+            ResetReason::Reloaded => {}
             ResetReason::InputLeft => self.keys.release_all(),
         }
         self.ids.generation = self.ids.generation.wrapping_add(1);

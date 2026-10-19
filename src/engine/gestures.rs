@@ -22,8 +22,9 @@
 //! A DoubleTap window belongs to its group, the keys and `when:` of the
 //! bindings that armed it (known issue 74): a press of the key that another
 //! group wins ends the window instead of completing it, and opens its own.
-//! Identity by keys and `when:`, not by a binding's place in the list,
-//! survives a reload.
+//! The identity is the keys and `when:`, not a binding's place in the list.
+//! A reload drops every pending press with the engine reset that comes
+//! with it (roadmap item 2.3).
 //!
 //! A first key-down of another key cancels a pending press whose key-down
 //! passed (owner decision, known issue 67), held or waiting for its second

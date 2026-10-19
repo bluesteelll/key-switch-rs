@@ -57,9 +57,11 @@ use windows::Win32::{
 };
 use windows::core::Error;
 
+use crate::data::binding::Binding;
 use crate::engine::{
     Decision, Engine, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
 };
+use crate::hook::config_watcher::ApplyReload;
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
 use crate::logging::counters::{self, Counter};
@@ -136,6 +138,16 @@ impl MainState {
     pub(crate) fn reset_transient_state(&mut self, hook: &KeyboardHook, reason: ResetReason) {
         self.reset_engine(reason);
         hook.cancel_actions();
+    }
+
+    /// Makes `bindings` the live list and resets the engine with it, on the
+    /// main thread, between two events (roadmap item 2.3, KS-31): no key
+    /// event is decided with the new list and a gesture of the old one.
+    /// `update_bindings` sorts the list, stores it and stops the macros of
+    /// the old list, so the reset here only resets the engine.
+    pub(crate) fn reload(&mut self, hook: &KeyboardHook, bindings: Vec<Binding>) {
+        hook.update_bindings(bindings);
+        self.reset_engine(ResetReason::Reloaded);
     }
 
     /// The engine half of [`reset_transient_state`](Self::reset_transient_state).
@@ -290,6 +302,12 @@ enum Request {
         enabled: bool,
         reply: SyncSender<bool>,
     },
+    /// A config reload from the watcher thread: the new list, swapped in
+    /// together with an engine reset (roadmap item 2.3).
+    Reload {
+        bindings: Vec<Binding>,
+        reply: SyncSender<()>,
+    },
 }
 
 /// Why a request to the main thread got no answer.
@@ -316,6 +334,12 @@ impl std::fmt::Display for MainThreadError {
 
 impl std::error::Error for MainThreadError {}
 
+impl ApplyReload for MainThreadHandle {
+    fn apply(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        self.reload(bindings)
+    }
+}
+
 /// How another thread reaches the main thread: the IPC connection workers,
 /// and a test's helper thread.
 #[derive(Clone)]
@@ -333,6 +357,26 @@ impl MainThreadHandle {
             .requests
             .try_send(Request::SetEnabled { enabled, reply })
         {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
+            Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
+        }
+        self.wake();
+        answer
+            .recv_timeout(REPLY_TIMEOUT)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => MainThreadError::NoAnswer,
+                RecvTimeoutError::Disconnected => MainThreadError::ShuttingDown,
+            })
+    }
+
+    /// Asks the main thread to make `bindings` the live list, with the
+    /// engine reset that goes with it (`MainState::reload`), and waits up
+    /// to [`REPLY_TIMEOUT`] for it. On `NoAnswer` the reload stays queued
+    /// and goes live when the main thread reaches it.
+    pub(crate) fn reload(&self, bindings: Vec<Binding>) -> Result<(), MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        match self.requests.try_send(Request::Reload { bindings, reply }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
             Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
@@ -545,6 +589,16 @@ fn serve(hook: &KeyboardHook, request: Request) {
             // never does; the requester then hears that the daemon stops.
             if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled)) {
                 let _ = reply.try_send(changed);
+            }
+        }
+        Request::Reload { bindings, reply } => {
+            let count = bindings.len();
+            if with_main(|main| main.reload(hook, bindings)).is_some()
+                && reply.try_send(()).is_err()
+            {
+                // The watcher stopped waiting after 2 s and logged that the
+                // bindings go live later; this is when (critic OQ4).
+                log::info!("config reload carried out late: {count} bindings live");
             }
         }
     }

@@ -66,7 +66,10 @@ impl KeyboardHook {
     /// between two `keys` bindings of equal precedence (roadmap item 1.6).
     ///
     /// A reload also stops every macro running and every slow action still
-    /// queued (roadmap item 2.1): they belong to the old list.
+    /// queued (roadmap item 2.1): they belong to the old list. The daemon
+    /// reloads on its main thread, in `MainState::reload`, which resets the
+    /// engine in the same step (roadmap item 2.3); at startup it stores the
+    /// first list before the hooks are installed.
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
         // A stable sort, so bindings with the same key count keep their
         // config order.

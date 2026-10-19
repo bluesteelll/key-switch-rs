@@ -233,9 +233,11 @@ impl App {
         // (`Drop` on the watcher stops the notify backend and tells the
         // debounce thread to exit). On error we keep running without
         // hot-reload — failing to start the watcher should not take down
-        // the daemon.
+        // the daemon. A reload is a request to this thread, which swaps the
+        // list and resets the engine between two key events (roadmap item
+        // 2.3).
         let _watcher = match self.config_path.take() {
-            Some(path) => match config_watcher::spawn_watcher(path.clone(), hook) {
+            Some(path) => match config_watcher::spawn_watcher(path.clone(), main.handle()) {
                 Ok(w) => {
                     log::info!("Watching {} for changes", path.display());
                     Some(w)

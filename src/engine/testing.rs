@@ -43,9 +43,11 @@
 //! Win down). A timer never asks for the mask: [`Scenario::advance_ms`]
 //! asserts it.
 //!
-//! [`Scenario::reload`] models a hot reload: the bindings are replaced, and
-//! the engine keeps its state, pending gestures and held keys included, as
-//! `KeyboardHook::update_bindings` leaves it.
+//! [`Scenario::reload`] models a hot reload as the daemon's main thread
+//! carries it out, in one step between two events (roadmap item 2.3): the
+//! bindings are replaced and the engine is reset with
+//! [`ResetReason::Reloaded`], which drops every pending gesture, chord and
+//! sequence and keeps the held keys and their records.
 //!
 //! [`Scenario::remapping_off`] and [`Scenario::remapping_on`] model `swch
 //! off` and `swch on`: each resets the engine and drops the timers the
@@ -286,13 +288,17 @@ impl Scenario {
 
     /// Replaces the bindings with those of `text`, loaded like
     /// [`from_ron`](Self::from_ron) and sorted, as a hot reload does through
-    /// `KeyboardHook::update_bindings`. The engine is not reset.
+    /// `KeyboardHook::update_bindings`, and resets the engine with
+    /// [`ResetReason::Reloaded`], dropping the timers that made stale, as the
+    /// daemon's main thread does in the same step.
     #[track_caller]
     pub(crate) fn reload(mut self, text: &str) -> Self {
         let mut bindings =
             from_ron_str(text).unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
         sort_by_specificity(&mut bindings);
         self.bindings = bindings;
+        self.engine.reset(&self.env, ResetReason::Reloaded);
+        self.drop_stale_timers();
         let label = format!("reload at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self

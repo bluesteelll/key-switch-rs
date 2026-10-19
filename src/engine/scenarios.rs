@@ -2564,8 +2564,8 @@ fn capslock_held_through_remapping_off_and_on_switches_the_language_once() {
 
 #[test]
 fn reload_mid_hold_applies_the_new_repeat_flag_from_the_next_repeat() {
-    // A hot reload leaves the engine alone, so the press goes on and the
-    // next repeat reads the new binding's flag.
+    // A reload drops pending gestures but keeps the held keys, so the press
+    // goes on and the next repeat reads the new binding's flag.
     Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
         .down("CapsLock")
         .expect_suppressed()
@@ -4035,10 +4035,11 @@ fn remapping_off_during_a_passing_hold_drops_it_and_nothing_sticks() {
 }
 
 #[test]
-fn reload_during_a_passing_double_tap_keeps_each_press_whole() {
-    // A press follows what its key-down got, whatever the bindings say by
-    // its key-up. The entry armed by the first press keeps its action, and
-    // the second key-down follows the binding loaded by then.
+fn a_reload_drops_a_pending_double_tap_and_keeps_each_press_whole() {
+    // Roadmap item 2.3 (KS-31): a reload drops the gesture pending from the
+    // old bindings, so the second press is a first press of the new ones.
+    // A press still follows what its key-down got, whatever the bindings
+    // say by its key-up.
     Scenario::from_ron(LSHIFT_DOUBLE_TAP)
         .check_press_symmetry()
         .check_nothing_stuck()
@@ -4051,10 +4052,10 @@ fn reload_during_a_passing_double_tap_keeps_each_press_whole() {
         .advance_ms(40)
         .down("LShift")
         .expect_suppressed()
-        .expect_fired(&[BindAction::ToggleCapsLock])
+        .expect_nothing_fired()
         .up("LShift")
         .expect_suppressed()
-        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+        .expect_total_fired(&[]);
 
     // And the other way round.
     Scenario::from_ron(LSHIFT_DOUBLE_TAP_BLOCKING)
@@ -4069,10 +4070,10 @@ fn reload_during_a_passing_double_tap_keeps_each_press_whole() {
         .advance_ms(40)
         .down("LShift")
         .expect_passed()
-        .expect_fired(&[BindAction::ToggleCapsLock])
+        .expect_nothing_fired()
         .up("LShift")
         .expect_passed()
-        .expect_total_fired(&[BindAction::ToggleCapsLock]);
+        .expect_total_fired(&[]);
 }
 
 #[test]
@@ -4685,9 +4686,10 @@ fn a_more_specific_tap_keeps_a_less_specific_hold_from_arming() {
 }
 
 #[test]
-fn a_gesture_armed_by_the_winner_resolves_after_a_reload_adds_a_more_specific_binding() {
-    // A pending gesture keeps its action, and the key-up does not consult
-    // the bindings: the reload changes only the next press.
+fn a_tap_armed_before_a_reload_fires_nothing_at_its_key_up() {
+    // Roadmap item 2.3's acceptance (KS-31): the reload drops the Tap
+    // pending from the old bindings, so its key-up fires nothing. It stays
+    // swallowed with its key-down, and the next press arms afresh.
     Scenario::from_ron(
         r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true) ] )"#,
     )
@@ -4699,7 +4701,7 @@ fn a_gesture_armed_by_the_winner_resolves_after_a_reload_adds_a_more_specific_bi
     .reload(SHIFT_CAPS_AND_CAPS_TAP)
     .up("CapsLock")
     .expect_suppressed()
-    .expect_fired(&[BindAction::SwitchLanguage])
+    .expect_nothing_fired()
     .advance_ms(100)
     .down("CapsLock")
     .expect_suppressed()

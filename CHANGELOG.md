@@ -474,6 +474,21 @@ minor version; such entries sit under **Changed** and start with
   the key down (known issue 78). Tests:
   `engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed`,
   `engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes`.
+- A config reload is applied on the daemon's main thread, between two key
+  events, and drops the pending `Tap`, `Hold`, `DoubleTap`, chord and
+  sequence entries in the same step (roadmap item 2.3; known issue 77). It
+  does not re-read the keys from Windows, as `swch on` does: no key event
+  is lost on a reload, and reading the keys right after a key-down passed
+  could miss it, so the keys held stay held and a key whose press the old
+  bindings swallowed keeps its release swallowed. The watcher thread waits
+  at most 2 s for the main thread; new lines:
+  `[WARN] config reload: the daemon's main thread did not answer within 2 s; the new bindings go live when it does`,
+  `[INFO] config reload carried out late: N bindings live`,
+  `[INFO] config reload skipped: the daemon is shutting down` and
+  `[ERROR] config reload failed: the daemon is busy; try again`. Tests:
+  `hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold`,
+  `a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands`,
+  `engine::scenarios::a_reload_drops_a_pending_double_tap_and_keeps_each_press_whole`.
 
 ### Fixed
 
@@ -834,6 +849,12 @@ minor version; such entries sit under **Changed** and start with
   2.3). Tests:
   `engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed`,
   `win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed`.
+- KS-31 (an unverified report): a `Tap` armed before a config reload no
+  longer fires the old action at its key-up, and no `Hold`, `DoubleTap`,
+  chord or sequence of the old bindings completes after the reload
+  (roadmap item 2.3). Tests:
+  `engine::scenarios::a_tap_armed_before_a_reload_fires_nothing_at_its_key_up`,
+  `hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing`.
 
 ## [0.1.0] - 2026-05-20
 

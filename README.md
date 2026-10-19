@@ -123,7 +123,7 @@ Windows API wrapper:
 - Installs the low-level keyboard hook (`WH_KEYBOARD_LL`) and the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) once, on the main thread, and removes them at shutdown
 - Bindings list in `ArcSwap<Vec<Binding>>` — lock-free reads on the hot path, atomic swap for hot-reload
 - Holds the remapping switch that `swch on` / `swch off` flip (`is_enabled`); only the main thread flips it, together with a reset of the decision core (see `main_thread.rs`)
-- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl` and `Sequence` (`submit`); a reload stops every running macro too
+- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
 
 #### `keyboard_hook_callback.rs`
 
@@ -175,7 +175,12 @@ that maps 1:1 to the program's internal Rust enums.
 On first run the program writes a self-documenting default file next to the
 executable, then loads it. **Bindings are hot-reloaded automatically** — edit
 `config.ron` in any editor, save, and the new bindings go live within ~250 ms
-without a restart.
+without a restart. The daemon's main thread swaps them in between two key
+events and drops, in the same step, every `Tap`, `Hold`, `DoubleTap`,
+`chord` and `sequence` still pending: a `Tap` armed before the save fires
+nothing at its release (roadmap item 2.3, KS-31). The keys held stay held,
+and a key whose press the old bindings swallowed keeps its release
+swallowed (known issue 77).
 
 If the file does not load (a syntax error, an unknown or misspelled field,
 an unknown key name, a timing value outside 1 to 10000 ms, ...) or is
