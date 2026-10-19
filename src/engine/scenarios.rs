@@ -983,6 +983,30 @@ fn a_tap_whose_window_timer_is_lost_fires_at_the_next_key_down() {
 }
 
 #[test]
+fn a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down() {
+    // The clock decides, not the timer (roadmap item 2.2, results P1): the
+    // window closed at +300 ms while its timer was stalled, so the press at
+    // +381 ms is a first press. It fires the waiting Tap ahead of itself,
+    // completes no DoubleTap and waits for a window of its own.
+    Scenario::from_ron(TAP_AND_DOUBLE_TAP_F13)
+        .down("F13")
+        .advance_ms(80)
+        .up("F13")
+        .expect_nothing_fired()
+        .advance_ms_stalled(301)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .advance_ms(50)
+        .up("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .advance_ms(300)
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::SwitchLanguage]);
+}
+
+#[test]
 fn a_press_after_a_lost_key_up_replaces_the_stale_press_and_keeps_a_hold_due_by_the_clock() {
     // Orchestrator ruling M6: the left Shift passes, its key-up goes
     // unseen, and A's key-up resyncs it as up, with no key-down in between.
