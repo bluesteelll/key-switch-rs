@@ -16,8 +16,10 @@
 //! 5. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
 //!    thread's state (`hook::main_thread::with_main`), with one snapshot of
 //!    the binding list and a `HookEnv` that answers the engine's questions
-//!    with live Win32 calls, and hands the timers the decision asks for to
-//!    the main thread's gesture timers, under the same borrow;
+//!    (the foreground window's executable name from the main thread's
+//!    foreground cache, with no call; its title and the OS key state with
+//!    live Win32 calls), and hands the timers the decision asks for to the
+//!    main thread's gesture timers, under the same borrow;
 //! 6. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in

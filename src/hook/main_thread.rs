@@ -26,15 +26,18 @@
 //! in the shape of the action executor's loop (roadmap item 2.1):
 //!
 //! 1. Drain, until a whole pass finds nothing: the requests (`swch on` and
-//!    `off`), then every gesture timer whose due time has passed by the
-//!    clock, each decided under the borrow and carried out after it.
+//!    `off`, a config reload), then the input signals noted since the last
+//!    pass (keyboard input left this desktop or came back), then every
+//!    gesture timer whose due time has passed by the clock, each decided
+//!    under the borrow and carried out after it.
 //! 2. Plan: drop the timers no entry waits for, then set the wake for the
 //!    earliest one left unless it is set for it already, or cancel it.
 //! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
 //!    message (`QS_ALLINPUT`, which has `QS_SENDMESSAGE`), also one already
 //!    seen but not removed (`MWMO_INPUTAVAILABLE`).
 //! 4. Pump: `PeekMessageW` until the queue is empty, a `MAIN_WAKE` comes (a
-//!    request waits: back to 1) or `WM_QUIT` (the loop ends).
+//!    request or a noted input signal waits: back to 1) or `WM_QUIT` (the
+//!    loop ends).
 //!
 //! The hook callbacks run inside those `PeekMessageW` calls. Windows calls a
 //! low-level hook by sending a message to the thread that installed it, a
@@ -661,8 +664,9 @@ impl MainThread {
         }
     }
 
-    /// Step 1 of the loop: serves the requests and carries out the due
-    /// timers until a whole pass finds neither.
+    /// Step 1 of the loop: serves the requests, answers the noted input
+    /// signals and carries out the due timers until a whole pass finds none
+    /// of them.
     fn drain(&self, hook: &KeyboardHook) {
         loop {
             let mut busy = false;
