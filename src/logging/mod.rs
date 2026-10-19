@@ -25,6 +25,7 @@ use std::sync::mpsc::SyncSender;
 use std::time::{Duration, SystemTime};
 
 pub mod counters;
+pub(crate) mod panic;
 mod sink;
 #[cfg(test)]
 pub(crate) mod testing;
