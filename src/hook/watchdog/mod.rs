@@ -849,6 +849,8 @@ mod tests {
         timeout: Option<u64>,
         /// When each request was sent, in ms.
         requests: Vec<u64>,
+        /// How many passes the loop made.
+        passes: u64,
     }
 
     impl Drive {
@@ -868,6 +870,7 @@ mod tests {
                 early: 0,
                 timeout: None,
                 requests: Vec::new(),
+                passes: 0,
             }
         }
 
@@ -885,6 +888,7 @@ mod tests {
                 input_here: self.input_here,
             };
             self.ticker.pass(self.at(ms), &context);
+            self.passes += 1;
             for call in self.ticker.timer.calls.borrow_mut().drain(..) {
                 self.due = match call {
                     TimerCall::Set(after) => {
@@ -1245,6 +1249,38 @@ mod tests {
         );
         assert_eq!(request.seen, 0);
         assert!(request.silent_for >= SILENCE, "{request:?}");
+    }
+
+    #[test]
+    fn the_loop_counts_its_wakes_and_raw_key_events() {
+        // Cut L1.2 step 6: the loop counts its passes, one per wake, and
+        // every raw key event it reads, for the stop line that manual check
+        // M9 reads.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run(0, 3000, a_burst);
+        assert_eq!(
+            drive.ticker.stats(),
+            LoopStats {
+                wakes: drive.passes,
+                raw_keys: 11
+            }
+        );
+    }
+
+    #[test]
+    fn the_watchdog_thread_reports_its_wakes_and_raw_key_events_when_it_stops() {
+        let (recorder, _requests) = Recorder::new();
+        let watchdog = HookWatchdog::start_synthetic(leaked_health(), recorder, leaked_counters())
+            .expect("the watchdog thread starts");
+        for _ in 0..5 {
+            watchdog.post_synthetic_raw();
+            thread::sleep(Duration::from_millis(20));
+        }
+        let stats = watchdog
+            .stop_counting()
+            .expect("the thread is joined within 1 s");
+        assert_eq!(stats.raw_keys, 5, "{stats:?}");
+        assert!(stats.wakes >= 1, "{stats:?}");
     }
 
     #[test]
