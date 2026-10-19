@@ -40,11 +40,13 @@
 //! Both callbacks run on the main thread, which installed the hooks, pumps
 //! their messages and owns the engine and every gesture timer
 //! (`hook::main_thread`, roadmap item 2.2). A gesture that must fire while
-//! no event arrives, a `Hold`, asks for a timer; the main loop takes it once
-//! it is due by `Instant::now()` and carries out its decision with
-//! `carry_out` on the main thread too, with the same split: a fast action
-//! runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action
-//! executor. No thread is started on the gesture path (KS-33).
+//! no event arrives, a `Hold` or a `Tap` that waits for its DoubleTap
+//! window, asks for a timer, and so does a pending chord or sequence for its
+//! expiry; the main loop takes the timer once it is due by `Instant::now()`
+//! and carries out its decision with `carry_out` on the main thread too,
+//! with the same split: a fast action runs there, and `Launch`, `OpenUrl`
+//! and `Sequence` go to the action executor. No thread is started on the
+//! gesture path (KS-33).
 //!
 //! `swch on` and `swch off` are requests that the main loop serves between
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is

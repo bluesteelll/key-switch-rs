@@ -553,7 +553,9 @@ impl Engine {
         let mut decision = Decision::default();
         if !was_repeat {
             // A Tap of another key that waits for its DoubleTap window has
-            // completed: it fires now, ahead of this key (roadmap item 2.2).
+            // completed: it fires now, ahead of this key. A pending gesture
+            // of another key whose key-down passed is cancelled, since this
+            // key makes it a shortcut (owner decision, roadmap item 2.2).
             self.gestures
                 .other_key_down(vk.0, &self.keys, now, &mut decision.fire);
 
