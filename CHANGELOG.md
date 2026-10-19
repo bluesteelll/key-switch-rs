@@ -208,6 +208,20 @@ minor version; such entries sit under **Changed** and start with
   cleanup thread per press. Scenario tests (`engine::testing::Scenario`: a
   RON config, a script of key events and a fake clock) cover every binding
   kind and trigger.
+- **Breaking:** another key pressed while a `Tap`, `Hold` or `DoubleTap`
+  whose key passes is pending cancels it (owner decision, roadmap item 2.2,
+  known issue 67), as AutoHotkey does: Ctrl+C no longer fires an `LCtrl`
+  `Tap`, typing `<T>` with the left Shift pressed twice no longer toggles
+  CapsLock with the template's `LShift` `DoubleTap`, and selecting words
+  with Ctrl+Shift held no longer fires a `Ctrl+Shift` `Hold`. Only a
+  key-down cancels, not a mouse click; a `Hold` whose term has passed fires
+  whatever comes after it; a gesture whose key is swallowed is not
+  cancelled; a `Tap` that waits for its DoubleTap window fires instead,
+  ahead of the key. Tests:
+  `engine::scenarios::a_quick_ctrl_shortcut_cancels_a_passing_ctrl_tap`,
+  `a_key_typed_between_two_passing_lshift_presses_cancels_the_double_tap`,
+  `selecting_words_with_ctrl_shift_held_cancels_a_passing_ctrl_shift_hold`,
+  `a_passing_hold_past_its_term_fires_whether_its_timer_runs_before_or_after_another_key_down`.
 - **Breaking:** `Tap`, `Hold` and `DoubleTap` on one key are one gesture
   (roadmap item 2.2, KS-25): of one press exactly one fires.
   `Tap(300)` + `Hold(200)` released at 250 ms fires only the Hold; a

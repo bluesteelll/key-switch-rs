@@ -419,10 +419,10 @@ A deferred binding made only of modifiers, such as the `LShift` one, lets
 its key through by default (`block_default`, see the behaviour rules
 below): every left-Shift press still reaches applications, and the double
 tap still toggles CapsLock. The `CapsLock` pair, whose key is not a
-modifier, swallows CapsLock. Another key pressed in between does not
-cancel the double tap, so typing `<T>` with the left Shift pressed again
-quickly for the `T` toggles CapsLock as well. Write `block_default: true`
-to keep the left Shift for the gesture alone.
+modifier, swallows CapsLock. Another key pressed in between cancels the
+double tap, so typing `<T>` with the left Shift pressed again quickly for
+the `T` types two capitals and leaves CapsLock alone. Write
+`block_default: true` to keep the left Shift for the gesture alone.
 
 | Variant            | When the action fires                                                                  |
 | ------------------ | -------------------------------------------------------------------------------------- |
@@ -487,12 +487,17 @@ to keep the left Shift for the gesture alone.
   `( keys: "Ctrl+J", action: SwitchLanguage, trigger: Tap(200), block_default: false )`,
   holding Ctrl+J and releasing Ctrl sends Down per repeat and lets `j`
   repeat too.
-- A key pressed while a gesture whose key passes is pending does not cancel
-  it. An `LShift` `Tap` also fires when Shift+A is released within its
-  term, an `LShift` `DoubleTap` fires when the left Shift is pressed twice
-  within its term for two capitals (`<T>`), and an `LCtrl` `Tap` fires on a
-  quick Ctrl+C. Whether such a key should cancel the gesture is an open
-  follow-up of roadmap item 1.3.
+- Another key pressed while a gesture whose key passes is pending cancels
+  it (owner decision, roadmap item 2.2), as AutoHotkey does: Shift+A
+  released within an `LShift` `Tap`'s term fires nothing, the left Shift
+  pressed twice for two capitals (`<T>`) fires no `LShift` `DoubleTap`, a
+  quick Ctrl+C fires no `LCtrl` `Tap`, and selecting words with
+  Ctrl+Shift+Right fires no `Ctrl+Shift` `Hold`. Only a key-down cancels:
+  a mouse click does not, because the keyboard hook does not see it, so a
+  quick Ctrl+click still fires an `LCtrl` `Tap`. A `Hold` whose term has
+  passed is not pending any more and fires. A gesture whose key is
+  swallowed is not cancelled: a key pressed while CapsLock of the CapsLock
+  pair is held passes and the pair resolves as usual.
 - A deferred binding on exactly the keys of the Windows language hotkey,
   such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
   takes the hotkey over from the auto-blocker, also when it sets

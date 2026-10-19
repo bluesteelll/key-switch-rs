@@ -60,7 +60,7 @@ The template's header describes hot reload, field checking and the BOM correctly
 
 > [!WARNING]
 > - The `Ctrl+Pause` example ([src/config/default_config.ron:268](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/default_config.ron#L268)) most likely does not fire: for Ctrl+Pause, Windows sends the code `VK_CANCEL` ([§6.6](keys.md#s6-6)).
-> - The `keys: "LShift"` example with `DoubleTap(250)` ([src/config/default_config.ron:308-318](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/default_config.ron#L308-L318)) fires, and since `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)) every left-Shift press still reaches applications, so the left Shift keeps typing capitals. Pressing the left Shift twice within 250 ms for two capitals, as in `<T>`, toggles CapsLock too ([§11.8](triggers-conditions.md#s11-8)). The template says both.
+> - The `keys: "LShift"` example with `DoubleTap(250)` ([src/config/default_config.ron:308-318](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/config/default_config.ron#L308-L318)) fires, and since `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)) every left-Shift press still reaches applications, so the left Shift keeps typing capitals. Pressing the left Shift twice within 250 ms for two capitals, as in `<T>`, no longer toggles CapsLock: the key typed in between cancels the double tap (roadmap item 2.2, [§11.8](triggers-conditions.md#s11-8)). The template says both.
 
 <a id="s2-3"></a>
 ### 2.3 Hot reload

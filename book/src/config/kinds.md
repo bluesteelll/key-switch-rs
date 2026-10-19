@@ -174,7 +174,7 @@ To "suppress" means not to pass the key event on to the OS and the applications.
 In every row the auto-repeats and the key-up follow the key-down.
 
 - Only the key that caused the match is suppressed. The OS has already received the modifiers pressed earlier: for `keys: "Ctrl+W", action: DoNothing` the application sees Ctrl go down and up.
-- With `block_default: false` the original key reaches the application **in addition** to the action. A `Tap`, `Hold` or `DoubleTap` binding still detects its gesture: the press, its auto-repeats and its release reach the application, and the action fires when the gesture completes. Another key pressed meanwhile does not cancel the gesture ([§11.8](triggers-conditions.md#s11-8)).
+- With `block_default: false` the original key reaches the application **in addition** to the action. A `Tap`, `Hold` or `DoubleTap` binding still detects its gesture: the press, its auto-repeats and its release reach the application, and the action fires when the gesture completes. Another key pressed meanwhile cancels the gesture, so that a shortcut is not also the gesture (roadmap item 2.2; [§11.8](triggers-conditions.md#s11-8)).
 - After a foreground change the engine forgets which key-ups were due to be suppressed: a held key's auto-repeats stay suppressed, but its release reaches Windows, unless a `Tap` or `Hold` of that press is still pending ([src/engine/mod.rs:381-396](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L381-L396)). Windows then sees a key-up without a key-down. Roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset) revisits this.
 - `swch off` and `swch on` drop every pending gesture and take the keys Windows holds as already pressed ([Controlling the daemon with swch](../build-and-run.md#controlling-the-daemon-with-swch)).
 
@@ -195,5 +195,5 @@ In every row the auto-repeats and the key-up follow the key-down.
 Practical rules:
 
 - Assign `chord`, `sequence` and deferred triggers that suppress their key to F13–F24 or to rarely used keys. A binding on letters, such as a chord on `["j","k"]`, makes every typed j and k disappear.
-- A `Tap`, `Hold` or `DoubleTap` on a key you also type with needs `block_default: false`, which a combination made only of modifiers has by default. Another key pressed while its gesture is pending does not cancel it ([§11.8](triggers-conditions.md#s11-8)).
+- A `Tap`, `Hold` or `DoubleTap` on a key you also type with needs `block_default: false`, which a combination made only of modifiers has by default. Another key pressed while its gesture is pending cancels it ([§11.8](triggers-conditions.md#s11-8)), so Ctrl+C does not also fire a Ctrl `Tap`.
 - Limit the damage with a `when: TitleContains("...")` or `when: AppEquals("...")` condition. In other windows the binding is skipped and the keys pass through as usual.

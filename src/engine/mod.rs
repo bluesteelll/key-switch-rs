@@ -144,7 +144,12 @@
 //!      fires if the same group, keys and `when:`, wins this key-down
 //!      within the window, and the key-down is spent (known issue 74).
 //!    - A first key-down of any key fires the Tap of another key that waits
-//!      for its DoubleTap window, ahead of the new key.
+//!      for its DoubleTap window, ahead of the new key, and cancels the
+//!      pending gesture of another key whose key-down passed (owner
+//!      decision, roadmap item 2.2, known issue 67): a key pressed during it
+//!      makes it a shortcut, such as Ctrl+C. A Hold whose term has passed
+//!      by the clock stays for its timer, so a late timer changes nothing.
+//!      A gesture whose key-down was swallowed stays.
 //!
 //!    The winner, or any acting member of its group, with `block_default`
 //!    asks for suppression; a losing binding never does. One without it
@@ -707,7 +712,7 @@ impl Engine {
         // if its term has not ended, unless the press opens a DoubleTap
         // window: then the Tap waits for the window, on a timer of its own.
         let seq = self.ids.next_seq();
-        let released = self.gestures.release(vk.0, now, seq);
+        let released = self.gestures.release(vk.0, now, was_passed, seq);
         let mut decision = Decision::default();
         decision.fire.extend(released.fired);
         if let Some(due) = released.window_due {

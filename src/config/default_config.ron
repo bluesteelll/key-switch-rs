@@ -316,10 +316,11 @@
         //
         // // Double-tap LShift to toggle CapsLock state. Made only of
         // // modifiers, it lets every left-Shift press still reach
-        // // applications, so the left Shift keeps typing capitals. Pressing
-        // // the left Shift twice within 250 ms for two capitals (typing
-        // // "<T>") toggles CapsLock too; add block_default: true to keep the
-        // // left Shift for the double tap alone.
+        // // applications, so the left Shift keeps typing capitals. Another
+        // // key pressed in between cancels the double tap, so typing "<T>"
+        // // with the left Shift pressed twice leaves CapsLock alone; add
+        // // block_default: true to keep the left Shift for the double tap
+        // // alone.
         // (
         //     keys: "LShift",
         //     action: ToggleCapsLock,
