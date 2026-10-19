@@ -64,8 +64,11 @@
 //! ## Time
 //!
 //! Deadlines are `Instant`s derived from [`Env::now`], stored in the pending
-//! entries. `Tap`, `DoubleTap`, `Chord` and `Sequence` entries expire
-//! lazily: the next event compares its time with the stored deadline.
+//! entries. `Tap`, `DoubleTap`, `Chord` and `Sequence` deadlines are checked
+//! lazily: the next event compares its time with the stored deadline. A
+//! `Chord` or `Sequence` entry also asks for an expiry timer, which frees it
+//! on time and fires nothing (roadmap item 2.2); the lazy check stays the
+//! authority, so a late or missing expiry timer changes no outcome.
 //! `Hold` must fire while no event arrives, so arming one returns a
 //! [`TimerRequest`]; the caller starts a timer and hands the
 //! [`TimerToken`] back to [`Engine::on_timer`] when it is due, through a
@@ -300,6 +303,10 @@ pub struct TimerToken {
 enum TimerSlot {
     /// The gesture pending on the press of this virtual-key code.
     Gesture(u16),
+    /// A pending chord's expiry.
+    Chord,
+    /// A pending sequence's expiry.
+    Sequence,
 }
 
 /// Where the engine's tokens come from.
@@ -432,6 +439,9 @@ impl Engine {
         }
         match token.slot {
             TimerSlot::Gesture(vk) => self.gestures.on_timer(vk, token.seq, &mut decision.fire),
+            // An expiry fires nothing: it frees the entry on time.
+            TimerSlot::Chord => self.chords.expire(token.seq),
+            TimerSlot::Sequence => self.sequences.expire(token.seq),
         }
         decision
     }
@@ -443,6 +453,8 @@ impl Engine {
         token.generation == self.ids.generation
             && match token.slot {
                 TimerSlot::Gesture(vk) => self.gestures.is_live(vk, token.seq),
+                TimerSlot::Chord => self.chords.is_live(token.seq),
+                TimerSlot::Sequence => self.sequences.is_live(token.seq),
             }
     }
 
@@ -480,6 +492,8 @@ impl Engine {
         }
         match token.slot {
             TimerSlot::Gesture(vk) => self.gestures.forget(vk, token.seq),
+            // The next key-down drops an expired entry anyway.
+            TimerSlot::Chord | TimerSlot::Sequence => {}
         }
     }
 
@@ -621,15 +635,22 @@ impl Engine {
                     if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
+                    let seq = self.ids.next_seq();
                     match self.sequences.on_key_down(
                         &self.keys,
                         &binding.action,
                         steps,
                         *max_gap,
                         now,
+                        seq,
                     ) {
                         SequenceOutcome::NotMatching => {}
-                        SequenceOutcome::Advanced => decision.suppress = true,
+                        SequenceOutcome::Advanced { due } => {
+                            decision.suppress = true;
+                            decision
+                                .timers
+                                .push(self.ids.request(TimerSlot::Sequence, seq, due));
+                        }
                         SequenceOutcome::Completed {
                             action,
                             last_step_keys,
@@ -646,12 +667,19 @@ impl Engine {
                     if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
+                    let seq = self.ids.next_seq();
                     match self
                         .chords
-                        .on_key_down(vk, &binding.action, keys, *window, now)
+                        .on_key_down(vk, &binding.action, keys, *window, now, seq)
                     {
                         ChordOutcome::NotInChord => {}
                         ChordOutcome::Pending => decision.suppress = true,
+                        ChordOutcome::Started { due } => {
+                            decision.suppress = true;
+                            decision
+                                .timers
+                                .push(self.ids.request(TimerSlot::Chord, seq, due));
+                        }
                         ChordOutcome::Completed { action, keys } => {
                             decision.suppress = true;
                             decision.fire.push(action);

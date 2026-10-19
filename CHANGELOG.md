@@ -249,6 +249,13 @@ minor version; such entries sit under **Changed** and start with
   `a_message_posted_behind_a_wake_is_dispatched_without_more_input`,
   `hook::keyboard_hook_callback::tests::the_gesture_path_starts_no_thread`,
   `a_thousand_hold_presses_through_the_adapter_keep_at_most_one_timer_queued`.
+- Chord and sequence entries expire on their own timers (roadmap item
+  2.2): a pending `chord` asks for a timer at the end of its window, and
+  every `sequence` start or step for one at its new deadline, which drops
+  the entry on time and fires nothing. The next key-down still checks the
+  deadline, so matching is unchanged. Tests:
+  `engine::tests::a_chord_expiry_timer_drops_the_pending_chord`,
+  `each_sequence_step_asks_for_a_new_expiry_timer_and_the_old_one_goes_stale`.
 - `swch on` and `swch off` are carried out on the main thread (roadmap item
   2.2): the IPC worker queues the request and waits at most 2 s for the
   answer, and the switch flips and the engine resets between two key
