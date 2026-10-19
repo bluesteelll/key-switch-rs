@@ -103,6 +103,8 @@ impl fmt::Display for ReinstallOutcome {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
 
     #[test]
@@ -135,6 +137,114 @@ mod tests {
                 "no keyboard hook is installed",
             ]
         );
+    }
+
+    /// The health of a watchdog that runs, with nothing else to say.
+    fn healthy() -> HookHealth {
+        HookHealth {
+            watched: true,
+            reinstalls: 0,
+            last_reinstall: None,
+            last_attempt_failed: false,
+            timer_failing: false,
+        }
+    }
+
+    #[test]
+    fn the_hook_health_reads_ok_not_watched_or_failed_with_its_reinstalls() {
+        // Roadmap item 2.4: `swch status` shows the hook's health after the
+        // binding count; `reinstalls: N` is the acceptance's own token.
+        let at = UNIX_EPOCH + Duration::from_millis(1_760_866_867_123);
+        let table = [
+            (healthy(), "hook ok, reinstalls: 0"),
+            (
+                HookHealth {
+                    watched: false,
+                    ..healthy()
+                },
+                "hook not watched, reinstalls: 0",
+            ),
+            (
+                HookHealth {
+                    reinstalls: 2,
+                    last_reinstall: Some(at),
+                    last_attempt_failed: true,
+                    ..healthy()
+                },
+                "hook reinstall failed, reinstalls: 2, last 2025-10-19T09:41:07.123Z",
+            ),
+            (
+                HookHealth {
+                    timer_failing: true,
+                    ..healthy()
+                },
+                "hook watchdog timer failing, reinstalls: 0",
+            ),
+            (
+                HookHealth {
+                    watched: false,
+                    last_attempt_failed: true,
+                    timer_failing: true,
+                    ..healthy()
+                },
+                "hook not watched, reinstalls: 0",
+            ),
+        ];
+        for (health, text) in table {
+            assert_eq!(health.to_string(), text, "{health:?}");
+        }
+    }
+
+    #[test]
+    fn a_reinstall_is_recorded_with_its_time() {
+        let health = HealthState::new();
+        health.set_watched(true);
+        assert_eq!(health.snapshot(), healthy());
+        health.record_reinstall(UNIX_EPOCH + Duration::from_millis(1_760_866_867_123));
+        assert_eq!(
+            health.snapshot().to_string(),
+            "hook ok, reinstalls: 1, last 2025-10-19T09:41:07.123Z"
+        );
+    }
+
+    #[test]
+    fn a_failed_attempt_reads_reinstall_failed_until_the_next_reinstall() {
+        let health = HealthState::new();
+        health.set_watched(true);
+        health.record_failed_attempt();
+        assert!(health.snapshot().last_attempt_failed);
+        assert_eq!(
+            health.snapshot().to_string(),
+            "hook reinstall failed, reinstalls: 0"
+        );
+        health.record_reinstall(UNIX_EPOCH + Duration::from_secs(1));
+        assert!(!health.snapshot().last_attempt_failed);
+    }
+
+    #[test]
+    fn a_failed_attempt_clears_once_the_hook_answers() {
+        // Ruling M3: the old hook kept after a failed attempt can be alive;
+        // once it answers, the status no longer says it failed.
+        let health = HealthState::new();
+        health.set_watched(true);
+        health.record_failed_attempt();
+        health.hook_answered();
+        assert_eq!(health.snapshot(), healthy());
+    }
+
+    #[test]
+    fn a_tick_timer_that_cannot_be_set_is_not_hook_ok() {
+        // Ruling I1: while the watchdog's timer keeps failing, the status
+        // does not say `hook ok`.
+        let health = HealthState::new();
+        health.set_watched(true);
+        health.set_timer_failing(true);
+        assert_eq!(
+            health.snapshot().to_string(),
+            "hook watchdog timer failing, reinstalls: 0"
+        );
+        health.set_timer_failing(false);
+        assert_eq!(health.snapshot(), healthy());
     }
 
     #[test]

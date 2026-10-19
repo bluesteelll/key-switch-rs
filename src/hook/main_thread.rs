@@ -2025,6 +2025,12 @@ mod tests {
         });
 
         assert_eq!(outcome, ReinstallOutcome::Reinstalled);
+        assert_eq!(
+            hook.health().snapshot().reinstalls,
+            1,
+            "swch status counts it"
+        );
+        assert!(hook.health().snapshot().last_reinstall.is_some());
         assert!(
             !is_live(hold),
             "the Hold armed before the loss fires nothing"
@@ -2062,6 +2068,8 @@ mod tests {
         });
 
         assert_eq!(outcome, ReinstallOutcome::Failed);
+        assert!(hook.health().snapshot().last_attempt_failed);
+        assert_eq!(hook.health().snapshot().reinstalls, 0);
         assert!(is_live(hold), "nothing was reset");
         assert!(
             lines.iter().any(|line| {

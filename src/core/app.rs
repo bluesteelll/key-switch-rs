@@ -387,6 +387,7 @@ mod tests {
     use super::*;
     use crate::core::windows_actions::BindAction;
     use crate::data::key_combination::KeyCombination;
+    use crate::hook::health::HookHealth;
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
 
     /// A hook of its own, leaked because `DaemonHandle` holds a `'static`
@@ -420,7 +421,14 @@ mod tests {
             handle.status(),
             DaemonStatus {
                 enabled: true,
-                bindings: 1
+                bindings: 1,
+                hook: HookHealth {
+                    watched: false,
+                    reinstalls: 0,
+                    last_reinstall: None,
+                    last_attempt_failed: false,
+                    timer_failing: false,
+                }
             }
         );
 

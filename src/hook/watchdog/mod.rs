@@ -898,7 +898,16 @@ mod tests {
         let mut drive = Drive::new(Recorder::new());
         drive.run(0, 300, a_burst);
         drive.ticker.timer.refusals.set(1);
-        drive.run(301, 3000, a_burst);
+        drive.run(301, 600, a_burst);
+        assert!(
+            drive.health.snapshot().timer_failing,
+            "the status says the timer fails"
+        );
+        drive.run(601, 3000, a_burst);
+        assert!(
+            !drive.health.snapshot().timer_failing,
+            "the timer works again"
+        );
         assert_eq!(drive.counters.get(Counter::WatchdogTimerNotSet), 1);
         assert_eq!(drive.requests.len(), 1, "{:?}", drive.requests);
         assert!(
@@ -918,6 +927,23 @@ mod tests {
         assert_eq!(drive.requests.len(), 2, "{:?}", drive.requests);
         let gap = drive.requests[1] - drive.requests[0];
         assert!((2000..2600).contains(&gap), "{:?}", drive.requests);
+    }
+
+    #[test]
+    fn a_failed_reinstall_is_no_longer_reported_once_the_hook_answers() {
+        // Ruling M3: the main thread records a failed attempt and keeps the
+        // old hook; a tick that sees a callback again clears the report.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run(0, 300, |ms| ms.is_multiple_of(30));
+        drive.health.record_failed_attempt();
+        drive.run(301, 600, |ms| ms.is_multiple_of(30));
+        assert!(
+            drive.health.snapshot().last_attempt_failed,
+            "no callback yet"
+        );
+        drive.health.callback_seen();
+        drive.run(601, 800, |ms| ms.is_multiple_of(30));
+        assert!(!drive.health.snapshot().last_attempt_failed);
     }
 
     #[test]
@@ -974,12 +1000,16 @@ mod tests {
 
     #[test]
     fn the_watchdog_thread_starts_and_stops_without_raw_input() {
+        let health = leaked_health();
         let (recorder, _requests) = Recorder::new();
-        let watchdog = HookWatchdog::start_synthetic(leaked_health(), recorder, leaked_counters())
+        assert!(!health.snapshot().watched);
+        let watchdog = HookWatchdog::start_synthetic(health, recorder, leaked_counters())
             .expect("the watchdog thread starts");
+        assert!(health.snapshot().watched, "watched while the thread runs");
         let begun = Instant::now();
         assert!(watchdog.stop(), "the thread is joined within 1 s");
         assert!(begun.elapsed() < HookWatchdog::STOP_TIMEOUT);
+        assert!(!health.snapshot().watched, "not watched once it stopped");
     }
 
     /// Posts a synthetic raw event every 20 ms for 3 s, calling `before`
