@@ -325,6 +325,7 @@ mod tests {
     use super::*;
     use crate::core::windows_actions::BindAction;
     use crate::data::key_combination::KeyCombination;
+    use crate::hook::main_thread::MainThread;
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
 
     /// A hook of its own, leaked because `DaemonHandle` holds a `'static`
@@ -360,6 +361,45 @@ mod tests {
         handle.set_enabled(true).expect("not inside with_engine");
         assert!(handle.status().enabled);
         assert!(!hook.is_installed(), "switching remapping installs nothing");
+    }
+
+    #[test]
+    fn daemon_handle_switches_remapping_through_the_main_thread() {
+        // Roadmap item 2.2: `on` and `off` are carried out by the thread that
+        // owns the engine, which runs the daemon's loop, and `exit` ends that
+        // loop. The loop thread has no hook installed.
+        let hook = leaked_hook();
+        let (ready_tx, ready) = std::sync::mpsc::channel();
+        let looper = std::thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let _ = ready_tx.send(main.handle());
+            main.run(hook)
+        });
+        let main = ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        let handle = DaemonHandle { hook, main };
+        assert_eq!(
+            handle.status(),
+            DaemonStatus {
+                enabled: true,
+                bindings: 1
+            }
+        );
+
+        handle.set_enabled(false).expect("the main thread answers");
+        assert!(!hook.is_enabled());
+        assert!(!handle.status().enabled);
+
+        handle.set_enabled(true).expect("the main thread answers");
+        assert!(handle.status().enabled);
+        assert!(!hook.is_installed(), "switching remapping installs nothing");
+
+        handle.request_exit().expect("the exit is posted");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
     }
 
     #[test]

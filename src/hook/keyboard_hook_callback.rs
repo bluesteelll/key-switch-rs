@@ -429,6 +429,7 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
+    use crate::hook::main_thread::{MainThread, REFUSED, with_main};
 
     // No test installs a hook. The `decide_event` tests use a local
     // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
@@ -870,6 +871,150 @@ mod tests {
         call_keyboard_callback(f13, WM_KEYDOWN);
         let record = next_record(&records);
         call_keyboard_callback(f13, WM_KEYUP);
+
+        assert_eq!(record.text(), "open https://example.com");
+        assert_eq!(record.name.as_deref(), Some("action-executor"));
+        let thread = executor.0.as_ref().map(|executor| executor.thread().id());
+        assert_eq!(Some(record.thread), thread);
+    }
+
+    /// Turns the process-wide hook's remapping on or off through this
+    /// thread's main state, as the main thread serves `swch on` and `off`.
+    fn switch_remapping(enabled: bool) -> bool {
+        with_main(|main| main.set_enabled(get_hook(), enabled, &HookEnv::new()))
+            .expect("this thread has a free main state")
+    }
+
+    #[test]
+    fn a_thousand_hold_presses_through_the_adapter_keep_at_most_one_timer_queued() {
+        // Roadmap item 2.2, KS-33: a Hold press sets the main thread's one
+        // gesture timer instead of starting a thread, and a cancelled Hold's
+        // timer is dropped when the next one is started. The callback reads
+        // the process-wide hook, hence `GLOBAL_HOOK`; the action is
+        // `DoNothing`, and none fires within the 10 s term.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_trigger(Trigger::Hold(10_000))
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        for _ in 0..1000 {
+            assert_eq!(call_keyboard_callback(f13, WM_KEYDOWN), LRESULT(1));
+            assert_eq!(call_keyboard_callback(f13, WM_KEYUP), LRESULT(1));
+        }
+
+        let (queued, live) = with_main(|main| {
+            let queued = main.timers.queue.len();
+            let far = Instant::now() + Duration::from_secs(60);
+            let live = std::iter::from_fn(|| main.timers.queue.take_due(far))
+                .filter(|timer| main.engine.is_live(timer.token))
+                .count();
+            (queued, live)
+        })
+        .expect("the main state is free");
+        assert!(queued <= 1, "{queued} timers queued after 1000 presses");
+        assert_eq!(live, 0, "no press is pending after its key-up");
+    }
+
+    #[test]
+    fn remapping_off_callbacks_pass_without_asking_for_the_engine() {
+        // A5-m1, the successor of the engine-lock test: while remapping is
+        // off both callbacks return before they ask for the main state. The
+        // test holds the state borrowed while they run, so a callback that
+        // asks is refused, and the refusal is counted. With remapping on the
+        // keyboard callback does ask: the control.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        assert!(switch_remapping(false));
+        let f13 = u32::from(VK_F13.0);
+
+        let (down, up, refused) = with_main(|_| {
+            let before = REFUSED.with(Cell::get);
+            let down = call_keyboard_callback(f13, WM_KEYDOWN);
+            let up = call_keyboard_callback(f13, WM_KEYUP);
+            // SAFETY: `foreground_changed` reads none of its arguments, so
+            // the null handles are never dereferenced or passed on. No hook
+            // is installed and no message is pumped here.
+            unsafe {
+                foreground_changed(
+                    HWINEVENTHOOK::default(),
+                    EVENT_SYSTEM_FOREGROUND,
+                    HWND::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            }
+            (down, up, REFUSED.with(Cell::get) - before)
+        })
+        .expect("the main state is free");
+        assert_ne!(down, LRESULT(1), "remapping off: the bound key-down passes");
+        assert_ne!(up, LRESULT(1), "remapping off: its key-up passes");
+        assert_eq!(
+            refused, 0,
+            "with remapping off neither callback asked for the main state"
+        );
+
+        assert!(switch_remapping(true));
+        let refused = with_main(|_| {
+            let before = REFUSED.with(Cell::get);
+            let down = call_keyboard_callback(f13, WM_KEYDOWN);
+            assert_ne!(down, LRESULT(1), "a refused key-down passes");
+            REFUSED.with(Cell::get) - before
+        })
+        .expect("the main state is free");
+        assert_eq!(
+            refused, 1,
+            "with remapping on the keyboard callback asks for the main state"
+        );
+    }
+
+    #[test]
+    fn a_hold_runs_its_slow_action_on_the_executor_from_the_main_loop() {
+        // Roadmap items 2.1 and 2.2: a Hold fires from the main loop's
+        // gesture timer, which carries out the decision through the
+        // process-wide hook, so the test holds `GLOBAL_HOOK`. Nothing is
+        // installed or injected: no hook exists, and the OpenUrl goes to the
+        // recording runner. A waiter ends the loop once the runner ran.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let main = MainThread::new().expect("the main thread is set up");
+        let (tx, records) = mpsc::channel();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        get_hook().attach_executor(Some(executor.handle()));
+        let executor = DetachAtEnd(Some(executor));
+        get_hook().update_bindings(vec![
+            Binding::new(
+                KeyCombination::new(VK_F13),
+                BindAction::OpenUrl("https://example.com".to_owned()),
+            )
+            .with_trigger(Trigger::Hold(1))
+            .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+        let handle = main.handle();
+        let waiter = thread::spawn(move || {
+            let record = records.recv_timeout(Duration::from_secs(2));
+            let _ = handle.request_exit();
+            record
+        });
+
+        assert_eq!(call_keyboard_callback(f13, WM_KEYDOWN), LRESULT(1));
+        main.run(get_hook()).expect("the loop ends on WM_QUIT");
+        let record = waiter
+            .join()
+            .expect("the waiter does not panic")
+            .expect("the Hold fired within 2 s");
+        assert_eq!(call_keyboard_callback(f13, WM_KEYUP), LRESULT(1));
 
         assert_eq!(record.text(), "open https://example.com");
         assert_eq!(record.name.as_deref(), Some("action-executor"));
