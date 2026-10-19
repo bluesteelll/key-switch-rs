@@ -1,3 +1,240 @@
+//! The watchdog's decision (roadmap item 2.4, cut D3): counts and instants
+//! in, "reinstall" or not out. No Win32 call, thread or clock: every instant
+//! is an argument, so the fake-clock tests below drive it as the watchdog
+//! thread does.
+//!
+//! While raw key events arrive, the watchdog ticks every [`TICK`] and reads
+//! the keyboard callback's heartbeat. A raw key event that no callback
+//! explains is evidence, counted only once it is at least one tick old: the
+//! evidence is checked before the interval's raw events are added, so raw
+//! input that arrives just before its own hook call never counts. The
+//! callbacks counted at a tick are owed to the next interval, whose raw
+//! events they may explain, whichever of the two Windows delivered first.
+//!
+//! # The anti-loop rule
+//!
+//! 1. A request needs at least 2 unexplained raw key events and no callback
+//!    for `S = SILENCE * 2^min(n, MAX_BACKOFF_SHIFT)`, where `n` counts the
+//!    reinstalls and failed attempts since the last callback seen. The
+//!    silence is measured from the last tick that saw a callback, the last
+//!    answer or decline, or the first raw event after idle, whichever came
+//!    last: so keys arrived for all of `S` without a callback.
+//! 2. At most one request is outstanding. It waits in the main thread's
+//!    queue while that thread is busy, and no new evidence counts until the
+//!    main thread answers.
+//! 3. The main thread dispatches the hook calls that wait for it, then
+//!    reinstalls only if the heartbeat has not moved since the request's
+//!    snapshot (`main_thread::reinstall_if_silent`).
+//! 4. After an answer, a new request needs a new window `S` and new
+//!    evidence after the answer.
+//! 5. Each reinstall or failed attempt with no callback in between doubles
+//!    `S`, up to 64 s; the first callback seen resets it to 1 s.
+//!
+//! So a busy main thread draws at most one request per busy period, which
+//! becomes a reinstall only if no hook call reaches the thread once it is
+//! free: the thread was then unresponsive for at least `S`, at least the
+//! largest `LowLevelHooksTimeout` Windows allows, while keys arrived, and
+//! Windows removed the hook. A reinstall that does not help is spaced out.
+//!
+//! Ticking stops once no raw event came for [`ACTIVE_FOR`], nothing is
+//! outstanding and no evidence waits for its window (ruling M1): idle costs
+//! no wake-up.
+
+#![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
+)]
+
+use std::time::{Duration, Instant};
+
+use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
+
+/// Roadmap item 2.4: keys arrive and the callback stays silent "for more
+/// than 1 s", the largest `LowLevelHooksTimeout` Windows allows.
+pub(crate) const SILENCE: Duration = Duration::from_secs(1);
+/// How often the heartbeat is read while keys are typed.
+pub(crate) const TICK: Duration = Duration::from_millis(250);
+/// How long ticking goes on after the last raw key event.
+pub(crate) const ACTIVE_FOR: Duration = Duration::from_secs(2);
+/// The silence a request needs doubles up to `SILENCE * 2^6`, 64 s.
+pub(crate) const MAX_BACKOFF_SHIFT: u32 = 6;
+/// How many unexplained raw key events a request needs.
+const MIN_EVIDENCE: u64 = 2;
+
+/// What a tick decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// Ticking stopped: nothing to read until the next raw key event.
+    Idle,
+    /// Tick again at this instant.
+    TickAt(Instant),
+    /// Ask the main thread for `request`, and tick again at `next_tick`.
+    Reinstall {
+        request: ReinstallRequest,
+        next_tick: Instant,
+    },
+}
+
+/// The watchdog's state: counts and instants only, no key data.
+#[derive(Debug)]
+pub(crate) struct Watchdog {
+    /// The heartbeat at the last tick.
+    last_callbacks: u64,
+    /// Every raw key event counted, and their count at the last tick.
+    raw_events: u64,
+    raw_at_last_tick: u64,
+    /// The callbacks counted at the last tick, which may explain raw events
+    /// of this interval; the credit lasts one interval.
+    owed: u64,
+    /// Raw key events that no callback explained, each at least a tick old.
+    evidence: u64,
+    /// Where the silence that a request needs starts (rule 1).
+    quiet_since: Instant,
+    /// The newest raw key event.
+    last_raw_at: Option<Instant>,
+    /// The next tick while ticking: the one source the watchdog thread sets
+    /// its timer from (ruling I1).
+    next_tick: Option<Instant>,
+    /// A request waits for the main thread's answer.
+    outstanding: bool,
+    /// Reinstalls and failed attempts since the last callback seen.
+    attempts: u32,
+}
+
+impl Watchdog {
+    /// A watchdog that has seen `callbacks` heartbeats and no raw key event.
+    pub(crate) fn new(now: Instant, callbacks: u64) -> Self {
+        Self {
+            last_callbacks: callbacks,
+            raw_events: 0,
+            raw_at_last_tick: 0,
+            owed: 0,
+            evidence: 0,
+            quiet_since: now,
+            last_raw_at: None,
+            next_tick: None,
+            outstanding: false,
+            attempts: 0,
+        }
+    }
+
+    /// A raw key event that the keyboard hook should see arrived. The first
+    /// one after idle starts the ticking and the silence (rule 1).
+    pub(crate) fn raw_event(&mut self, now: Instant) {
+        self.raw_events += 1;
+        self.last_raw_at = Some(now);
+        if self.next_tick.is_none() {
+            self.next_tick = Some(now + TICK);
+            self.quiet_since = now;
+            self.owed = 0;
+        }
+    }
+
+    /// When the next tick is due, while ticking.
+    pub(crate) fn next_tick(&self) -> Option<Instant> {
+        self.next_tick
+    }
+
+    /// The silence a request needs now (rule 5).
+    fn window(&self) -> Duration {
+        SILENCE * (1 << self.attempts.min(MAX_BACKOFF_SHIFT))
+    }
+
+    /// Reads the heartbeat, `callbacks`, at a tick that is due by `now`.
+    pub(crate) fn tick(&mut self, now: Instant, callbacks: u64) -> Verdict {
+        let answered = callbacks.wrapping_sub(self.last_callbacks);
+        let arrived = self.raw_events.saturating_sub(self.raw_at_last_tick);
+        self.last_callbacks = callbacks;
+        self.raw_at_last_tick = self.raw_events;
+
+        let mut request = None;
+        if answered > 0 {
+            self.quiet_since = now;
+            self.evidence = 0;
+            self.owed = answered;
+            self.attempts = 0;
+        } else {
+            let explained = arrived.min(self.owed);
+            self.owed = 0;
+            // Before this interval's raw events count (ruling M5).
+            let decide = !self.outstanding
+                && self.evidence >= MIN_EVIDENCE
+                && now >= self.quiet_since + self.window();
+            self.evidence = self.evidence.saturating_add(arrived - explained);
+            if decide {
+                self.outstanding = true;
+                request = Some(ReinstallRequest {
+                    seen: callbacks,
+                    silent_for: now.saturating_duration_since(self.quiet_since),
+                    attempt: self.attempts.saturating_add(1),
+                });
+            }
+        }
+
+        let next_tick = now + TICK;
+        if let Some(request) = request {
+            self.next_tick = Some(next_tick);
+            return Verdict::Reinstall { request, next_tick };
+        }
+        if self.keeps_ticking(now) {
+            self.next_tick = Some(next_tick);
+            Verdict::TickAt(next_tick)
+        } else {
+            self.next_tick = None;
+            Verdict::Idle
+        }
+    }
+
+    /// Whether another tick can change anything (ruling M1): a request
+    /// waits, a raw event came within [`ACTIVE_FOR`], or evidence that can
+    /// make a request waits for its window.
+    fn keeps_ticking(&self, now: Instant) -> bool {
+        let Some(last_raw_at) = self.last_raw_at else {
+            return self.outstanding;
+        };
+        self.outstanding
+            || now < last_raw_at + ACTIVE_FOR
+            || (self.evidence >= MIN_EVIDENCE && now < last_raw_at + self.window() + TICK)
+    }
+
+    /// The main thread answered the outstanding request with `outcome`.
+    /// A reinstall or a failed attempt doubles the next window; every answer
+    /// starts a new window and drops the evidence (rule 4), and the raw
+    /// events before the answer no longer count. The heartbeat's base stays,
+    /// so a callback of the new hook resets the window at the next tick.
+    pub(crate) fn answered(&mut self, now: Instant, outcome: ReinstallOutcome) {
+        self.outstanding = false;
+        match outcome {
+            ReinstallOutcome::Reinstalled | ReinstallOutcome::Failed => {
+                self.attempts = self.attempts.saturating_add(1);
+            }
+            ReinstallOutcome::Alive | ReinstallOutcome::NotInstalled => {}
+        }
+        self.start_over(now);
+    }
+
+    /// The request could not be sent (the main thread's queue was full, or
+    /// it is ending): the next tick asks again.
+    pub(crate) fn not_sent(&mut self) {
+        self.outstanding = false;
+    }
+
+    /// Keyboard input is not on the daemon's desktop at the decision: the
+    /// evidence is dropped, and a new request needs a new window.
+    pub(crate) fn declined(&mut self, now: Instant) {
+        self.outstanding = false;
+        self.start_over(now);
+    }
+
+    fn start_over(&mut self, now: Instant) {
+        self.evidence = 0;
+        self.owed = 0;
+        self.quiet_since = now;
+        self.raw_at_last_tick = self.raw_events;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -92,7 +329,7 @@ mod tests {
 
     /// A raw key event every 30 ms, from 0.
     fn typing(ms: u64, f: &mut Feeder) {
-        if ms % 30 == 0 {
+        if ms.is_multiple_of(30) {
             f.raw(ms);
         }
     }
@@ -368,6 +605,25 @@ mod tests {
             f.idle[0]
         );
         assert_eq!(f.ticks.last(), f.idle.last(), "no tick after the idle one");
+    }
+
+    #[test]
+    fn raw_events_before_an_answer_are_no_evidence_after_it() {
+        // Rule 4: a new request needs evidence after the answer. Two raw
+        // events between the request's tick and its answer, then nothing.
+        let mut f = Feeder::new();
+        f.run(0, 10_000, |ms, f| {
+            if ms <= 990 {
+                typing(ms, f);
+            }
+            if ms == 1001 || ms == 1003 {
+                f.raw(ms);
+            }
+            if f.last_request().is_some_and(|at| ms == at + 10) {
+                f.answer(ms, ReinstallOutcome::Reinstalled);
+            }
+        });
+        assert_eq!(f.request_times(), [1000]);
     }
 
     #[test]
