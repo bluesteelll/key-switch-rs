@@ -1635,7 +1635,10 @@ mod tests {
 
     /// A [`WindowQuery`](crate::platform::foreground::WindowQuery) whose
     /// foreground window the test moves; window `n` belongs to process `n`
-    /// and process `n` runs `p<n>.exe`.
+    /// and process `n` runs `p<n>.exe`. The tests use odd window numbers:
+    /// a real process id is a multiple of 4, so an odd one can never be
+    /// this test process's own, which the cache would take for the daemon's
+    /// and name no executable for.
     struct MovingQuery(std::rc::Rc<Cell<usize>>);
 
     impl crate::platform::foreground::WindowQuery for MovingQuery {
@@ -1664,17 +1667,17 @@ mod tests {
         ] {
             let main = MainThread::new().expect("the main thread is set up");
             let hook = KeyboardHook::new();
-            let window = std::rc::Rc::new(Cell::new(0x1000));
+            let window = std::rc::Rc::new(Cell::new(0x1001));
             with_main(|state| {
                 state.foreground =
                     ForegroundCache::with_query(Box::new(MovingQuery(window.clone())));
-                state.foreground_changed(HWND(0x1000 as *mut std::ffi::c_void));
+                state.foreground_changed(HWND(0x1001 as *mut std::ffi::c_void));
             })
             .expect("the main state is free");
-            window.set(0x2000);
+            window.set(0x2001);
             assert_eq!(
                 with_main(|state| state.foreground.app().map(str::to_owned)),
-                Some(Some("p4096.exe".to_owned())),
+                Some(Some("p4097.exe".to_owned())),
                 "the cache still names the window of before the {signal}"
             );
 
@@ -1683,7 +1686,7 @@ mod tests {
 
             assert_eq!(
                 with_main(|state| state.foreground.app().map(str::to_owned)),
-                Some(Some("p8192.exe".to_owned())),
+                Some(Some("p8193.exe".to_owned())),
                 "the drain of {signal} reads the foreground window again"
             );
         }
