@@ -26,11 +26,15 @@ One package with a library, two binaries, a build script and the book:
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
   `main_thread.rs` (`MainState` with the engine, the gesture timers and the foreground cache, `with_main`, the
   `MainThread::run` loop, reload requests, input signals), `control_window.rs` (`ControlWindow`, the hidden
-  top-level window for session notifications and session end), `config_watcher.rs`, `ipc_server.rs`.
+  top-level window for session notifications and session end), `health.rs` (`HealthState`: the callback heartbeat,
+  `HookHealth`, reinstall requests), `installer.rs` (the only Win32 hook and raw-input installers, compiled out under
+  test; `FakeInstaller`), `watchdog/` (`mod.rs` the `hook-watchdog` thread, `decision.rs` pure), `debug_hold.rs`
+  (debug builds only), `config_watcher.rs`, `ipc_server.rs`.
 - `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`,
   `registry.rs`, `single_instance.rs`, `known_folder.rs`).
 - `src/logging/`: `mod.rs` (`init`, `attach_file`, `flush`, `FATAL_TARGET`), `sink.rs` (line format, rotation),
-  `writer.rs` (the `log-writer` thread), `counters.rs` (hook-path counters), `testing.rs` (`capture`, test only).
+  `writer.rs` (the `log-writer` thread), `counters.rs` (hook-path counters), `panic.rs` (the panic hook, a 250 ms
+  bounded flush, installed by `init`), `testing.rs` (`capture`, test only).
 - `src/engine/`: the pure decision core (`#![forbid(unsafe_code)]`; no Win32 calls, threads, locks or clock).
   `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
   `fire`, `timers`, and `mask`, the menu mask key of roadmap 1.2). `Env` supplies the clock, the OS key state and the
@@ -63,8 +67,10 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 `cargo test` does not run it. Report those tests as manual checks. Do not count them as passes.
 The latency bench (`#[ignore = "bench: ..."]`, rows R1-R8, `KS_BENCH_LOAD=1` adds R8) is counted apart and never as a pass.
 Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rules of
-`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8) and `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
-against 5.4 us); a breach is a defect unless the cut justified the extra work.
+`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8), `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
+against 5.4 us) and `p2-2.4-watchdog/cut.md` (R14 p50 <= R14c p50 + 300 ns; the 1 ms-paced rows gate on p50 only;
+R15 is evidence; R16, one wake per burst, about 50 us, is declared and not gated); a breach is a defect unless the
+cut justified the extra work. A cut that sets a new latency bound probes it with a diagnostic row first.
 
 ## Coding principles
 
@@ -74,6 +80,8 @@ against 5.4 us); a breach is a defect unless the cut justified the extra work.
    `keyboard_hook_callback.rs` names no `log::` outside its tests: a per-event condition is a
    `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_main`.
    The hook path runs only `FastAction`s inline; every other action goes through `KeyboardHook::submit` to the executor.
+   The watchdog heartbeat (`health().callback_seen()`, one atomic RMW after `code < 0`, before the remapping gate) and
+   the debug-only hold are the only other additions.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
    if and only if its key-down was, unless Windows has the key down (the OS witness, roadmap 2.3), so Windows
@@ -94,7 +102,8 @@ against 5.4 us); a breach is a defect unless the cut justified the extra work.
    swaps the bindings on main (`MainState::reload`). The hook path never queries a process: `when:` reads the
    foreground cache, which the foreground callback fills, and the title of another process's window. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
-   The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`).
+   The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`); `HealthState`
+   (atomics in `KeyboardHook`) is the watchdog's shared state.
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
 6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows, the engine and
@@ -106,7 +115,9 @@ against 5.4 us); a breach is a defect unless the cut justified the extra work.
    signal and posts `MAIN_WAKE`; resets run in the drain, and a lost-input reset reads no OS state. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
    APIs needs its own pump. `Launch`, `OpenUrl` and `Sequence` run on the `action-executor` thread, which owns its STA,
    its bounded queue, its `Delay` timer and its message pump; main starts it before the hooks and stops it after
-   they are removed. The `log-writer` thread alone writes the console
+   they are removed. The `hook-watchdog` thread owns a message-only window, the process's raw keyboard registration
+   and a waitable timer; it reads atomics and posts a reinstall request, and only main installs, reinstalls or
+   removes hooks. It starts before the hooks and stops after them. The `log-writer` thread alone writes the console
    and the log files; every other thread only queues a line. Moving hook work off the main thread is
    a design question, so escalate it.
 7. **Win32 errors:** propagate `windows::core::Result<()>`, check handles and close them on every
@@ -131,6 +142,8 @@ against 5.4 us); a breach is a defect unless the cut justified the extra work.
   Never call `SendInput` or otherwise inject input. Never write the registry or change system
   settings. Reads are fine.
 - Tests that would need any of that are `#[ignore = "manual: <what a human checks>"]`.
+- Every hook or raw-input registration goes through `hook::installer`, whose Win32 code is compiled out under test;
+  tests use `FakeInstaller` or a synthetic source, and the installer scan test fails on any other call site.
 - Never push, tag, release or change GitHub settings unless the brief is the merge step of a lane.
 
 ## Git flow
