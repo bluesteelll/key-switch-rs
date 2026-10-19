@@ -917,6 +917,30 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_reentry_is_counted_in_main_state_refused() {
+        // Roadmap item 2.4: a refusal is counted in the daemon's counters,
+        // never logged on the hook path. Other tests refuse too, so the
+        // count may rise by more; the one test that takes the counters
+        // holds `GLOBAL_HOOK`, so this one does too (ruling M4).
+        let _global = crate::hook::keyboard_hook_callback::GLOBAL_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _main = MainThread::new().expect("the main thread is set up");
+            let before = counters::COUNTERS.get(Counter::MainStateRefused);
+            let nested = with_main(|_| with_main(|_| ()));
+            let after = counters::COUNTERS.get(Counter::MainStateRefused);
+            let _ = tx.send((nested, after.saturating_sub(before)));
+        });
+        let (nested, refused) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("re-entry panicked or hung");
+        assert_eq!(nested, Some(None));
+        assert!(refused >= 1, "the refusal is counted: {refused}");
+    }
+
+    #[test]
     fn with_main_works_again_after_a_call() {
         let _main = MainThread::new().expect("the main thread is set up");
         assert_eq!(with_main(|_| 1), Some(1));

@@ -329,7 +329,8 @@ mod tests {
                 "log_lines_dropped",
                 "executor_jobs_dropped",
                 "executor_unavailable",
-                "post_message_failed"
+                "post_message_failed",
+                "main_state_refused"
             ]
         );
     }
