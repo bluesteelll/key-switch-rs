@@ -92,7 +92,8 @@ fn same_file_name(a: &[u16], b: &[u16]) -> bool {
 
 /// Install a watcher on the parent directory of `config_path` and spawn the
 /// debounce + reload worker. Returns the watcher handle — caller MUST keep it
-/// alive (drop = stop watching, debounce thread exits cleanly).
+/// alive (drop = stop watching, debounce thread exits cleanly). An error if
+/// the folder cannot be watched or the worker thread cannot be started.
 pub fn spawn_watcher(
     config_path: PathBuf,
     hook: &'static KeyboardHook,
@@ -120,10 +121,12 @@ pub fn spawn_watcher(
     // events. A non-recursive directory watch is robust to that.
     watcher.watch(&dir, RecursiveMode::NonRecursive)?;
 
+    // A thread that cannot be started is the caller's error to log: the
+    // daemon goes on without hot reload. The watcher is dropped with it.
     thread::Builder::new()
         .name("config-watcher".into())
         .spawn(move || debounce_loop(rx, config_path, hook))
-        .expect("spawn config-watcher thread");
+        .map_err(notify::Error::io)?;
 
     Ok(watcher)
 }

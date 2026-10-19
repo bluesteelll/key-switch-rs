@@ -802,6 +802,12 @@ minor version; such entries sit under **Changed** and start with
   modifier is down in Windows (known issue 68). Tests:
   `engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys`,
   `a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows`.
+- The config watcher reports a `config-watcher` thread it cannot start
+  instead of panicking: the daemon logs
+  `[WARN] could not start config file watcher for <path>: ...` and
+  `[INFO] continuing without hot-reload` and runs on (roadmap item 2.3, a
+  leftover of item 2.2). Test:
+  `hook::config_watcher::tests::the_watcher_thread_has_no_panic_path`.
 
 ## [0.1.0] - 2026-05-20
 
