@@ -16,7 +16,10 @@ One package with a library, two binaries, a build script and the book:
 - `src/lib.rs`: the library both binaries import.
 - `src/main.rs` builds `key-switch-rs.exe` (the daemon), and `src/bin/swch.rs` builds `swch.exe` (the CLI).
 - `src/config/`: `schema.rs` (serde `Raw*`), `loader.rs`, `parsing.rs`, `default_config.ron`.
-- `src/core/`: `app.rs` (builder + `GetMessageW` loop), `constants.rs` (the sentinel), `windows_actions.rs`.
+- `src/core/`: `app.rs` (builder + `GetMessageW` loop), `constants.rs` (the sentinel), `windows_actions.rs`
+  (`BindAction`, `FastAction`), `executor/` (`mod.rs` the `action-executor` thread, `runs.rs` the pure macro runs,
+  `testing.rs` the `FakeRunner`).
+- `src/platform/`: `timers.rs` (`WaitableTimer`, a high-resolution waitable timer for threads that wait on deadlines).
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
   `config_watcher.rs`, `ipc_server.rs`.
@@ -59,6 +62,7 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    beyond what the cut prescribes. Never catch panics there. A swallowed panic leaves a phantom-blocked keyboard.
    `keyboard_hook_callback.rs` names no `log::` outside its tests: a per-event condition is a
    `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_engine`.
+   The hook path runs only `FastAction`s inline; every other action goes through `KeyboardHook::submit` to the executor.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
    if and only if its key-down was.
@@ -76,11 +80,14 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    spawn or message pump under it. `with_engine` refuses a nested call on the same thread (the event passes)
    instead of deadlocking. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
+   The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`).
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
 6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows and
    pumps `GetMessageW`. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
-   APIs needs its own pump. Macro steps run on worker threads. The `log-writer` thread alone writes the console
+   APIs needs its own pump. `Launch`, `OpenUrl` and `Sequence` run on the `action-executor` thread, which owns its STA,
+   its bounded queue, its `Delay` timer and its message pump; main starts it before the hooks and stops it after
+   they are removed. The `log-writer` thread alone writes the console
    and the log files; every other thread only queues a line. Moving hook work off the main thread is
    a design question, so escalate it.
 7. **Win32 errors:** propagate `windows::core::Result<()>`, check handles and close them on every
