@@ -918,6 +918,7 @@ fn qualifies(make_code: u16, vkey: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -1476,6 +1477,265 @@ mod tests {
         assert_eq!(size_of::<RawBuffer>(), 64 * size_of::<RAWINPUT>());
         #[cfg(target_pointer_width = "64")]
         assert_eq!(KEYBOARD_RECORD, 40, "a keyboard record on x64");
+    }
+
+    /// Raw input reads that Windows never sees: each read takes the next
+    /// answer of its list, then `Empty`; the queue says it holds raw input
+    /// while `pending`, which a standard read clears if `standard_clears`.
+    #[derive(Default)]
+    struct FakeReads {
+        buffered: VecDeque<Read>,
+        standard: VecDeque<Read>,
+        pending: bool,
+        standard_clears: bool,
+        buffered_calls: usize,
+        standard_calls: usize,
+    }
+
+    impl RawReads for FakeReads {
+        fn buffered(&mut self) -> Read {
+            self.buffered_calls += 1;
+            self.buffered.pop_front().unwrap_or(Read::Empty)
+        }
+
+        fn standard(&mut self) -> Read {
+            self.standard_calls += 1;
+            if self.standard_clears {
+                self.pending = false;
+            }
+            self.standard.pop_front().unwrap_or(Read::Empty)
+        }
+
+        fn raw_pending(&mut self) -> bool {
+            self.pending
+        }
+    }
+
+    fn records(keys: u64, unread: u64) -> Read {
+        Read::Records(BlockCount { keys, unread })
+    }
+
+    /// A clock that stands still.
+    fn still() -> impl Fn() -> Instant {
+        let now = Instant::now();
+        move || now
+    }
+
+    /// A clock that moves on 1 ms at each reading.
+    fn one_ms_per_reading() -> impl Fn() -> Instant {
+        let now = std::cell::Cell::new(Instant::now());
+        move || {
+            let at = now.get();
+            now.set(at + Duration::from_millis(1));
+            at
+        }
+    }
+
+    #[test]
+    fn a_drain_reads_until_the_queue_is_empty() {
+        // Ruling V3-I1: a drain reads until the queue is empty; its records
+        // are counted, and so are those it could not read.
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            buffered: [records(3, 0), records(2, 1), records(4, 0)].into(),
+            ..FakeReads::default()
+        };
+        assert_eq!(
+            drain(&mut reads, true, counters, still()),
+            Drained {
+                keys: 9,
+                ..Drained::default()
+            }
+        );
+        assert_eq!(reads.buffered_calls, 4, "until a read finds nothing");
+        assert_eq!(counters.get(Counter::RawInputUnread), 1);
+    }
+
+    #[test]
+    fn a_drain_that_spends_its_budget_leaves_the_rest_for_the_next() {
+        // Ruling V3-I1: the bound of a drain is a time budget, not a count
+        // of records; a drain that spends it says raw input is left, and
+        // the next drain goes on where it stopped, so nothing is lost.
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            buffered: std::iter::repeat_n(records(76, 0), 100).collect(),
+            ..FakeReads::default()
+        };
+        let clock = one_ms_per_reading();
+        let first = drain(&mut reads, true, counters, &clock);
+        assert!(first.pending, "{first:?}");
+        assert!(first.keys > 0 && first.keys < 7_600, "{first:?}");
+        let mut keys = first.keys;
+        let mut drains = 1;
+        loop {
+            let next = drain(&mut reads, true, counters, &clock);
+            keys += next.keys;
+            drains += 1;
+            if !next.pending {
+                break;
+            }
+            assert!(drains < 100, "the drains end");
+        }
+        assert_eq!(keys, 7_600, "every key event, over {drains} drains");
+    }
+
+    #[test]
+    fn a_failed_buffered_read_is_counted_and_the_standard_read_takes_the_rest() {
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            buffered: [Read::Failed, records(50, 0)].into(),
+            standard: [records(1, 0), records(0, 0), records(1, 0)].into(),
+            ..FakeReads::default()
+        };
+        assert_eq!(
+            drain(&mut reads, true, counters, still()),
+            Drained {
+                keys: 2,
+                ..Drained::default()
+            }
+        );
+        assert_eq!(
+            reads.buffered_calls, 1,
+            "no buffered read after a failed one"
+        );
+        assert_eq!(counters.get(Counter::RawInputUnread), 1);
+    }
+
+    #[test]
+    fn raw_input_that_no_buffered_read_returns_is_taken_by_one_standard_read() {
+        // Ruling V3-M3: a buffered read finds nothing while the queue still
+        // says it holds raw input; one standard read takes it.
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            standard: [records(1, 0)].into(),
+            pending: true,
+            standard_clears: true,
+            ..FakeReads::default()
+        };
+        assert_eq!(
+            drain(&mut reads, true, counters, still()),
+            Drained {
+                keys: 1,
+                ..Drained::default()
+            }
+        );
+        assert_eq!(reads.standard_calls, 1);
+        assert_eq!(counters.get(Counter::RawInputUnread), 0);
+    }
+
+    #[test]
+    fn raw_input_that_no_read_returns_is_counted_and_the_wait_backs_off_for_a_tick() {
+        // Ruling V3-M3: the queue says it holds raw input that neither read
+        // returns, which would end every wait with raw input in its mask at
+        // once, for ever. The drain counts it once and stops, and the next
+        // wait leaves raw input out until a tick has passed: no spin.
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            pending: true,
+            ..FakeReads::default()
+        };
+        let drained = drain(&mut reads, true, counters, still());
+        assert_eq!(
+            drained,
+            Drained {
+                stuck: true,
+                ..Drained::default()
+            }
+        );
+        assert_eq!((reads.buffered_calls, reads.standard_calls), (1, 1));
+        assert_eq!(counters.get(Counter::RawInputUnread), 1);
+        let now = Instant::now();
+        let (mask, timeout) = next_wait(QS_RAWINPUT, false, None, drained, now);
+        assert!(!mask.contains(QS_RAWINPUT), "{mask:?}");
+        assert_eq!(timeout, 250, "one tick");
+    }
+
+    #[test]
+    fn a_drain_ends_at_wm_quit() {
+        let counters = leaked_counters();
+        let mut reads = FakeReads {
+            standard: [records(1, 0), Read::Quit, records(1, 0)].into(),
+            ..FakeReads::default()
+        };
+        assert_eq!(
+            drain(&mut reads, false, counters, still()),
+            Drained {
+                keys: 1,
+                quit: true,
+                ..Drained::default()
+            }
+        );
+    }
+
+    #[test]
+    fn the_next_wait_never_waits_while_raw_input_is_left() {
+        // Ruling V3-I1: a drain that spent its budget is followed by another
+        // before the thread waits; otherwise the wait leaves raw input out
+        // while ticking and times out at the tick a timer could not take.
+        let now = Instant::now();
+        let left = Drained {
+            keys: 300,
+            pending: true,
+            ..Drained::default()
+        };
+        assert_eq!(next_wait(QS_RAWINPUT, true, None, left, now).1, 0);
+        assert_eq!(
+            next_wait(QS_RAWINPUT, false, None, Drained::default(), now),
+            (QS_ALLINPUT, INFINITE)
+        );
+        assert_eq!(
+            next_wait(QS_RAWINPUT, true, None, Drained::default(), now),
+            (QUEUE_STATUS_FLAGS(0xFF), INFINITE)
+        );
+        assert_eq!(
+            next_wait(
+                QS_RAWINPUT,
+                true,
+                Some(now + Duration::from_millis(100)),
+                Drained::default(),
+                now
+            ),
+            (QUEUE_STATUS_FLAGS(0xFF), 100)
+        );
+    }
+
+    #[test]
+    fn the_buffered_read_of_a_thread_without_raw_input_reads_nothing() {
+        // Critic OQ3, an FFI smoke test of the buffered read's sizes on a
+        // thread of its own with a sink window and no raw input
+        // registration, so it reads only that thread's empty queue.
+        // Microsoft Learn names two outcomes for GetRawInputBuffer: the
+        // number of records written, 0 for none, or (UINT)-1 for an error.
+        // Either way the drain reads nothing.
+        let counters = leaked_counters();
+        let (outcome, drained) = thread::spawn(move || {
+            let window = SinkWindow::create().expect("a message-only window");
+            let mut buffer = empty_buffer();
+            let mut msg = MSG::default();
+            let mut size = RAW_BUFFER_BYTES as u32;
+            // SAFETY: `buffer` is RAW_BUFFER_BYTES of initialised bytes,
+            // aligned to 8, alive for the call; `size` says how many bytes it
+            // holds, so the call writes within it; the header size is
+            // RAWINPUTHEADER's, as the call asks.
+            let outcome = unsafe {
+                GetRawInputBuffer(
+                    Some(buffer.0.as_mut_ptr().cast::<RAWINPUT>()),
+                    &mut size,
+                    size_of::<RAWINPUTHEADER>() as u32,
+                )
+            };
+            let drained = drain_keyboard(window.0, &mut buffer, counters, &mut msg);
+            (outcome, drained)
+        })
+        .join()
+        .expect("the smoke test's thread ends");
+        let unread = counters.get(Counter::RawInputUnread);
+        match outcome {
+            0 => assert_eq!(unread, 0, "no records: nothing was unread"),
+            u32::MAX => assert_eq!(unread, 1, "an error: the failed read is counted"),
+            records => panic!("{records} records from a queue with no raw input"),
+        }
+        assert_eq!(drained, Drained::default());
     }
 
     #[test]
