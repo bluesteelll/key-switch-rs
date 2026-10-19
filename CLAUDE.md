@@ -165,7 +165,9 @@ cut justified the extra work. A cut that sets a new latency bound probes it with
 - The config stays RON.
 - Logging uses the `log` crate plus the in-house rotating file sink in `src/logging` (roadmap 1.7).
 - After a key-up the hook never saw (Win+L), the next press of a swallowed, non-repeating trigger key fires (roadmap 2.3, 2026-10-18).
-- Another key-down cancels a pending `Tap`/`Hold`/`DoubleTap` whose key passes, as AutoHotkey does (roadmap 2.2, 2026-10-18).
+- Another key-down cancels a pending `Tap`/`Hold`/`DoubleTap` whose key passes, as AutoHotkey does (roadmap 2.2, 2026-10-18);
+  a Tap that already completed and waits for its DoubleTap window fires at once instead (2026-10-19).
+- A `when:` reads the window title live; the executable name is cached per window (2026-10-19).
 - Binds run with the lowest possible latency (2026-10-19): the key-to-action path is the top non-functional
   priority. Every cut states its effect on that path (per-event work, allocations, locks, Win32 calls, timer
   resolution, wake-ups), and added delay there is a defect unless the cut justifies it and the orchestrator accepts it.
