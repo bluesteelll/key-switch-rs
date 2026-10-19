@@ -18,6 +18,7 @@ use crate::hook::control_window::ControlWindow;
 use crate::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{MainThread, MainThreadHandle};
+use crate::hook::watchdog::HookWatchdog;
 use crate::hook::{config_watcher, keyboard_hook_callback};
 use crate::ipc;
 use crate::logging::counters;
@@ -166,9 +167,10 @@ impl App {
     /// Runs the daemon on the calling thread, which becomes its main
     /// thread, until `WM_QUIT`: creates the IPC pipe, starts the action
     /// executor, sets up the main thread's engine and gesture timer
-    /// (`hook::main_thread`), creates the control window (roadmap item 2.3),
-    /// installs the hooks, serves the pipe, runs the main loop, removes the
-    /// hooks, destroys the control window and stops the executor.
+    /// (`hook::main_thread`), starts the hook watchdog (roadmap item 2.4),
+    /// creates the control window (roadmap item 2.3), installs the hooks,
+    /// serves the pipe, runs the main loop, removes the hooks, destroys the
+    /// control window and stops the watchdog and the executor.
     ///
     /// A pipe that cannot be created, an executor that cannot be started or
     /// a gesture timer that cannot be made is an error before any hook is
@@ -194,7 +196,11 @@ impl App {
         self.setup_ctrl_c_handler()?;
 
         // Before the hooks, so that the first slow action has somewhere to
-        // go and the hooks never wait for one.
+        // go and the hooks never wait for one. The hook watchdog starts
+        // before them too, and both stop after the hooks are removed: the
+        // main thread never waits for another thread while the keyboard
+        // hook is installed and the main loop does not run, which would hold
+        // up every keystroke (ruling I3 of roadmap item 2.4).
         let executor = Executor::start(Win32Runner, QUEUE_CAPACITY, &counters::COUNTERS)
             .map_err(|error| format!("could not start the action executor: {error}"))?;
         // Before the hooks, on the thread that installs them: the engine and
@@ -207,6 +213,19 @@ impl App {
         let bindings = std::mem::take(&mut self.pending_bindings);
         hook.update_bindings(bindings);
         let mut executor = AttachedExecutor::attach(hook, executor);
+        // Before the hooks (see the executor's start): the watchdog counts
+        // raw keyboard input only while the keyboard hook is installed. It
+        // is no reason to stop: without it the daemon runs as before it.
+        let watchdog = match HookWatchdog::start(hook.health(), main.handle(), &counters::COUNTERS)
+        {
+            Ok(watchdog) => Some(watchdog),
+            Err(error) => {
+                log::warn!(
+                    "the hook watchdog is off ({error}): a keyboard hook that Windows removes is not reinstalled until the daemon restarts"
+                );
+                None
+            }
+        };
         // Before the hooks, after the executor guard, so that on every
         // return it is destroyed before the guard's stop, which waits up to
         // 2 s: a top-level window must not outlive the loop that pumps it
@@ -294,10 +313,22 @@ impl App {
         // never run while the keyboard hook waits for this thread, and before
         // the executor's stop, which may wait 2 s.
         drop(control_window);
+        stop_watchdog(watchdog);
         executor.stop();
 
         ran.map_err(|error| format!("the main message loop failed: {error}"))?;
         Ok(())
+    }
+}
+
+/// Stops the hook watchdog, if it runs, waiting at most 1 s. After the
+/// hooks are removed (ruling I3): a request it sends meanwhile finds no
+/// hook and installs none.
+fn stop_watchdog(watchdog: Option<HookWatchdog>) {
+    if let Some(watchdog) = watchdog
+        && !watchdog.stop()
+    {
+        log::warn!("the hook watchdog did not stop within 1 s; exiting without it");
     }
 }
 

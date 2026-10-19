@@ -44,17 +44,9 @@ pub(crate) trait Installer {
 
     /// Registers `sink` for the raw input of every keyboard, also while
     /// another process has the foreground (`RIDEV_INPUTSINK`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
-    )]
     fn register_raw_keyboard(&self, sink: HWND) -> Result<()>;
 
     /// Removes this process's raw keyboard registration.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
-    )]
     fn unregister_raw_keyboard(&self) -> Result<()>;
 }
 
@@ -87,9 +79,7 @@ mod win32 {
     /// keyboard's usage, which select every keyboard for raw input. The
     /// `windows` crate has them only under its
     /// `Win32_Devices_HumanInterfaceDevice` feature.
-    #[expect(dead_code, reason = "first used by Hook: the hook watchdog thread")]
     const GENERIC_DESKTOP: u16 = 0x01;
-    #[expect(dead_code, reason = "first used by Hook: the hook watchdog thread")]
     const KEYBOARD: u16 = 0x06;
 
     impl Installer for System {

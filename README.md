@@ -65,7 +65,10 @@ key-switch-rs/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, remapping switch
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── control_window.rs   - hidden control window: session notifications, session end
-    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals
+    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals, hook reinstall
+    │   ├── health.rs           - the keyboard callback's heartbeat, what the watchdog asks the main thread
+    │   ├── installer.rs        - the Win32 calls that install hooks and raw input, compiled only outside tests
+    │   ├── watchdog/           - the hook watchdog: raw keyboard input against the heartbeat (mod.rs), the pure decision (decision.rs)
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── platform/
@@ -895,6 +898,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_Globalization` (`CompareStringOrdinal`: the config watcher compares file names the way the file system does)
   - `Win32_Graphics_Gdi` (`RegisterClassW` and `WNDCLASSW` for the control window)
   - `Win32_UI_WindowsAndMessaging`
+  - `Win32_UI_Input` (`RegisterRawInputDevices`, `GetRawInputData`: the hook watchdog's raw keyboard input)
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
   - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
@@ -928,6 +932,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles and the remapping switch, and the decision core owned by the main thread, which runs the hooks and every gesture timer, so no lock is taken on the key path; binding list can be hot-swapped atomically; a reload stops the macros still running, which belong to the old list
 - **Timers on the main thread**: a `Hold` sets the main thread's one high-resolution waitable timer instead of starting a thread, and fires within about 1 ms of its term
+- **Hook watchdog**: Windows removes a low-level keyboard hook whose callback runs past `LowLevelHooksTimeout`, without a word (KS-08). A `hook-watchdog` thread receives the raw input of every keyboard on a message-only window of its own and compares it with a heartbeat the keyboard callback bumps; when keys arrive and the callback stays silent for more than 1 s, the main thread reinstalls the hook (the new one first, then the old one off) and logs it. The main thread pays one atomic increment per key; Windows sends one `WM_INPUT` per key event to the watchdog thread, never to the main thread, which reads it on another core; idle, the watchdog does not wake up. It keeps no key data and never injects input
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
@@ -966,6 +971,21 @@ What still cannot be intercepted:
   is released. Its release reaches Windows, because the hook finds the key
   down in Windows, so it does not stay stuck (roadmap item 2.3, known
   issue 78).
+
+The hook watchdog (roadmap item 2.4) has limits of its own:
+
+- The keys typed between the hook's loss and its reinstall, about 1 to 1.5
+  s, reach Windows unremapped, and a `Hold` armed just before the loss can
+  still fire on its timer.
+- Another program's low-level hook installed after the daemon that
+  swallows every key for more than 1 s can draw one reinstall, which puts
+  the daemon's hook first again, if Windows reports raw input for the keys
+  that hook swallows (not verified).
+- A daemon that is not elevated gets no hook calls while an elevated
+  window has the focus, but may get its raw input: it then asks for a
+  reinstall after 1, 2, 4 ... up to 64 s of typing there.
+- Raw keyboard input in the daemon's process belongs to the watchdog:
+  Windows allows one registration per device class and process.
 
 For a fully unattended/no-UAC-prompt setup, the alternative is
 `uiAccess="true"` in the manifest — but that requires a binary signed with a

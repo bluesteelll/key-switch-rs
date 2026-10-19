@@ -41,10 +41,6 @@
 //! no wake-up.
 
 #![forbid(unsafe_code)]
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
-)]
 
 use std::time::{Duration, Instant};
 

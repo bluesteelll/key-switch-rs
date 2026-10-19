@@ -455,10 +455,6 @@ enum Request {
     /// The hook watchdog saw keys arrive while the keyboard callback stayed
     /// silent (roadmap item 2.4): reinstall the keyboard hook if it is still
     /// silent, and answer what was done.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
-    )]
     ReinstallHook {
         request: ReinstallRequest,
         reply: SyncSender<ReinstallOutcome>,
@@ -548,10 +544,6 @@ impl MainThreadHandle {
     /// Asks the main thread to reinstall the keyboard hook if it is still
     /// silent, without waiting: the answer comes on the receiver once the
     /// main thread reaches the request, which the watchdog polls.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by Hook: the hook watchdog thread")
-    )]
     pub(crate) fn request_reinstall(
         &self,
         request: ReinstallRequest,

@@ -4,7 +4,7 @@
 //! watchdog asks the main thread when the two disagree.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// The heartbeat, alone on its cache line: the main thread writes it at
@@ -17,12 +17,17 @@ struct Heartbeat(AtomicU64);
 /// atomics only, a field of `KeyboardHook` (`KeyboardHook::health`).
 pub(crate) struct HealthState {
     heartbeat: Heartbeat,
+    /// Whether the keyboard hook is installed: set by `KeyboardHook::install`
+    /// and cleared by `uninstall`, on the main thread, and read by the
+    /// watchdog, which counts raw input only while it is (ruling I3).
+    hook_installed: AtomicBool,
 }
 
 impl HealthState {
     pub(crate) const fn new() -> Self {
         Self {
             heartbeat: Heartbeat(AtomicU64::new(0)),
+            hook_installed: AtomicBool::new(false),
         }
     }
 
@@ -38,6 +43,17 @@ impl HealthState {
     /// How many calls the keyboard callback has had.
     pub(crate) fn callbacks(&self) -> u64 {
         self.heartbeat.0.load(Ordering::Acquire)
+    }
+
+    /// Notes whether the keyboard hook is installed. Main thread, around
+    /// its install and its removal; the flag publishes no other data.
+    pub(crate) fn set_hook_installed(&self, installed: bool) {
+        self.hook_installed.store(installed, Ordering::Release);
+    }
+
+    /// Whether the keyboard hook is installed.
+    pub(crate) fn hook_installed(&self) -> bool {
+        self.hook_installed.load(Ordering::Acquire)
     }
 }
 

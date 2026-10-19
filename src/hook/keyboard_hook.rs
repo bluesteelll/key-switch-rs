@@ -166,6 +166,7 @@ impl KeyboardHook {
 
         let hook = installer.set_keyboard_hook()?;
         self.hook_handle.store(hook, Ordering::Release);
+        self.health.set_hook_installed(true);
 
         // Foreground-change hook re-syncs modifier state after focus returns from
         // a higher-integrity window (Task Manager, UAC, lock screen, etc.) that
@@ -245,6 +246,7 @@ impl KeyboardHook {
         let handle = self
             .hook_handle
             .swap(std::ptr::null_mut(), Ordering::AcqRel);
+        self.health.set_hook_installed(false);
         if !handle.is_null() {
             installer.unhook_keyboard(handle)?;
         }

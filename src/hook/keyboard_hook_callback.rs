@@ -63,8 +63,11 @@
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is
 //! reset with no event decided in between. So are a config reload and the
 //! input signals that `desktop_switched` and the control window note
-//! (roadmap item 2.3). None of them installs or removes a hook; only the
-//! main thread does.
+//! (roadmap item 2.3), and a reinstall of the keyboard hook that the hook
+//! watchdog asks for (`hook::watchdog`, roadmap item 2.4): the watchdog runs
+//! on a thread of its own, reads only the heartbeat this callback bumps, and
+//! the main thread replaces the hook between two callbacks. Only the main
+//! thread installs or removes a hook.
 //!
 //! The engine reads the clock once per event, here, and the loop takes a
 //! timer only once its due time has passed. The engine decides by
@@ -1317,8 +1320,9 @@ mod tests {
     /// watcher (which start their own threads once, at startup), of every
     /// file under `src/engine`, and of the files the fast actions, the
     /// gesture timer and the foreground cache run in, name no way to start a
-    /// thread. The tokens are
-    /// assembled, so this test does not match itself.
+    /// thread. The folder `src/hook/watchdog` is not entered, on purpose: it
+    /// starts the hook watchdog's thread once, at startup (roadmap item
+    /// 2.4). The tokens are assembled, so this test does not match itself.
     #[test]
     fn the_gesture_path_starts_no_thread() {
         let tokens = [
