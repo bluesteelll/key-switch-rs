@@ -379,9 +379,12 @@ mod tests {
     }
 
     /// The Win32 calls that install or remove a global hook or a raw input
-    /// sink. Assembled, so that this file does not match itself.
+    /// sink, matched anywhere in a line's code. Assembled, so that this
+    /// file does not match itself. `SetWindowsHook` is a prefix: the
+    /// `windows` crate also exports SetWindowsHookExA and the obsolete
+    /// SetWindowsHookW and SetWindowsHookA, and each installs a hook.
     const INSTALLERS: [&str; 5] = [
-        concat!("SetWindows", "HookExW"),
+        concat!("SetWindows", "Hook"),
         concat!("UnhookWindows", "HookEx"),
         concat!("SetWin", "EventHook"),
         concat!("UnhookWin", "Event"),
@@ -405,21 +408,14 @@ mod tests {
         }
     }
 
-    /// The sources of the package under `root` that the scan reads, sorted.
+    /// The sources of the package under `root` that the scan reads, sorted:
+    /// every `.rs` file under `src` and the build script, which Cargo runs
+    /// at every build and `lib.rs` compiles into the test harness.
     fn scanned_sources(root: &Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
+        let mut files = vec![root.join("build.rs")];
         rust_files(&root.join("src"), &mut files);
         files.sort();
         files
-    }
-
-    /// The index of the line that opens the tests module of a source file
-    /// (`#[cfg(test)]` followed by `mod tests {`), or the line count.
-    fn tests_start(lines: &[&str]) -> usize {
-        lines
-            .windows(2)
-            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
-            .unwrap_or(lines.len())
     }
 
     /// The code of `line`: without its `//` comment and without the text of
@@ -485,7 +481,8 @@ mod tests {
     }
 
     /// Scans `text`, the source at `relative` (from the manifest folder,
-    /// with `/`), into `findings`.
+    /// with `/`), into `findings`. Every line counts, test modules
+    /// included: they are the code that only a test build compiles.
     fn scan_source(relative: &str, text: &str, findings: &mut Findings) {
         let lines: Vec<&str> = text.lines().collect();
         let allowed = if relative == INSTALLER_FILE {
@@ -494,7 +491,7 @@ mod tests {
         } else {
             None
         };
-        for (index, line) in lines[..tests_start(&lines)].iter().enumerate() {
+        for (index, line) in lines.iter().enumerate() {
             let number = index + 1;
             let code = code_of(line);
             let calls: Vec<&str> = INSTALLERS
@@ -584,10 +581,11 @@ mod tests {
         // Ruling S1 and S4 of roadmap item 2.4: every call that installs a
         // global hook or a raw input sink sits in the `win32` module of this
         // file, which `#[cfg(not(test))]` keeps out of the test build, so no
-        // test can reach one, whatever a guard in front of it does. The
-        // integration tests link the library as the daemon does, so none of
-        // them may name a call, or the one public way to the hooks,
-        // `core::app` (`App::run`).
+        // test can reach one, whatever a guard in front of it does. No other
+        // line of `src` or of the build script may name one, test modules
+        // included. The integration tests link the library as the daemon
+        // does, so none of them may name a call, or the one public way to
+        // the hooks, `core::app` (`App::run`).
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let files = scanned_sources(root);
         assert!(files.len() > 40, "the scan found the sources: {files:?}");
