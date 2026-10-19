@@ -1607,6 +1607,29 @@ mod tests {
     }
 
     #[test]
+    fn a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain() {
+        // Ruling R2 and the drain's own gate: signals still pending when
+        // `swch off` lands are dropped, not logged and not answered, since
+        // the reset of `swch on` reads the keys again anyway.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        note_input_signal(InputSignal::SessionLocked);
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, false)),
+            Some(true),
+            "remapping goes off"
+        );
+        let ((), lines) = crate::logging::testing::capture(|| main.drain(&hook));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("session locked") && !line.contains("state reset")),
+            "a drain with remapping off logs and resets nothing: {lines:?}"
+        );
+        assert_eq!(take_pending_signals(), None, "the drain still took them");
+    }
+
+    #[test]
     fn a_switch_request_to_an_ended_main_thread_fails_at_once() {
         let handle = thread::spawn(|| {
             MainThread::new()
