@@ -780,6 +780,11 @@ minor version; such entries sit under **Changed** and start with
   capitals again. Pressing it twice within 250 ms for two capitals toggles
   CapsLock too (see the **Breaking** entry for `block_default` under
   **Changed**).
+- A gesture timer that Windows refused to move to an earlier `Hold` no
+  longer leaves the main loop waiting on the old deadline: the loop sets
+  it again for the earliest gesture left (roadmap item 2.3, 2.2 review
+  OQ3). Test:
+  `hook::main_thread::tests::a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop`.
 
 ## [0.1.0] - 2026-05-20
 

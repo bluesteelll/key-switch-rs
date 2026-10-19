@@ -258,6 +258,10 @@ impl Scheduler for GestureTimers {
             if self.wake.set(after).is_err() {
                 let token = request.token;
                 self.queue.retain(&|queued| queued != token);
+                // A failed set leaves the timer set for no deadline the loop
+                // can name, so the next plan sets it again for the earliest
+                // one left instead of keeping it.
+                self.armed = None;
                 return false;
             }
             self.armed = Some(request.due);
