@@ -51,6 +51,7 @@ mod decision;
 
 use std::io;
 use std::marker::PhantomData;
+use std::mem::offset_of;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -60,7 +61,8 @@ use windows::Win32::{
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::{
         Input::{
-            GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD,
+            GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RAWKEYBOARD, RID_INPUT,
+            RIM_TYPEKEYBOARD,
         },
         WindowsAndMessaging::*,
     },
@@ -808,6 +810,97 @@ fn raw_key_event(lparam: LPARAM, counters: &Counters) -> bool {
     // wrote; it is a plain struct of integers.
     let keyboard = unsafe { raw.data.keyboard };
     qualifies(keyboard.MakeCode, keyboard.VKey)
+}
+
+/// How many bytes one buffered read takes at most: room for 64 of the
+/// largest records, 76 keyboard records on x64.
+const RAW_BUFFER_BYTES: usize = 64 * size_of::<RAWINPUT>();
+
+/// The step from one record of a buffered read to the next: the record's
+/// size rounded up to a pointer, winuser.h's `RAWINPUT_ALIGN`, which
+/// NEXTRAWINPUTBLOCK applies.
+const RAWINPUT_ALIGN: usize = size_of::<usize>();
+
+/// The buffer of a buffered read: plain bytes, always initialised, so that
+/// no padding byte of a typed RAWINPUT is ever read; aligned to 8 bytes,
+/// which GetRawInputBuffer asks ("aligned on a DWORD boundary", and 8 bytes
+/// under WOW64). Made once, on the watchdog thread's stack.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+#[repr(C, align(8))]
+struct RawBuffer([u8; RAW_BUFFER_BYTES]);
+
+/// What one buffered read held: the key events the keyboard hook would
+/// see, and the records that could not be read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BlockCount {
+    keys: u64,
+    unread: u64,
+}
+
+/// The `u32` at `at` in `bytes`, if it is there.
+fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(size_of::<u32>())?;
+    Some(u32::from_ne_bytes(bytes.get(at..end)?.try_into().ok()?))
+}
+
+/// The `u16` at `at` in `bytes`, if it is there.
+fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(size_of::<u16>())?;
+    Some(u16::from_ne_bytes(bytes.get(at..end)?.try_into().ok()?))
+}
+
+/// Counts the key events among the `count` records that a buffered read
+/// wrote to `bytes`, as [`raw_key_event`] counts one. Like
+/// [`raw_key_event`] it reads a record's make code and virtual key only to
+/// tell whether the hook would see it, and keeps neither. A record whose
+/// header or size does not fit ends the walk, and the records left are
+/// unread; so is a keyboard record too short for its key fields.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn count_raw_keys(bytes: &[u8], count: u32) -> BlockCount {
+    let header = size_of::<RAWINPUTHEADER>();
+    let body = offset_of!(RAWINPUT, data);
+    let mut block = BlockCount::default();
+    let mut at = 0_usize;
+    for read in 0..count {
+        let kind = u32_at(bytes, at + offset_of!(RAWINPUTHEADER, dwType));
+        let size = u32_at(bytes, at + offset_of!(RAWINPUTHEADER, dwSize))
+            .and_then(|size| usize::try_from(size).ok());
+        let (Some(kind), Some(size)) = (kind, size) else {
+            block.unread += u64::from(count - read);
+            break;
+        };
+        if size < header || at.saturating_add(size) > bytes.len() {
+            block.unread += u64::from(count - read);
+            break;
+        }
+        if kind == RIM_TYPEKEYBOARD.0 {
+            if size >= body + size_of::<RAWKEYBOARD>() {
+                let make_code = u16_at(bytes, at + body + offset_of!(RAWKEYBOARD, MakeCode));
+                let vkey = u16_at(bytes, at + body + offset_of!(RAWKEYBOARD, VKey));
+                if let (Some(make_code), Some(vkey)) = (make_code, vkey)
+                    && qualifies(make_code, vkey)
+                {
+                    block.keys += 1;
+                }
+            } else {
+                block.unread += 1;
+            }
+        }
+        at = (at + size).next_multiple_of(RAWINPUT_ALIGN);
+    }
+    block
 }
 
 /// Whether a raw keyboard event with `make_code` and `vkey` reaches the
@@ -1687,12 +1780,14 @@ mod tests {
     #[test]
     fn no_key_data_leaves_the_raw_input_read() {
         // Roadmap item 2.4: no key data from raw input is kept or logged.
-        // The fields that name a key are read only where the event is
-        // classified, and no log line names them.
+        // The fields that name a key are read only where an event is
+        // classified, by the standard read and by the buffered one, and no
+        // log line names them.
         let fields = [concat!("V", "Key"), concat!("Make", "Code")];
         let text = source("src/hook/watchdog/mod.rs");
         let lines = non_test_lines(&text);
         let mut allowed = fn_lines(&lines, "fn raw_key_event(");
+        allowed.extend(fn_lines(&lines, "fn count_raw_keys("));
         allowed.extend(fn_lines(&lines, "fn qualifies("));
         let mut found = 0;
         let mut sites = Vec::new();
