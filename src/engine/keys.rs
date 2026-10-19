@@ -110,10 +110,11 @@ impl KeyState {
     }
 
     /// Rebuilds the table from the OS key state, after remapping was
-    /// switched off or on. Every keyboard code the OS reports held is held
+    /// switched off or on, or after the keyboard hook was reinstalled
+    /// (roadmap item 2.4). Every keyboard code the OS reports held is held
     /// and on record as passed: the engine saw no event while remapping was
-    /// off, Windows saw every key-down, so the key's auto-repeats and its
-    /// key-up must reach Windows too. Every other key is up. Its record is
+    /// off or the hook was gone, Windows saw every key-down, so the key's
+    /// auto-repeats and its key-up must reach Windows too. Every other key is up. Its record is
     /// dropped, except a swallowed key-down's: Windows is no witness for a
     /// key it never saw go down (KS-14), so its key-up, if one is still
     /// due, stays swallowed, unless Windows has the key down by then (the

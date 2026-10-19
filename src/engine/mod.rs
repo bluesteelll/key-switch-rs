@@ -388,6 +388,10 @@ pub enum ResetReason {
     /// switched to another desktop (Ctrl+Alt+Del, a UAC prompt on the
     /// secure desktop). Key-ups may be lost there.
     InputLeft,
+    /// The hook watchdog had the keyboard hook reinstalled: Windows had
+    /// removed it, so the engine saw no event while Windows saw every one
+    /// (roadmap item 2.4, KS-08).
+    HookReinstalled,
 }
 
 impl fmt::Display for ResetReason {
@@ -396,6 +400,7 @@ impl fmt::Display for ResetReason {
             ResetReason::RemappingSwitched => "remapping switched",
             ResetReason::Reloaded => "config reloaded",
             ResetReason::InputLeft => "keyboard input left this desktop",
+            ResetReason::HookReinstalled => "the keyboard hook was reinstalled",
         })
     }
 }
@@ -625,6 +630,10 @@ impl Engine {
     ///   key-down the engine swallowed reads as up, since Windows never saw
     ///   it go down, and keeps its record: its key-up stays swallowed, or
     ///   reaches Windows if Windows has the key down by then.
+    /// - [`ResetReason::HookReinstalled`]: the same, for the same reason:
+    ///   while Windows had removed the keyboard hook the engine saw no event
+    ///   and Windows saw every one. So a swallowed key released meanwhile
+    ///   is up again, and its next press is a press.
     /// - [`ResetReason::Reloaded`]: unchanged. A reload loses no key event,
     ///   and reading the OS would race the key state of a key-down that has
     ///   just passed (the state of the delivered key lags until the hook
@@ -645,7 +654,9 @@ impl Engine {
         self.sequences = Sequences::new();
         self.mask_owed = false;
         match reason {
-            ResetReason::RemappingSwitched => self.keys.resync_from_os(env),
+            ResetReason::RemappingSwitched | ResetReason::HookReinstalled => {
+                self.keys.resync_from_os(env)
+            }
             // No key event is lost on a reload, and the OS state of a key
             // whose key-down has just passed may still lag behind it.
             ResetReason::Reloaded => {}
