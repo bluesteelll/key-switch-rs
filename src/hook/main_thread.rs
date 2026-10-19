@@ -828,6 +828,56 @@ mod tests {
     }
 
     #[test]
+    fn a_wake_that_cannot_be_set_counts_only_the_holds_it_drops() {
+        // Review m2 of roadmap item 2.2: a wake that cannot be set forgets
+        // every queued timer, but only a Hold is dropped with it. The Tap
+        // that waits for its DoubleTap window stays and fires at the next
+        // key-down; a chord's expiry drops nothing.
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing, trigger: Hold(10000)),
+                (keys: "F14", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F14", action: ToggleCapsLock, trigger: DoubleTap(6000)),
+                (chord: (keys: ["J", "K"], window_ms: 5000), action: ToggleCapsLock),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut timers = GestureTimers::new().expect("the gesture timer is made");
+        let env = QuietEnv(Instant::now());
+        // J before F14: a first key-down fires a Tap that waits for its
+        // window, so the window must open last.
+        for event in [
+            KeyEvent::down(VK_F13),
+            KeyEvent::down(VK_J),
+            KeyEvent::down(VK_F14),
+            KeyEvent::up(VK_F14),
+        ] {
+            let mut decision = engine.on_key(event, &bindings, &env);
+            assert_eq!(
+                engine.start_timers(std::mem::take(&mut decision.timers), &mut timers),
+                0
+            );
+        }
+        assert_eq!(timers.queue.len(), 3, "a Hold, a window and a chord expiry");
+
+        timers.wake = WaitableTimer::not_a_timer();
+        timers.armed = None;
+        let Wake::Failed { dropped, .. } = timers.plan_wake(&mut engine, Instant::now()) else {
+            panic!("a wake that cannot be set fails");
+        };
+        assert_eq!(dropped, 1, "only the Hold is dropped");
+
+        let decision = engine.on_key(KeyEvent::down(VK_F15), &bindings, &env);
+        assert_eq!(
+            decision.fire,
+            [BindAction::SwitchLanguage],
+            "the waiting Tap fires at the next key-down"
+        );
+    }
+
+    #[test]
     fn a_message_posted_behind_a_wake_is_dispatched_without_more_input() {
         // Technical debt m-1 of roadmap item 2.1, for the main loop: `pump`
         // goes back to the drain at a MAIN_WAKE and leaves the messages

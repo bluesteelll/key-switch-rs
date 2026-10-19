@@ -1058,14 +1058,47 @@ mod tests {
         assert!(up.fire.is_empty(), "the Tap waits for the window");
         assert_eq!(
             engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
-            1,
-            "the window's timer is refused"
+            0,
+            "the window's timer is refused, and no Hold is dropped with it"
         );
 
         assert_eq!(
             engine.on_timer(hold_token).fire,
             [BindAction::SwitchLanguage, BindAction::DoNothing],
             "the Hold's timer at 500 ms fires the waiting Tap first"
+        );
+    }
+
+    #[test]
+    fn a_refused_window_timer_drops_no_gesture() {
+        // Review m2 of roadmap item 2.2: the count that the adapter bumps
+        // `hold_timer_not_started` with is the number of Holds dropped. A
+        // Tap that waits for its DoubleTap window is kept when its timer is
+        // refused, so it counts nothing.
+        let t0 = Instant::now();
+        let bindings = loaded(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+            ] )"#,
+        );
+        let mut engine = Engine::new();
+
+        let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let mut up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(80)),
+        );
+        assert_eq!(
+            up.timers.len(),
+            1,
+            "the waiting Tap asks for its window's timer"
+        );
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
+            0,
+            "a refused window timer drops no gesture"
         );
     }
 
