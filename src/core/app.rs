@@ -234,6 +234,10 @@ impl App {
         // session end.
         let control_window = ControlWindow::create()
             .map_err(|error| format!("could not create the control window: {error}"))?;
+        // A debug build's hold of the keyboard callback for the watchdog's
+        // manual check, if asked for; a release build has no such code.
+        #[cfg(debug_assertions)]
+        crate::hook::debug_hold::arm_from_env();
         // On failure the listener is dropped on return, which closes the
         // pipe, the control window is destroyed and the executor is
         // stopped; a failed WinEvent hook has already removed the keyboard

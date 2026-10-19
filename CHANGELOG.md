@@ -234,6 +234,13 @@ minor version; such entries sit under **Changed** and start with
   `logging::panic::tests::a_stuck_writer_holds_a_panic_report_at_most_its_budget`,
   `a_panic_report_reaches_the_log_file_before_it_returns`,
   `a_panicking_thread_of_a_child_process_is_logged_through_the_installed_hook`.
+- Debug builds only: `KS_DEBUG_HOOK_HOLD=<key>` at startup (for example
+  `ScrollLock`) makes the keyboard callback hold 1.5 s at each key-down of
+  that key, past the largest `LowLevelHooksTimeout`, so that the hook
+  watchdog can be checked by hand (roadmap item 2.4). It logs
+  `[WARN] debug build: the keyboard callback holds 1.5 s at each ScrollLock key-down (KS_DEBUG_HOOK_HOLD)`.
+  A release build has no code for it
+  (`hook::keyboard_hook_callback::tests::the_debug_hold_is_compiled_only_into_debug_builds`).
 
 ### Changed
 

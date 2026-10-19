@@ -461,6 +461,9 @@ mod tests {
             ("src/logging/counters.rs", None),
             // The heartbeat of every keyboard callback (roadmap item 2.4).
             ("src/hook/health.rs", Some("fn callback_seen(")),
+            // A debug build's hold of the callback (roadmap item 2.4).
+            ("src/hook/debug_hold.rs", Some("fn hold_if_asked(")),
+            ("src/hook/debug_hold.rs", Some("fn should_hold(")),
         ];
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut sites = Vec::new();

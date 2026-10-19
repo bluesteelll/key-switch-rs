@@ -36,6 +36,11 @@
 //! 8. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
+//! In debug builds only, `KS_DEBUG_HOOK_HOLD` set to a key name at startup
+//! makes the callback hold 1.5 s at each key-down of that key, after the
+//! timing starts, for the hook watchdog's manual check (`hook::debug_hold`,
+//! roadmap item 2.4); a release build has no code for it.
+//!
 //! `desktop_switched` notes a switch of the input desktop for the main
 //! loop, which resets the transient state when keyboard input left this
 //! desktop (roadmap item 2.3). It does nothing while remapping is off.
@@ -375,6 +380,8 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
     // this call; two fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    #[cfg(debug_assertions)]
+    crate::hook::debug_hold::hold_if_asked(wparam, event.vkCode);
     let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
         Some(decision) => {
             let suppress = decision.suppress;
