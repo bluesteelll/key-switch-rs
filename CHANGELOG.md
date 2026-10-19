@@ -134,8 +134,11 @@ minor version; such entries sit under **Changed** and start with
   `KS_BENCH_OUT=<file> cargo test --release --locked --lib bench::latency_bench -- --ignored --exact --test-threads=1`.
   It appends a Markdown table: the engine's cost per event and per timer,
   the hook callback's cost without a hook, the lateness of a gesture
-  deadline and the round trip of a sent message to the main loop. Not part
-  of the default `cargo test` run, which still prints nothing.
+  deadline and the round trip of a sent message to the main loop; with
+  `KS_BENCH_LOAD=1` also the delivery of a sent message to the main loop
+  while every core is busy, with the loop thread at normal and at highest
+  priority. Not part of the default `cargo test` run, which still prints
+  nothing.
 
 ### Changed
 

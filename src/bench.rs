@@ -35,16 +35,27 @@
 //!   thread runs the main loop until a helper ends it at the record.
 //! - R7: the round trip of `SendMessageTimeoutW(WM_NULL)` to a window of a
 //!   thread that runs the daemon's main loop (`MainThread::run`).
+//! - R8, only with `KS_BENCH_LOAD=1`: with a busy thread at normal priority
+//!   on every core, the one-way delivery of a sent message to the main
+//!   loop's window procedure (the time it enters it less the time before the
+//!   send, as a low-level hook call reaches the daemon), with the loop thread
+//!   at `THREAD_PRIORITY_NORMAL` and then at `THREAD_PRIORITY_HIGHEST`, and
+//!   the round trips of the same sends. It loads every core for a few
+//!   seconds, as a build does, which is why it is opt-in.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
     Foundation::*,
+    System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_HIGHEST,
+        THREAD_PRIORITY_NORMAL,
+    },
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 use windows::core::w;
@@ -443,6 +454,158 @@ fn r7_round_trip(count: usize) -> Vec<Duration> {
     samples
 }
 
+/// The message R8 sends to its probe window.
+const PROBE: u32 = WM_APP + 7;
+
+/// The clock R8 measures on: nanoseconds since this instant fit an atomic.
+static BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// When the probe window's procedure last received `PROBE`, in nanoseconds
+/// since [`BASE`]. Stored with Release by the loop thread inside the sent
+/// message; loaded with Acquire by the sender after `SendMessageTimeoutW`
+/// returned, which happens after the store.
+static PROBED_AT: AtomicU64 = AtomicU64::new(0);
+
+fn nanos_since_base() -> u64 {
+    u64::try_from(BASE.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The probe window's procedure: stamps `PROBE` on entry. It replaces the
+/// `STATIC` class's procedure while the bench sends probes; every other
+/// message goes to `DefWindowProcW`, and the original procedure is put back
+/// before the window is destroyed.
+unsafe extern "system" fn probe_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == PROBE {
+        PROBED_AT.store(nanos_since_base(), Ordering::Release);
+        return LRESULT(1);
+    }
+    // SAFETY: passes the message on with the exact arguments the system
+    // gave this window procedure.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// A message-only `STATIC` window of the calling thread whose procedure is
+/// [`probe_proc`], as an integer, with the procedure it replaced.
+fn probe_window() -> (isize, isize) {
+    let hwnd = HWND(message_only_window() as *mut std::ffi::c_void);
+    // SAFETY: `hwnd` is the calling thread's own window; the new procedure
+    // is a 'static extern "system" fn with the WNDPROC signature, and the
+    // one it replaces is put back before the window is destroyed.
+    let original =
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, probe_proc as *const () as isize) };
+    assert_ne!(original, 0, "the STATIC procedure is replaced");
+    (hwnd.0 as isize, original)
+}
+
+/// R8 for one priority of the loop thread: `count` sends, 1 ms apart, of
+/// `PROBE` to a probe window of a helper thread that runs the main loop at
+/// `priority`. Returns the one-way deliveries and the round trips.
+fn r8_delivery(priority: THREAD_PRIORITY, count: usize) -> (Vec<Duration>, Vec<Duration>) {
+    let (ready_tx, ready) = mpsc::channel();
+    let helper = thread::spawn(move || {
+        // SAFETY: the pseudo handle of the calling thread needs no closing;
+        // the call changes only this thread's priority.
+        unsafe { SetThreadPriority(GetCurrentThread(), priority) }
+            .expect("invariant: a thread may set its own priority");
+        let main = MainThread::new().expect("invariant: the helper's main thread is set up");
+        let hook = KeyboardHook::new();
+        let (hwnd, original) = probe_window();
+        let _ = ready_tx.send((hwnd, main.handle()));
+        main.run(&hook)
+            .expect("invariant: the main loop ends on WM_QUIT");
+        let hwnd = HWND(hwnd as *mut std::ffi::c_void);
+        // SAFETY: `hwnd` is this thread's own window; `original` is the
+        // procedure SetWindowLongPtrW returned for it, put back before the
+        // window is destroyed, once, here.
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original);
+            let _ = DestroyWindow(hwnd);
+        }
+    });
+    let (hwnd, main) = ready
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the helper made its window");
+    let hwnd = HWND(hwnd as *mut std::ffi::c_void);
+    let mut one_way = Vec::with_capacity(count);
+    let mut round_trip = Vec::with_capacity(count);
+    for _ in 0..count {
+        thread::sleep(Duration::from_millis(1));
+        let sent = nanos_since_base();
+        let begun = Instant::now();
+        // SAFETY: `hwnd` is a window of the helper thread, alive until that
+        // thread gets WM_QUIT after this loop; PROBE carries no pointer, and
+        // no result pointer is passed.
+        let answered = unsafe {
+            SendMessageTimeoutW(
+                hwnd,
+                PROBE,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                1000,
+                None,
+            )
+        };
+        round_trip.push(begun.elapsed());
+        assert_ne!(answered, LRESULT(0), "the loop answered the probe");
+        let received = PROBED_AT.load(Ordering::Acquire);
+        one_way.push(Duration::from_nanos(received.saturating_sub(sent)));
+    }
+    main.request_exit().expect("the helper has a message queue");
+    helper.join().expect("the helper does not panic");
+    (one_way, round_trip)
+}
+
+/// R8: the rows of [`r8_delivery`] at normal and at highest priority, with
+/// a busy thread at normal priority on every core meanwhile.
+fn r8_under_load(count: usize) -> Vec<Row> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let cores = thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let busy: Vec<_> = (0..cores)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+        .collect();
+    let (normal_one_way, normal_trip) = r8_delivery(THREAD_PRIORITY_NORMAL, count);
+    let (highest_one_way, highest_trip) = r8_delivery(THREAD_PRIORITY_HIGHEST, count);
+    stop.store(true, Ordering::Release);
+    for thread in busy {
+        thread.join().expect("a busy thread does not panic");
+    }
+    vec![
+        Row {
+            id: "R8/normal",
+            what: "one-way delivery under load, loop at NORMAL",
+            samples: normal_one_way,
+        },
+        Row {
+            id: "R8/highest",
+            what: "one-way delivery under load, loop at HIGHEST",
+            samples: highest_one_way,
+        },
+        Row {
+            id: "R8/normal-rt",
+            what: "round trip under load, loop at NORMAL",
+            samples: normal_trip,
+        },
+        Row {
+            id: "R8/highest-rt",
+            what: "round trip under load, loop at HIGHEST",
+            samples: highest_trip,
+        },
+    ]
+}
+
 /// Taken by the bench, which drives the process-wide hook, so that it never
 /// runs beside a test that does too (it is meant to run alone).
 static BENCH: Mutex<()> = Mutex::new(());
@@ -502,6 +665,9 @@ fn latency_bench() {
         what: "SendMessageTimeoutW(WM_NULL) round trip to the loop",
         samples: r7_round_trip(1_000),
     });
+    if std::env::var_os("KS_BENCH_LOAD").is_some_and(|load| load == "1") {
+        rows.extend(r8_under_load(300));
+    }
     get_hook().update_bindings(Vec::new());
 
     let mut table = format!(
