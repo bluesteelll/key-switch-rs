@@ -28,7 +28,11 @@
 //! `WM_INPUT` for this process and wakes this thread, which reads it with
 //! `GetRawInputData` and counts it, on another core (ruling M6). While keys
 //! are typed the thread ticks at most four times a second; idle, it waits
-//! with no wake-up.
+//! with no wake-up. A keyboard callback that runs while this thread handles
+//! an event is slower, about 18 us at the median on the developer's machine
+//! (bench row R14 against R14/settled); whether a key's raw input reaches
+//! this thread before or after its own hook call is not documented (cut
+//! Q6).
 //!
 //! # Raw input in this process
 //!
@@ -328,6 +332,8 @@ impl Source {
     fn is_synthetic_raw(self, msg: &MSG) -> bool {
         match self {
             Source::Keyboard => {
+                // Only the test source reads `msg`; the daemon's has no
+                // synthetic events.
                 let _ = msg;
                 false
             }
