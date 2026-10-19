@@ -199,8 +199,9 @@ minor version; such entries sit under **Changed** and start with
   `[INFO] state reset: the keyboard hook was reinstalled`,
   `[INFO] the keyboard hook answered before its reinstall; it was kept`,
   `[ERROR] could not reinstall the keyboard hook (...); the old one is kept`,
-  `[INFO] hook watchdog: raw keyboard input arrives` and the watchdog's
-  startup and exit lines; new counters `raw_input_unread`,
+  `[INFO] hook watchdog: raw keyboard input arrives`,
+  `[INFO] hook watchdog stopped after N wakes for M raw key events` (once,
+  at exit) and the watchdog's startup and exit lines; new counters `raw_input_unread`,
   `watchdog_timer_not_set` and `watchdog_desktop_check_failed`. The
   `windows` feature `Win32_UI_Input` is named (it was on already;
   `Cargo.lock` is unchanged). No test can install a hook or register for

@@ -133,6 +133,14 @@ fn plan(armed: Option<Instant>, next: Option<Instant>, now: Instant) -> Plan {
     }
 }
 
+/// What the loop did in the thread's life: its passes, one per wake, and
+/// the raw key events it read, counted or not. The stop line reports them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LoopStats {
+    pub(crate) wakes: u64,
+    pub(crate) raw_keys: u64,
+}
+
 /// What a pass of the loop reads and whom it asks.
 struct Context<'a, R> {
     health: &'a HealthState,
@@ -155,6 +163,7 @@ struct Ticker<T> {
     raw_input_seen: bool,
     /// The heartbeat at the last tick.
     seen: u64,
+    stats: LoopStats,
 }
 
 impl<T: TickTimer> Ticker<T> {
@@ -167,13 +176,19 @@ impl<T: TickTimer> Ticker<T> {
             reply: None,
             raw_input_seen: false,
             seen,
+            stats: LoopStats::default(),
         }
+    }
+
+    fn stats(&self) -> LoopStats {
+        self.stats
     }
 
     /// A raw key event that the keyboard hook should see. It counts only
     /// while the keyboard hook is installed (ruling I3): before `install`
     /// and after `uninstall` no callback can answer it.
     fn raw_event(&mut self, now: Instant, health: &HealthState) {
+        self.stats.raw_keys += 1;
         if !health.hook_installed() {
             return;
         }
@@ -206,6 +221,7 @@ impl<T: TickTimer> Ticker<T> {
     /// nothing, asks for the reinstall a tick decided, and sets the timer for
     /// the decision's next tick, or cancels it (ruling I1).
     fn pass<R: RequestReinstall>(&mut self, now: Instant, context: &Context<'_, R>) {
+        self.stats.wakes += 1;
         self.take_answer(now);
         if self.watchdog.next_tick().is_some_and(|due| due <= now) {
             let callbacks = context.health.callbacks();
@@ -348,8 +364,9 @@ impl Source {
 pub(crate) struct HookWatchdog {
     thread_id: u32,
     join: Option<JoinHandle<()>>,
-    /// Receives once the thread has dropped everything it owns.
-    done: Receiver<()>,
+    /// Receives once the thread has dropped everything it owns, with what
+    /// its loop did if the loop ran.
+    done: Receiver<Option<LoopStats>>,
 }
 
 impl HookWatchdog {
@@ -394,8 +411,8 @@ impl HookWatchdog {
         let join = thread::Builder::new()
             .name("hook-watchdog".into())
             .spawn(move || {
-                run_watchdog(health, &requests, counters, source, &ready_tx);
-                let _ = done_tx.send(());
+                let stats = run_watchdog(health, &requests, counters, source, &ready_tx);
+                let _ = done_tx.send(stats);
             })?;
         let started = ready
             .recv_timeout(Self::START_TIMEOUT)
@@ -420,12 +437,22 @@ impl HookWatchdog {
     /// Stops the thread; true if it ended within [`STOP_TIMEOUT`](Self::STOP_TIMEOUT).
     /// After that it is left to the end of the process.
     pub(crate) fn stop(mut self) -> bool {
-        self.stop_thread()
+        self.stop_thread().is_some()
     }
 
-    fn stop_thread(&mut self) -> bool {
+    /// As [`stop`](Self::stop), with what the thread's loop did: `None` if
+    /// the thread did not end in time.
+    #[cfg(test)]
+    pub(crate) fn stop_counting(mut self) -> Option<LoopStats> {
+        self.stop_thread().flatten()
+    }
+
+    /// Stops the thread: `None` if it did not end within
+    /// [`STOP_TIMEOUT`](Self::STOP_TIMEOUT), else what its loop did, if
+    /// the loop ran.
+    fn stop_thread(&mut self) -> Option<Option<LoopStats>> {
         let Some(join) = self.join.take() else {
-            return true;
+            return Some(None);
         };
         // SAFETY: PostThreadMessageW takes the thread id and the message by
         // value and reads no memory of ours; WM_QUIT carries no pointer. A
@@ -433,11 +460,15 @@ impl HookWatchdog {
         // message waits below.
         let _ = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
         match self.done.recv_timeout(Self::STOP_TIMEOUT) {
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+            Ok(stats) => {
                 let _ = join.join();
-                true
+                Some(stats)
             }
-            Err(RecvTimeoutError::Timeout) => false,
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = join.join();
+                Some(None)
+            }
+            Err(RecvTimeoutError::Timeout) => None,
         }
     }
 }
@@ -526,18 +557,20 @@ impl Drop for RawInputRegistration {
     }
 }
 
-/// The watchdog thread: its prologue, its loop and its epilogue. The
-/// registration is removed and the window destroyed when they drop, in
-/// that order, at the end.
+/// The watchdog thread: its prologue, its loop and its epilogue, which
+/// logs what the loop did. The registration is removed and the window
+/// destroyed when they drop, in that order, at the end. `None` if the loop
+/// never ran.
 fn run_watchdog<R: RequestReinstall>(
     health: &'static HealthState,
     requests: &R,
     counters: &'static Counters,
     source: Source,
     ready: &SyncSender<io::Result<u32>>,
-) {
+) -> Option<LoopStats> {
     let fail = |what: &str, error: windows::core::Error| {
         let _ = ready.send(Err(io::Error::other(format!("{what}: {error}"))));
+        None
     };
     let mut msg = MSG::default();
     // SAFETY: `msg` is a local that outlives the call, which only writes it;
@@ -567,7 +600,7 @@ fn run_watchdog<R: RequestReinstall>(
     // A starter that gave up waits no more, and nobody would stop this
     // thread.
     if ready.send(Ok(thread_id)).is_err() {
-        return;
+        return None;
     }
     let context = Context {
         health,
@@ -577,6 +610,16 @@ fn run_watchdog<R: RequestReinstall>(
     };
     let mut ticker = Ticker::new(Instant::now(), timer, health);
     run_loop(&mut ticker, window.0, source, &context, &mut msg);
+    let stats = ticker.stats();
+    // Once per run, in every build: the release daemon's evidence that the
+    // thread wakes once per burst of keys and not per key, and not at
+    // idle (manual checks M2 and M9).
+    log::info!(
+        "hook watchdog stopped after {} wakes for {} raw key events",
+        stats.wakes,
+        stats.raw_keys
+    );
+    Some(stats)
 }
 
 /// The loop, in the shape of the main loop: wait for the tick timer and the
