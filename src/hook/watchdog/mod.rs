@@ -8,14 +8,15 @@
 //! stops while `swch status` still says `running`.
 //!
 //! The `hook-watchdog` thread registers a message-only window for the raw
-//! input of every keyboard (`RIDEV_INPUTSINK`): Windows posts it a
+//! input of every keyboard (`RIDEV_INPUTSINK`): Windows queues it a
 //! `WM_INPUT` per key event, whatever window has the foreground. While keys
-//! arrive it compares their count with the keyboard callback's heartbeat
-//! (`hook::health`) four times a second ([`decision`]), and when keys arrive
-//! and the callback stays silent for more than a second it asks the main
-//! thread, through its request queue, to reinstall the keyboard hook: only
-//! the thread that installed a hook may install it again (KS-01). It never
-//! injects input, which would reset the idle timer and keep the screen on.
+//! arrive it reads them in batches and compares their count with the
+//! keyboard callback's heartbeat (`hook::health`) four times a second
+//! ([`decision`]), and when keys arrive and the callback stays silent for
+//! more than a second it asks the main thread, through its request queue,
+//! to reinstall the keyboard hook: only the thread that installed a hook may
+//! install it again (KS-01). It never injects input, which would reset the
+//! idle timer and keep the screen on.
 //! Raw input counts only while the keyboard hook is installed (ruling I3),
 //! so the thread can start before `install` and stop after `uninstall`.
 //!
@@ -24,15 +25,17 @@
 //! The main thread does nothing per key event for the watchdog but the
 //! heartbeat's one atomic increment: raw input goes to this thread, never to
 //! the main thread's queue, where every key would add a `WM_INPUT` to
-//! dispatch next to the hook calls (cut D1). Per key event Windows builds a
-//! `WM_INPUT` for this process and wakes this thread, which reads it with
-//! `GetRawInputData` and counts it, on another core (ruling M6). While keys
-//! are typed the thread ticks at most four times a second; idle, it waits
-//! with no wake-up. A keyboard callback that runs while this thread handles
-//! an event is slower, about 18 us at the median on the developer's machine
-//! (bench row R14 against R14/settled); whether a key's raw input reaches
-//! this thread before or after its own hook call is not documented (cut
-//! Q6).
+//! dispatch next to the hook calls (cut D1). Per key event Windows queues a
+//! `WM_INPUT` for this thread (ruling M6), and the thread does nothing for
+//! it while it ticks (ruling L1): its wait leaves raw input out, so the key
+//! events wait in the queue, and each tick, four times a second while keys
+//! are typed, reads them all in one drain (`GetRawInputBuffer`, 76 keyboard
+//! records per call on x64). The first key event after the thread went
+//! idle ends its wait, once per burst of keys, and that pass runs on
+//! another core next to the key's own callback, which it can slow down
+//! (bench row R16); whether a key's raw input reaches this thread before or
+//! after its hook call is not documented (cut Q6). Idle, the thread waits
+//! with no wake-up.
 //!
 //! # Raw input in this process
 //!
@@ -43,9 +46,9 @@
 //!
 //! # No key data
 //!
-//! [`raw_key_event`] reads an event's make code and virtual key into a stack
-//! local only to tell whether the hook would see it, and returns a `bool`:
-//! the watchdog keeps counts and instants, and logs no key.
+//! [`raw_key_event`] and [`count_raw_keys`] read an event's make code and
+//! virtual key only to tell whether the hook would see it, and return a
+//! count: the watchdog keeps counts and instants, and logs no key.
 
 mod decision;
 
@@ -57,7 +60,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM},
+    Foundation::{HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::{
         Input::{
@@ -186,19 +189,14 @@ impl<T: TickTimer> Ticker<T> {
         self.stats
     }
 
-    /// A raw key event that the keyboard hook should see. It counts only
-    /// while the keyboard hook is installed (ruling I3): before `install`
-    /// and after `uninstall` no callback can answer it.
-    fn raw_event(&mut self, now: Instant, health: &HealthState) {
-        self.stats.raw_keys += 1;
-        if !health.hook_installed() {
-            return;
-        }
-        if !self.raw_input_seen {
-            self.raw_input_seen = true;
-            log::info!("hook watchdog: raw keyboard input arrives");
-        }
-        self.watchdog.raw_event(now);
+    /// Whether the watchdog ticks: its wait then leaves raw input out.
+    fn is_ticking(&self) -> bool {
+        self.watchdog.next_tick().is_some()
+    }
+
+    /// Raw key events read after `WM_QUIT`: counted, never decided.
+    fn read_at_stop(&mut self, raw_keys: u64) {
+        self.stats.raw_keys += raw_keys;
     }
 
     /// The timer signalled, and the wait took the signal: it is set for
@@ -218,12 +216,33 @@ impl<T: TickTimer> Ticker<T> {
         }
     }
 
-    /// One pass after any wake: takes the main thread's answer, ticks if the
-    /// tick is due by the clock, so that an early or stale signal changes
-    /// nothing, asks for the reinstall a tick decided, and sets the timer for
-    /// the decision's next tick, or cancels it (ruling I1).
-    fn pass<R: RequestReinstall>(&mut self, now: Instant, context: &Context<'_, R>) {
+    /// One pass after any wake and its drain, `drained`: counts the raw key
+    /// events it read, takes the main thread's answer, ticks if the tick is
+    /// due by the clock, so that an early or stale signal changes nothing,
+    /// with the credit of the callbacks kept while the drain left raw input
+    /// queued (ruling V3-I1), asks for the reinstall a tick decided, and
+    /// sets the timer for the decision's next tick, or cancels it (ruling
+    /// I1).
+    fn pass<R: RequestReinstall>(
+        &mut self,
+        now: Instant,
+        drained: Drained,
+        context: &Context<'_, R>,
+    ) {
+        let raw_keys = drained.keys;
         self.stats.wakes += 1;
+        self.stats.raw_keys += raw_keys;
+        // Raw key events count only while the keyboard hook is installed
+        // (ruling I3): before `install` and after `uninstall` no callback
+        // can answer them. Before the answer, so that the raw events read
+        // with it are no evidence after it (rule 4).
+        if raw_keys > 0 && context.health.hook_installed() {
+            if !self.raw_input_seen {
+                self.raw_input_seen = true;
+                log::info!("hook watchdog: raw keyboard input arrives");
+            }
+            self.watchdog.raw_batch(raw_keys, now);
+        }
         self.take_answer(now);
         if self.watchdog.next_tick().is_some_and(|due| due <= now) {
             let callbacks = context.health.callbacks();
@@ -233,9 +252,9 @@ impl<T: TickTimer> Ticker<T> {
                 // longer the hook's state (ruling M3).
                 context.health.hook_answered();
             }
-            // The per-event pump reads every queued message before the
-            // pass, so no raw input is left behind.
-            if let Verdict::Reinstall { request, .. } = self.watchdog.tick(now, callbacks, false) {
+            if let Verdict::Reinstall { request, .. } =
+                self.watchdog.tick(now, callbacks, drained.pending)
+            {
                 self.ask(now, request, context);
             }
         }
@@ -323,9 +342,10 @@ impl<T: TickTimer> Ticker<T> {
     }
 }
 
-/// A thread message that, in the tests, stands for one raw key event.
+/// A thread message that, in the tests and the bench, stands for one raw
+/// key event.
 #[cfg(test)]
-const SYNTHETIC_RAW: u32 = WM_APP + 2;
+pub(crate) const SYNTHETIC_RAW: u32 = WM_APP + 2;
 
 /// Where the watchdog's raw key events come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,13 +362,6 @@ enum Source {
 impl Source {
     /// The queue bit of the raw key events this source batches: what the
     /// wait leaves out while ticking ([`wake_mask`]).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-        )
-    )]
     fn batched_wake(self) -> QUEUE_STATUS_FLAGS {
         match self {
             Source::Keyboard => QS_RAWINPUT,
@@ -359,13 +372,6 @@ impl Source {
 
     /// The message of the raw key events this source batches: what the
     /// pump leaves in the queue for the drain ([`pump_ranges`]).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-        )
-    )]
     fn batched_message(self) -> u32 {
         match self {
             Source::Keyboard => WM_INPUT,
@@ -382,17 +388,19 @@ impl Source {
         }
     }
 
-    /// Whether `msg` is a synthetic raw key event of this source.
-    fn is_synthetic_raw(self, msg: &MSG) -> bool {
+    /// Drains this source's raw key events: for the keyboard those queued
+    /// for `window`, this thread's sink window, through `buffer`.
+    fn drain(
+        self,
+        window: HWND,
+        buffer: &mut RawBuffer,
+        counters: &Counters,
+        msg: &mut MSG,
+    ) -> Drained {
         match self {
-            Source::Keyboard => {
-                // Only the test source reads `msg`; the daemon's has no
-                // synthetic events.
-                let _ = msg;
-                false
-            }
+            Source::Keyboard => drain_keyboard(window, buffer, counters, msg),
             #[cfg(test)]
-            Source::Synthetic => msg.hwnd.is_invalid() && msg.message == SYNTHETIC_RAW,
+            Source::Synthetic => drain(&mut SyntheticReads { msg }, false, counters, Instant::now),
         }
     }
 }
@@ -647,7 +655,15 @@ fn run_watchdog<R: RequestReinstall>(
         input_here: source.input_here(),
     };
     let mut ticker = Ticker::new(Instant::now(), timer, health);
-    run_loop(&mut ticker, window.0, source, &context, &mut msg);
+    let mut buffer = RawBuffer([0; RAW_BUFFER_BYTES]);
+    run_loop(
+        &mut ticker,
+        window.0,
+        source,
+        &context,
+        &mut msg,
+        &mut buffer,
+    );
     let stats = ticker.stats();
     // Once per run, in every build: the release daemon's evidence that the
     // thread wakes once per burst of keys and not per key, and not at
@@ -661,19 +677,30 @@ fn run_watchdog<R: RequestReinstall>(
 }
 
 /// The loop, in the shape of the main loop: wait for the tick timer and the
-/// messages at once, take the messages, then one pass, which sets the timer
-/// again (ruling I1). Ends at `WM_QUIT`, or when the wait fails.
+/// messages at once, take every message but raw input, drain the raw input,
+/// then one pass, which sets the timer again (ruling I1). While the
+/// watchdog ticks the wait leaves raw input out, so the key events wait in
+/// the queue for the tick's drain and wake nothing; idle, the first of a
+/// burst ends the wait (ruling L1). It never waits while a drain left raw
+/// input in the queue (ruling V3-I1). Ends at `WM_QUIT`, after a last drain
+/// into the counts, or when the wait fails.
 fn run_loop<R: RequestReinstall>(
     ticker: &mut Ticker<WaitableTimer>,
     window: HWND,
     source: Source,
     context: &Context<'_, R>,
     msg: &mut MSG,
+    buffer: &mut RawBuffer,
 ) {
+    let mut drained = Drained::default();
     loop {
-        let timeout = ticker.wake_by().map_or(INFINITE, |at| {
-            wait_ms(at.saturating_duration_since(Instant::now()))
-        });
+        let (mask, timeout) = next_wait(
+            source.batched_wake(),
+            ticker.is_ticking(),
+            ticker.wake_by(),
+            drained,
+            Instant::now(),
+        );
         // SAFETY: the slice holds the tick timer's handle, which `ticker`
         // keeps open for the whole call; the slice lives until the call
         // returns, which only reads it.
@@ -681,24 +708,37 @@ fn run_loop<R: RequestReinstall>(
             MsgWaitForMultipleObjectsEx(
                 Some(&[ticker.timer.handle()]),
                 timeout,
-                QS_ALLINPUT,
+                mask,
                 MWMO_INPUTAVAILABLE,
             )
         };
         if woke == WAIT_OBJECT_0 {
             ticker.fired();
-        } else if woke == WAIT_TIMEOUT {
-            // The tick of a timer that could not be set: the pass below.
         } else if woke == WAIT_FAILED {
             log::error!(
                 "the hook watchdog's message loop failed ({}) and stopped; a keyboard hook that Windows removes is not reinstalled until the daemon restarts",
                 windows::core::Error::from_thread()
             );
             return;
-        } else if pump(msg, window, source, ticker, context) {
+        }
+        // Any other return, a message, a timeout or a return with nothing
+        // to do ("MsgWaitForMultipleObjectsEx can return even though no
+        // appropriate input is available"), makes a pass too: the clock
+        // decides the tick.
+        drained = if pump(msg, source.batched_message()) {
+            Drained {
+                quit: true,
+                ..Drained::default()
+            }
+        } else {
+            source.drain(window, buffer, context.counters, msg)
+        };
+        if drained.quit {
+            ticker.read_at_stop(drained.keys);
+            ticker.read_at_stop(source.drain(window, buffer, context.counters, msg).keys);
             return;
         }
-        ticker.pass(Instant::now(), context);
+        ticker.pass(Instant::now(), drained, context);
     }
 }
 
@@ -706,13 +746,6 @@ fn run_loop<R: RequestReinstall>(
 /// `batched` while `leave_out`. While the watchdog ticks, raw input waits in
 /// the queue for the tick's drain and wakes nothing (ruling L1); idle, the
 /// first raw key event of a burst ends the wait.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn wake_mask(batched: QUEUE_STATUS_FLAGS, leave_out: bool) -> QUEUE_STATUS_FLAGS {
     if leave_out {
         QS_ALLINPUT & !batched
@@ -727,13 +760,6 @@ fn wake_mask(batched: QUEUE_STATUS_FLAGS, leave_out: bool) -> QUEUE_STATUS_FLAGS
 /// range filters ..., skipping WM_INPUT entirely" (Using Raw Input), since
 /// "GetMessage removes the current WM_INPUT from the raw input queue"
 /// (Raw Input Overview).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn pump_ranges(skip: u32) -> [(u32, u32); 2] {
     [(0, skip - 1), (skip + 1, 0xFFFF)]
 }
@@ -745,37 +771,33 @@ fn wait_ms(after: Duration) -> u32 {
     u32::try_from(ms).map_or(INFINITE - 1, |ms| ms.min(INFINITE - 1))
 }
 
-/// Takes this thread's messages until its queue is empty; true at
-/// `WM_QUIT`. A raw key event is counted, then dispatched to the window's
-/// procedure, `DefWindowProcW`, which frees it as Windows asks ("The
-/// application must call DefWindowProc so the system can perform cleanup",
-/// WM_INPUT).
-fn pump<R: RequestReinstall>(
-    msg: &mut MSG,
-    window: HWND,
-    source: Source,
-    ticker: &mut Ticker<WaitableTimer>,
-    context: &Context<'_, R>,
-) -> bool {
-    // SAFETY: `msg` is the loop's local and outlives every call, which only
-    // writes it and removes the message from this thread's own queue.
-    while unsafe { PeekMessageW(msg, None, 0, 0, PM_REMOVE) }.as_bool() {
-        if msg.message == WM_QUIT {
-            return true;
+/// Takes every message but `skip`, the batched raw input, from this
+/// thread's queue until none is left, and dispatches it; true at `WM_QUIT`.
+/// It filters by message, never by window, so that `WM_QUIT`, a thread
+/// message, is always seen (critic OQ2).
+fn pump(msg: &mut MSG, skip: u32) -> bool {
+    loop {
+        let mut took = false;
+        for (low, high) in pump_ranges(skip) {
+            // SAFETY: `msg` is the loop's local and outlives every call,
+            // which only writes it and removes the message from this
+            // thread's own queue.
+            while unsafe { PeekMessageW(msg, None, low, high, PM_REMOVE) }.as_bool() {
+                if msg.message == WM_QUIT {
+                    return true;
+                }
+                took = true;
+                // SAFETY: `msg` was filled by PeekMessageW above and outlives
+                // the call, which only reads it; a thread message goes
+                // nowhere, and one for the sink window reaches the system
+                // class's procedure.
+                unsafe { DispatchMessageW(msg) };
+            }
         }
-        let raw = if msg.message == WM_INPUT && msg.hwnd == window {
-            raw_key_event(msg.lParam, context.counters)
-        } else {
-            source.is_synthetic_raw(msg)
-        };
-        if raw {
-            ticker.raw_event(Instant::now(), context.health);
+        if !took {
+            return false;
         }
-        // SAFETY: `msg` was filled by PeekMessageW above and outlives the
-        // call, which only reads it; a thread message goes nowhere.
-        unsafe { DispatchMessageW(msg) };
     }
-    false
 }
 
 /// The make code of a keyboard overrun: no key. The `windows` crate has the
@@ -783,8 +805,9 @@ fn pump<R: RequestReinstall>(
 const KEYBOARD_OVERRUN_MAKE_CODE: u16 = 0xFF;
 
 /// Whether the `WM_INPUT` with `lparam` is a keyboard event that the
-/// keyboard hook would see too. The only function that reads key data; it
-/// keeps none. A read that fails is counted in `raw_input_unread`.
+/// keyboard hook would see too: the standard read's classification, as
+/// [`count_raw_keys`] is the buffered read's. It reads key data and keeps
+/// none. A read that fails is counted in `raw_input_unread`.
 fn raw_key_event(lparam: LPARAM, counters: &Counters) -> bool {
     let mut raw = RAWINPUT::default();
     let mut size = size_of::<RAWINPUT>() as u32;
@@ -959,13 +982,6 @@ impl Drained {
 /// standard read takes it; if that finds nothing either, the drain counts
 /// it in `raw_input_unread` and says the queue is stuck, so that the next
 /// wait does not return for it at once, for ever (ruling V3-M3).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn drain(
     reads: &mut impl RawReads,
     buffered: bool,
@@ -1028,13 +1044,6 @@ fn drain(
 /// before it waits (ruling V3-I1); the tick the timer could not take
 /// (`wake_by`, ruling I1); and one tick without raw input in the mask after
 /// a stuck queue (ruling V3-M3).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn next_wait(
     batched: QUEUE_STATUS_FLAGS,
     ticking: bool,
@@ -1120,13 +1129,6 @@ impl RawReads for KeyboardReads<'_> {
 
 /// Drains the raw keyboard input queued for `window`, this thread's sink
 /// window, through `buffer`, made once on the thread's stack.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn drain_keyboard(
     window: HWND,
     buffer: &mut RawBuffer,
@@ -1140,6 +1142,42 @@ fn drain_keyboard(
         counters,
     };
     drain(&mut reads, BUFFERED, counters, Instant::now)
+}
+
+/// The raw key events of the tests: one `SYNTHETIC_RAW` thread message
+/// each. Unlike raw input they have no queue bit of their own:
+/// `QS_POSTMESSAGE` also covers `WM_QUIT`, and a peek clears it (cut L1.2,
+/// critique_v3 M3), so a stuck queue is never seen here.
+#[cfg(test)]
+struct SyntheticReads<'a> {
+    msg: &'a mut MSG,
+}
+
+#[cfg(test)]
+impl RawReads for SyntheticReads<'_> {
+    fn buffered(&mut self) -> Read {
+        self.standard()
+    }
+
+    fn standard(&mut self) -> Read {
+        // SAFETY: `self.msg` outlives the call, which only writes it and
+        // removes the message from this thread's own queue.
+        let found =
+            unsafe { PeekMessageW(self.msg, None, SYNTHETIC_RAW, SYNTHETIC_RAW, PM_REMOVE) };
+        if !found.as_bool() {
+            return Read::Empty;
+        }
+        // "PeekMessage always retrieves WM_QUIT messages, no matter which
+        // values you specify for wMsgFilterMin and wMsgFilterMax".
+        if self.msg.message == WM_QUIT {
+            return Read::Quit;
+        }
+        Read::Records(BlockCount { keys: 1, unread: 0 })
+    }
+
+    fn raw_pending(&mut self) -> bool {
+        false
+    }
 }
 
 /// Whether a raw keyboard event with `make_code` and `vkey` reaches the
@@ -1162,7 +1200,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use windows::Win32::Foundation::E_ACCESSDENIED;
+    use windows::Win32::Foundation::{E_ACCESSDENIED, WAIT_TIMEOUT};
     use windows::Win32::UI::Input::KeyboardAndMouse::{VK_A, VK_VOLUME_UP};
     use windows::Win32::UI::Input::RIM_TYPEHID;
 
@@ -1302,9 +1340,9 @@ mod tests {
         /// When each request was sent, in ms, and the requests.
         requests: Vec<u64>,
         sent_requests: Vec<ReinstallRequest>,
-        /// How many passes the loop made, and when the last one ran.
+        /// How many passes the loop made, and when each ran.
         passes: u64,
-        last_pass: Option<u64>,
+        pass_times: Vec<u64>,
         /// Raw key events queued and not read yet, and all of them.
         queued: u64,
         raws: u64,
@@ -1339,7 +1377,7 @@ mod tests {
                 requests: Vec::new(),
                 sent_requests: Vec::new(),
                 passes: 0,
-                last_pass: None,
+                pass_times: Vec::new(),
                 queued: 0,
                 raws: 0,
                 raw_wakes: 0,
@@ -1397,9 +1435,14 @@ mod tests {
                 requests: &self.recorder,
                 input_here: self.input_here,
             };
-            self.ticker.pass(self.at(ms), read, self.left, &context);
+            let drained = Drained {
+                keys: read,
+                pending: self.left,
+                ..Drained::default()
+            };
+            self.ticker.pass(self.at(ms), drained, &context);
             self.passes += 1;
-            self.last_pass = Some(ms);
+            self.pass_times.push(ms);
             for call in self.ticker.timer.calls.borrow_mut().drain(..) {
                 self.timer_calls.push((ms, call));
                 self.due = match call {
@@ -1529,13 +1572,12 @@ mod tests {
             }
         });
         assert_eq!(drive.raw_wakes, 2);
-        let calls = &drive.timer_calls;
         assert!(
-            calls
-                .iter()
-                .any(|&(ms, call)| ms < 5000 && call == TimerCall::Cancel),
-            "ticking stopped before 5000 ms: {calls:?}"
+            !drive.pass_times.iter().any(|ms| (2250..5000).contains(ms)),
+            "ticking stopped before 5000 ms: {:?}",
+            drive.pass_times
         );
+        let calls = &drive.timer_calls;
         assert!(
             calls.contains(&(5000, TimerCall::Set(TICK))),
             "and started again at 5000 ms: {calls:?}"
@@ -1618,14 +1660,21 @@ mod tests {
     #[test]
     fn a_single_batched_raw_event_stops_ticking_after_two_seconds() {
         // Ruling M1 on batched reads: idle again at most ACTIVE_FOR and a
-        // tick after the last key, and no pass after that.
+        // tick after the last key, with the timer not set, and no pass
+        // after that. The timer signalled for that tick, so there is
+        // nothing to cancel.
         let mut drive = Drive::new(Recorder::new());
         drive.run(0, 10_000, |ms| ms == 0);
         assert_eq!(drive.requests, [] as [u64; 0]);
-        let &(at, call) = drive.timer_calls.last().expect("the timer was used");
-        assert_eq!(call, TimerCall::Cancel, "{:?}", drive.timer_calls);
-        assert!(at <= 2250, "{:?}", drive.timer_calls);
-        assert_eq!(drive.last_pass, Some(at), "no pass after it");
+        let last = *drive.pass_times.last().expect("the loop ran");
+        assert!(last <= 2250, "{:?}", drive.pass_times);
+        assert!(!drive.ticker.is_ticking(), "idle after {last} ms");
+        assert_eq!(
+            (drive.due, drive.timeout),
+            (None, None),
+            "nothing wakes the thread: {:?}",
+            drive.timer_calls
+        );
     }
 
     #[test]

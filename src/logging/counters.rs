@@ -45,11 +45,14 @@ pub enum Counter {
     /// event without deciding it (`hook::main_thread::with_main`, roadmap
     /// item 2.4). Nothing re-enters the state today, so a count is a defect.
     MainStateRefused,
-    /// The hook watchdog could not read a raw keyboard event
-    /// (`GetRawInputData`), so it did not count it (roadmap item 2.4).
+    /// The hook watchdog could not read raw keyboard input, so it did not
+    /// count it (roadmap item 2.4): a `GetRawInputData` or a
+    /// `GetRawInputBuffer` that failed, a record of a buffered read that
+    /// could not be read, or a queue that reports raw input that no read
+    /// returns.
     RawInputUnread,
-    /// The hook watchdog could not set its tick timer; it tries again at
-    /// its next wake, which the next raw key event brings (roadmap item
+    /// The hook watchdog could not set its tick timer; its wait then times
+    /// out at the tick, and the pass sets the timer again (roadmap item
     /// 2.4).
     WatchdogTimerNotSet,
     /// The hook watchdog could not tell whether keyboard input is on the

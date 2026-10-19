@@ -7,7 +7,11 @@
 //! the keyboard callback's heartbeat. A raw key event that no callback
 //! explains is evidence, counted only once it is at least one tick old: the
 //! evidence is checked before the interval's raw events are added, so raw
-//! input that arrives just before its own hook call never counts.
+//! input that arrives just before its own hook call never counts. The
+//! interval's raw events are those its drains read: the drain of the
+//! tick's own pass, right before the heartbeat is read, and those of any
+//! earlier wake in the interval (ruling L1). A raw event read at the tick
+//! `T` arrived at or before `T`, and is first checked at `T + TICK`.
 //!
 //! The counts are matched as totals, whichever of the two Windows delivered
 //! first: the callbacks counted that no raw event has matched yet are a
@@ -99,7 +103,8 @@ pub(crate) struct Watchdog {
     evidence: u64,
     /// Where the silence that a request needs starts (rule 1).
     quiet_since: Instant,
-    /// The newest raw key event.
+    /// The drain that read the newest raw key event, at most a tick after
+    /// the event itself.
     last_raw_at: Option<Instant>,
     /// The next tick while ticking: the one source the watchdog thread sets
     /// its timer from (ruling I1).
@@ -127,16 +132,27 @@ impl Watchdog {
         }
     }
 
-    /// A raw key event that the keyboard hook should see arrived. The first
-    /// one after idle starts the ticking and the silence (rule 1).
-    pub(crate) fn raw_event(&mut self, now: Instant) {
-        self.raw_events += 1;
+    /// `count` raw key events that the keyboard hook should see were read
+    /// at `now`, by one drain. The first batch after idle starts the ticking
+    /// and the silence (rule 1).
+    pub(crate) fn raw_batch(&mut self, count: u64, now: Instant) {
+        if count == 0 {
+            return;
+        }
+        self.raw_events = self.raw_events.saturating_add(count);
         self.last_raw_at = Some(now);
         if self.next_tick.is_none() {
             self.next_tick = Some(now + TICK);
             self.quiet_since = now;
             self.credit = 0;
         }
+    }
+
+    /// One raw key event read at `now`: the decision tests' scripts read
+    /// their events one by one.
+    #[cfg(test)]
+    pub(crate) fn raw_event(&mut self, now: Instant) {
+        self.raw_batch(1, now);
     }
 
     /// When the next tick is due, while ticking.

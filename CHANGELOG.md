@@ -183,7 +183,12 @@ minor version; such entries sit under **Changed** and start with
   keyboard on a message-only window of its own (`RIDEV_INPUTSINK`) and
   compares it, four times a second while keys are typed, with a heartbeat
   that the keyboard callback bumps at every call (one atomic increment, the
-  only per-key cost on the main thread). When keys arrive and the callback
+  only per-key cost on the main thread). It reads the raw input queued
+  since the last tick in one batch (`GetRawInputBuffer`), so it does not
+  wake up per key: the first key after 2 s without keys wakes it once,
+  and a backlog is read until the queue is empty. Callbacks are matched
+  against raw key events as totals, so a burst of injected keys whose raw
+  input is read over several ticks draws no reinstall. When keys arrive and the callback
   stays silent for more than 1 s, it asks the main thread, which installed
   the hook, to reinstall it: the new hook goes in first, then the old one
   comes off, so a key never sees two hooks of the daemon or none; a hook
