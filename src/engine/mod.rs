@@ -204,6 +204,7 @@ mod env;
 mod gestures;
 mod keys;
 mod matching;
+mod schedule;
 mod sequences;
 mod winner;
 
@@ -661,7 +662,10 @@ mod tests {
     use super::*;
     use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14, VK_MENU, VK_SHIFT};
+    use crate::engine::{Scheduler, TimerQueue};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_F13, VK_F14, VK_LSHIFT, VK_MENU, VK_SHIFT,
+    };
 
     /// An [`Env`] stopped at one instant with nothing held and no
     /// foreground window: enough to arm a Hold and read its timer token.
@@ -769,6 +773,142 @@ mod tests {
             engine.on_timer(token),
             Decision::default(),
             "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
+        );
+    }
+
+    /// A [`Scheduler`] that refuses every timer, as the main thread's does
+    /// when Windows cannot set its timer.
+    struct Refusing;
+
+    impl Scheduler for Refusing {
+        fn start(&mut self, _request: TimerRequest) -> bool {
+            false
+        }
+        fn retain(&mut self, _live: &dyn Fn(TimerToken) -> bool) {}
+    }
+
+    const HOLD_F13: &str =
+        r#"( bindings: [ (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)) ] )"#;
+
+    fn hold_f13() -> Vec<Binding> {
+        let mut bindings = crate::config::from_ron_str(HOLD_F13).expect("config parses");
+        sort_by_specificity(&mut bindings);
+        bindings
+    }
+
+    #[test]
+    fn a_token_from_before_a_reset_is_stale() {
+        // KS-11 across `swch off` / `swch on`: the reset starts a new
+        // generation, so a timer started before it fires nothing, also
+        // against a Hold armed after it.
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+
+        let before = engine
+            .on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0))
+            .timers[0]
+            .token;
+        assert!(engine.is_live(before));
+        engine.reset(&FixedEnv(t0 + Duration::from_millis(50)));
+        assert!(!engine.is_live(before), "the reset makes the token stale");
+        assert_eq!(engine.on_timer(before), Decision::default());
+
+        let after = engine
+            .on_key(
+                KeyEvent::down(VK_F13),
+                &bindings,
+                &FixedEnv(t0 + Duration::from_millis(100)),
+            )
+            .timers[0]
+            .token;
+        assert_ne!(before, after);
+        assert!(engine.is_live(after));
+        assert!(!engine.is_live(before));
+        assert_eq!(
+            engine.on_timer(before),
+            Decision::default(),
+            "the old token does not fire the new Hold"
+        );
+        assert_eq!(
+            engine.on_timer(after).fire,
+            [BindAction::PressKey(VK_LSHIFT)]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_hold_leaves_its_token_stale() {
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+        let mut queue = TimerQueue::new();
+
+        let mut down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let token = down.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut down.timers), &mut queue),
+            0
+        );
+        assert!(engine.is_live(token));
+
+        let _ = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(50)),
+        );
+        assert!(!engine.is_live(token), "the key-up cancelled the Hold");
+        assert_eq!(engine.on_timer(token), Decision::default());
+
+        // The next arming prunes the stale timer from the queue.
+        let mut again = engine.on_key(
+            KeyEvent::down(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(100)),
+        );
+        engine.start_timers(std::mem::take(&mut again.timers), &mut queue);
+        assert_eq!(queue.len(), 1, "only the live timer is queued");
+    }
+
+    #[test]
+    fn a_timer_the_scheduler_refuses_is_forgotten() {
+        // KS-33: a Hold whose timer cannot be set never fires and does not
+        // keep its key from arming the next press.
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+
+        let mut down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let token = down.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut down.timers), &mut Refusing),
+            1,
+            "one timer was refused"
+        );
+        assert!(!engine.is_live(token));
+
+        let up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(300)),
+        );
+        assert!(up.fire.is_empty(), "the forgotten Hold never fires");
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
+        assert_eq!(engine.on_timer(token), Decision::default());
+
+        let mut queue = TimerQueue::new();
+        let mut again = engine.on_key(
+            KeyEvent::down(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(400)),
+        );
+        let next = again.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut again.timers), &mut queue),
+            0
+        );
+        assert!(
+            engine.is_live(next),
+            "the next press arms a Hold of its own"
         );
     }
 
