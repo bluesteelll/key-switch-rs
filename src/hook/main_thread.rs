@@ -770,6 +770,60 @@ mod tests {
     }
 
     #[test]
+    fn a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop() {
+        // Review OQ3 of roadmap item 2.2: after a failed set the waitable
+        // timer is set for no deadline the loop can name. If `armed` still
+        // named the old one, the plan would keep it, and the loop could wait
+        // for a wake that never comes.
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing, trigger: Hold(10000)),
+                (keys: "F14", action: DoNothing, trigger: Hold(5000)),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut timers = GestureTimers::new().expect("the gesture timer is made");
+        let env = QuietEnv(Instant::now());
+
+        let mut f13 = engine.on_key(KeyEvent::down(VK_F13), &bindings, &env);
+        let f13_due = f13.timers[0].due;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut f13.timers), &mut timers),
+            0
+        );
+        assert_eq!(timers.armed, Some(f13_due));
+
+        timers.wake = WaitableTimer::not_a_timer();
+        assert!(
+            WaitableTimer::not_a_timer().set(ms(10)).is_err(),
+            "precondition: Windows refuses to set an event as a timer"
+        );
+        let mut f14 = engine.on_key(KeyEvent::down(VK_F14), &bindings, &env);
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut f14.timers), &mut timers),
+            1,
+            "the earlier deadline could not be set"
+        );
+        assert_eq!(
+            timers.armed, None,
+            "a failed set leaves the timer set for no deadline the loop knows"
+        );
+
+        timers.wake = WaitableTimer::new().expect("the gesture timer is made");
+        assert!(matches!(
+            timers.plan_wake(&mut engine, Instant::now()),
+            Wake::Wait
+        ));
+        assert_eq!(
+            timers.armed,
+            Some(f13_due),
+            "the loop sets the wake again for the Hold that is left"
+        );
+    }
+
+    #[test]
     fn a_message_posted_behind_a_wake_is_dispatched_without_more_input() {
         // Technical debt m-1 of roadmap item 2.1, for the main loop: `pump`
         // goes back to the drain at a MAIN_WAKE and leaves the messages
