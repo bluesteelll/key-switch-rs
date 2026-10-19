@@ -61,8 +61,8 @@ use windows::Win32::{
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::{
         Input::{
-            GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RAWKEYBOARD, RID_INPUT,
-            RIM_TYPEKEYBOARD,
+            GetRawInputBuffer, GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTHEADER, RAWKEYBOARD,
+            RID_INPUT, RIM_TYPEKEYBOARD,
         },
         WindowsAndMessaging::*,
     },
@@ -75,7 +75,7 @@ use crate::hook::main_thread::{MainThreadError, MainThreadHandle};
 use crate::logging::counters::{Counter, Counters};
 use crate::platform::desktop;
 use crate::platform::timers::WaitableTimer;
-use decision::{Verdict, Watchdog};
+use decision::{TICK, Verdict, Watchdog};
 
 /// Where the watchdog sends its requests: the main thread's request queue
 /// in the daemon, a recorder in the tests.
@@ -827,13 +827,6 @@ const RAWINPUT_ALIGN: usize = size_of::<usize>();
 /// no padding byte of a typed RAWINPUT is ever read; aligned to 8 bytes,
 /// which GetRawInputBuffer asks ("aligned on a DWORD boundary", and 8 bytes
 /// under WOW64). Made once, on the watchdog thread's stack.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 #[repr(C, align(8))]
 struct RawBuffer([u8; RAW_BUFFER_BYTES]);
 
@@ -863,13 +856,6 @@ fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
 /// tell whether the hook would see it, and keeps neither. A record whose
 /// header or size does not fit ends the walk, and the records left are
 /// unread; so is a keyboard record too short for its key fields.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
-    )
-)]
 fn count_raw_keys(bytes: &[u8], count: u32) -> BlockCount {
     let header = size_of::<RAWINPUTHEADER>();
     let body = offset_of!(RAWINPUT, data);
@@ -903,6 +889,257 @@ fn count_raw_keys(bytes: &[u8], count: u32) -> BlockCount {
         at = (at + size).next_multiple_of(RAWINPUT_ALIGN);
     }
     block
+}
+
+/// Whether the keyboard's drain reads by `GetRawInputBuffer`. A 32-bit
+/// build reads one `WM_INPUT` at a time instead, so that the WOW64 layout
+/// of a buffered read never applies (cut L1.3 E11).
+const BUFFERED: bool = cfg!(target_pointer_width = "64");
+
+/// How long one drain reads before the loop makes a pass: a time budget,
+/// not a count of records, so that a backlog of any size is read in full
+/// within a few passes and the ticks stay on time (ruling V3-I1).
+const DRAIN_BUDGET: Duration = Duration::from_millis(5);
+
+/// One read of the watchdog thread's raw input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    /// Nothing was read.
+    Empty,
+    /// Records were read: the key events the hook would see among them,
+    /// and those that could not be read.
+    Records(BlockCount),
+    /// The read failed: `GetRawInputBuffer` returned `(UINT)-1`.
+    Failed,
+    /// `WM_QUIT` came instead.
+    Quit,
+}
+
+/// The reads of a drain: Windows' raw input queue of the watchdog thread
+/// in the daemon, a fake in the tests.
+trait RawReads {
+    /// One buffered read: up to a buffer's worth of records.
+    fn buffered(&mut self) -> Read;
+    /// One standard read: the next `WM_INPUT`, read and dispatched, or
+    /// `WM_QUIT`.
+    fn standard(&mut self) -> Read;
+    /// Whether the queue still says that it holds raw input.
+    fn raw_pending(&mut self) -> bool;
+}
+
+/// What one drain read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Drained {
+    /// The raw key events the hook would see.
+    keys: u64,
+    /// The budget ran out with raw input left: the loop drains again before
+    /// it waits, and the decision keeps the callbacks' credit for it.
+    pending: bool,
+    /// The queue says it holds raw input that no read returns: the next
+    /// wait leaves raw input out for one tick (ruling V3-M3).
+    stuck: bool,
+    /// `WM_QUIT` came.
+    quit: bool,
+}
+
+impl Drained {
+    fn add(&mut self, block: BlockCount, counters: &Counters) {
+        self.keys += block.keys;
+        for _ in 0..block.unread {
+            counters.bump(Counter::RawInputUnread);
+        }
+    }
+}
+
+/// Reads raw input until the queue is empty, `WM_QUIT` comes or
+/// [`DRAIN_BUDGET`] by `clock` is spent: by buffered reads if `buffered`,
+/// else by standard reads. A failed buffered read is counted in
+/// `raw_input_unread`, and standard reads take the rest of the drain. When
+/// a read finds nothing while the queue still says it holds raw input, one
+/// standard read takes it; if that finds nothing either, the drain counts
+/// it in `raw_input_unread` and says the queue is stuck, so that the next
+/// wait does not return for it at once, for ever (ruling V3-M3).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn drain(
+    reads: &mut impl RawReads,
+    buffered: bool,
+    counters: &Counters,
+    clock: impl Fn() -> Instant,
+) -> Drained {
+    let until = clock() + DRAIN_BUDGET;
+    let mut buffered = buffered;
+    let mut drained = Drained::default();
+    loop {
+        if clock() >= until {
+            drained.pending = true;
+            return drained;
+        }
+        let read = if buffered {
+            reads.buffered()
+        } else {
+            reads.standard()
+        };
+        match read {
+            Read::Records(block) => drained.add(block, counters),
+            Read::Failed => {
+                counters.bump(Counter::RawInputUnread);
+                buffered = false;
+            }
+            Read::Quit => {
+                drained.quit = true;
+                return drained;
+            }
+            Read::Empty => {
+                if !reads.raw_pending() {
+                    return drained;
+                }
+                let fallback = if buffered {
+                    reads.standard()
+                } else {
+                    Read::Empty
+                };
+                match fallback {
+                    Read::Records(block) => drained.add(block, counters),
+                    Read::Quit => {
+                        drained.quit = true;
+                        return drained;
+                    }
+                    Read::Empty | Read::Failed => {
+                        if reads.raw_pending() {
+                            counters.bump(Counter::RawInputUnread);
+                            drained.stuck = true;
+                        }
+                        return drained;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The next wait's wake mask and its timeout in ms, after the drain
+/// `drained`: none while raw input is left, so the thread drains again
+/// before it waits (ruling V3-I1); the tick the timer could not take
+/// (`wake_by`, ruling I1); and one tick without raw input in the mask after
+/// a stuck queue (ruling V3-M3).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn next_wait(
+    batched: QUEUE_STATUS_FLAGS,
+    ticking: bool,
+    wake_by: Option<Instant>,
+    drained: Drained,
+    now: Instant,
+) -> (QUEUE_STATUS_FLAGS, u32) {
+    let mask = wake_mask(batched, ticking || drained.stuck);
+    if drained.pending {
+        return (mask, 0);
+    }
+    let back_off = drained.stuck.then(|| now + TICK);
+    let until = match (wake_by, back_off) {
+        (Some(tick), Some(back_off)) => Some(tick.min(back_off)),
+        (tick, back_off) => tick.or(back_off),
+    };
+    let timeout = until.map_or(INFINITE, |at| wait_ms(at.saturating_duration_since(now)));
+    (mask, timeout)
+}
+
+/// The raw input reads of the watchdog thread's own queue.
+struct KeyboardReads<'a> {
+    /// The sink window raw input is delivered to.
+    window: HWND,
+    buffer: &'a mut RawBuffer,
+    msg: &'a mut MSG,
+    counters: &'a Counters,
+}
+
+impl RawReads for KeyboardReads<'_> {
+    fn buffered(&mut self) -> Read {
+        let mut size = RAW_BUFFER_BYTES as u32;
+        // SAFETY: `self.buffer` is RAW_BUFFER_BYTES of initialised bytes,
+        // aligned to 8 as the call asks, alive for the call; `size` says how
+        // many bytes it holds, so the call writes within it; the header size
+        // is RAWINPUTHEADER's. The call reads the calling thread's queue,
+        // which is this thread's.
+        let count = unsafe {
+            GetRawInputBuffer(
+                Some(self.buffer.0.as_mut_ptr().cast::<RAWINPUT>()),
+                &mut size,
+                size_of::<RAWINPUTHEADER>() as u32,
+            )
+        };
+        match count {
+            0 => Read::Empty,
+            u32::MAX => Read::Failed,
+            count => Read::Records(count_raw_keys(&self.buffer.0, count)),
+        }
+    }
+
+    fn standard(&mut self) -> Read {
+        // SAFETY: `self.msg` outlives the call, which only writes it and
+        // removes the message from this thread's own queue; `self.window` is
+        // this thread's live sink window.
+        let found =
+            unsafe { PeekMessageW(self.msg, Some(self.window), WM_INPUT, WM_INPUT, PM_REMOVE) };
+        if !found.as_bool() {
+            return Read::Empty;
+        }
+        if self.msg.message == WM_QUIT {
+            return Read::Quit;
+        }
+        let key = raw_key_event(self.msg.lParam, self.counters);
+        // SAFETY: `self.msg` was filled by PeekMessageW above and outlives the
+        // call, which only reads it; the window's procedure is
+        // DefWindowProcW, which frees the raw input, as WM_INPUT asks.
+        unsafe { DispatchMessageW(self.msg) };
+        Read::Records(BlockCount {
+            keys: u64::from(key),
+            unread: 0,
+        })
+    }
+
+    fn raw_pending(&mut self) -> bool {
+        // SAFETY: GetQueueStatus takes the flags by value, reads no memory of
+        // ours and reports this thread's own queue.
+        let status = unsafe { GetQueueStatus(QS_RAWINPUT) };
+        // The high word names the kinds of message in the queue now.
+        (status >> 16) & QS_RAWINPUT.0 != 0
+    }
+}
+
+/// Drains the raw keyboard input queued for `window`, this thread's sink
+/// window, through `buffer`, made once on the thread's stack.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn drain_keyboard(
+    window: HWND,
+    buffer: &mut RawBuffer,
+    counters: &Counters,
+    msg: &mut MSG,
+) -> Drained {
+    let mut reads = KeyboardReads {
+        window,
+        buffer,
+        msg,
+        counters,
+    };
+    drain(&mut reads, BUFFERED, counters, Instant::now)
 }
 
 /// Whether a raw keyboard event with `make_code` and `vkey` reaches the
