@@ -833,6 +833,49 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_callback_counts_every_call_also_while_remapping_is_off() {
+        // Roadmap item 2.4: the hook watchdog compares raw keyboard input
+        // with this heartbeat, so every call with code >= 0 counts: an
+        // injected event and one while remapping is off too, or a hook that
+        // dies under `swch off` would go unnoticed. The callback reads the
+        // process-wide hook, hence `GLOBAL_HOOK`, which also makes the
+        // difference exact; the binding is `DoNothing`.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+        let before = get_hook().health().callbacks();
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+        let injected = KBDLLHOOKSTRUCT {
+            vkCode: f13,
+            dwExtraInfo: injected_sentinel(),
+            ..Default::default()
+        };
+        // SAFETY: code 0 is HC_ACTION, and lparam points to `injected`, a
+        // KBDLLHOOKSTRUCT on this stack frame that outlives the call; no
+        // hook is installed, so the pass path's CallNextHookEx calls no
+        // next hook procedure.
+        unsafe {
+            keyboard_hook_callback(
+                0,
+                WPARAM(WM_KEYDOWN as usize),
+                LPARAM(&injected as *const KBDLLHOOKSTRUCT as isize),
+            )
+        };
+        assert!(set_enabled(get_hook(), false));
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert_eq!(get_hook().health().callbacks() - before, 5);
+    }
+
+    #[test]
     fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
         let inputs = menu_mask_inputs();
         for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {
