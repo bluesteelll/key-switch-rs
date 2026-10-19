@@ -104,9 +104,11 @@ fn write_to_stderr(line: &LogLine) {
 fn write_to_stderr(_line: &LogLine) {}
 
 /// Installs the logger, at level [`MAX_LEVEL`], and starts the `log-writer`
-/// thread with the console (stderr) as its only output. Once per process; a
-/// later call, or a call after another logger was installed, does nothing.
-/// If the thread cannot be started, records go to stderr directly.
+/// thread with the console (stderr) as its only output, and installs the
+/// panic hook, which logs a panic through that writer (`panic`). Once per
+/// process; a later call, or a call after another logger was installed,
+/// does nothing. If the thread cannot be started, records go to stderr
+/// directly.
 pub fn init() {
     let Some(spawned) = start_logging(
         || log::set_logger(&LOGGER).is_ok(),
@@ -115,6 +117,9 @@ pub fn init() {
         return;
     };
     log::set_max_level(MAX_LEVEL);
+    // A panic's message goes through the writer from now on, with a
+    // bounded wait (roadmap item 2.4).
+    panic::install();
     match spawned {
         Ok(tx) => {
             let _ = LOGGER.writer.set(tx);

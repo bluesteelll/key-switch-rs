@@ -877,6 +877,10 @@ If the daemon cannot find the folder, the console says
 file cannot be written, the console says `[WARN] log file <path>: ...` once,
 and every later line tries again.
 
+A panic, a defect of the daemon, is logged the same way, as
+`[ERROR] thread '<name>' panicked at <file>:<line>:<column>: <message>`;
+the panicking thread waits at most 250 ms for the line to be written.
+
 Lines reach the file and the console through one writer thread, the file
 first. In a window of the classic console host (`conhost.exe`) with
 QuickEdit on, a selection you hold in the daemon's console stops that

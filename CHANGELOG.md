@@ -224,6 +224,16 @@ minor version; such entries sit under **Changed** and start with
   `hook::health::tests::the_hook_health_reads_ok_not_watched_or_failed_with_its_reinstalls`,
   `hook::ipc_server::tests::dispatch_status_appends_the_hook_health`,
   `tests/ipc_roundtrip.rs::status_reports_the_hook_health_over_the_pipe`.
+- A panic hook (roadmap item 2.4, roadmap 1.7 question 4): a thread that
+  panics logs
+  `[ERROR] thread '<name>' panicked at <file>:<line>:<column>: <message>`
+  through the log writer, so the line reaches `daemon.log`, and waits at
+  most 250 ms for it; a second panic of the thread within a second shares
+  that wait. A panic in the keyboard callback then ends the daemon, so the
+  keyboard waits at most about 250 ms for it. Tests:
+  `logging::panic::tests::a_stuck_writer_holds_a_panic_report_at_most_its_budget`,
+  `a_panic_report_reaches_the_log_file_before_it_returns`,
+  `a_panicking_thread_of_a_child_process_is_logged_through_the_installed_hook`.
 
 ### Changed
 
@@ -594,6 +604,9 @@ minor version; such entries sit under **Changed** and start with
   of `running (3 bindings live)` (roadmap item 2.4). It still starts the
   same way, so `swch open` and scripts that look for `running (` are not
   affected; one that compares the whole line must follow.
+- Rust's own panic message (`thread 'main' panicked at ...` on stderr, from
+  the panicking thread, with no bound) is replaced by the panic hook's log
+  line, on the console and in `daemon.log` (roadmap item 2.4).
 
 ### Fixed
 

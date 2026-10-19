@@ -1,3 +1,154 @@
+//! The panic hook (roadmap item 2.4; roadmap item 1.7, question 4): a
+//! panic's message goes through the log writer, so that it reaches
+//! `daemon.log`, with a bounded wait.
+//!
+//! Rust's default hook writes the message to stderr from the panicking
+//! thread with no bound: a console in a held QuickEdit selection would stop
+//! it there, and the line never reaches the file. This hook builds one line,
+//! `[ERROR] thread '<name>' panicked at <file>:<line>:<column>: <message>`,
+//! queues it for the writer and waits until it is written, and gives up at
+//! [`REPORT_BUDGET`]. It never chains to the default hook, which would write
+//! the message a second time, without a bound.
+//!
+//! # The bound
+//!
+//! A panic holds its thread in the hook for at most 250 ms, plus the time to
+//! build its line. A second panic on the same thread within 1 s of the end of
+//! that budget shares it. A panic inside the keyboard callback, an `extern
+//! "system"` fn, then aborts the process ("As of 1.81, the non-unwind ABIs
+//! (e.g., "C") will now abort on uncaught unwinds", Rust 1.81.0), so the
+//! keyboard waits at most about 250 ms for the dying daemon, under the
+//! largest `LowLevelHooksTimeout` of 1000 ms. The writer writes the file
+//! before the console, so the line is in `daemon.log` even if the console
+//! blocks.
+//!
+//! On the `log-writer` thread itself, or with no writer, the hook writes
+//! the line to stderr and does not wait: there is nobody to wait for.
+
+use std::any::Any;
+use std::cell::Cell;
+use std::fmt::Write as _;
+use std::panic::PanicHookInfo;
+use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant, SystemTime};
+
+use super::sink::LogLine;
+use super::writer::{self, WriterMsg};
+
+/// How long a panic waits for its line to be written.
+pub(crate) const REPORT_BUDGET: Duration = Duration::from_millis(250);
+
+/// How long after a budget's end a panic of the same thread shares it.
+const EPISODE: Duration = Duration::from_secs(1);
+
+/// The target of the line, which reads as the crate's own.
+const TARGET: &str = "key_switch_rs::panic";
+
+/// The name of the writer's thread, which must not wait for itself.
+const WRITER_THREAD: &str = "log-writer";
+
+thread_local! {
+    /// The end of this thread's last panic budget.
+    static BUDGET_END: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Installs the panic hook for the whole process, on the daemon's writer.
+/// `logging::init` calls it once it has installed the logger.
+pub(crate) fn install() {
+    std::panic::set_hook(Box::new(|info| report(info, super::LOGGER.writer.get())));
+}
+
+/// Installs the panic hook on the writer that `writer` names, for a test's
+/// child process, which must not start the daemon's.
+#[cfg(test)]
+pub(crate) fn install_with(writer: fn() -> Option<&'static SyncSender<WriterMsg>>) {
+    std::panic::set_hook(Box::new(move |info| report(info, writer())));
+}
+
+/// The hook: builds the line and hands it to `writer` with this thread's
+/// budget, or writes it to stderr where waiting would wait for nothing.
+fn report(info: &PanicHookInfo<'_>, writer: Option<&SyncSender<WriterMsg>>) {
+    let thread = std::thread::current();
+    let name = thread.name();
+    let location = info
+        .location()
+        .map(|location| (location.file(), location.line(), location.column()));
+    let text = panic_text(name, location, info.payload());
+    let line = LogLine::new(
+        SystemTime::now(),
+        log::Level::Error,
+        TARGET,
+        &format_args!("{text}"),
+    );
+    match writer {
+        Some(tx) if name != Some(WRITER_THREAD) => {
+            let now = Instant::now();
+            let deadline = BUDGET_END
+                .try_with(|end| {
+                    let deadline = budget_end(now, end.get());
+                    end.set(Some(deadline));
+                    deadline
+                })
+                .unwrap_or(now + REPORT_BUDGET);
+            let _ = report_on(tx, line, deadline);
+        }
+        _ => super::write_to_stderr(&line),
+    }
+}
+
+/// The panic's line: `thread '<name>' panicked at <file>:<line>:<column>:
+/// <message>`, as Rust's default hook names a thread without a name
+/// (`<unnamed>`); `<unknown>` for no location; the message if the payload
+/// is a `&str` or a `String`, else `Box<dyn Any>`. Built with `write!` into
+/// a `String`, which cannot panic.
+pub(crate) fn panic_text(
+    thread: Option<&str>,
+    location: Option<(&str, u32, u32)>,
+    payload: &(dyn Any + Send),
+) -> String {
+    let mut text = String::new();
+    let _ = write!(
+        text,
+        "thread '{}' panicked at ",
+        thread.unwrap_or("<unnamed>")
+    );
+    match location {
+        Some((file, line, column)) => {
+            let _ = write!(text, "{file}:{line}:{column}");
+        }
+        None => text.push_str("<unknown>"),
+    }
+    text.push_str(": ");
+    text.push_str(message(payload));
+    text
+}
+
+fn message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message
+    } else {
+        "Box<dyn Any>"
+    }
+}
+
+/// The deadline of a panic at `now` on a thread whose last budget ended at
+/// `previous`: that end, if `now` is within [`EPISODE`] of it, else `now`
+/// plus [`REPORT_BUDGET`].
+pub(crate) fn budget_end(now: Instant, previous: Option<Instant>) -> Instant {
+    match previous {
+        Some(end) if now < end + EPISODE => end,
+        _ => now + REPORT_BUDGET,
+    }
+}
+
+/// Queues `line` for the writer behind `tx` and waits until it is written,
+/// both until `deadline`; true if it was written in time.
+pub(crate) fn report_on(tx: &SyncSender<WriterMsg>, line: LogLine, deadline: Instant) -> bool {
+    writer::send_by(tx, WriterMsg::Line(line), deadline).is_ok() && writer::flush_by(tx, deadline)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

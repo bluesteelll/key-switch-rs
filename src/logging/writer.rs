@@ -96,7 +96,7 @@ impl std::fmt::Display for SendFailure {
 
 /// Queues `msg`, retrying every millisecond while the queue is full, until
 /// `deadline`.
-fn send_by(
+pub(crate) fn send_by(
     tx: &SyncSender<WriterMsg>,
     mut msg: WriterMsg,
     deadline: Instant,
@@ -130,7 +130,12 @@ pub(crate) fn attach_on(
 /// written and the counters are reported. `true` if that happened in time,
 /// or if there is no writer left to wait for.
 pub(crate) fn flush_on(tx: &SyncSender<WriterMsg>, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    flush_by(tx, Instant::now() + timeout)
+}
+
+/// [`flush_on`] with a deadline instead of a timeout: the panic hook's
+/// budget (`logging::panic`).
+pub(crate) fn flush_by(tx: &SyncSender<WriterMsg>, deadline: Instant) -> bool {
     let (ack_tx, ack_rx) = sync_channel(1);
     match send_by(tx, WriterMsg::Flush(ack_tx), deadline) {
         Ok(()) => ack_rx
