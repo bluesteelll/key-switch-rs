@@ -3834,6 +3834,102 @@ fn selecting_words_with_ctrl_shift_held_cancels_a_passing_ctrl_shift_hold() {
 }
 
 #[test]
+fn a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys() {
+    // Roadmap item 2.3 (2.2 review OQ2): "another key-down" of the owner
+    // decision on open question 10 is a key outside the pending gesture's
+    // combo. The second press goes down LCtrl first, which must neither
+    // cancel the window nor fire its waiting Tap; LShift then completes it.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "Ctrl+Shift", action: ToggleCapsLock, trigger: DoubleTap(300)) ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .expect_passed()
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(20)
+    .up("LShift")
+    .expect_passed()
+    .up("LCtrl")
+    .expect_passed()
+    .advance_ms(30)
+    .down("LCtrl")
+    .expect_passed()
+    .expect_nothing_fired()
+    .down("LShift")
+    .expect_passed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("LShift")
+    .expect_passed()
+    .up("LCtrl")
+    .expect_passed()
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+
+    // With a Tap that waits for the window: the own key fires no Tap.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "Ctrl+Shift", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .down("LShift")
+    .advance_ms(20)
+    .up("LShift")
+    .up("LCtrl")
+    .expect_nothing_fired()
+    .advance_ms(30)
+    .down("LCtrl")
+    .expect_passed()
+    .expect_nothing_fired()
+    .down("LShift")
+    .expect_passed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("LShift")
+    .up("LCtrl")
+    .advance_ms(500)
+    .expect_total_fired(&[BindAction::ToggleCapsLock]);
+}
+
+#[test]
+fn a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows() {
+    // The declared cost of the rule above (known issue 68, critique M1):
+    // the waiting Tap no longer fires at the own key's key-down, before
+    // Windows sees it, but at the next other key, with LCtrl down in
+    // Windows. Windows then gets Ctrl+Esc; the modifiers an output is sent
+    // with belong to roadmap item 3.1.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "Ctrl+Shift", action: PressKey("Escape"), trigger: Tap(200)),
+            (keys: "Ctrl+Shift", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("LCtrl")
+    .down("LShift")
+    .advance_ms(20)
+    .up("LShift")
+    .up("LCtrl")
+    .expect_nothing_fired()
+    .advance_ms(30)
+    .down("LCtrl")
+    .expect_passed()
+    .expect_nothing_fired()
+    .down("C")
+    .expect_passed()
+    .expect_fired(&[BindAction::PressKey(VK_ESCAPE)])
+    .expect_down_in_windows("LCtrl")
+    .up("C")
+    .up("LCtrl")
+    .advance_ms(500)
+    .expect_total_fired(&[BindAction::PressKey(VK_ESCAPE)]);
+}
+
+#[test]
 fn a_passing_hold_past_its_term_fires_whether_its_timer_runs_before_or_after_another_key_down() {
     // Orchestrator ruling I1: a Hold whose term has passed is resolved by
     // the clock. A key-down that comes after the term but before the
