@@ -2316,6 +2316,25 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_is_rounded_up_to_whole_milliseconds_and_stays_below_infinite() {
+        // A timeout that rounds down returns before the tick is due, and the
+        // thread then spins on a zero timeout until the clock catches up.
+        assert_eq!(wait_ms(Duration::ZERO), 0, "no time left, no wait");
+        assert_eq!(
+            wait_ms(Duration::from_micros(1)),
+            1,
+            "a fraction of a millisecond waits a whole one"
+        );
+        assert_eq!(wait_ms(Duration::from_micros(1_001)), 2, "rounded up");
+        assert_eq!(wait_ms(Duration::from_millis(250)), 250, "whole ms stay");
+        assert_eq!(
+            wait_ms(Duration::from_secs(10 * 365 * 24 * 3600)),
+            INFINITE - 1,
+            "never INFINITE, which would mean no tick at all"
+        );
+    }
+
+    #[test]
     fn the_buffered_read_of_a_thread_without_raw_input_reads_nothing() {
         // Critic OQ3, an FFI smoke test of the buffered read's sizes on a
         // thread of its own with a sink window and no raw input
