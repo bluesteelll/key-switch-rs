@@ -38,6 +38,12 @@
 //!   press a key the hook does not see, a held key stays held for the
 //!   engine until a key-up it sees, and the modifier resync skips a
 //!   swallowed modifier and finds a passed one down in Windows.
+//! - Unseen mode, the Focus steps plus key-downs the hook never sees (a
+//!   higher-integrity window, the secure desktop; roadmap item 2.3, ruling
+//!   R1): no key is left down in Windows. The release of a swallowed key
+//!   that was pressed again unseen reaches Windows because Windows has the
+//!   key down. Such an Alt or Win does not count for the menu mask (known
+//!   issue 78), so the mask rule is not checked, nor is symmetry.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
 
@@ -193,6 +199,16 @@ const CONFIGS: [Config; 9] = [
 enum Mode {
     Strict,
     Focus,
+    /// The Focus steps, and key-downs the hook does not see (roadmap item
+    /// 2.3, ruling R1).
+    Unseen,
+}
+
+impl Mode {
+    /// Whether the script changes the foreground and loses key-ups.
+    fn loses_events(self) -> bool {
+        matches!(self, Mode::Focus | Mode::Unseen)
+    }
 }
 
 /// A random key of [`KEYS`] that the script holds (`held == true`) or has
@@ -217,6 +233,10 @@ fn step(
     let delay = |rng: &mut SplitMix64| DELAYS_MS[rng.below(DELAYS_MS.len())];
     match rng.below(100) {
         0..35 => match pick(rng, held, false) {
+            Some(index) if mode == Mode::Unseen && rng.below(10) == 0 => {
+                held[index] = true;
+                scenario.down_unseen(KEYS[index])
+            }
             Some(index) => press(scenario, held, index),
             None => {
                 let index = pick(rng, held, true).expect("invariant: some key is held");
@@ -233,7 +253,7 @@ fn step(
         60..85 => match pick(rng, held, true) {
             Some(index) => {
                 held[index] = false;
-                if mode == Mode::Focus && rng.below(10) == 0 {
+                if mode.loses_events() && rng.below(10) == 0 {
                     scenario.up_unseen(KEYS[index])
                 } else {
                     scenario.up(KEYS[index])
@@ -245,7 +265,7 @@ fn step(
             }
         },
         85..95 => scenario.advance_ms(delay(rng)),
-        95..97 if mode == Mode::Focus => scenario.foreground_changed(),
+        95..97 if mode.loses_events() => scenario.foreground_changed(),
         95..97 => scenario.advance_ms(delay(rng)),
         _ => scenario.advance_ms_stalled(delay(rng)),
     }
@@ -270,8 +290,10 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
         ))
         .check_nothing_stuck();
     // A `MaskOnly` blocker masks events it lets through, which the rule
-    // does not cover.
-    if config.blocker != Some(BlockerMode::MaskOnly) {
+    // does not cover. An Alt or Win pressed again where the hook cannot see
+    // it, after its swallowed key-down, does not count for the mask
+    // (known issue 78), so the rule is not checked with unseen presses.
+    if config.blocker != Some(BlockerMode::MaskOnly) && mode != Mode::Unseen {
         scenario = scenario.check_mask_rule();
     }
     if mode == Mode::Strict {
@@ -314,4 +336,9 @@ fn nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups() {
 #[test]
 fn auto_repeats_fire_only_actions_that_repeat() {
     run_all(Mode::Focus, true);
+}
+
+#[test]
+fn nothing_is_left_down_in_windows_when_the_hook_misses_key_downs() {
+    run_all(Mode::Unseen, false);
 }

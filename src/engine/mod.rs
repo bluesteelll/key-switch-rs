@@ -1070,6 +1070,64 @@ mod tests {
         );
     }
 
+    /// An [`Env`] stopped at one instant with nothing held, which records
+    /// every key it is asked about.
+    struct CountingEnv {
+        now: Instant,
+        asked: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl CountingEnv {
+        fn asked(&self, vk: VIRTUAL_KEY) -> usize {
+            self.asked.borrow().iter().filter(|&&key| key == vk).count()
+        }
+    }
+
+    impl Env for CountingEnv {
+        fn now(&self) -> Instant {
+            self.now
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.asked.borrow_mut().push(vk);
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key() {
+        // Roadmap item 2.3, ruling R1: the witness costs one OS read, and
+        // only at a key-up the engine would swallow. A key-up that passes
+        // asks nothing.
+        let bindings = loaded(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing),
+                (keys: "F14", action: DoNothing, block_default: false),
+            ] )"#,
+        );
+        let env = CountingEnv {
+            now: Instant::now(),
+            asked: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut engine = Engine::new();
+
+        for vk in [VK_F13, VK_F14] {
+            let _ = engine.on_key(KeyEvent::down(vk), &bindings, &env);
+            let _ = engine.on_key(KeyEvent::up(vk), &bindings, &env);
+        }
+        assert_eq!(
+            env.asked(VK_F13),
+            1,
+            "a swallowed key-up asks the OS about its key once"
+        );
+        assert_eq!(env.asked(VK_F14), 0, "a key-up that passes asks nothing");
+    }
+
     #[test]
     fn a_refused_window_timer_drops_no_gesture() {
         // Review m2 of roadmap item 2.2: the count that the adapter bumps

@@ -1978,6 +1978,63 @@ fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
         .expect_passed();
 }
 
+// ---- The OS witness at a swallowed key-up (roadmap item 2.3, ruling R1) ----
+
+#[test]
+fn a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_is_released_in_windows() {
+    // CapsLock's key-up and its next key-down went where the hook does not
+    // see them (a higher-integrity window in a daemon that is not elevated,
+    // the secure desktop). Windows has CapsLock down; its release, which
+    // the hook sees, must reach Windows although the engine swallowed the
+    // last key-down it saw, or CapsLock stays down for good.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up_unseen("CapsLock")
+        .down_unseen("CapsLock")
+        .up("CapsLock")
+        .expect_passed()
+        .expect_nothing_fired();
+}
+
+#[test]
+fn a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_across_focus_changes_is_released_in_windows()
+ {
+    // The critique's script (critique I1), with a focus change before and
+    // after the unseen press.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .foreground_changed()
+        .up_unseen("CapsLock")
+        .down_unseen("CapsLock")
+        .foreground_changed()
+        .up("CapsLock")
+        .expect_passed();
+}
+
+#[test]
+fn a_swallowed_key_released_while_remapping_is_off_and_pressed_again_unseen_is_released_in_windows()
+{
+    // CapsLock was swallowed before `swch off`, released while remapping
+    // was off (a lone key-up, known issue 59) and pressed again before the
+    // hook saw any of it: its release after `swch on` must reach Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .remapping_off()
+        .up("CapsLock")
+        .expect_passed()
+        .remapping_on()
+        .down_unseen("CapsLock")
+        .up("CapsLock")
+        .expect_passed();
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the
