@@ -125,12 +125,14 @@ Facts with file:line only, no opinions.`, { effort: 'high' })
         ? `(1) The quality gate on HEAD: cargo fmt --check, cargo clippy --all-targets --locked -- -D warnings, and the full cargo test --locked.
 (2) Every red-first named in cut.md and impl.md must be red on ${BASE} and green on HEAD. Check ${BASE} in a scratch git worktree under ${SP}wt with its OWN CARGO_TARGET_DIR under ${SP}target-wt, and remove it afterwards with git worktree remove.
 (3) Make at least two mutations of your own, in the scratch worktree and never in ${WT}, each of which a named test must catch. Report each mutation and the test that caught it.
-(4) For every acceptance criterion, name the test that proves it and run it. List the criteria that can only be checked manually.`
+(4) For every acceptance criterion, name the test that proves it and run it. List the criteria that can only be checked manually.
+(5) The latency bench on ${BASE} and on HEAD, as ${WT}/.claude/agents/tester.md section 4b says (3 runs each, the D10 comparison rule); a breach the cut does not justify is RED.`
         : `DELTA round - the fix since ${since} (${SP}fix_r${round - 1}.md).
 (1) cargo clippy -D warnings, and the tests the fix touches.
 (2) Every CONFIRMED item of ${SP}triage_r${round - 1}.md: its red-first is red on ${since} and green on HEAD.
 (3) At least two NEW mutations aimed at the fix and at the tests the previous round added, each caught by a named test.
-(4) The full cargo test --locked once on HEAD.`)
+(4) The full cargo test --locked once on HEAD.
+(5) If the fix touches the hook path, the main loop or the executor: the latency bench on ${since} and on HEAD (tester.md section 4b).`)
         + ` Never leave uncommitted changes in ${WT}: mutations and red-first checks run only in the scratch worktrees. A test you add to close a gap is committed on ${BR} as its own commit whose subject starts with 'Tests:', touching test code only (#[cfg(test)] modules, src/engine/scenarios.rs, tests/), ending with the trailer Co-Authored-By: ${MODEL.tester === 'sonnet' ? 'Claude Sonnet 5.5' : 'Claude Opus 5.5'} <noreply@anthropic.com>; name it in your report. Save ${SP}test_r${round}.md.`),
     () => run(`review-r${round}`, ph, 'code-reviewer', S(['APPROVED', 'CHANGES_REQUESTED'], RATED),
       `${packLine}ROLE: code-reviewer (round ${round}). Review ${round === 1 ? 'git diff ' + BASE + '...' + BR + ' and the addendum at the end of ' + SP + 'cut.md' : 'git diff ' + since + '..' + BR + ', and whether it closes the CONFIRMED items of ' + SP + 'triage_r' + (round - 1) + '.md'} against the spec, ${SP}cut.md and the R1-R10 risk areas. Read code through git show and git diff, because the tester may be mutating a scratch tree.
@@ -174,7 +176,7 @@ phase('Results')
 let results = await run('results', 'Results', 'results-analyst', S(['ACCEPT', 'REWORK', 'RETHINK']),
   `ROLE: results-analyst. Read the spec, ${SP}cut.md, the critique report(s), ${SP}impl.md and every test_r*/review_r*/triage_r*/fix_r* report in ${SP}; then read the actual diff git diff ${BASE}...${BR}.
 Verdicts:
-- ACCEPT: every acceptance criterion is proven by a test or listed as a manual check, the last tester round is GREEN, and no CONFIRMED Critical/Important item is open.
+- ACCEPT: every acceptance criterion is proven by a test or listed as a manual check, the last tester round is GREEN with no latency-bench breach the cut does not justify (owner decision: lowest latency), and no CONFIRMED Critical/Important item is open.
 - REWORK: say exactly what is wrong and which stage it goes back to.
 - RETHINK: the design is wrong.
 Save ${SP}results.md.`)

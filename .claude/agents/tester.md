@@ -88,6 +88,10 @@ git worktree remove --force "$L/wt/parent"; git worktree prune
 
 In a second scratch worktree at HEAD (`$L/wt/mut`, `CARGO_TARGET_DIR=$L/target-wt/mut`), make at least two small, plausible faults in the code the lane changed, one at a time, and name **before running** the test that must catch each. Good mutations here: flip `suppress` on a repeat; drop the trigger-key check; collapse `LShift` to `Shift` again; swap `>=`/`>` at a gesture term boundary; let the auto-blocker match as a subset; skip the sentinel check; turn a reload error into an empty binding list. Revert each (`git -C "$L/wt/mut" checkout -- .`, then `git diff --exit-code`), and remove the worktree. A mutation that no test catches is a RED finding unless you then add a test that does and show it red under the mutation and green without it.
 
+## 4b. Latency bench (every lane since roadmap 2.2)
+
+The owner's decision is that binds run with the lowest possible latency (CLAUDE.md). Run the bench (`src/bench.rs`, `#[ignore = "bench: ..."]`) three times on the parent and three times on HEAD, each in its own scratch worktree with its own `CARGO_TARGET_DIR`: `KS_BENCH_OUT=<file> KS_BENCH_LABEL=<parent|head> cargo test --release --locked --lib bench::latency_bench -- --ignored --exact --test-threads=1`. Add `KS_BENCH_LOAD=1` for row R8 when the lane touches the main loop, thread priority or the executor. Report the median of the three p50s and the largest p99 per row, and apply the comparison rule of `D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (or the lane cut's own rule if it sets one). A breach is RED unless the cut justified that extra work. The bench is never counted as a pass and never mixed with the `manual:` tests.
+
 ## 5. Acceptance criteria
 
 Map every bullet of the item's **Acceptance** list to exactly one of: a named test with its `ok` line; a `#[ignore = "manual: ..."]` test plus its smoke-checklist line (reported as *manual, not verified*); or **missing**. A criterion that the engine, the loader or another pure function can express but that has only a manual line or nothing is RED. Grep-style criteria (`rg "SendInput\(" src` finds one place) are run and quoted.

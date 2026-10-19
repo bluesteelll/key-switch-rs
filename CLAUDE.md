@@ -19,9 +19,11 @@ One package with a library, two binaries, a build script and the book:
 - `src/core/`: `app.rs` (builder + `GetMessageW` loop), `constants.rs` (the sentinel), `windows_actions.rs`
   (`BindAction`, `FastAction`), `executor/` (`mod.rs` the `action-executor` thread, `runs.rs` the pure macro runs,
   `testing.rs` the `FakeRunner`).
-- `src/platform/`: `timers.rs` (`WaitableTimer`, a high-resolution waitable timer for threads that wait on deadlines).
+- `src/platform/`: `timers.rs` (`WaitableTimer`, a high-resolution waitable timer for threads that wait on deadlines),
+  `priority.rs` (`RaisedPriority`: the main thread runs at `THREAD_PRIORITY_HIGHEST`).
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
+  `main_thread.rs` (`MainState` with the engine and the gesture timers, `with_main`, the `MainThread::run` loop),
   `config_watcher.rs`, `ipc_server.rs`.
 - `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`,
   `registry.rs`, `single_instance.rs`, `known_folder.rs`).
@@ -30,11 +32,13 @@ One package with a library, two binaries, a build script and the book:
 - `src/engine/`: the pure decision core (`#![forbid(unsafe_code)]`; no Win32 calls, threads, locks or clock).
   `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
   `fire`, `timers`, and `mask`, the menu mask key of roadmap 1.2). `Env` supplies the clock, the OS key state and the
-  foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`. Scenario tests live in
+  foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`; `schedule.rs` has the
+  `Scheduler` trait and the pure `TimerQueue`. Scenario tests live in
   `engine::scenarios` on the `engine::testing` harness (`Scenario`, fake `Env`). New matching, suppression and
   gesture logic goes here; the hook callback only adapts Win32 to it and carries out the `Decision`.
 - `build.rs` + `app.manifest`: the release daemon embeds a `requireAdministrator` manifest. Only
   the daemon gets it, and the switches go only to the MSVC linker.
+- `src/bench.rs` (test only): the latency bench, an ignored `bench:` test (see Build and quality gate).
 - `book/`: the English mdBook (`book.toml`, `src/SUMMARY.md`, mermaid assets).
 - `.github/workflows/`: `ci.yml` runs the quality gate, and `book.yml` builds the book and deploys it to Pages on push to `master`.
 - `.claude/`: `agents/` (nine roles), `workflows/` (`ks-lane.js`, `ks-phase.js`),
@@ -49,11 +53,15 @@ cargo fmt --check                                       # gate 1
 cargo clippy --all-targets --locked -- -D warnings      # gate 2
 cargo test --locked                                     # gate 3
 mdbook build book -d D:/tmp/ks-orch/<lane>/book         # book; output outside the repo
+$env:KS_BENCH_OUT='<file>'; cargo test --release --locked --lib bench::latency_bench -- --ignored --exact --test-threads=1   # latency bench
 ```
 
 The three gates are the definition of green, both locally and in `ci.yml`. A test that needs a
 live hook, injected input or a registry write is `#[ignore = "manual: <what a human checks>"]`, and
 `cargo test` does not run it. Report those tests as manual checks. Do not count them as passes.
+The latency bench (`#[ignore = "bench: ..."]`, rows R1-R8, `KS_BENCH_LOAD=1` adds R8) is counted apart and never as a pass.
+Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rule of
+`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10; a breach is a defect unless the cut justified the extra work.
 
 ## Coding principles
 
@@ -61,7 +69,7 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    No blocking, sleeping, I/O, process creation, new allocations, new locks or Win32 lookups in it
    beyond what the cut prescribes. Never catch panics there. A swallowed panic leaves a phantom-blocked keyboard.
    `keyboard_hook_callback.rs` names no `log::` outside its tests: a per-event condition is a
-   `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_engine`.
+   `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_main`.
    The hook path runs only `FastAction`s inline; every other action goes through `KeyboardHook::submit` to the executor.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
@@ -74,17 +82,19 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
    `// SAFETY: <concrete invariant>`. A comment like "caller's responsibility" or an empty SAFETY line is a defect.
 5. **Shared state:** the hook singleton is `static KEYBOARD_HOOK: LazyLock<KeyboardHook>`, reached
    through `get_hook() -> &'static KeyboardHook` (shared, because the callback is re-entrant). Never use
-   `static mut`, `&'static mut`, `RefCell` or a hook-wide `Mutex` for hook state. The one exception is
-   `Mutex<Engine>` in `KeyboardHook`, until roadmap item 2.2 moves the Hold timers to the main thread. Only
-   `KeyboardHook::with_engine` takes it, and only while the engine decides: no action, `SendInput`, thread
-   spawn or message pump under it. `with_engine` refuses a nested call on the same thread (the event passes)
-   instead of deadlocking. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
+   `static mut`, `&'static mut`, `RefCell` or a `Mutex` for shared hook state. The engine and the gesture timers are
+   not shared: they live in `hook::main_thread::MAIN`, a thread-local `RefCell<Option<MainState>>` of the main thread,
+   reached only through `with_main` (`try_borrow_mut`: a re-entrant call is refused and the event passes, never a
+   panic or a deadlock). No action, `SendInput` or message pump runs under the borrow except the one
+   `SetWaitableTimer` the timers need. The remapping switch flips only on main, with the `MainState`. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
    The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`).
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
-6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows and
-   pumps `GetMessageW`. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
+6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows, the engine and
+   the gesture timers, and runs `MainThread::run` at `THREAD_PRIORITY_HIGHEST`: drain the requests and due timers,
+   then `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` on its high-resolution timer, then pump.
+   Hold and waiting-Tap actions run there. `swch on`/`off` are requests the main thread serves. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
    APIs needs its own pump. `Launch`, `OpenUrl` and `Sequence` run on the `action-executor` thread, which owns its STA,
    its bounded queue, its `Delay` timer and its message pump; main starts it before the hooks and stops it after
    they are removed. The `log-writer` thread alone writes the console
@@ -102,7 +112,8 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 9. **Tests:** unit tests go in `#[cfg(test)] mod tests` at the bottom of the file, with real `VK_*` constants and no
    mocks. Decision logic is pinned by scenario tests in `engine::scenarios`. Work is red-first: a regression test fails for the
    right reason before the fix lands. Tests never call `logging::init` or `attach_file`; they use
-   `logging::testing::capture` and `config::testing::TempDir`, and the suite prints nothing.
+   `logging::testing::capture` and `config::testing::TempDir`, and the suite prints nothing. Under `cfg(test)`
+   `FastAction::run` only records; a test that reaches the engine makes its thread a main thread (`MainThread::new()`).
 
 ## Safety rules for agents (non-negotiable)
 

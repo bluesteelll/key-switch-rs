@@ -53,7 +53,7 @@ These describe how this codebase actually looks. Match them.
 ## 3. Shared state and the hot path
 - The hook callback must not block, sleep, do I/O or start processes; Windows stalls all keyboard input until it returns (KS-08). Do not add allocations, locks or Win32 lookups to it beyond what the cut prescribes.
 - Shared state is atomics or `ArcSwap`. Orderings in this repo: `Release` stores, `Acquire` loads, `AcqRel` RMW. Do not downgrade to `Relaxed` without a written justification naming the pairing.
-- The engine sits behind `Mutex<Engine>` (`KeyboardHook::with_engine`) until roadmap item 2.2 moves the Hold timers to the main thread. It is the only lock on the callback path: do not add another, never hold it across an action, `SendInput`, thread spawn or message pump, and keep `with_engine`'s refusal of a nested call on the same thread.
+- The engine and the gesture timers live in the main thread's thread-local `MainState` (`hook::main_thread`), reached only through `with_main` (`try_borrow_mut`; a re-entrant call is refused and the event passes). There is no lock on the callback path: do not add one, and never run an action, `SendInput`, a thread spawn or a message pump under the borrow.
 - Bindings change only through `KeyboardHook::update_bindings` (stable sort by `key_count()` descending, then one atomic store). Preserve that specificity order if you touch matching.
 - Thread affinity: install, uninstall and anything touching the hooks run on the main (message-loop) thread. If a change needs them elsewhere, that is a design question: escalate.
 
