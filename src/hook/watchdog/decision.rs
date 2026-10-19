@@ -7,9 +7,20 @@
 //! the keyboard callback's heartbeat. A raw key event that no callback
 //! explains is evidence, counted only once it is at least one tick old: the
 //! evidence is checked before the interval's raw events are added, so raw
-//! input that arrives just before its own hook call never counts. The
-//! callbacks counted at a tick are owed to the next interval, whose raw
-//! events they may explain, whichever of the two Windows delivered first.
+//! input that arrives just before its own hook call never counts.
+//!
+//! The counts are matched as totals, whichever of the two Windows delivered
+//! first: the callbacks counted that no raw event has matched yet are a
+//! credit for the raw events read later (ruling V3-I1). The credit is kept
+//! while a drain leaves raw input in the queue, so a burst whose raw input
+//! is read over several ticks is matched by the callbacks counted before
+//! it, and a live hook is never reinstalled for it. It lapses at the first
+//! tick whose drain emptied the queue: by then every raw event of those
+//! callbacks has been read, and what is left is keys that raw input never
+//! saw (keys the daemon swallows), which must not hide a hook that dies
+//! later. A tick that sees a callback re-takes the baseline: the evidence
+//! goes, so raw events that the hook legitimately does not see (another
+//! desktop, UIPI) never add up across a live hook's ticks.
 //!
 //! # The anti-loop rule
 //!
@@ -80,9 +91,10 @@ pub(crate) struct Watchdog {
     /// Every raw key event counted, and their count at the last tick.
     raw_events: u64,
     raw_at_last_tick: u64,
-    /// The callbacks counted at the last tick, which may explain raw events
-    /// of this interval; the credit lasts one interval.
-    owed: u64,
+    /// The callbacks counted that no raw event has matched yet. They explain
+    /// the raw events read next; what is left lapses at a tick whose drain
+    /// emptied the queue.
+    credit: u64,
     /// Raw key events that no callback explained, each at least a tick old.
     evidence: u64,
     /// Where the silence that a request needs starts (rule 1).
@@ -105,7 +117,7 @@ impl Watchdog {
             last_callbacks: callbacks,
             raw_events: 0,
             raw_at_last_tick: 0,
-            owed: 0,
+            credit: 0,
             evidence: 0,
             quiet_since: now,
             last_raw_at: None,
@@ -123,7 +135,7 @@ impl Watchdog {
         if self.next_tick.is_none() {
             self.next_tick = Some(now + TICK);
             self.quiet_since = now;
-            self.owed = 0;
+            self.credit = 0;
         }
     }
 
@@ -141,26 +153,34 @@ impl Watchdog {
     /// `backlog` says that the drain right before it left raw input in the
     /// queue.
     pub(crate) fn tick(&mut self, now: Instant, callbacks: u64, backlog: bool) -> Verdict {
-        let _ = backlog;
         let answered = callbacks.wrapping_sub(self.last_callbacks);
         let arrived = self.raw_events.saturating_sub(self.raw_at_last_tick);
         self.last_callbacks = callbacks;
         self.raw_at_last_tick = self.raw_events;
 
+        // The callbacks counted before explain this interval's raw events
+        // first; the rest of their credit waits only for raw input still
+        // queued.
+        let explained = arrived.min(self.credit);
+        let unexplained = arrived - explained;
+        let kept = if backlog { self.credit - explained } else { 0 };
+
         let mut request = None;
         if answered > 0 {
+            // The baseline: the callback is alive. Raw events no callback
+            // explains are dropped; this interval's callbacks beyond them are
+            // credit for raw events read later.
             self.quiet_since = now;
             self.evidence = 0;
-            self.owed = answered;
+            self.credit = kept.saturating_add(answered.saturating_sub(unexplained));
             self.attempts = 0;
         } else {
-            let explained = arrived.min(self.owed);
-            self.owed = 0;
+            self.credit = kept;
             // Before this interval's raw events count (ruling M5).
             let decide = !self.outstanding
                 && self.evidence >= MIN_EVIDENCE
                 && now >= self.quiet_since + self.window();
-            self.evidence = self.evidence.saturating_add(arrived - explained);
+            self.evidence = self.evidence.saturating_add(unexplained);
             if decide {
                 self.outstanding = true;
                 request = Some(ReinstallRequest {
@@ -228,7 +248,7 @@ impl Watchdog {
 
     fn start_over(&mut self, now: Instant) {
         self.evidence = 0;
-        self.owed = 0;
+        self.credit = 0;
         self.quiet_since = now;
         self.raw_at_last_tick = self.raw_events;
     }
@@ -544,8 +564,8 @@ mod tests {
 
     #[test]
     fn raw_events_of_callbacks_seen_at_the_last_tick_are_explained() {
-        // The owed credit: callbacks counted at a tick explain the raw
-        // events of the next interval.
+        // The credit: callbacks counted at a tick explain the raw events of
+        // the next interval.
         let mut f = Feeder::new();
         f.run(0, 10_000, |ms, f| {
             if ms == 0 {
