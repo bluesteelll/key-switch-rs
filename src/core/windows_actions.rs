@@ -115,11 +115,12 @@ impl PartialEq for BindAction {
 
 impl Eq for BindAction {}
 
-/// An action that runs on the thread that fires it (the hook thread, or a
-/// Hold's `hold-timer` thread) before the hook returns, so that its output
-/// stays in order with the keys typed after it (roadmap item 2.1). Each
-/// one only posts a message or sends one key press. Every other action
-/// goes to the action executor; [`BindAction::as_fast`] decides which.
+/// An action that runs on the thread that fires it, the main thread, in the
+/// hook callback before the hook returns or in the main loop for a Hold, so
+/// that its output stays in order with the keys typed after it (roadmap
+/// items 2.1 and 2.2). Each one only posts a message or sends one key
+/// press. Every other action goes to the action executor;
+/// [`BindAction::as_fast`] decides which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastAction {
     SwitchLanguage,
@@ -141,7 +142,7 @@ impl FastAction {
     /// (`logging::counters`), never logged.
     ///
     /// Under test it is only recorded, on the calling thread
-    /// ([`fast_actions_run`]): a test that carries out a decision must not
+    /// (`fast_actions_run`): a test that carries out a decision must not
     /// type into, post to or switch the layout of the window that has the
     /// focus on the machine that runs it, whatever its action.
     pub fn run(self) {

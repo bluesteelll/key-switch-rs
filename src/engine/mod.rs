@@ -5,15 +5,16 @@
 //! # Architecture
 //!
 //! ```text
-//!   Win32 WH_KEYBOARD_LL                          hook timer threads
-//!          |                                              |
-//!          v                                              v
-//!   hook::keyboard_hook_callback (adapter) ---- Engine::on_timer(token)
+//!   Win32 WH_KEYBOARD_LL               main loop, gesture timer due
+//!          |                                       |
+//!          v                                       v
+//!   hook::keyboard_hook_callback (adapter)   Engine::on_timer(token)
 //!     - drops negative codes and the daemon's own injected events
 //!     - KBDLLHOOKSTRUCT -> KeyEvent
 //!     - Engine::on_key(event, &bindings, &env) -> Decision
-//!     - sends the menu mask key if Decision::mask, starts
-//!       Decision::timers, runs the fast actions of Decision::fire and
+//!     - hands Decision::timers to the main thread's gesture timers
+//!       (Engine::start_timers), sends the menu mask key if
+//!       Decision::mask, runs the fast actions of Decision::fire and
 //!       queues the others for the action executor, then returns
 //!       LRESULT(1) if Decision::suppress, else CallNextHookEx
 //! ```
@@ -21,9 +22,11 @@
 //! The engine is plain Rust with no Win32 calls, no threads, no locks and
 //! no clock of its own. Everything from outside comes in through the
 //! [`Env`] trait: the time of the event, the operating system's view of the
-//! keys held and the foreground window for `when:` conditions. Because
-//! of that, the whole decision path runs under test with a fake `Env`
-//! (`testing::Scenario`), from a RON config and a script of key events.
+//! keys held and the foreground window for `when:` conditions; and the
+//! timers it asks for go out through the [`Scheduler`] trait. Because of
+//! that, the whole decision path runs under test with a fake `Env` and a
+//! [`TimerQueue`] (`testing::Scenario`), from a RON config and a script of
+//! key events.
 //!
 //! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
 //! FFI, because every Win32 call through the `windows` crate is `unsafe`.
@@ -75,30 +78,25 @@
 //! Hold's deadline cancels it; a key-up at or after the deadline does not,
 //! because the key was held for the whole term: the entry stays armed and
 //! its timer fires it whenever it runs. Only [`Engine::on_timer`] ever fires
-//! a Hold, so a caller that runs timer decisions off the hook thread keeps
-//! every Hold action off it. With equal Tap and Hold terms on one key
-//! exactly one of the two fires (KS-25).
+//! a Hold. With equal Tap and Hold terms on one key exactly one of the two
+//! fires (KS-25).
 //!
-//! ## Threads and locking
+//! ## Threads
 //!
-//! The engine is single-threaded data and does not lock. For now the hook
-//! adapter keeps it behind a `Mutex` in `KeyboardHook`, reached only through
-//! `KeyboardHook::with_engine`, because `Hold` timers still run on their own
-//! short-lived `hold-timer` threads and call [`Engine::on_timer`] there; the
-//! adapter then carries out the Hold on that timer thread: a fast action
-//! runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action
-//! executor (roadmap item 2.1). The adapter holds the lock only while the
-//! engine decides and carries out every action after releasing it. `with_engine` refuses a nested call on the same thread
-//! (the event then passes) instead of deadlocking on the lock. `swch on` and
-//! `swch off` take the lock on an IPC connection worker to call
-//! [`Engine::reset`].
+//! The engine is single-threaded data and does not lock. The daemon keeps
+//! it on its main thread (`hook::main_thread`, roadmap item 2.2), the
+//! thread that installs the hooks and pumps their messages, in a
+//! thread-local reached only through `with_main`. Every caller runs there:
+//! both hook callbacks, the main loop's timers and `swch on` and `swch off`,
+//! which call [`Engine::reset`]. `with_main` refuses a nested call on the
+//! same thread (the event then passes) instead of panicking.
 //!
-//! The adapter's [`Env::now`] reads the clock inside the lock, and a timer
-//! thread waits until `Instant::now()` has reached its [`TimerRequest::due`]
-//! before it locks. A key-up and the Hold timer of the same press are
-//! therefore decided in clock order, which is what makes Tap and Hold with
-//! equal terms exclusive. Moving the timers onto the hook thread is roadmap
-//! item 2.2.
+//! The adapter's [`Env::now`] reads the clock once per event, and the main
+//! loop hands a token to [`Engine::on_timer`] only once `Instant::now()` has
+//! reached its [`TimerRequest::due`]. The engine compares `Instant`s, so a
+//! key-up and the Hold timer of the same press are decided in clock order
+//! whichever of the two the loop sees first, which is what makes Tap and
+//! Hold with equal terms exclusive.
 //!
 //! ## Decision rules
 //!

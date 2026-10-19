@@ -128,6 +128,14 @@ minor version; such entries sit under **Changed** and start with
   The line ends with `longest_callback_us`, the
   longest keyboard-hook callback since the last report, in microseconds,
   and a callback of 5 ms or more triggers the line on its own.
+- A latency bench (roadmap item 2.2), `bench::latency_bench`: one ignored
+  test that a lane runs by hand on its parent and on its head, in a release
+  build, with
+  `KS_BENCH_OUT=<file> cargo test --release --locked --lib bench::latency_bench -- --ignored --exact --test-threads=1`.
+  It appends a Markdown table: the engine's cost per event and per timer,
+  the hook callback's cost without a hook, the lateness of a gesture
+  deadline and the round trip of a sent message to the main loop. Not part
+  of the default `cargo test` run, which still prints nothing.
 
 ### Changed
 
@@ -196,11 +204,40 @@ minor version; such entries sit under **Changed** and start with
 - The keyboard decisions moved into a pure decision core, `src/engine`
   (roadmap Workstream A, scope additions). The hook callback translates each
   event, asks `Engine::on_key` for a `Decision` and carries it out on the
-  same thread as before; Hold actions still run on their own `hold-timer`
-  thread. Tap and DoubleTap expire by deadline instead of a cleanup thread
-  per press, so only Hold still starts a timer thread. Scenario tests
-  (`engine::testing::Scenario`: a RON config, a script of key events and a
-  fake clock) cover every binding kind and trigger.
+  same thread as before. Tap and DoubleTap expire by deadline instead of a
+  cleanup thread per press. Scenario tests (`engine::testing::Scenario`: a
+  RON config, a script of key events and a fake clock) cover every binding
+  kind and trigger.
+- Gesture timers run on the main thread (roadmap item 2.2): the thread
+  that installs the hooks and pumps their messages owns the decision core
+  and every gesture timer, so a `Hold` starts no thread and the engine has
+  no lock. The main loop waits for its messages and one high-resolution
+  waitable timer at once, so a `Hold` fires within about 1 ms of its term,
+  not on the 15.6 ms system tick; a fast `Hold` action now runs on the main
+  thread, between key events. Timer tokens carry a generation, a slot and a
+  sequence number, so a stale timer does nothing; the scenario tests drive
+  time through the same `TimerQueue` (`engine::Scheduler`). Tests:
+  `hook::main_thread::tests::a_200_ms_hold_fires_within_a_few_ms_of_its_deadline`,
+  `a_message_sent_from_another_thread_is_handled_while_the_loop_waits_on_its_timer`,
+  `a_message_posted_behind_a_wake_is_dispatched_without_more_input`,
+  `hook::keyboard_hook_callback::tests::the_gesture_path_starts_no_thread`,
+  `a_thousand_hold_presses_through_the_adapter_keep_at_most_one_timer_queued`.
+- `swch on` and `swch off` are carried out on the main thread (roadmap item
+  2.2): the IPC worker queues the request and waits at most 2 s for the
+  answer, and the switch flips and the engine resets between two key
+  events. New replies: `could not turn remapping off: the daemon's main
+  thread did not answer within 2 s` (the request still takes effect when the
+  main thread reaches it), `... the daemon is shutting down` and `... the
+  daemon is busy; try again`. New startup error: `[FATAL] could not create
+  the gesture timer: ...`; new run-time messages: `[ERROR] could not set the
+  gesture timer (...); N pending gestures dropped`, `[FATAL] the main message
+  loop failed: ...` and, before Windows 10 version 1803, `[WARN] gesture
+  timers wake on the 15.6 ms system tick: ...`. The counter
+  `hold_timer_not_started` keeps its name and now counts a gesture timer
+  the main thread could not set.
+- Under test a fast action is only recorded (`FastAction::run`), so no test
+  that carries out a decision types, posts or switches the layout on the
+  machine that runs it.
 - **Breaking:** key names keep their side in every trigger: `keys`,
   `sequence` steps and `chord` keys (KS-07). `Shift`, `Ctrl`, `Alt` and
   `Win` (`Super`) match either key; `LShift`, `RShift`, `LCtrl`, `RCtrl`,
@@ -649,11 +686,12 @@ minor version; such entries sit under **Changed** and start with
   the key-up of a key whose key-down reached Windows: a modifier held in
   its last step (for example `Win` in `"Win+F14"`), or F14 pressed first
   for `["F14+F15", "F14+F16"]`, which was left held in Windows.
-- KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
-  thread per press, and a Hold timer thread that cannot be started is
-  logged instead of aborting the daemon; that Hold then does not fire. A
-  `Sequence` macro no longer starts a thread, so it cannot abort the daemon
-  when one cannot be started (roadmap item 2.1).
+- KS-33 (an unverified report): no gesture starts a thread any more. Tap
+  and DoubleTap expire by deadline, a `Sequence` macro runs on the action
+  executor (roadmap item 2.1), and a `Hold` sets the main thread's gesture
+  timer (roadmap item 2.2), so nothing on the key path can fail to start a
+  thread and abort the daemon. A gesture timer that Windows refuses is
+  counted in `hold_timer_not_started`, and that Hold does not fire.
 - KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
   harness from `src/main.rs` (`test = false` and `bench = false` on the
   daemon binary). That harness inherited the daemon's `requireAdministrator`

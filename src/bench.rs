@@ -26,13 +26,15 @@
 //!   (down, 80 ms, up) and F13 Hold presses.
 //! - R3: `Engine::on_timer` for armed Holds.
 //! - R4: the adapter's key path, `keyboard_hook_callback` on the
-//!   process-wide hook, F13 bound to `DoNothing` and A unbound, down and up.
-//! - R5: the key-down callback of an F13 Hold(50) press, which starts the
-//!   Hold's timer.
+//!   process-wide hook, F13 bound to `DoNothing` and A unbound, down and up,
+//!   with the bench thread as the main thread (`hook::main_thread`).
+//! - R5: the key-down callback of an F13 Hold(50) press, which sets the main
+//!   thread's gesture timer.
 //! - R6: how late an F13 Hold(d) fires its macro, for d of 5, 20, 50 and 200
-//!   ms: the recording runner's time less the key-down's less d.
+//!   ms: the recording runner's time less the key-down's less d. The bench
+//!   thread runs the main loop until a helper ends it at the record.
 //! - R7: the round trip of `SendMessageTimeoutW(WM_NULL)` to a window of a
-//!   thread that runs the daemon's message loop.
+//!   thread that runs the daemon's main loop (`MainThread::run`).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -43,7 +45,6 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::{
     Foundation::*,
-    System::Threading::GetCurrentThreadId,
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 use windows::core::w;
@@ -58,7 +59,9 @@ use crate::data::sequence::SequenceStep;
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 use crate::engine::{Engine, Env, KeyDirection, KeyEvent, sort_by_specificity};
+use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
+use crate::hook::main_thread::MainThread;
 
 /// One row of the table: its label, what it measures and its samples.
 struct Row {
@@ -316,14 +319,13 @@ fn r5_hold_press(count: usize) -> Vec<Duration> {
         samples.push(begun.elapsed());
         call_keyboard_callback(VK_F13, WM_KEYUP);
     }
-    // The timers of the presses above find nothing to fire; let them end
-    // before the next row.
-    thread::sleep(Duration::from_millis(200));
     samples
 }
 
-/// R6: how late an F13 Hold(`ms`) fires its macro, `count` times.
-fn r6_lateness(ms: u64, count: usize) -> Vec<Duration> {
+/// R6: how late an F13 Hold(`ms`) fires its macro, `count` times, with
+/// `main` the bench thread's main state, whose loop runs until a helper
+/// ends it at each record.
+fn r6_lateness(main: &MainThread, ms: u64, count: usize) -> Vec<Duration> {
     let (tx, records) = mpsc::channel();
     let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
         .expect("invariant: the bench's executor starts");
@@ -337,16 +339,29 @@ fn r6_lateness(ms: u64, count: usize) -> Vec<Duration> {
         .with_allow_extra_modifiers(true),
     ]);
     let term = Duration::from_millis(ms);
+    let handle = main.handle();
+    let (fired_tx, fired) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        for _ in 0..count {
+            let record = records.recv_timeout(Duration::from_secs(2));
+            let _ = handle.request_exit();
+            let _ = fired_tx.send(record.map(|record| record.at));
+        }
+    });
     let mut samples = Vec::with_capacity(count);
     for _ in 0..count {
         let pressed = Instant::now();
         call_keyboard_callback(VK_F13, WM_KEYDOWN);
-        let record = records
-            .recv_timeout(Duration::from_secs(2))
+        main.run(get_hook())
+            .expect("invariant: the main loop ends on WM_QUIT");
+        let at = fired
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the waiter answers")
             .expect("the Hold fires within 2 s");
         call_keyboard_callback(VK_F13, WM_KEYUP);
-        samples.push(record.at.duration_since(pressed).saturating_sub(term));
+        samples.push(at.duration_since(pressed).saturating_sub(term));
     }
+    waiter.join().expect("the waiter does not panic");
     get_hook().attach_executor(None);
     let _ = executor.stop();
     samples
@@ -405,35 +420,25 @@ fn round_trips(hwnd: isize, count: usize) -> Vec<Duration> {
         .collect()
 }
 
-/// R7: round trips to a window of a helper thread that pumps with the
-/// daemon's message loop.
+/// R7: round trips to a window of a helper thread that runs the daemon's
+/// main loop.
 fn r7_round_trip(count: usize) -> Vec<Duration> {
     let (ready_tx, ready) = mpsc::channel();
     let helper = thread::spawn(move || {
+        let main = MainThread::new().expect("invariant: the helper's main thread is set up");
+        let hook = KeyboardHook::new();
         let hwnd = message_only_window();
-        // SAFETY: GetCurrentThreadId takes no arguments and cannot fail.
-        let thread_id = unsafe { GetCurrentThreadId() };
-        let _ = ready_tx.send((hwnd, thread_id));
-        // The daemon's loop before roadmap item 2.2 (`App::run`).
-        // SAFETY: `msg` is a local that outlives every call: GetMessageW
-        // writes it, TranslateMessage and DispatchMessageW only read it.
-        unsafe {
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            let _ = DestroyWindow(HWND(hwnd as *mut std::ffi::c_void));
-        }
+        let _ = ready_tx.send((hwnd, main.handle()));
+        main.run(&hook)
+            .expect("invariant: the main loop ends on WM_QUIT");
+        // SAFETY: `hwnd` is this thread's own window, destroyed once here.
+        let _ = unsafe { DestroyWindow(HWND(hwnd as *mut std::ffi::c_void)) };
     });
-    let (hwnd, thread_id) = ready
+    let (hwnd, main) = ready
         .recv_timeout(Duration::from_secs(5))
         .expect("the helper made its window");
     let samples = round_trips(hwnd, count);
-    // SAFETY: PostThreadMessageW takes the thread id and the message by
-    // value; the thread is the helper above, which runs until WM_QUIT.
-    unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
-        .expect("the helper has a message queue");
+    main.request_exit().expect("the helper has a message queue");
     helper.join().expect("the helper does not panic");
     samples
 }
@@ -450,6 +455,9 @@ fn latency_bench() {
         .expect("set KS_BENCH_OUT to the file the bench appends its table to");
     let label = std::env::var("KS_BENCH_LABEL").unwrap_or_else(|_| "unlabelled".to_owned());
 
+    // The bench thread is the main thread for the adapter rows, as the
+    // daemon's main thread is for its callbacks.
+    let main = MainThread::new().expect("invariant: the bench's main thread is set up");
     let mut rows = vec![
         Row {
             id: "R1",
@@ -486,7 +494,7 @@ fn latency_bench() {
         rows.push(Row {
             id,
             what,
-            samples: r6_lateness(ms, 10),
+            samples: r6_lateness(&main, ms, 10),
         });
     }
     rows.push(Row {

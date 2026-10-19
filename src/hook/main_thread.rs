@@ -1,3 +1,567 @@
+//! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
+//! thread that installs both hooks and pumps their messages also owns the
+//! engine and every gesture timer, and serves `swch on` and `swch off`.
+//!
+//! # State
+//!
+//! The engine and the gesture timers live in this thread's [`MainState`], a
+//! thread-local that only [`with_main`] reaches. Every caller of the engine
+//! runs on this thread: the keyboard and foreground hook callbacks, which
+//! Windows dispatches inside this thread's message calls, and the loop's
+//! timer drain and requests. So no lock guards the engine, and none can be
+//! held across a callback or inverted by a thread priority. `with_main`
+//! borrows the state with `try_borrow_mut`: a callback that runs while the
+//! state is borrowed is refused and its event passes, so a re-entered
+//! callback neither panics nor hangs the keyboard. Under the borrow only
+//! the engine decides and the gesture timer is set (`SetWaitableTimer`); no
+//! action runs, nothing is injected or submitted and no message is pumped.
+//!
+//! # The loop
+//!
+//! [`MainThread::run`] waits for its gesture timer and its messages at once,
+//! in the shape of the action executor's loop (roadmap item 2.1):
+//!
+//! 1. Drain, until a whole pass finds nothing: the requests (`swch on` and
+//!    `off`), then every gesture timer whose due time has passed by the
+//!    clock, each decided under the borrow and carried out after it.
+//! 2. Plan: drop the timers no entry waits for, then set the wake for the
+//!    earliest one left unless it is set for it already, or cancel it.
+//! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
+//!    message (`QS_ALLINPUT`, which has `QS_SENDMESSAGE`), also one already
+//!    seen but not removed (`MWMO_INPUTAVAILABLE`).
+//! 4. Pump: `PeekMessageW` until the queue is empty, a `MAIN_WAKE` comes (a
+//!    request waits: back to 1) or `WM_QUIT` (the loop ends).
+//!
+//! The hook callbacks run inside those `PeekMessageW` calls. Windows calls a
+//! low-level hook by sending a message to the thread that installed it, a
+//! sent message wakes the wait, and `PeekMessageW` dispatches sent messages
+//! before it looks at posted ones, so nothing stands between a key event and
+//! its callback. A callback that asks for a timer sets the wake itself
+//! ([`GestureTimers`] as a [`Scheduler`]), so the wait always holds the
+//! earliest deadline, whatever ran inside it. The clock decides: an early,
+//! late or stale signal costs one drain.
+//!
+//! The gesture timer is a high-resolution waitable timer
+//! (`platform::timers`), so a deadline is met within about a millisecond,
+//! not on the 15.6 ms tick of the system clock.
+
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
+
+use windows::Win32::{
+    Foundation::{E_UNEXPECTED, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
+    System::Threading::{GetCurrentThreadId, INFINITE},
+    UI::WindowsAndMessaging::*,
+};
+use windows::core::Error;
+
+use crate::engine::{Decision, Engine, Env, Scheduler, TimerQueue, TimerRequest, TimerToken};
+use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
+use crate::logging::counters::{self, Counter};
+use crate::platform::timers::WaitableTimer;
+
+/// The thread message that wakes the loop for a request.
+pub(crate) const MAIN_WAKE: u32 = WM_APP + 1;
+
+/// How long `swch on` and `off` wait for the main thread's answer. Below the
+/// `swch` client's 5 s reply deadline, so the client gets this reason.
+pub(crate) const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How many requests wait for the main thread before the next is refused.
+const REQUEST_CAPACITY: usize = 8;
+
+thread_local! {
+    /// The main state of this thread, if it is the daemon's main thread.
+    static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many calls `with_main` refused on this thread because the state
+    /// was borrowed.
+    pub(crate) static REFUSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// What the main thread owns: the engine and its gesture timers.
+pub(crate) struct MainState {
+    pub(super) engine: Engine,
+    pub(super) timers: GestureTimers,
+}
+
+/// Runs `f` on this thread's main state and returns what it returns.
+///
+/// `None`, without running `f`, if this thread has no main state, or if the
+/// state is borrowed already: a callback re-entered under the borrow then
+/// passes its event, and nothing panics or waits. `f` must only decide,
+/// reset or set the gesture timer (see the module docs).
+pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
+    MAIN.try_with(|main| {
+        let Ok(mut state) = main.try_borrow_mut() else {
+            #[cfg(test)]
+            REFUSED.with(|refused| refused.set(refused.get() + 1));
+            return None;
+        };
+        state.as_mut().map(f)
+    })
+    .ok()
+    .flatten()
+}
+
+impl MainState {
+    /// Turns remapping on or off (`swch on`, `swch off`; KS-31) and returns
+    /// whether the switch changed. On the main thread, between callbacks:
+    /// an event is decided either before the flip with the old state or
+    /// after it with the reset one. A real change resets the engine, which
+    /// makes every queued gesture timer stale, drops those timers, and stops
+    /// every macro running and every slow action still queued (roadmap item
+    /// 2.1). A change that is no change resets nothing: it would wipe the
+    /// records of keys held and swallowed right now.
+    pub(crate) fn set_enabled(
+        &mut self,
+        hook: &KeyboardHook,
+        enabled: bool,
+        env: &dyn Env,
+    ) -> bool {
+        if !hook.switch_enabled(enabled, self) {
+            return false;
+        }
+        self.engine.reset(env);
+        let engine = &self.engine;
+        self.timers.retain(&|token| engine.is_live(token));
+        hook.cancel_actions();
+        true
+    }
+}
+
+/// The main thread's gesture timers: the queue of every timer the engine
+/// asked for, and one waitable timer set for the earliest.
+pub(crate) struct GestureTimers {
+    pub(super) queue: TimerQueue,
+    wake: WaitableTimer,
+    /// The due time the waitable timer is set for, until it signals or is
+    /// cancelled.
+    armed: Option<Instant>,
+}
+
+/// What [`GestureTimers::plan_wake`] did.
+enum Wake {
+    /// The wake is set for the earliest timer, or no timer is queued.
+    Wait,
+    /// The earliest timer is due: drain without waiting.
+    Due,
+    /// The waitable timer could not be set; `dropped` timers were forgotten.
+    Failed { error: Error, dropped: usize },
+}
+
+/// What to do with the gesture timer, decided without a Win32 call.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    Cancel,
+    Due,
+    Keep,
+    Arm { after: Duration, at: Instant },
+}
+
+/// The plan for a timer set for `armed` when the earliest queued deadline is
+/// `next`. A timer set for that deadline stands: its signal is not a
+/// message, so nothing that ran on this thread since can have taken it.
+fn plan(armed: Option<Instant>, next: Option<Instant>, now: Instant) -> Plan {
+    match next {
+        None => Plan::Cancel,
+        Some(at) if at <= now => Plan::Due,
+        Some(at) if armed == Some(at) => Plan::Keep,
+        Some(at) => Plan::Arm {
+            after: at.duration_since(now),
+            at,
+        },
+    }
+}
+
+impl GestureTimers {
+    pub(crate) fn new() -> windows::core::Result<Self> {
+        Ok(Self {
+            queue: TimerQueue::new(),
+            wake: WaitableTimer::new()?,
+            armed: None,
+        })
+    }
+
+    /// The wait took the timer's signal: it is set for nothing now.
+    fn fired(&mut self) {
+        self.armed = None;
+    }
+
+    fn cancel(&mut self) {
+        if self.armed.take().is_some() {
+            // A timer that fails to stop signals once more, and the loop
+            // takes that for a wake.
+            let _ = self.wake.cancel();
+        }
+    }
+
+    /// Step 2 of the loop: drops the timers no entry of `engine` waits for
+    /// and sets the wake for the earliest one left. If the waitable timer
+    /// cannot be set, every queued timer is forgotten, so that no Hold waits
+    /// for a wake that never comes.
+    fn plan_wake(&mut self, engine: &mut Engine, now: Instant) -> Wake {
+        let live = &*engine;
+        self.queue.retain(&|token| live.is_live(token));
+        match plan(self.armed, self.queue.next_due(), now) {
+            Plan::Cancel => {
+                self.cancel();
+                Wake::Wait
+            }
+            Plan::Due => Wake::Due,
+            Plan::Keep => Wake::Wait,
+            Plan::Arm { after, at } => {
+                // Setting the timer replaces the due time it had.
+                self.armed = None;
+                match self.wake.set(after) {
+                    Ok(()) => {
+                        self.armed = Some(at);
+                        Wake::Wait
+                    }
+                    Err(error) => {
+                        let lost = RefCell::new(Vec::new());
+                        self.queue.retain(&|token| {
+                            lost.borrow_mut().push(token);
+                            false
+                        });
+                        let lost = lost.into_inner();
+                        for token in &lost {
+                            engine.forget_timer(*token);
+                        }
+                        Wake::Failed {
+                            error,
+                            dropped: lost.len(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Scheduler for GestureTimers {
+    /// Queues `request` and, if it is due before the deadline the wake is set
+    /// for, sets the wake for it. Runs in the hook callback, under the
+    /// borrow: one `SetWaitableTimer` at most, no allocation while the
+    /// queue has room. False, with `request` taken out again, if the timer
+    /// could not be set.
+    fn start(&mut self, request: TimerRequest) -> bool {
+        self.queue.start(request);
+        if self.armed.is_none_or(|armed| request.due < armed) {
+            let after = request.due.saturating_duration_since(Instant::now());
+            if self.wake.set(after).is_err() {
+                let token = request.token;
+                self.queue.retain(&|queued| queued != token);
+                return false;
+            }
+            self.armed = Some(request.due);
+        }
+        true
+    }
+
+    fn retain(&mut self, live: &dyn Fn(TimerToken) -> bool) {
+        self.queue.retain(live);
+    }
+}
+
+/// A request to the main thread.
+enum Request {
+    /// `swch on` or `swch off`; the answer is whether the switch changed.
+    SetEnabled {
+        enabled: bool,
+        reply: SyncSender<bool>,
+    },
+}
+
+/// Why a request to the main thread got no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MainThreadError {
+    /// The main thread did not answer within [`REPLY_TIMEOUT`]. The request
+    /// stays queued and is carried out when the main thread reaches it.
+    NoAnswer,
+    /// The main loop has ended, or is ending.
+    ShuttingDown,
+    /// Too many requests wait already.
+    Busy,
+}
+
+impl std::fmt::Display for MainThreadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            MainThreadError::NoAnswer => "the daemon's main thread did not answer within 2 s",
+            MainThreadError::ShuttingDown => "the daemon is shutting down",
+            MainThreadError::Busy => "the daemon is busy; try again",
+        })
+    }
+}
+
+impl std::error::Error for MainThreadError {}
+
+/// How another thread reaches the main thread: the IPC connection workers,
+/// and a test's helper thread.
+#[derive(Clone)]
+pub(crate) struct MainThreadHandle {
+    thread_id: u32,
+    requests: SyncSender<Request>,
+}
+
+impl MainThreadHandle {
+    /// Asks the main thread to turn remapping on or off and waits up to
+    /// [`REPLY_TIMEOUT`] for its answer: whether the switch changed.
+    pub(crate) fn set_enabled(&self, enabled: bool) -> Result<bool, MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        match self
+            .requests
+            .try_send(Request::SetEnabled { enabled, reply })
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
+            Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
+        }
+        self.wake();
+        answer
+            .recv_timeout(REPLY_TIMEOUT)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => MainThreadError::NoAnswer,
+                RecvTimeoutError::Disconnected => MainThreadError::ShuttingDown,
+            })
+    }
+
+    /// Ends the main loop: posts `WM_QUIT` to the main thread, which then
+    /// removes the hooks itself.
+    pub(crate) fn request_exit(&self) -> windows::core::Result<()> {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; WM_QUIT carries no pointer in
+        // its parameters. A thread id that is no longer valid only makes the
+        // call fail, and that error is returned.
+        unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+    }
+
+    /// Posted after the request it announces, so that a drain that missed
+    /// it is followed by this wake. A lost wake loses no request: it waits
+    /// in the queue until the loop's next wake of any kind.
+    fn wake(&self) {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value, reads no memory of ours and returns without waiting;
+        // MAIN_WAKE carries no pointer. An id that is no longer valid only
+        // makes the call fail.
+        let _ = unsafe { PostThreadMessageW(self.thread_id, MAIN_WAKE, WPARAM(0), LPARAM(0)) };
+    }
+
+    /// A handle with no main thread behind it, as one whose main thread has
+    /// ended: every request fails at once.
+    #[cfg(test)]
+    pub(crate) fn without_a_thread() -> Self {
+        let (requests, _) = mpsc::sync_channel(1);
+        Self {
+            thread_id: 0,
+            requests,
+        }
+    }
+}
+
+/// The calling thread as the daemon's main thread: its [`MainState`] and its
+/// requests. Dropping it removes the state, after which every callback on
+/// this thread passes its event, and closes the request queue, after which
+/// every request fails at once. Not `Send`: the state belongs to the thread
+/// that made it.
+pub(crate) struct MainThread {
+    requests: Receiver<Request>,
+    handle: MainThreadHandle,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl MainThread {
+    /// Makes the calling thread the main thread: creates its message queue,
+    /// its gesture timer and its engine. An error if the timer cannot be
+    /// made, or if this thread is a main thread already.
+    pub(crate) fn new() -> windows::core::Result<Self> {
+        let timers = GestureTimers::new()?;
+        if !timers.wake.is_high_resolution() {
+            log::warn!(
+                "gesture timers wake on the 15.6 ms system tick: no high-resolution timer before Windows 10 version 1803"
+            );
+        }
+        let state = MainState {
+            engine: Engine::new(),
+            timers,
+        };
+        let installed = MAIN.with(|main| match main.try_borrow_mut() {
+            Ok(mut slot) if slot.is_none() => {
+                *slot = Some(state);
+                true
+            }
+            _ => false,
+        });
+        if !installed {
+            return Err(Error::new(
+                E_UNEXPECTED,
+                "this thread is the daemon's main thread already",
+            ));
+        }
+        let mut msg = MSG::default();
+        // SAFETY: `msg` is a local that outlives the call, which only writes
+        // it; the call creates this thread's message queue, as
+        // PostThreadMessageW asks of the receiving thread, and removes
+        // nothing.
+        let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+        // SAFETY: GetCurrentThreadId takes no arguments, touches no memory of
+        // ours and cannot fail.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        let (requests_tx, requests) = mpsc::sync_channel(REQUEST_CAPACITY);
+        Ok(Self {
+            requests,
+            handle: MainThreadHandle {
+                thread_id,
+                requests: requests_tx,
+            },
+            _thread_bound: PhantomData,
+        })
+    }
+
+    /// A handle for the threads that send requests.
+    pub(crate) fn handle(&self) -> MainThreadHandle {
+        self.handle.clone()
+    }
+
+    /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
+    /// out every decision on `hook`. An error if the wait fails; the caller
+    /// then removes the hooks.
+    pub(crate) fn run(&self, hook: &KeyboardHook) -> windows::core::Result<()> {
+        let Some(timer) = with_main(|main| main.timers.wake.handle()) else {
+            return Err(Error::new(
+                E_UNEXPECTED,
+                "the main loop runs without its main state",
+            ));
+        };
+        let mut msg = MSG::default();
+        loop {
+            self.drain(hook);
+            match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
+                Some(Wake::Due) => continue,
+                Some(Wake::Failed { error, dropped }) => log::error!(
+                    "could not set the gesture timer ({error}); {dropped} pending gestures dropped"
+                ),
+                Some(Wake::Wait) | None => {}
+            }
+            // SAFETY: the slice holds the gesture timer's handle, which the
+            // WaitableTimer in this thread's main state keeps open: only
+            // dropping `self` removes that state, and `self` is borrowed for
+            // the whole call. The slice lives until the call returns, which
+            // only reads it.
+            let woke = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    Some(&[timer]),
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            if woke == WAIT_OBJECT_0 {
+                with_main(|main| main.timers.fired());
+                continue;
+            }
+            if woke == WAIT_FAILED {
+                return Err(Error::from_thread());
+            }
+            // A message waits. MWMO_INPUTAVAILABLE also counts one queued
+            // before the wait began, such as the messages behind a MAIN_WAKE
+            // that `pump` left for after the drain.
+            if pump(&mut msg) {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Step 1 of the loop: serves the requests and carries out the due
+    /// timers until a whole pass finds neither.
+    fn drain(&self, hook: &KeyboardHook) {
+        loop {
+            let mut busy = false;
+            while let Ok(request) = self.requests.try_recv() {
+                serve(hook, request);
+                busy = true;
+            }
+            while let Some(decision) = with_main(take_due_timer).flatten() {
+                carry_out(hook, decision);
+                busy = true;
+            }
+            if !busy {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for MainThread {
+    fn drop(&mut self) {
+        // In a thread's end the slot may be gone already; and a drop inside
+        // `with_main` leaves the state to the thread's end.
+        let _ = MAIN.try_with(|main| {
+            if let Ok(mut slot) = main.try_borrow_mut() {
+                slot.take();
+            }
+        });
+    }
+}
+
+/// Decides the earliest timer that is due by the clock, if any, and starts
+/// the timers its decision asks for.
+fn take_due_timer(main: &mut MainState) -> Option<Decision> {
+    let request = main.timers.queue.take_due(Instant::now())?;
+    let mut decision = main.engine.on_timer(request.token);
+    let timers = std::mem::take(&mut decision.timers);
+    for _ in 0..main.engine.start_timers(timers, &mut main.timers) {
+        counters::bump(Counter::HoldTimerNotStarted);
+    }
+    Some(decision)
+}
+
+/// Carries out one request. The answer never blocks: a requester that gave
+/// up has dropped its receiver, and its request still took effect.
+fn serve(hook: &KeyboardHook, request: Request) {
+    match request {
+        Request::SetEnabled { enabled, reply } => {
+            let env = HookEnv::new();
+            // `None` only if the loop itself ran inside `with_main`, which it
+            // never does; the requester then hears that the daemon stops.
+            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled, &env)) {
+                let _ = reply.try_send(changed);
+            }
+        }
+    }
+}
+
+/// Step 4 of the loop: takes this thread's messages until its queue is
+/// empty or a `MAIN_WAKE` comes, which goes back to the drain at once. True
+/// on `WM_QUIT`.
+fn pump(msg: &mut MSG) -> bool {
+    // SAFETY: `msg` is the loop's local and outlives every call, which only
+    // writes it and removes the message from this thread's own queue. The
+    // hook callbacks run inside this call.
+    while unsafe { PeekMessageW(msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if msg.message == WM_QUIT {
+            return true;
+        }
+        if msg.hwnd.is_invalid() && msg.message == MAIN_WAKE {
+            return false;
+        }
+        // SAFETY: `msg` was filled by PeekMessageW above and outlives both
+        // calls, which only read it.
+        unsafe {
+            let _ = TranslateMessage(msg);
+            DispatchMessageW(msg);
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -5,10 +569,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use windows::Win32::{
-        Foundation::*,
-        UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
-    };
+    use windows::Win32::{Foundation::*, UI::Input::KeyboardAndMouse::*};
     use windows::core::w;
 
     use super::*;
