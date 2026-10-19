@@ -12,6 +12,10 @@ pub mod logging;
 pub mod platform;
 pub mod system;
 
+// The latency bench of roadmap item 2.2: one ignored test, run by hand.
+#[cfg(test)]
+mod bench;
+
 // Cargo never runs tests inside a build script, so the build script's logic
 // is compiled into the library's test harness and tested from there. Its
 // `main` is unused in that context.
