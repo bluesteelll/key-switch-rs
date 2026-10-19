@@ -752,6 +752,41 @@ mod tests {
     }
 
     #[test]
+    fn credit_matched_to_raw_events_is_not_kept_for_the_ones_after_them() {
+        // Ruling V3-I1: the hook saw 10 000 of a burst's 12 000 events and
+        // died; raw input is read over three ticks, each drain leaving
+        // input queued. The callbacks counted at the first tick explain 9 000
+        // of the events read after it, once: the 4 000 read at the second
+        // tick use up 4 000 of that credit, so the 7 000 read at the third
+        // leave 2 000 that nothing explains, and they ask for a reinstall.
+        let mut f = Feeder::new();
+        f.run(0, 5000, |ms, f| match ms {
+            0 => {
+                f.raw(ms);
+                f.callback();
+            }
+            100 => f.callbacks += 10_000,
+            249 => {
+                f.raws(ms, 1_000);
+                f.backlog = true;
+            }
+            499 => f.raws(ms, 4_000),
+            749 => {
+                f.raws(ms, 7_000);
+                f.backlog = false;
+            }
+            _ => {}
+        });
+        let times = f.request_times();
+        assert_eq!(
+            times.len(),
+            1,
+            "one request for the 2 000 extra events: {times:?}"
+        );
+        assert!((1250..=1500).contains(&times[0]), "{times:?}");
+    }
+
+    #[test]
     fn a_hook_that_dies_after_a_burst_asks_for_exactly_one_reinstall() {
         // Ruling V3-I1: the burst held 500 events that the hook saw and
         // raw input did not (keys the daemon swallowed), then the hook died
