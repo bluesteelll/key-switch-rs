@@ -854,6 +854,46 @@ mod tests {
     }
 
     #[test]
+    fn remapping_off_keyboard_callback_returns_before_it_times_itself() {
+        // The callback's own switch check is the fast gate: it returns before
+        // the timing work. `decide_event` has a second check, so the refusal
+        // count of the test above cannot tell the two apart; the gauge can,
+        // because only the code after the first gate records it. Every test
+        // that calls the callback holds `GLOBAL_HOOK` and nothing else writes
+        // the gauge, so resetting it here and reading it back is race free.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        assert!(set_enabled(get_hook(), false));
+        let _ = counters::COUNTERS.take();
+        for _ in 0..100 {
+            call_keyboard_callback(f13, WM_KEYDOWN);
+            call_keyboard_callback(f13, WM_KEYUP);
+        }
+        assert_eq!(
+            counters::COUNTERS.longest_callback(),
+            Duration::ZERO,
+            "with remapping off the callback passes the event before it times itself"
+        );
+
+        assert!(set_enabled(get_hook(), true));
+        for _ in 0..100 {
+            call_keyboard_callback(f13, WM_KEYDOWN);
+            call_keyboard_callback(f13, WM_KEYUP);
+        }
+        assert!(
+            counters::COUNTERS.longest_callback() > Duration::ZERO,
+            "with remapping on the same calls are timed: the control"
+        );
+    }
+
+    #[test]
     fn a_hold_runs_its_slow_action_on_the_executor_from_the_main_loop() {
         // Roadmap items 2.1 and 2.2: a Hold fires from the main loop's
         // gesture timer, which carries out the decision through the
