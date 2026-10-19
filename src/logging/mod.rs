@@ -446,6 +446,8 @@ mod tests {
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),
+            // The heartbeat of every keyboard callback (roadmap item 2.4).
+            ("src/hook/health.rs", Some("fn callback_seen(")),
         ];
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut sites = Vec::new();

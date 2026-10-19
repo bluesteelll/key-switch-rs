@@ -1,5 +1,6 @@
 pub mod config_watcher;
 pub(crate) mod control_window;
+pub mod health;
 pub(crate) mod installer;
 pub mod ipc_server;
 pub mod keyboard_hook;

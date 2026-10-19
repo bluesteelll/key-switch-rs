@@ -4,23 +4,26 @@
 //! For every `WH_KEYBOARD_LL` event, `keyboard_hook_callback`:
 //!
 //! 1. passes `code < 0` on untouched, as the hook contract requires;
-//! 2. passes every event untouched, without reading it, while remapping is
+//! 2. bumps the keyboard hook's heartbeat (`hook::health`, one atomic RMW),
+//!    which the hook watchdog compares with the raw keyboard input that
+//!    Windows reports (roadmap item 2.4, KS-08);
+//! 3. passes every event untouched, without reading it, while remapping is
 //!    off (`swch off`, `KeyboardHook::is_enabled`); the hooks stay
 //!    installed;
-//! 3. passes the daemon's own injected events (the sentinel in
+//! 4. passes the daemon's own injected events (the sentinel in
 //!    `dwExtraInfo`, see `crate::core::constants`) before any state is
 //!    touched, so a synthesized key never feeds back into the engine;
-//! 4. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
+//! 5. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
-//! 5. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
+//! 6. asks [`Engine::on_key`](crate::engine::Engine::on_key) on the main
 //!    thread's state (`hook::main_thread::with_main`), with one snapshot of
 //!    the binding list and a `HookEnv` that answers the engine's questions
 //!    (the foreground window's executable name from the main thread's
 //!    foreground cache, with no call; its title and the OS key state with
 //!    live Win32 calls), and hands the timers the decision asks for to the
 //!    main thread's gesture timers, under the same borrow;
-//! 6. carries out the [`Decision`] after the borrow and the snapshot are
+//! 7. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
 //!    one `SendInput`, tagged with the sentinel; roadmap item 1.2, KS-12),
@@ -30,7 +33,7 @@
 //!    so that its output stays in order with the keys typed after it;
 //!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
 //!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
-//! 7. returns `LRESULT(1)` if the decision suppresses the event, and
+//! 8. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
 //! `desktop_switched` notes a switch of the input desktop for the main
@@ -351,6 +354,9 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     }
 
     let hook = get_hook();
+    // Before the switch: the hook watchdog compares every call with the raw
+    // keyboard input, also while remapping is off (roadmap item 2.4).
+    hook.health().callback_seen();
     if !hook.is_enabled() {
         // SAFETY: passes the event on with the exact arguments the system
         // gave this hook procedure. Remapping is off (`swch off`): the event

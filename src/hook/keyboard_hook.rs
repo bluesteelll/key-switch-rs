@@ -14,14 +14,15 @@ use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
 use crate::engine;
+use crate::hook::health::HealthState;
 use crate::hook::installer::{self, Installer};
 use crate::hook::keyboard_hook_callback;
 use crate::hook::main_thread::MainState;
 
 /// What the hooks share with the other threads: the binding list, the hook
-/// handles, the remapping switch and the action executor. The engine is not
-/// here: it belongs to the main thread (`hook::main_thread`, roadmap item
-/// 2.2).
+/// handles, the remapping switch, the action executor and the keyboard
+/// hook's health. The engine is not here: it belongs to the main thread
+/// (`hook::main_thread`, roadmap item 2.2).
 pub struct KeyboardHook {
     /// Bindings list. Hot path reads via `ArcSwap::load()` which is
     /// effectively lock-free (no atomic CAS on the read side). Hot-reload
@@ -50,6 +51,9 @@ pub struct KeyboardHook {
     /// lifetime ([`attach_executor`](Self::attach_executor)); read with one
     /// lock-free load per slow action, like `bindings`.
     executor: ArcSwapOption<ExecutorHandle>,
+    /// The keyboard callback's heartbeat, which the hook watchdog reads
+    /// (roadmap item 2.4).
+    health: HealthState,
 }
 
 impl KeyboardHook {
@@ -63,6 +67,7 @@ impl KeyboardHook {
             desktop_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
             executor: ArcSwapOption::empty(),
+            health: HealthState::new(),
         }
     }
 
@@ -115,6 +120,11 @@ impl KeyboardHook {
     /// stable for the guard's lifetime even if a reload happens concurrently.
     pub fn bindings(&self) -> Guard<Arc<Vec<Binding>>> {
         self.bindings.load()
+    }
+
+    /// The keyboard hook's health: the heartbeat the callback bumps.
+    pub(crate) fn health(&self) -> &HealthState {
+        &self.health
     }
 
     /// Whether remapping is on. See `switch_enabled`.
