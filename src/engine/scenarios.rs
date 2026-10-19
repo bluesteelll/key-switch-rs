@@ -388,7 +388,51 @@ fn two_quick_taps_fire_twice() {
     .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::SwitchLanguage]);
 }
 
+#[test]
+fn stale_tap_gc_eats_second_quick_tap() {
+    // Ported from the gesture repro crate (`book/src/methodology.md`,
+    // "Gesture repro crate") with its assertion inverted: the name is the
+    // defect guarded against (KS-11). Press 1's cleanup at +200 must not
+    // delete press 2's Tap, armed at +120 and released at +230.
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: DoNothing, trigger: Tap(200)) ] )"#)
+        .down("F13")
+        .advance_ms(20)
+        .up("F13")
+        .expect_fired(&[BindAction::DoNothing])
+        .advance_ms(100)
+        .down("F13")
+        .advance_ms(110)
+        .up("F13")
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_total_fired(&[BindAction::DoNothing, BindAction::DoNothing]);
+}
+
 // ---- Hold ----
+
+#[test]
+fn stale_hold_timer_fires_new_press_early() {
+    // Ported from the gesture repro crate (`book/src/methodology.md`,
+    // "Gesture repro crate") with its assertion inverted: the name is the
+    // defect guarded against (KS-11). Press 1 is released at +20; press 2,
+    // armed at +120, must still be pending at +230, after press 1's timer
+    // fell due at +200, and fire at its own term, +320.
+    Scenario::from_ron(r#"( bindings: [ (keys: "F14", action: DoNothing, trigger: Hold(200)) ] )"#)
+        .down("F14")
+        .advance_ms(20)
+        .up("F14")
+        .expect_nothing_fired()
+        .advance_ms(100)
+        .down("F14")
+        .advance_ms(110)
+        .expect_nothing_fired()
+        .advance_ms(89)
+        .expect_nothing_fired()
+        .advance_ms(1)
+        .expect_fired(&[BindAction::DoNothing])
+        .up("F14")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::DoNothing]);
+}
 
 #[test]
 fn hold_fires_once_its_term_passes_while_held() {
