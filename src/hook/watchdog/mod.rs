@@ -831,6 +831,7 @@ mod tests {
 
     use windows::Win32::Foundation::E_ACCESSDENIED;
     use windows::Win32::UI::Input::KeyboardAndMouse::{VK_A, VK_VOLUME_UP};
+    use windows::Win32::UI::Input::RIM_TYPEHID;
 
     use super::decision::SILENCE;
     use super::*;
@@ -1246,6 +1247,140 @@ mod tests {
         let notify = concat!("RIDEV_", "DEVNOTIFY");
         let sites: Vec<&str> = text.lines().filter(|line| line.contains(notify)).collect();
         assert!(sites.is_empty(), "{sites:?}");
+    }
+
+    /// The size of a keyboard record of a buffered read.
+    const KEYBOARD_RECORD: usize = offset_of!(RAWINPUT, data) + size_of::<RAWKEYBOARD>();
+
+    /// Writes the bytes of `value` at `at`, as Windows lays them out.
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+
+    /// Writes a record header of `kind` and `size` at `at`.
+    fn put_header(bytes: &mut [u8], at: usize, kind: u32, size: u32) {
+        put(
+            bytes,
+            at + offset_of!(RAWINPUTHEADER, dwType),
+            &kind.to_ne_bytes(),
+        );
+        put(
+            bytes,
+            at + offset_of!(RAWINPUTHEADER, dwSize),
+            &size.to_ne_bytes(),
+        );
+    }
+
+    /// Writes a keyboard record of `make_code` and `vkey` at `at`, and
+    /// returns where the next record starts.
+    fn put_key(bytes: &mut [u8], at: usize, make_code: u16, vkey: u16) -> usize {
+        put_header(bytes, at, RIM_TYPEKEYBOARD.0, KEYBOARD_RECORD as u32);
+        let body = at + offset_of!(RAWINPUT, data);
+        put(
+            bytes,
+            body + offset_of!(RAWKEYBOARD, MakeCode),
+            &make_code.to_ne_bytes(),
+        );
+        put(
+            bytes,
+            body + offset_of!(RAWKEYBOARD, VKey),
+            &vkey.to_ne_bytes(),
+        );
+        (at + KEYBOARD_RECORD).next_multiple_of(size_of::<usize>())
+    }
+
+    fn empty_buffer() -> RawBuffer {
+        RawBuffer([0; RAW_BUFFER_BYTES])
+    }
+
+    #[test]
+    fn a_buffered_read_counts_the_key_events_the_hook_sees() {
+        // Cut L1.2: the keys of a buffered read count as the standard read
+        // counts them (qualifies): no overrun, no VK 0 or 255.
+        let mut buffer = empty_buffer();
+        let mut at = 0;
+        for (make_code, vkey) in [
+            (0x1E, VK_A.0),
+            (0x1E, VK_A.0),
+            (0xFF, VK_A.0),
+            (0x1E, 0),
+            (0x1E, 255),
+            (0, VK_VOLUME_UP.0),
+        ] {
+            at = put_key(&mut buffer.0, at, make_code, vkey);
+        }
+        assert_eq!(
+            count_raw_keys(&buffer.0, 6),
+            BlockCount { keys: 3, unread: 0 }
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn the_walk_steps_by_each_records_size_rounded_up_to_a_pointer() {
+        // Cut L1.3 E11: the next record starts at the record's size rounded
+        // up to 8 bytes in a 64-bit process (winuser.h's RAWINPUT_ALIGN).
+        let mut buffer = empty_buffer();
+        assert_eq!(put_key(&mut buffer.0, 0, 0x1E, VK_A.0), 40);
+        put_header(&mut buffer.0, 40, RIM_TYPEHID.0, 36);
+        assert_eq!(put_key(&mut buffer.0, 80, 0x1E, VK_A.0), 120);
+        assert_eq!(
+            count_raw_keys(&buffer.0, 3),
+            BlockCount { keys: 2, unread: 0 }
+        );
+    }
+
+    #[test]
+    fn a_record_that_does_not_fit_ends_the_walk_as_unread() {
+        let mut buffer = empty_buffer();
+        let at = put_key(&mut buffer.0, 0, 0x1E, VK_A.0);
+        put_header(&mut buffer.0, at, RIM_TYPEKEYBOARD.0, 4000);
+        assert_eq!(
+            count_raw_keys(&buffer.0, 3),
+            BlockCount { keys: 1, unread: 2 }
+        );
+    }
+
+    #[test]
+    fn a_record_shorter_than_its_header_ends_the_walk() {
+        // A size of 0 would never move the walk on.
+        let mut buffer = empty_buffer();
+        let at = put_key(&mut buffer.0, 0, 0x1E, VK_A.0);
+        put_header(&mut buffer.0, at, RIM_TYPEKEYBOARD.0, 0);
+        put_key(&mut buffer.0, at + 40, 0x1E, VK_A.0);
+        assert_eq!(
+            count_raw_keys(&buffer.0, 3),
+            BlockCount { keys: 1, unread: 2 }
+        );
+    }
+
+    #[test]
+    fn a_keyboard_record_too_short_for_its_keys_is_unread() {
+        // A keyboard record that ends before its key fields cannot be
+        // read; the walk goes on by its size.
+        let mut buffer = empty_buffer();
+        let short = size_of::<RAWINPUTHEADER>() + 4;
+        put_header(&mut buffer.0, 0, RIM_TYPEKEYBOARD.0, short as u32);
+        put_key(
+            &mut buffer.0,
+            short.next_multiple_of(size_of::<usize>()),
+            0x1E,
+            VK_A.0,
+        );
+        assert_eq!(
+            count_raw_keys(&buffer.0, 2),
+            BlockCount { keys: 1, unread: 1 }
+        );
+    }
+
+    #[test]
+    fn the_buffer_holds_64_records_aligned_for_the_buffered_read() {
+        // Cut L1.3 E11: "Pointer should be aligned on a DWORD (32-bit)
+        // boundary" (GetRawInputBuffer); 8, for the WOW64 note.
+        assert!(align_of::<RawBuffer>() >= 8);
+        assert_eq!(size_of::<RawBuffer>(), 64 * size_of::<RAWINPUT>());
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(KEYBOARD_RECORD, 40, "a keyboard record on x64");
     }
 
     #[test]
