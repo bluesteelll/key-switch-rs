@@ -1147,6 +1147,67 @@ mod tests {
         assert_eq!(windows, 0);
     }
 
+    #[test]
+    fn a_message_wait_leaves_out_a_pending_message_its_wake_mask_does_not_name() {
+        // Cut L1.3 E4, a characterisation of Windows rather than of the
+        // watchdog: a message already in the queue does not end an
+        // MWMO_INPUTAVAILABLE wait whose mask leaves its kind out, and ends
+        // one whose mask names it. The batched read of raw input rests on
+        // this rule for QS_RAWINPUT; here it is shown for QS_POSTMESSAGE on
+        // a thread's own queue, with no hook and no raw input.
+        const PROBE: u32 = WM_APP + 0x30;
+        let outcome = thread::spawn(|| {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a local that outlives the call, which only
+            // writes it; the call makes this thread's queue and removes
+            // nothing.
+            let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+            // SAFETY: GetCurrentThreadId reads no memory of ours;
+            // PostThreadMessageW takes the id and the message by value, and
+            // the message carries no pointer.
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), PROBE, WPARAM(0), LPARAM(0)) }
+                .expect("a thread posts to its own queue");
+            let begun = Instant::now();
+            // SAFETY: no handles are passed, so the call reads no memory of
+            // ours; it waits on this thread's own queue.
+            let left_out = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    None,
+                    100,
+                    QS_ALLINPUT & !QS_POSTMESSAGE,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            let waited = begun.elapsed();
+            let begun = Instant::now();
+            // SAFETY: as above.
+            let named =
+                unsafe { MsgWaitForMultipleObjectsEx(None, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+            let returned = begun.elapsed();
+            let mut removed = 0;
+            // SAFETY: `msg` is a local that outlives every call, which only
+            // writes it and removes the probe from this thread's own queue.
+            while unsafe { PeekMessageW(&mut msg, None, PROBE, PROBE, PM_REMOVE) }.as_bool() {
+                removed += 1;
+            }
+            (left_out, waited, named, returned, removed)
+        })
+        .join()
+        .expect("the probe thread ends");
+        let (left_out, waited, named, returned, removed) = outcome;
+        assert_eq!(left_out, WAIT_TIMEOUT, "a mask without the message's kind");
+        assert!(
+            waited >= Duration::from_millis(80),
+            "the wait timed out after {waited:?}"
+        );
+        assert_eq!(named, WAIT_OBJECT_0, "a mask that names the message's kind");
+        assert!(
+            returned < Duration::from_millis(50),
+            "it returned after {returned:?}"
+        );
+        assert_eq!(removed, 1, "the message stayed queued, once");
+    }
+
     /// Posts a synthetic raw event every 20 ms for 3 s, calling `before`
     /// right before each, and returns the requests with when they came,
     /// from the first raw event.
