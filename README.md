@@ -498,7 +498,14 @@ the `T` types two capitals and leaves CapsLock alone. Write
   quick Ctrl+click still fires an `LCtrl` `Tap`. A `Hold` whose term has
   passed is not pending any more and fires. A gesture whose key is
   swallowed is not cancelled: a key pressed while CapsLock of the CapsLock
-  pair is held passes and the pair resolves as usual.
+  pair is held passes and the pair resolves as usual. A key of the
+  gesture's own combination does not cancel a `DoubleTap` that waits for
+  its second press (roadmap item 2.3): the second press of a `Ctrl+Shift`
+  `DoubleTap` may begin with Ctrl. A `Tap` waiting for that window then
+  fires at the next key outside the combination, with that modifier down
+  in Windows: a `Ctrl+Shift` `Tap` of `PressKey("Escape")` next to a
+  `Ctrl+Shift` `DoubleTap`, tapped once and followed by Ctrl+C within the
+  window, sends Ctrl+Esc (known issue 68).
 - A deferred binding on exactly the keys of the Windows language hotkey,
   such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
   takes the hotkey over from the auto-blocker, also when it sets

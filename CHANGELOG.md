@@ -795,6 +795,13 @@ minor version; such entries sit under **Changed** and start with
   it again for the earliest gesture left (roadmap item 2.3, 2.2 review
   OQ3). Test:
   `hook::main_thread::tests::a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop`.
+- A passing multi-key `DoubleTap` such as `Ctrl+Shift` is no longer
+  cancelled by its own keys going down again: the second press may begin
+  with Ctrl (roadmap item 2.3, 2.2 review OQ2). A `Tap` that waits for
+  that window fires at the next key outside the combination, while that
+  modifier is down in Windows (known issue 68). Tests:
+  `engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys`,
+  `a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows`.
 
 ## [0.1.0] - 2026-05-20
 

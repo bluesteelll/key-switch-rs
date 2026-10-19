@@ -558,7 +558,7 @@ impl Engine {
             // of another key whose key-down passed is cancelled, since this
             // key makes it a shortcut (owner decision, roadmap item 2.2).
             self.gestures
-                .other_key_down(vk.0, &self.keys, now, &mut decision.fire);
+                .other_key_down(vk, &self.keys, now, &mut decision.fire);
 
             // A deferred winner's group arms one press, which resolves to
             // one of its gestures (KS-25). The press also ends this key's

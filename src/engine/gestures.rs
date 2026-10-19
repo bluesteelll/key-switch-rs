@@ -29,7 +29,10 @@
 //! passed (owner decision, known issue 67), held or waiting for its second
 //! press, unless its Hold's term has passed by the clock; a press whose
 //! key-down was swallowed stays. A waiting Tap fires instead, ahead of the
-//! new key. Auto-repeats and key-ups of other keys change nothing.
+//! new key. A key of the group's own combo is not another key for a press
+//! that waits for its second press, so the second press of a `Ctrl+Shift`
+//! DoubleTap may begin with Ctrl (roadmap item 2.3). Auto-repeats and
+//! key-ups of other keys change nothing.
 //!
 //! Time comes in as arguments; nothing here reads a clock or sleeps. Every
 //! press keeps the engine's number of its arming (`seq`), which its timer
@@ -38,6 +41,8 @@
 //! new number: the timer of its cancelled Hold then finds nothing.
 
 use std::time::Instant;
+
+use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use super::keys::KeyState;
 use super::winner::GroupArming;
@@ -293,9 +298,13 @@ impl Gestures {
     ///   such as Ctrl+C or two capitals with Shift. A held press whose Hold
     ///   term has passed is not pending any more: it stays for its timer.
     /// - A gesture whose key was swallowed stays, as before.
+    /// - A press that waits for its second press is not another key's for
+    ///   a key of its own group's combo: the second press of a `Ctrl+Shift`
+    ///   DoubleTap may go down Ctrl first (roadmap item 2.3). Its waiting
+    ///   Tap then fires at the next key outside the combo, or on its timer.
     pub(super) fn other_key_down(
         &mut self,
-        vk: u16,
+        vk: VIRTUAL_KEY,
         keys: &KeyState,
         now: Instant,
         fire: &mut Vec<BindAction>,
@@ -303,8 +312,13 @@ impl Gestures {
         let mut index = 0;
         while index < self.presses.len() {
             let press = &self.presses[index];
-            let cancel = press.vk != vk
+            let cancel = press.vk != vk.0
                 && match &press.phase {
+                    Phase::AwaitSecond { group, .. }
+                        if group.keys.keys.iter().any(|key| key.accepts(vk)) =>
+                    {
+                        false
+                    }
                     Phase::AwaitSecond {
                         deferred_tap: Some(_),
                         ..
@@ -774,9 +788,9 @@ mod tests {
 
         state.press(F13, Some(&both), t0, 1, &mut fire);
         state.release(F13, t0 + ms(80), false, 2);
-        state.other_key_down(F13, &keys, t0 + ms(90), &mut fire);
+        state.other_key_down(VK_F13, &keys, t0 + ms(90), &mut fire);
         assert!(fire.is_empty(), "its own key is not another key");
-        state.other_key_down(F14, &keys, t0 + ms(100), &mut fire);
+        state.other_key_down(VK_F14, &keys, t0 + ms(100), &mut fire);
         assert_eq!(fire, [BindAction::SwitchLanguage]);
         assert_eq!(state.awaiting(F13), None);
     }
@@ -809,19 +823,19 @@ mod tests {
 
         let mut state = Gestures::new();
         state.press(F13, Some(&tap_hold), t0, 1, &mut fire);
-        state.other_key_down(F14, &swallowed, t0 + ms(50), &mut fire);
+        state.other_key_down(VK_F14, &swallowed, t0 + ms(50), &mut fire);
         assert_eq!(
             state.held(F13),
             Some((true, true, false)),
             "swallowed: kept"
         );
-        state.other_key_down(F14, &passed, t0 + ms(50), &mut fire);
+        state.other_key_down(VK_F14, &passed, t0 + ms(50), &mut fire);
         assert_eq!(state.held(F13), None, "passed: cancelled");
         assert!(!state.is_live(F13, 1), "and its Hold's timer is stale");
 
         let mut state = Gestures::new();
         state.press(F13, Some(&tap_hold), t0, 1, &mut fire);
-        state.other_key_down(F14, &passed, t0 + ms(300), &mut fire);
+        state.other_key_down(VK_F14, &passed, t0 + ms(300), &mut fire);
         assert!(
             state.is_live(F13, 1),
             "a Hold due by the clock stays for its late timer"
@@ -830,12 +844,12 @@ mod tests {
         let mut state = Gestures::new();
         state.press(F13, Some(&double), t0, 1, &mut fire);
         state.release(F13, t0 + ms(50), false, 2);
-        state.other_key_down(F14, &KeyState::new(), t0 + ms(60), &mut fire);
+        state.other_key_down(VK_F14, &KeyState::new(), t0 + ms(60), &mut fire);
         assert_eq!(state.awaiting(F13), Some(false), "swallowed window: kept");
         let mut state = Gestures::new();
         state.press(F13, Some(&double), t0, 1, &mut fire);
         state.release(F13, t0 + ms(50), true, 2);
-        state.other_key_down(F14, &KeyState::new(), t0 + ms(60), &mut fire);
+        state.other_key_down(VK_F14, &KeyState::new(), t0 + ms(60), &mut fire);
         assert_eq!(state.awaiting(F13), None, "passing window: cancelled");
         assert!(fire.is_empty(), "nothing fires");
     }
@@ -871,7 +885,7 @@ mod tests {
         state.release(F13, t0 + ms(450), false, 4);
         assert!(!state.forget(F13, 4), "no Hold is dropped");
         assert_eq!(state.awaiting(F13), Some(true), "the waiting Tap stays");
-        state.other_key_down(F14, &KeyState::new(), t0 + ms(800), &mut fire);
+        state.other_key_down(VK_F14, &KeyState::new(), t0 + ms(800), &mut fire);
         assert_eq!(fire, [BindAction::SwitchLanguage]);
     }
 
