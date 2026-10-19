@@ -1125,6 +1125,60 @@ mod tests {
     }
 
     #[test]
+    fn the_wait_leaves_the_batched_input_out_only_while_ticking() {
+        // Ruling L1: idle, the first raw key event of a burst ends the
+        // wait; ticking, raw input waits in the queue for the tick's drain,
+        // and every other kind of message still ends the wait.
+        assert_eq!(wake_mask(QS_RAWINPUT, false), QS_ALLINPUT);
+        let ticking = wake_mask(QS_RAWINPUT, true);
+        assert_eq!(ticking, QUEUE_STATUS_FLAGS(0xFF));
+        assert!(!ticking.contains(QS_RAWINPUT), "{ticking:?}");
+        assert!(
+            ticking.contains(QS_POSTMESSAGE | QS_SENDMESSAGE | QS_TIMER),
+            "{ticking:?}"
+        );
+        assert_eq!(Source::Keyboard.batched_wake(), QS_RAWINPUT);
+        assert_eq!(Source::Synthetic.batched_wake(), QS_POSTMESSAGE);
+        assert_eq!(Source::Keyboard.batched_message(), WM_INPUT);
+        assert_eq!(Source::Synthetic.batched_message(), SYNTHETIC_RAW);
+    }
+
+    #[test]
+    fn the_pump_leaves_only_the_batched_message_in_the_queue() {
+        // Cut L1.3 E7: a pump that took WM_INPUT would leave the buffered
+        // read nothing to read.
+        for skip in [WM_INPUT, SYNTHETIC_RAW] {
+            let ranges = pump_ranges(skip);
+            for message in 0..=0xFFFF_u32 {
+                let taken = ranges
+                    .iter()
+                    .any(|&(low, high)| (low..=high).contains(&message));
+                assert_eq!(
+                    taken,
+                    message != skip,
+                    "message {message:#x}, {skip:#x} left in the queue"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_raw_input_registration_asks_for_no_device_notifications() {
+        // Cut L1.3 E10: "Don't use RIDEV_DEVNOTIFY with this pattern", whose
+        // WM_INPUT_DEVICE_CHANGE the range-filtered pump cannot take, so the
+        // thread would spin. The token is assembled, so that this file does
+        // not match itself.
+        let text = source("src/hook/installer.rs");
+        assert!(
+            text.lines().any(|line| line.contains("RIDEV_INPUTSINK")),
+            "the registration is a sink"
+        );
+        let notify = concat!("RIDEV_", "DEVNOTIFY");
+        let sites: Vec<&str> = text.lines().filter(|line| line.contains(notify)).collect();
+        assert!(sites.is_empty(), "{sites:?}");
+    }
+
+    #[test]
     fn only_keyboard_events_the_hook_can_see_count() {
         assert!(qualifies(0x1E, VK_A.0), "A");
         assert!(!qualifies(0xFF, VK_A.0), "keyboard overrun");
