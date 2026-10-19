@@ -2457,7 +2457,8 @@ mod tests {
             };
             let waited = begun.elapsed();
             let begun = Instant::now();
-            // SAFETY: as above.
+            // SAFETY: no handles are passed, so the call reads no memory of
+            // ours; it waits on this thread's own queue.
             let named =
                 unsafe { MsgWaitForMultipleObjectsEx(None, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
             let returned = begun.elapsed();
@@ -2578,14 +2579,16 @@ mod tests {
             // WM_QUIT carries no pointer.
             unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, WPARAM(0), LPARAM(0)) }
                 .expect("a thread posts to its own queue");
-            // SAFETY: as the first peek; this one removes only from this
-            // thread's own queue.
+            // SAFETY: `msg` is a local that outlives the call, which only
+            // writes it and removes a message from this thread's own queue.
             let posted = unsafe { PeekMessageW(&mut msg, None, OTHER, OTHER, PM_REMOVE) }
                 .as_bool()
                 .then_some(msg.message);
             let mut ranges = None;
             for (low, high) in pump_ranges(OTHER) {
-                // SAFETY: as above.
+                // SAFETY: `msg` is a local that outlives the call, which only
+                // writes it and removes a message from this thread's own
+                // queue.
                 if unsafe { PeekMessageW(&mut msg, None, low, high, PM_REMOVE) }.as_bool() {
                     ranges = Some(msg.message);
                 }
@@ -2593,7 +2596,8 @@ mod tests {
             // SAFETY: PostQuitMessage takes its exit code by value and sets
             // this thread's quit state.
             unsafe { PostQuitMessage(0) };
-            // SAFETY: as above.
+            // SAFETY: `msg` is a local that outlives the call, which only
+            // writes it and removes a message from this thread's own queue.
             let quit_state = unsafe { PeekMessageW(&mut msg, None, OTHER, OTHER, PM_REMOVE) }
                 .as_bool()
                 .then_some(msg.message);
