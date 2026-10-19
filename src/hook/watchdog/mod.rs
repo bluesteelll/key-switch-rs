@@ -855,6 +855,19 @@ const RAWINPUT_ALIGN: usize = size_of::<usize>();
 #[repr(C, align(8))]
 struct RawBuffer([u8; RAW_BUFFER_BYTES]);
 
+impl RawBuffer {
+    /// What a buffered read into this buffer that returned `written` read:
+    /// nothing at 0, a failed read at `(UINT)-1`, else the key events among
+    /// the `written` records it holds.
+    fn take(&mut self, written: u32) -> Read {
+        match written {
+            0 => Read::Empty,
+            u32::MAX => Read::Failed,
+            count => Read::Records(count_raw_keys(&self.0, count)),
+        }
+    }
+}
+
 /// What one buffered read held: the key events the keyboard hook would
 /// see, and the records that could not be read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1083,18 +1096,14 @@ impl RawReads for KeyboardReads<'_> {
         // many bytes it holds, so the call writes within it; the header size
         // is RAWINPUTHEADER's. The call reads the calling thread's queue,
         // which is this thread's.
-        let count = unsafe {
+        let written = unsafe {
             GetRawInputBuffer(
                 Some(self.buffer.0.as_mut_ptr().cast::<RAWINPUT>()),
                 &mut size,
                 size_of::<RAWINPUTHEADER>() as u32,
             )
         };
-        match count {
-            0 => Read::Empty,
-            u32::MAX => Read::Failed,
-            count => Read::Records(count_raw_keys(&self.buffer.0, count)),
-        }
+        self.buffer.take(written)
     }
 
     fn standard(&mut self) -> Read {
