@@ -5,4 +5,5 @@
 //! `Delay` steps, kept here so that the gesture timers of roadmap item 2.2
 //! can wait on it too.
 
+pub mod priority;
 pub mod timers;
