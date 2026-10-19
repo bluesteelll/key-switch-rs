@@ -1,3 +1,229 @@
+//! The foreground window as `when:` conditions see it (roadmap item 2.3,
+//! the latency bullet moved from 3.5).
+//!
+//! [`ForegroundCache`] keeps the executable name of the foreground window,
+//! read once per (window, process) when the window takes the foreground:
+//! the daemon fills it from `EVENT_SYSTEM_FOREGROUND`, right after the
+//! hooks are installed, at `swch on` and when keyboard input comes back to
+//! this desktop, on the main thread, never in the keyboard callback. The
+//! keyboard callback reads the name from the cache, with no Win32 call and
+//! no allocation.
+//!
+//! The title is read live, because it changes inside one window (a browser
+//! tab), at most once per key-down that evaluates a title condition.
+//! `GetWindowTextW` on a window of another process sends no `WM_GETTEXT`:
+//! "This behavior is by design. It allows applications to call
+//! GetWindowText without becoming unresponsive if the process that owns
+//! the target window is not responding" (Microsoft Learn,
+//! GetWindowTextW). On a window of this process it would send one and run
+//! this thread's window procedures inside the hook, so such a window is
+//! never asked.
+//!
+//! [`WindowQuery`] is the seam: [`Win32Query`] asks Windows, and a test
+//! counts the questions. Nothing here imports the rest of the crate.
+
+use windows::{
+    Win32::{
+        Foundation::*,
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_NATIVE, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        },
+        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
+    },
+    core::{Owned, PWSTR},
+};
+
+/// What the cache asks Windows about windows and processes.
+pub trait WindowQuery {
+    /// The foreground window, or an invalid handle if there is none.
+    fn foreground(&self) -> HWND;
+    /// The id of the process that owns `window`, 0 for none.
+    fn owner(&self, window: HWND) -> u32;
+    /// The file name of the executable of process `pid`, or `None` if it
+    /// cannot be read.
+    fn image_name(&self, pid: u32) -> Option<String>;
+    /// The title of `window`, or `None` if it has none.
+    fn title(&self, window: HWND) -> Option<String>;
+}
+
+/// [`WindowQuery`] by the Win32 calls.
+pub struct Win32Query;
+
+impl WindowQuery for Win32Query {
+    fn foreground(&self) -> HWND {
+        // SAFETY: GetForegroundWindow takes no arguments and reads no memory
+        // of ours; with no foreground window it returns a null handle.
+        unsafe { GetForegroundWindow() }
+    }
+
+    fn owner(&self, window: HWND) -> u32 {
+        let mut pid = 0;
+        // SAFETY: `pid` is a local that outlives the call, which only writes
+        // it; a handle that names no window leaves it 0.
+        let _thread = unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+        pid
+    }
+
+    fn image_name(&self, pid: u32) -> Option<String> {
+        process_image_name(pid).ok()
+    }
+
+    fn title(&self, window: HWND) -> Option<String> {
+        window_title(window)
+    }
+}
+
+/// The executable name of the foreground window, cached per window. Not
+/// `Send`: it holds a window handle and belongs to the main thread.
+pub struct ForegroundCache {
+    query: Box<dyn WindowQuery>,
+    /// The window the cache is for; invalid until the first one.
+    window: HWND,
+    /// The process that owned `window` when it was read.
+    pid: u32,
+    /// Whether `window` belongs to this process.
+    own: bool,
+    app: Option<String>,
+}
+
+impl Default for ForegroundCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ForegroundCache {
+    /// A cache that asks Windows, for no window yet.
+    pub fn new() -> Self {
+        Self {
+            query: Box::new(Win32Query),
+            window: HWND::default(),
+            pid: 0,
+            own: false,
+            app: None,
+        }
+    }
+
+    /// A cache that asks `query`, for no window yet.
+    #[cfg(test)]
+    pub(crate) fn with_query(query: Box<dyn WindowQuery>) -> Self {
+        Self {
+            query,
+            ..Self::new()
+        }
+    }
+
+    /// `window` took the foreground. A handle that names no window, or no
+    /// window any process owns now, keeps the cache, as during a desktop
+    /// switch. The same window of the same process asks nothing; a handle
+    /// that another process owns now is another window. A window of this
+    /// process has no executable name for `when:`.
+    pub fn window_changed(&mut self, window: HWND) {
+        if window.is_invalid() {
+            return;
+        }
+        let pid = self.query.owner(window);
+        if pid == 0 || (window == self.window && pid == self.pid) {
+            return;
+        }
+        self.window = window;
+        self.pid = pid;
+        self.own = pid == std::process::id();
+        self.app = if self.own {
+            None
+        } else {
+            self.query.image_name(pid)
+        };
+    }
+
+    /// Reads the foreground window again, for when no foreground event
+    /// may have been seen: right after the hooks are installed, at `swch
+    /// on` and when keyboard input comes back to this desktop.
+    pub fn resync(&mut self) {
+        let window = self.query.foreground();
+        self.window_changed(window);
+    }
+
+    /// The executable name of the foreground window (`"code.exe"`), with no
+    /// Win32 call.
+    pub fn app(&self) -> Option<&str> {
+        self.app.as_deref()
+    }
+
+    /// The title of the foreground window, read now. `None` with no
+    /// window, and for a window of this process, which is never asked.
+    pub fn read_title(&self) -> Option<String> {
+        if self.window.is_invalid() || self.own {
+            return None;
+        }
+        self.query.title(self.window)
+    }
+}
+
+/// Capacity, in UTF-16 units, of the buffer for a window title. A longer
+/// title is cut there.
+const TITLE_CAPACITY: usize = 512;
+
+/// The title of `window`, or `None` if it has none or is gone.
+fn window_title(window: HWND) -> Option<String> {
+    let mut buffer = [0u16; TITLE_CAPACITY];
+    // SAFETY: `buffer` is a local that outlives the call, and the wrapper
+    // passes its length, so the call writes within it; a handle that names
+    // no window returns 0.
+    let len = unsafe { GetWindowTextW(window, &mut buffer) };
+    let len = usize::try_from(len).ok().filter(|&len| len > 0)?;
+    Some(String::from_utf16_lossy(&buffer[..len.min(TITLE_CAPACITY)]))
+}
+
+/// Capacity, in UTF-16 units, of the buffer for a process image path: four
+/// times MAX_PATH, so long-path installs fit without a heap retry.
+const IMAGE_PATH_CAPACITY: usize = 1024;
+
+/// File name of the executable of process `pid`, e.g. `"notepad.exe"`.
+fn process_image_name(pid: u32) -> windows::core::Result<String> {
+    // QueryFullProcessImageNameW needs only PROCESS_QUERY_LIMITED_INFORMATION,
+    // which Windows also grants against elevated and protected processes.
+    // Reading the module list needs PROCESS_VM_READ on top, so it failed on
+    // this handle for every process (KS-03).
+    //
+    // SAFETY: OpenProcess takes no pointers. In `Ok` it returns a valid
+    // handle that nothing else owns or closes, so `Owned` may close it.
+    let process =
+        unsafe { Owned::new(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?) };
+
+    let mut buffer = [0u16; IMAGE_PATH_CAPACITY];
+    let mut size = IMAGE_PATH_CAPACITY as u32;
+    // The native form (`\Device\HarddiskVolume3\...`) ends in the same file
+    // name as the Win32 form and skips its device-to-drive-letter
+    // translation: about 2 us per lookup instead of 20 us.
+    //
+    // SAFETY: `*process` is a live handle with the access right the call
+    // needs. The PWSTR points at `buffer`, which outlives the call, and
+    // `size` holds its capacity in UTF-16 units, so the call writes within
+    // it.
+    unsafe {
+        QueryFullProcessImageNameW(
+            *process,
+            PROCESS_NAME_NATIVE,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )?;
+    }
+    let path = &buffer[..(size as usize).min(IMAGE_PATH_CAPACITY)];
+    let file_name =
+        image_file_name(path).ok_or_else(|| windows::core::Error::from(ERROR_INVALID_DATA))?;
+    Ok(String::from_utf16_lossy(file_name))
+}
+
+/// The UTF-16 units of `path` after its last `\`, or `None` when there are
+/// none.
+fn image_file_name(path: &[u16]) -> Option<&[u16]> {
+    path.rsplit(|&unit| unit == u16::from(b'\\'))
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;

@@ -31,8 +31,10 @@
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
-//! `foreground_changed` hands foreground switches to
-//! [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed)
+//! `foreground_changed` hands foreground switches to the main thread's
+//! foreground cache, which reads the new window's executable name there
+//! and not on the key path (`platform::foreground`, roadmap item 2.3), and
+//! to [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed),
 //! the same way, and does nothing while remapping is off.
 //!
 //! # Threads
@@ -81,9 +83,11 @@
 //! suppressed: the key-up would pass and the engine would keep the key held
 //! and blocked, so the key's next press would count as an auto-repeat and
 //! its release would be swallowed. No such re-entry exists today. A change
-//! that injects input or pumps messages under the borrow (for example a
-//! foreground lookup that sends `WM_GETTEXT` to a window of this process)
-//! must deal with it first.
+//! that injects input or pumps messages under the borrow must deal with it
+//! first. The title read of a `when:` (`GetWindowTextW`) is the one Win32
+//! lookup under the borrow that could send a message: it never asks a
+//! window of this process, whose title read would send `WM_GETTEXT`
+//! (`platform::foreground`).
 
 use std::cell::OnceCell;
 use std::sync::LazyLock;
@@ -97,11 +101,11 @@ use windows::Win32::{
 use crate::core::constants;
 use crate::core::executor::TargetWindow;
 use crate::core::windows_actions::BindAction;
-use crate::data::condition::ForegroundContext;
 use crate::engine::{Decision, Env, KeyEvent};
 use crate::hook::keyboard_hook::KeyboardHook;
-use crate::hook::main_thread::with_main;
+use crate::hook::main_thread::{MainState, with_main};
 use crate::logging::counters::{self, Counter};
+use crate::platform::foreground::ForegroundCache;
 
 /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
 /// rather than a plain `static` because `KeyboardHook::new()` allocates the
@@ -117,28 +121,26 @@ pub fn get_hook() -> &'static KeyboardHook {
     &KEYBOARD_HOOK
 }
 
-/// The engine's [`Env`], backed by live Win32 calls. One is created on the
-/// stack per event, and one per reset in `MainState::set_enabled`. The
-/// foreground window is captured at most once, on the first question about
-/// it, so bindings without a `when:` condition never cause a foreground
-/// lookup.
-pub(super) struct HookEnv {
-    foreground: OnceCell<ForegroundContext>,
+/// The engine's [`Env`], backed by the OS key state and the main thread's
+/// foreground cache. One is created on the stack per event, and one per
+/// reset. The executable name comes from the cache, with no Win32 call; the
+/// title is read at most once, on the first question about it, so a binding
+/// without a title condition never reads it (roadmap item 2.3).
+pub(super) struct HookEnv<'a> {
+    foreground: &'a ForegroundCache,
+    title: OnceCell<Option<String>>,
 }
 
-impl HookEnv {
-    pub(super) fn new() -> Self {
+impl<'a> HookEnv<'a> {
+    pub(super) fn new(foreground: &'a ForegroundCache) -> Self {
         Self {
-            foreground: OnceCell::new(),
+            foreground,
+            title: OnceCell::new(),
         }
     }
-
-    fn foreground(&self) -> &ForegroundContext {
-        self.foreground.get_or_init(ForegroundContext::capture)
-    }
 }
 
-impl Env for HookEnv {
+impl Env for HookEnv<'_> {
     fn now(&self) -> Instant {
         Instant::now()
     }
@@ -152,11 +154,13 @@ impl Env for HookEnv {
     }
 
     fn foreground_app(&self) -> Option<&str> {
-        self.foreground().app()
+        self.foreground.app()
     }
 
     fn foreground_title(&self) -> Option<&str> {
-        self.foreground().title()
+        self.title
+            .get_or_init(|| self.foreground.read_title())
+            .as_deref()
     }
 }
 
@@ -199,11 +203,16 @@ pub(super) fn decide_event(
     // One snapshot for the whole decision, even if a reload swaps the list
     // meanwhile. It is dropped on return, before any action runs.
     let bindings = hook.bindings();
-    let env = HookEnv::new();
     let (decision, refused) = with_main(|main| {
-        let mut decision = main.engine.on_key(event, &bindings, &env);
-        let timers = std::mem::take(&mut decision.timers);
-        let refused = main.engine.start_timers(timers, &mut main.timers);
+        let MainState {
+            engine,
+            timers,
+            foreground,
+        } = main;
+        let env = HookEnv::new(foreground);
+        let mut decision = engine.on_key(event, &bindings, &env);
+        let requests = std::mem::take(&mut decision.timers);
+        let refused = engine.start_timers(requests, timers);
         (decision, refused)
     })?;
     // The engine has forgotten a timer the main thread could not set: that
@@ -357,17 +366,17 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 }
 
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
-/// engine resyncs the modifiers and forgets which key-ups were due to be
-/// swallowed, repairing what the keyboard hook may have missed while a
-/// higher-integrity window had focus. A modifier whose key-down the engine
-/// swallowed is not resynced (Windows never saw it go down, KS-14), so a
-/// lost key-up of such a modifier is not repaired here. While remapping is
-/// off it does nothing: the reset at `swch on` takes every held key from the
-/// OS anyway.
+/// main thread's foreground cache reads the new window's executable name,
+/// and the engine resyncs the modifiers, repairing what the keyboard hook
+/// may have missed while a higher-integrity window had focus. A modifier
+/// whose key-down the engine swallowed is not resynced (Windows never saw it
+/// go down, KS-14), so a lost key-up of such a modifier is not repaired
+/// here. While remapping is off it does nothing: the reset at `swch on`
+/// reads the foreground and every held key from the OS anyway.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
-    _hwnd: HWND,
+    hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
     _thread: u32,
@@ -377,9 +386,8 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     if !hook.is_enabled() {
         return;
     }
-    let env = HookEnv::new();
     // `None` only on re-entry, which nothing triggers today (module docs).
-    let _ = with_main(|main| main.engine.on_foreground_changed(&env));
+    let _ = with_main(|main| main.foreground_changed(hwnd));
 }
 
 #[cfg(test)]
@@ -577,7 +585,9 @@ mod tests {
             let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0)
                 .expect("a key-down reaches the engine");
             assert_eq!(down.fire, [BindAction::DoNothing], "the when: holds");
-            decide_event(&hook, message(WM_KEYUP), f13, 0).expect("a key-up reaches the engine");
+            let up = decide_event(&hook, message(WM_KEYUP), f13, 0)
+                .expect("a key-up reaches the engine");
+            assert!(up.suppress, "the key-up follows its swallowed key-down");
         }
         assert_eq!(
             asked.image_names.get(),
@@ -601,11 +611,13 @@ mod tests {
 
         let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
         assert_eq!(down.fire, [BindAction::DoNothing], "the GitHub tab");
-        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
         *title.borrow_mut() = "Inbox - Mozilla Firefox".to_owned();
         let down = decide_event(&hook, message(WM_KEYDOWN), f13, 0).expect("reaches the engine");
         assert!(down.fire.is_empty(), "another tab of the same window");
-        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(!up.suppress, "the key-up follows its passed key-down");
 
         assert_eq!(asked.titles.get(), 2, "one title read per key-down");
         assert_eq!(asked.image_names.get(), 1);
@@ -630,7 +642,8 @@ mod tests {
             down.fire.is_empty(),
             "a window of this process has no title"
         );
-        decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        let up = decide_event(&hook, message(WM_KEYUP), f13, 0).expect("reaches the engine");
+        assert!(!up.suppress, "the key-up follows its passed key-down");
         assert_eq!(asked.titles.get(), 0);
         assert_eq!(asked.image_names.get(), 0);
     }
@@ -1126,8 +1139,9 @@ mod tests {
     /// the thread count does not grow with the presses. The non-test lines
     /// of every file under `src/hook` but the IPC server and the config
     /// watcher (which start their own threads once, at startup), of every
-    /// file under `src/engine`, and of the files the fast actions and the
-    /// gesture timer run in, name no way to start a thread. The tokens are
+    /// file under `src/engine`, and of the files the fast actions, the
+    /// gesture timer and the foreground cache run in, name no way to start a
+    /// thread. The tokens are
     /// assembled, so this test does not match itself.
     #[test]
     fn the_gesture_path_starts_no_thread() {
@@ -1154,6 +1168,7 @@ mod tests {
             "src/core/windows_actions.rs",
             "src/system/system_function.rs",
             "src/platform/timers.rs",
+            "src/platform/foreground.rs",
         ] {
             files.push(root.join(file));
         }

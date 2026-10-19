@@ -209,6 +209,9 @@ impl App {
         // pipe, and the executor is stopped; a failed foreground hook has
         // already removed the keyboard hook inside `install`.
         hook.install()?;
+        // Once the foreground hook is live, so that a window change after
+        // this read is a foreground event (roadmap item 2.3).
+        main.refresh_foreground();
         log::info!("Hook installed successfully");
 
         // Served only once the hooks are installed: a server started before

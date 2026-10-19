@@ -489,6 +489,21 @@ minor version; such entries sit under **Changed** and start with
   `hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold`,
   `a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands`,
   `engine::scenarios::a_reload_drops_a_pending_double_tap_and_keeps_each_press_whole`.
+- A `when:` condition reads the foreground window's executable name from a
+  per-window cache that the foreground event fills on the daemon's main
+  thread, so no process is queried in the keyboard callback; a title is
+  read once per key-down that needs one, and never for a window of the
+  daemon's own process, whose title read would send it a message (roadmap
+  item 2.3, the latency bullet moved from 3.5). A key that a program sends
+  right after it activates a window can be decided against the previous
+  window (known issue 80). Tests:
+  `hook::keyboard_hook_callback::tests::a_hundred_conditional_presses_in_one_window_query_its_process_once`,
+  `a_title_condition_reads_the_cached_windows_title_on_each_key_down`,
+  `a_window_of_this_process_is_never_asked_for_its_title`,
+  `platform::foreground::tests::the_cache_queries_again_only_for_another_window`.
+  Manual check:
+  `cargo test --locked -- --ignored --exact platform::foreground::tests::the_foreground_cache_names_the_focused_notepad`,
+  then focus Notepad within 5 s.
 
 ### Fixed
 

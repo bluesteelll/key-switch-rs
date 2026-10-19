@@ -436,6 +436,11 @@ mod tests {
             ("src/hook/main_thread.rs", Some("fn with_main<")),
             ("src/hook/main_thread.rs", Some("fn start(")),
             ("src/hook/main_thread.rs", Some("fn retain(")),
+            // What a `when:` reads in the callback (roadmap item 2.3): the
+            // cached executable name and the live title.
+            ("src/platform/foreground.rs", Some("fn app(")),
+            ("src/platform/foreground.rs", Some("fn read_title(")),
+            ("src/platform/foreground.rs", Some("fn window_title(")),
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),

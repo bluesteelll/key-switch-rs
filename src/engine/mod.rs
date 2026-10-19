@@ -31,7 +31,7 @@
 //! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
 //! FFI, because every Win32 call through the `windows` crate is `unsafe`.
 //! It does not rule out safe wrappers that do Win32 work or read the clock,
-//! such as `ForegroundContext::capture`, `FastAction::run` or
+//! such as `ForegroundCache::resync`, `FastAction::run` or
 //! `Instant::now()`. Outside tests the engine calls none of them, and
 //! review keeps it that way. The engine uses [`BindAction`] only as data
 //! (actions to fire, cloned into pending gestures) and never executes one.
@@ -704,9 +704,9 @@ impl Engine {
                         // key-down fires wherever the blocker sits in the
                         // list (KS-18). Its `when:`, taken from the bindings
                         // that asked for it (KS-35), is asked only once the
-                        // hotkey matches: on the hook thread it may capture
-                        // the foreground window (KS-08). `Always` asks the
-                        // Env nothing.
+                        // hotkey matches: on the hook thread a title
+                        // condition reads the foreground window's title
+                        // (KS-08). `Always` asks the Env nothing.
                         if matching::blocker_matches(combo, vk, &self.keys, |key| {
                             env.os_key_down(key)
                         }) && binding.condition.evaluate(&foreground)
@@ -950,9 +950,9 @@ mod tests {
 
     #[test]
     fn a_when_condition_is_asked_only_for_a_binding_whose_keys_match() {
-        // On the hook thread a `when:` may capture the foreground window
-        // (GetForegroundWindow, OpenProcess, GetWindowTextW): a binding on
-        // other keys must not pay for it on every key press (KS-08).
+        // On the hook thread a title condition reads the foreground
+        // window's title (GetWindowTextW): a binding on other keys must not
+        // pay for it on every key press (KS-08).
         let mut bindings = crate::config::from_ron_str(
             r#"( bindings: [
                 (keys: "F13", action: SwitchLanguage, when: AppEquals("code.exe")),
@@ -975,8 +975,9 @@ mod tests {
     #[test]
     fn a_blocker_when_condition_is_asked_only_once_its_hotkey_matches() {
         // An auto-blocker takes the `when:` of the bindings that ask for it
-        // (KS-35). Asked before its hotkey matches, it would capture the
-        // foreground window on the hook thread for every key press (KS-08).
+        // (KS-35). Asked before its hotkey matches, a title condition would
+        // read the foreground window's title on the hook thread for every
+        // key press (KS-08).
         let mut bindings = vec![
             Binding::new(KeyCombination::new(VK_F14), BindAction::ToggleCapsLock),
             Binding::new_auto_blocker(

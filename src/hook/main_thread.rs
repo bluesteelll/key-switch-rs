@@ -1,11 +1,13 @@
 //! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
 //! thread that installs both hooks and pumps their messages also owns the
-//! engine and every gesture timer, and serves `swch on` and `swch off`.
+//! engine and every gesture timer, and serves `swch on` and `swch off` and
+//! config reloads (roadmap item 2.3).
 //!
 //! # State
 //!
-//! The engine and the gesture timers live in this thread's [`MainState`], a
-//! thread-local that only [`with_main`] reaches. Every caller of the engine
+//! The engine, the gesture timers and the foreground cache of `when:`
+//! (`platform::foreground`, roadmap item 2.3) live in this thread's
+//! [`MainState`], a thread-local that only [`with_main`] reaches. Every caller of the engine
 //! runs on this thread: the keyboard and foreground hook callbacks, which
 //! Windows dispatches inside this thread's message calls, and the loop's
 //! timer drain and requests. So no lock guards the engine, and none can be
@@ -13,8 +15,10 @@
 //! borrows the state with `try_borrow_mut`: a callback that runs while the
 //! state is borrowed is refused and its event passes, so a re-entered
 //! callback neither panics nor hangs the keyboard. Under the borrow only
-//! the engine decides and the gesture timer is set (`SetWaitableTimer`); no
-//! action runs, nothing is injected or submitted and no message is pumped.
+//! the engine decides, the gesture timer is set (`SetWaitableTimer`), the
+//! foreground cache reads a process name (in the foreground callback) and
+//! a title condition reads a title of another process's window; no action
+//! runs, nothing is injected or submitted and no message is pumped or sent.
 //!
 //! # The loop
 //!
@@ -51,7 +55,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
-    Foundation::{E_UNEXPECTED, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
+    Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::WindowsAndMessaging::*,
 };
@@ -65,6 +69,7 @@ use crate::hook::config_watcher::ApplyReload;
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
 use crate::logging::counters::{self, Counter};
+use crate::platform::foreground::ForegroundCache;
 use crate::platform::timers::WaitableTimer;
 
 /// The thread message that wakes the loop for a request.
@@ -93,6 +98,9 @@ thread_local! {
 pub(crate) struct MainState {
     pub(super) engine: Engine,
     pub(super) timers: GestureTimers,
+    /// The foreground window's executable name for `when:`, filled from the
+    /// foreground hook and never in the keyboard callback (roadmap item 2.3).
+    pub(super) foreground: ForegroundCache,
 }
 
 /// Runs `f` on this thread's main state and returns what it returns.
@@ -152,9 +160,23 @@ impl MainState {
 
     /// The engine half of [`reset_transient_state`](Self::reset_transient_state).
     fn reset_engine(&mut self, reason: ResetReason) {
-        self.engine.reset(&HookEnv::new(), reason);
+        // The foreground hook reports nothing while remapping is off, so a
+        // window that took the foreground meanwhile is read here.
+        if reason == ResetReason::RemappingSwitched {
+            self.foreground.resync();
+        }
+        self.engine.reset(&HookEnv::new(&self.foreground), reason);
         let engine = &self.engine;
         self.timers.retain(&|token| engine.is_live(token));
+    }
+
+    /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
+    /// reads its executable once, here and not in the keyboard callback,
+    /// and the engine resyncs the modifiers.
+    pub(crate) fn foreground_changed(&mut self, window: HWND) {
+        self.foreground.window_changed(window);
+        let env = HookEnv::new(&self.foreground);
+        self.engine.on_foreground_changed(&env);
     }
 }
 
@@ -448,6 +470,7 @@ impl MainThread {
         let state = MainState {
             engine: Engine::new(),
             timers,
+            foreground: ForegroundCache::new(),
         };
         let installed = MAIN.with(|main| match main.try_borrow_mut() {
             Ok(mut slot) if slot.is_none() => {
@@ -485,6 +508,14 @@ impl MainThread {
     /// A handle for the threads that send requests.
     pub(crate) fn handle(&self) -> MainThreadHandle {
         self.handle.clone()
+    }
+
+    /// Reads the foreground window into the cache (roadmap item 2.3).
+    /// `App::run` calls it right after the hooks are installed: a window
+    /// change from then on is a foreground event, so no change falls
+    /// between this read and the hook.
+    pub(crate) fn refresh_foreground(&self) {
+        let _ = with_main(|main| main.foreground.resync());
     }
 
     /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying

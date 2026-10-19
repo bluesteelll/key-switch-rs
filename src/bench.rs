@@ -731,6 +731,9 @@ fn latency_bench() {
     if std::env::var_os("KS_BENCH_LOAD").is_some_and(|load| load == "1") {
         rows.extend(r8_under_load(300));
     }
+    // R9 and R10 read the foreground window from the main thread's cache,
+    // as the daemon does once its hooks are installed; outside the timing.
+    main.refresh_foreground();
     rows.extend([
         Row {
             id: "R9",

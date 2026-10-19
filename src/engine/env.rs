@@ -16,9 +16,11 @@ use crate::data::condition::ForegroundInfo;
 /// key state and a configurable foreground app and title. The engine never
 /// reads time or OS state any other way, so a scenario is deterministic.
 ///
-/// Implementations may cache per event: the adapter creates a fresh `Env`
-/// for every hook invocation and captures the foreground window at most
-/// once, on the first `foreground_*` call.
+/// Implementations may cache: the adapter creates a fresh `Env` for every
+/// hook invocation, answers `foreground_app` from the main thread's
+/// per-window cache, which the foreground event fills (roadmap item 2.3),
+/// and reads the title at most once per event, on the first
+/// `foreground_title` call.
 pub trait Env {
     /// Monotonic time of the event being decided. The engine calls it once
     /// per event; every deadline it stores is derived from it.
