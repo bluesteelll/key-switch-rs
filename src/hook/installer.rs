@@ -203,6 +203,154 @@ impl Installer for System {
     }
 }
 
+/// What a [`FakeInstaller`] was asked, in order, with the handle each call
+/// made or took.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Call {
+    /// A keyboard hook was installed as this handle.
+    SetKeyboard(usize),
+    /// The install of a keyboard hook was refused.
+    SetKeyboardRefused,
+    /// The keyboard hook with this handle was asked to go.
+    UnhookKeyboard(usize),
+    /// A WinEvent hook was installed as this handle.
+    SetWinEvent(usize),
+    /// The WinEvent hook with this handle was asked to go.
+    UnhookWinEvent(usize),
+}
+
+/// The state of a [`FakeInstaller`].
+#[cfg(test)]
+#[derive(Default)]
+struct FakeState {
+    /// The last handle made; handles count from 1, so none is null.
+    last: usize,
+    /// The keyboard hooks installed now, oldest first.
+    keyboard: Vec<usize>,
+    /// The WinEvent hooks installed now.
+    win_event: Vec<usize>,
+    calls: Vec<Call>,
+    /// How many keyboard hooks were installed after each keyboard call.
+    keyboard_counts: Vec<usize>,
+    refuse_next_keyboard_hook: bool,
+}
+
+/// An installer that models the hooks as numbered handles and records
+/// every call, for the tests of the install, the reinstall and the removal
+/// (ruling S3). Nothing reaches Windows. A hook that holds its handles must
+/// be leaked or emptied with `uninstall_with` on the fake: its drop would
+/// remove them through [`SYSTEM`].
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FakeInstaller {
+    state: std::cell::RefCell<FakeState>,
+}
+
+#[cfg(test)]
+impl FakeInstaller {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next keyboard hook is refused with `E_ACCESSDENIED`.
+    pub(crate) fn refuse_next_keyboard_hook(&self) {
+        self.state.borrow_mut().refuse_next_keyboard_hook = true;
+    }
+
+    /// Windows removes the keyboard hook `handle` on its own, as after a
+    /// callback that ran past `LowLevelHooksTimeout`.
+    pub(crate) fn remove_on_its_own(&self, handle: usize) {
+        self.state
+            .borrow_mut()
+            .keyboard
+            .retain(|&live| live != handle);
+    }
+
+    /// The calls since the last take, which it clears with the keyboard
+    /// counts.
+    pub(crate) fn take_calls(&self) -> Vec<Call> {
+        let mut state = self.state.borrow_mut();
+        state.keyboard_counts.clear();
+        std::mem::take(&mut state.calls)
+    }
+
+    /// How many keyboard hooks were installed after each keyboard call since
+    /// the last take of the calls.
+    pub(crate) fn keyboard_counts(&self) -> Vec<usize> {
+        self.state.borrow().keyboard_counts.clone()
+    }
+
+    /// The keyboard hooks installed now, oldest first.
+    pub(crate) fn keyboard_hooks(&self) -> Vec<usize> {
+        self.state.borrow().keyboard.clone()
+    }
+
+    fn handle(number: usize) -> RawHandle {
+        std::ptr::without_provenance_mut(number)
+    }
+}
+
+#[cfg(test)]
+impl Installer for FakeInstaller {
+    fn set_keyboard_hook(&self) -> Result<RawHandle> {
+        let mut state = self.state.borrow_mut();
+        if std::mem::take(&mut state.refuse_next_keyboard_hook) {
+            state.calls.push(Call::SetKeyboardRefused);
+            let count = state.keyboard.len();
+            state.keyboard_counts.push(count);
+            return Err(windows::Win32::Foundation::E_ACCESSDENIED.into());
+        }
+        state.last += 1;
+        let number = state.last;
+        state.keyboard.push(number);
+        state.calls.push(Call::SetKeyboard(number));
+        let count = state.keyboard.len();
+        state.keyboard_counts.push(count);
+        Ok(Self::handle(number))
+    }
+
+    fn unhook_keyboard(&self, hook: RawHandle) -> Result<()> {
+        let mut state = self.state.borrow_mut();
+        let number = hook.addr();
+        state.calls.push(Call::UnhookKeyboard(number));
+        let installed = state.keyboard.contains(&number);
+        state.keyboard.retain(|&live| live != number);
+        let count = state.keyboard.len();
+        state.keyboard_counts.push(count);
+        if installed {
+            Ok(())
+        } else {
+            Err(windows::Win32::Foundation::ERROR_INVALID_HOOK_HANDLE.into())
+        }
+    }
+
+    fn set_win_event_hook(&self, _event: u32, _callback: WINEVENTPROC) -> Option<RawHandle> {
+        let mut state = self.state.borrow_mut();
+        state.last += 1;
+        let number = state.last;
+        state.win_event.push(number);
+        state.calls.push(Call::SetWinEvent(number));
+        Some(Self::handle(number))
+    }
+
+    fn unhook_win_event(&self, hook: RawHandle) -> Result<()> {
+        let mut state = self.state.borrow_mut();
+        let number = hook.addr();
+        state.calls.push(Call::UnhookWinEvent(number));
+        state.win_event.retain(|&live| live != number);
+        Ok(())
+    }
+
+    fn register_raw_keyboard(&self, _sink: HWND) -> Result<()> {
+        Ok(())
+    }
+
+    fn unregister_raw_keyboard(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};

@@ -277,7 +277,9 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
+    use crate::hook::installer::{Call, FakeInstaller};
     use crate::hook::main_thread::{MainThread, with_main};
+    use windows::Win32::Foundation::{E_ACCESSDENIED, ERROR_INVALID_HOOK_HANDLE};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     /// Turns remapping on or off on `hook` through this thread's main
@@ -560,6 +562,148 @@ mod tests {
                 TargetWindow::NONE
             ),
             Submitted::Closed
+        );
+    }
+
+    /// A hook that is never dropped: one that holds the handles of a fake
+    /// would remove them through the system installer, which panics under
+    /// test.
+    fn leaked() -> &'static KeyboardHook {
+        Box::leak(Box::new(KeyboardHook::new()))
+    }
+
+    /// A leaked hook installed through `fake`, whose calls are taken: the
+    /// keyboard hook is handle 1, the two WinEvent hooks 2 and 3.
+    fn installed(fake: &FakeInstaller) -> &'static KeyboardHook {
+        let hook = leaked();
+        hook.install_with(fake)
+            .expect("the fake installs every hook");
+        assert_eq!(
+            fake.take_calls(),
+            [
+                Call::SetKeyboard(1),
+                Call::SetWinEvent(2),
+                Call::SetWinEvent(3)
+            ]
+        );
+        hook
+    }
+
+    /// Removes `hook`'s hooks through `fake` and returns the keyboard
+    /// handle it removed.
+    fn removed_keyboard_hook(hook: &KeyboardHook, fake: &FakeInstaller) -> Option<usize> {
+        hook.uninstall_with(fake)
+            .expect("the fake removes the keyboard hook");
+        fake.take_calls().into_iter().find_map(|call| match call {
+            Call::UnhookKeyboard(handle) => Some(handle),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_reinstall_installs_the_new_hook_before_it_removes_the_old_one() {
+        // Ruling S3, critique I2: a key event sees exactly one hook of
+        // ours, never none, so the new hook goes in first, then the old one
+        // comes off, and the hook keeps the new handle.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::Replaced {
+                old: OldHook::StillInstalled
+            })
+        );
+        assert_eq!(
+            fake.keyboard_counts(),
+            [2, 1],
+            "one keyboard hook was installed at every step, never none"
+        );
+        assert_eq!(
+            fake.take_calls(),
+            [Call::SetKeyboard(4), Call::UnhookKeyboard(1)],
+            "the new hook first, then the old one off"
+        );
+        assert_eq!(fake.keyboard_hooks(), [4], "one keyboard hook, the new one");
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(4));
+    }
+
+    #[test]
+    fn a_failed_reinstall_keeps_the_old_hook() {
+        // Ruling S3: a new hook that Windows refuses leaves the old one
+        // installed and in the hook, so the daemon never has fewer hooks
+        // than before.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        fake.refuse_next_keyboard_hook();
+
+        let error = hook
+            .reinstall_keyboard_hook_with(&fake)
+            .expect_err("the fake refuses the new hook");
+        assert_eq!(error.code(), E_ACCESSDENIED);
+        assert_eq!(
+            fake.take_calls(),
+            [Call::SetKeyboardRefused],
+            "the old hook is left alone"
+        );
+        assert_eq!(fake.keyboard_hooks(), [1]);
+        assert!(hook.is_installed());
+        assert_eq!(
+            removed_keyboard_hook(hook, &fake),
+            Some(1),
+            "the hook still holds the old handle"
+        );
+    }
+
+    #[test]
+    fn a_reinstall_of_a_hook_that_is_not_installed_installs_nothing() {
+        // Ruling S3: before the first install and after `uninstall` (exit,
+        // or the session end) a late request installs no hook.
+        let fake = FakeInstaller::new();
+        assert_eq!(
+            leaked().reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::NotInstalled)
+        );
+        assert_eq!(fake.take_calls(), [], "never installed: no call");
+
+        let hook = installed(&fake);
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(1));
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::NotInstalled)
+        );
+        assert_eq!(fake.take_calls(), [], "removed: no call");
+        assert!(!hook.is_installed());
+        assert_eq!(fake.keyboard_hooks(), [] as [usize; 0]);
+    }
+
+    #[test]
+    fn a_reinstall_reports_an_old_hook_that_windows_removed_as_gone() {
+        // KS-08: Windows removes a hook whose callback ran past
+        // `LowLevelHooksTimeout`, so removing the old one fails; the new one
+        // stays, and the failure is only reported.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        fake.remove_on_its_own(1);
+
+        assert_eq!(
+            hook.reinstall_keyboard_hook_with(&fake),
+            Ok(Reinstalled::Replaced {
+                old: OldHook::Gone(ERROR_INVALID_HOOK_HANDLE.into())
+            })
+        );
+        assert_eq!(fake.keyboard_hooks(), [4]);
+        assert_eq!(removed_keyboard_hook(hook, &fake), Some(4));
+    }
+
+    #[test]
+    fn the_daemons_reinstall_of_a_hook_never_installed_makes_no_call() {
+        // The daemon's path, through the system installer, which panics at
+        // any call under test: this returns only because the null handle
+        // stops it first.
+        assert_eq!(
+            KeyboardHook::new().reinstall_keyboard_hook(),
+            Ok(Reinstalled::NotInstalled)
         );
     }
 
