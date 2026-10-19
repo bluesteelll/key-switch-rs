@@ -12,8 +12,9 @@
 //! The winner alone acts on the key-down, unless it has a `Tap`, `Hold` or
 //! `DoubleTap` trigger: then every deferred binding on the same keys with
 //! the same `when:` that matches the press acts with it, as one gesture
-//! group, so a Tap and a Hold on one key still arm together. [`GroupArms`]
-//! lets only the first binding of each trigger kind in the group act.
+//! group, so a Tap and a Hold on one key still arm together, as one press
+//! ([`GroupArming`], roadmap item 2.2). [`GroupArms`] lets only the first
+//! binding of each trigger kind in the group act.
 //!
 //! Auto-blockers, sequences and chords are not candidates. Blockers only
 //! suppress, by their own rule; sequences and chords are state machines
@@ -22,12 +23,16 @@
 //! Nothing here keeps state across events, allocates or locks: a [`Winner`]
 //! borrows its binding for the one key-down.
 
+use std::time::Duration;
+
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use super::keys::KeyState;
 use super::matching;
+use crate::core::windows_actions::BindAction;
 use crate::data::binding::{Binding, BindingKind};
-use crate::data::condition::ForegroundInfo;
+use crate::data::condition::{Condition, ForegroundInfo};
+use crate::data::key_combination::KeyCombination;
 use crate::data::trigger::Trigger;
 
 /// The `keys` binding that wins a key-down (roadmap item 1.6, KS-13).
@@ -81,7 +86,63 @@ pub(super) fn elect<'a>(
     winner
 }
 
-impl Winner<'_> {
+/// What a deferred winner and its group arm on a first key-down: the term
+/// and action of the first `Tap`, `Hold` and `DoubleTap` of the group, the
+/// group's keys and `when:` (the identity of its DoubleTap window, known
+/// issue 74), and whether any of them asks to swallow the key-down.
+pub(super) struct GroupArming<'a> {
+    pub(super) keys: &'a KeyCombination,
+    pub(super) condition: &'a Condition,
+    pub(super) tap: Option<(Duration, &'a BindAction)>,
+    pub(super) hold: Option<(Duration, &'a BindAction)>,
+    pub(super) double_tap: Option<(Duration, &'a BindAction)>,
+    /// A member that acts sets `block_default`.
+    pub(super) block: bool,
+}
+
+impl<'a> Winner<'a> {
+    /// The gestures the winner's group arms on the key-down of `vk`, with
+    /// `held` the keys held after it; `None` for an `Immediate` winner. The
+    /// members are the bindings [`admits`](Self::admits) lets act, from the
+    /// winner on in list order, and of each trigger kind only the first
+    /// ([`GroupArms`]).
+    pub(super) fn deferred_group(
+        &self,
+        vk: VIRTUAL_KEY,
+        bindings: &'a [Binding],
+        held: &KeyState,
+    ) -> Option<GroupArming<'a>> {
+        if self.binding.trigger.is_immediate() {
+            return None;
+        }
+        let mut group = GroupArming {
+            keys: self.binding.combination()?,
+            condition: &self.binding.condition,
+            tap: None,
+            hold: None,
+            double_tap: None,
+            block: false,
+        };
+        let mut arms = GroupArms::default();
+        for (index, binding) in bindings.iter().enumerate().skip(self.index) {
+            if binding.is_auto_blocker()
+                || !self.admits(index, binding, vk, held)
+                || !arms.claim(binding.trigger)
+            {
+                continue;
+            }
+            let (slot, term_ms) = match binding.trigger {
+                Trigger::Tap(term_ms) => (&mut group.tap, term_ms),
+                Trigger::Hold(term_ms) => (&mut group.hold, term_ms),
+                Trigger::DoubleTap(term_ms) => (&mut group.double_tap, term_ms),
+                Trigger::Immediate => continue,
+            };
+            *slot = Some((Duration::from_millis(term_ms), &binding.action));
+            group.block |= binding.block_default;
+        }
+        Some(group)
+    }
+
     /// Whether the `keys` user binding at `index` acts on this key-down:
     /// the winner itself, or a member of its gesture group.
     ///

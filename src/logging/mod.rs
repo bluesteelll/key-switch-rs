@@ -382,8 +382,8 @@ mod tests {
     }
 
     /// Roadmap item 2.1 ("the hook path never calls `log::`"): the
-    /// functions that run on the hook thread (or a Hold's `hold-timer`
-    /// thread, which carries out the same way) outside
+    /// functions that run in the hook callback (or in the main loop's timer
+    /// drain, which carries out the same way) outside
     /// `keyboard_hook_callback.rs` name no `log::`. That file, with
     /// `carry_out` and `dispatch`, is scanned whole by
     /// `only_the_startup_banner_prints_outside_src_bin`. `None` scans the
@@ -423,11 +423,19 @@ mod tests {
             ("src/core/executor/mod.rs", Some("fn foreground(")),
             ("src/core/executor/mod.rs", Some("fn submit(")),
             ("src/core/executor/mod.rs", Some("fn wake(")),
-            // The cancel that `set_enabled` and `update_bindings` make.
+            // The cancel that `MainState::set_enabled` and
+            // `update_bindings` make.
             ("src/core/executor/mod.rs", Some("fn cancel_pending(")),
             // The hook's entry to the executor, and its cancel.
             ("src/hook/keyboard_hook.rs", Some("fn submit(")),
             ("src/hook/keyboard_hook.rs", Some("fn cancel_actions(")),
+            // The callback's way to the engine and the gesture timer it
+            // sets (roadmap item 2.2): `with_main`, then the scheduler's
+            // `start` and `retain` (`GestureTimers`; the file's startup
+            // function is `MainThread::new`, so its one `fn start(` is that).
+            ("src/hook/main_thread.rs", Some("fn with_main<")),
+            ("src/hook/main_thread.rs", Some("fn start(")),
+            ("src/hook/main_thread.rs", Some("fn retain(")),
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),

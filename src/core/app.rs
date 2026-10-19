@@ -16,9 +16,11 @@ use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Win32Runner};
 use crate::data::binding::Binding;
 use crate::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::main_thread::{MainThread, MainThreadHandle};
 use crate::hook::{config_watcher, keyboard_hook_callback};
 use crate::ipc;
 use crate::logging::counters;
+use crate::platform::priority::RaisedPriority;
 
 static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -63,21 +65,21 @@ impl Drop for AttachedExecutor {
 }
 
 /// The daemon's side of the IPC commands, called on the IPC connection
-/// workers. `on` and `off` only flip the remapping switch of the
-/// process-wide hook; `exit` posts `WM_QUIT` to the main thread, which then
-/// removes the hooks itself.
+/// workers. `on` and `off` are requests to the main thread, which owns the
+/// engine, flips the remapping switch and resets the engine between two
+/// events (roadmap item 2.2); `exit` posts `WM_QUIT` to the main thread,
+/// which then removes the hooks itself.
 struct DaemonHandle {
     hook: &'static KeyboardHook,
-    /// The thread that pumps `GetMessageW`, or 0 if unknown.
-    main_thread_id: u32,
+    main: MainThreadHandle,
 }
 
 impl DaemonControl for DaemonHandle {
     fn set_enabled(&self, enabled: bool) -> std::result::Result<(), String> {
-        self.hook
+        self.main
             .set_enabled(enabled)
             .map(drop)
-            .ok_or_else(|| "the engine is busy on this thread".to_owned())
+            .map_err(|error| error.to_string())
     }
 
     fn status(&self) -> DaemonStatus {
@@ -88,15 +90,7 @@ impl DaemonControl for DaemonHandle {
     }
 
     fn request_exit(&self) -> std::result::Result<(), String> {
-        if self.main_thread_id == 0 {
-            return Err("main thread id unknown, cannot post WM_QUIT".to_owned());
-        }
-        // SAFETY: PostThreadMessageW takes the thread id and the message by
-        // value and reads no memory of ours; WM_QUIT carries no pointer in
-        // its parameters. A thread id that is no longer valid only makes the
-        // call fail, and that error is returned.
-        unsafe { PostThreadMessageW(self.main_thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
-            .map_err(|error| error.to_string())
+        self.main.request_exit().map_err(|error| error.to_string())
     }
 }
 
@@ -170,16 +164,19 @@ impl App {
 
     /// Runs the daemon on the calling thread, which becomes its main
     /// thread, until `WM_QUIT`: creates the IPC pipe, starts the action
-    /// executor, installs both hooks, serves the pipe, pumps messages,
-    /// removes the hooks and stops the executor.
+    /// executor, sets up the main thread's engine and gesture timer
+    /// (`hook::main_thread`), installs both hooks, serves the pipe, runs the
+    /// main loop, removes the hooks and stops the executor.
     ///
-    /// A pipe that cannot be created, or an executor that cannot be
-    /// started, is an error before any hook is installed, so no hook ever
-    /// runs without `swch` control (KS-20) or with nowhere to send `Launch`,
-    /// `OpenUrl` and `Sequence` (roadmap item 2.1). If the IPC server thread
+    /// A pipe that cannot be created, an executor that cannot be started or
+    /// a gesture timer that cannot be made is an error before any hook is
+    /// installed, so no hook ever runs without `swch` control (KS-20), with
+    /// nowhere to send `Launch`, `OpenUrl` and `Sequence` (roadmap item 2.1)
+    /// or without its timers (roadmap item 2.2). If the IPC server thread
     /// cannot be started, the hooks are removed again before the error is
-    /// returned. On every return the executor is stopped after the hooks
-    /// are removed, waiting at most 2 s for a step that still runs.
+    /// returned, and so they are if the main loop fails. On every return the
+    /// executor is stopped after the hooks are removed, waiting at most 2 s
+    /// for a step that still runs.
     pub fn run(mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
         // SAFETY: GetCurrentThreadId takes no arguments, touches no memory
         // of ours and cannot fail.
@@ -198,6 +195,11 @@ impl App {
         // go and the hooks never wait for one.
         let executor = Executor::start(Win32Runner, QUEUE_CAPACITY, &counters::COUNTERS)
             .map_err(|error| format!("could not start the action executor: {error}"))?;
+        // Before the hooks, on the thread that installs them: the engine and
+        // every gesture timer belong to this thread, and a timer that cannot
+        // be made leaves nothing to undo.
+        let main = MainThread::new()
+            .map_err(|error| format!("could not create the gesture timer: {error}"))?;
 
         let hook = keyboard_hook_callback::get_hook();
         let bindings = std::mem::take(&mut self.pending_bindings);
@@ -215,7 +217,7 @@ impl App {
         // posts WM_QUIT to this thread, like Ctrl+C.
         let control = Arc::new(DaemonHandle {
             hook,
-            main_thread_id: main_tid,
+            main: main.handle(),
         });
         if let Err(error) = listener.serve(control) {
             // Here, on the thread that installed the hooks (KS-01).
@@ -250,22 +252,32 @@ impl App {
             None => None,
         };
 
-        // SAFETY: `msg` is a local that outlives every call: GetMessageW
-        // writes it, TranslateMessage and DispatchMessageW only read it.
-        // This is the thread that installed both hooks, so their callbacks
-        // are dispatched from this loop (KS-01).
-        unsafe {
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+        // Every keystroke on the desktop waits for this thread while it runs
+        // the loop, so it runs at THREAD_PRIORITY_HIGHEST meanwhile (roadmap
+        // item 2.2), and at normal priority again for the shutdown.
+        let raised = match RaisedPriority::raise() {
+            Ok(raised) => Some(raised),
+            Err(error) => {
+                log::warn!(
+                    "could not raise the main thread's priority ({error}); it runs at normal priority"
+                );
+                None
             }
-        }
+        };
+        // This is the thread that installed both hooks, so their callbacks
+        // are dispatched from this loop (KS-01), and the gesture timers fire
+        // in it (roadmap item 2.2).
+        let ran = main.run(hook);
+        drop(raised);
+        // From here a `swch on` or `off` is answered at once, "the daemon is
+        // shutting down": the request queue closes with the main state.
+        drop(main);
 
         log::info!("Removing keyboard hook...");
         hook.uninstall()?;
         executor.stop();
 
+        ran.map_err(|error| format!("the main message loop failed: {error}"))?;
         Ok(())
     }
 }
@@ -339,12 +351,21 @@ mod tests {
     }
 
     #[test]
-    fn daemon_handle_status_follows_the_hook_flag() {
+    fn daemon_handle_switches_remapping_through_the_main_thread() {
+        // Roadmap item 2.2: `on` and `off` are carried out by the thread that
+        // owns the engine, which runs the daemon's loop, and `exit` ends that
+        // loop. The loop thread has no hook installed.
         let hook = leaked_hook();
-        let handle = DaemonHandle {
-            hook,
-            main_thread_id: 0,
-        };
+        let (ready_tx, ready) = std::sync::mpsc::channel();
+        let looper = std::thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let _ = ready_tx.send(main.handle());
+            main.run(hook)
+        });
+        let main = ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        let handle = DaemonHandle { hook, main };
         assert_eq!(
             handle.status(),
             DaemonStatus {
@@ -353,22 +374,32 @@ mod tests {
             }
         );
 
-        handle.set_enabled(false).expect("not inside with_engine");
+        handle.set_enabled(false).expect("the main thread answers");
         assert!(!hook.is_enabled());
         assert!(!handle.status().enabled);
 
-        handle.set_enabled(true).expect("not inside with_engine");
+        handle.set_enabled(true).expect("the main thread answers");
         assert!(handle.status().enabled);
         assert!(!hook.is_installed(), "switching remapping installs nothing");
+
+        handle.request_exit().expect("the exit is posted");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
     }
 
     #[test]
     fn daemon_handle_refuses_exit_without_a_main_thread() {
         let handle = DaemonHandle {
             hook: leaked_hook(),
-            main_thread_id: 0,
+            main: MainThreadHandle::without_a_thread(),
         };
         assert!(handle.request_exit().is_err());
+        assert_eq!(
+            handle.set_enabled(false),
+            Err("the daemon is shutting down".to_owned())
+        );
     }
 
     #[test]

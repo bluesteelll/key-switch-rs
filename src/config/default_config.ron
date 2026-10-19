@@ -122,10 +122,13 @@
 //
 // Multiple bindings on the same combo and when: with different triggers
 // coexist: e.g. one Tap(200) binding for SwitchLanguage and one Hold(200)
-// binding for PressKey("LShift") on CapsLock arm both gestures on key-down.
-// With equal terms exactly one of them fires: Tap if the key is released
+// binding for PressKey("LShift") on CapsLock arm both gestures on key-down,
+// as one press, and exactly one of them fires: Tap if the key is released
 // before 200 ms, Hold otherwise. The Hold sends one LShift press at that
-// moment, not a held Shift.
+// moment, not a held Shift. Prefer equal terms: with Tap(100) and Hold(200)
+// a release between 100 and 200 ms fires nothing. With a DoubleTap on the
+// same combo the Tap waits until the DoubleTap window closes, so that a
+// double press fires only the DoubleTap.
 //
 // One binding wins each key press: of the bindings that match it, the one
 // with more keys, then one with a when: over one without, then the one
@@ -296,7 +299,7 @@
         // ),
         //
         // // Two bindings on the same key — one for quick tap, one for hold.
-        // // Both arm on key-down; whichever wins on key-up / timer fires.
+        // // Both arm on key-down as one press; exactly one of them fires.
         // // Replace the CapsLock binding at the top with these two: a
         // // binding listed first on the same keys wins every press.
         // (
@@ -313,10 +316,11 @@
         //
         // // Double-tap LShift to toggle CapsLock state. Made only of
         // // modifiers, it lets every left-Shift press still reach
-        // // applications, so the left Shift keeps typing capitals. Pressing
-        // // the left Shift twice within 250 ms for two capitals (typing
-        // // "<T>") toggles CapsLock too; add block_default: true to keep the
-        // // left Shift for the double tap alone.
+        // // applications, so the left Shift keeps typing capitals. Another
+        // // key pressed in between cancels the double tap, so typing "<T>"
+        // // with the left Shift pressed twice leaves CapsLock alone; add
+        // // block_default: true to keep the left Shift for the double tap
+        // // alone.
         // (
         //     keys: "LShift",
         //     action: ToggleCapsLock,

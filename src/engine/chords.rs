@@ -4,8 +4,10 @@
 //! The engine feeds every non-repeat key-down to [`Chords::on_key_down`] once
 //! per Chord binding. A chord is identified by its set of keys; a pending
 //! entry accumulates the keys pressed so far until every chord key has been
-//! pressed (fire) or the window, counted from the first key, has passed (the
-//! entry is dropped lazily on the next key-down).
+//! pressed (fire) or the window, counted from the first key, has passed. A
+//! new entry asks for a timer at the window's end, which drops it on time
+//! (roadmap item 2.2); the next key-down also drops an expired entry, so a
+//! late or missing timer changes no outcome.
 //!
 //! **Suppression**: every key-down of a key that belongs to a chord binding
 //! is suppressed, whether or not the chord completes. When it completes, the
@@ -35,6 +37,8 @@ struct PendingChord {
     seen: Vec<VIRTUAL_KEY>,
     action: BindAction,
     expires_at: Instant,
+    /// The engine's number of the arming, which its expiry timer carries.
+    seq: u64,
 }
 
 #[derive(Default)]
@@ -49,6 +53,9 @@ pub(super) enum ChordOutcome {
     NotInChord,
     /// The key is part of a chord that is still incomplete: suppress it.
     Pending,
+    /// The key starts a chord: suppress it, and start its expiry timer, due
+    /// at the end of the window.
+    Started { due: Instant },
     /// The chord just completed: suppress the key, fire `action` and
     /// suppress the key-ups of the keys in `keys`, the codes pressed for it,
     /// that are still held and whose key-down did not pass.
@@ -60,7 +67,8 @@ impl Chords {
         Self::default()
     }
 
-    /// Feeds one key-down to one Chord binding.
+    /// Feeds one key-down to one Chord binding. `seq` is the engine's number
+    /// for an entry this key-down starts.
     pub(super) fn on_key_down(
         &mut self,
         vk: VIRTUAL_KEY,
@@ -68,6 +76,7 @@ impl Chords {
         chord_keys: &[KeySpec],
         window: Duration,
         now: Instant,
+        seq: u64,
     ) -> ChordOutcome {
         if !chord_keys.iter().any(|key| key.accepts(vk)) {
             return ChordOutcome::NotInChord;
@@ -105,13 +114,25 @@ impl Chords {
 
         // No pending entry: start a fresh one with this key as the first
         // seen key. Lifetime = the chord window from this moment.
+        let due = now + window;
         self.pending.push(PendingChord {
             chord_keys: chord_keys.to_vec(),
             seen: vec![vk],
             action: action.clone(),
-            expires_at: now + window,
+            expires_at: due,
+            seq,
         });
-        ChordOutcome::Pending
+        ChordOutcome::Started { due }
+    }
+
+    /// The expiry timer of the entry armed as `seq` is due: the entry goes.
+    pub(super) fn expire(&mut self, seq: u64) {
+        self.pending.retain(|p| p.seq != seq);
+    }
+
+    /// Whether the entry armed as `seq` still waits for its expiry timer.
+    pub(super) fn is_live(&self, seq: u64) -> bool {
+        self.pending.iter().any(|p| p.seq == seq)
     }
 }
 
@@ -145,6 +166,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             Instant::now(),
+            1,
         );
         assert_eq!(outcome, ChordOutcome::NotInChord);
     }
@@ -152,14 +174,19 @@ mod tests {
     #[test]
     fn first_chord_key_arms_pending() {
         let mut state = Chords::new();
+        let now = Instant::now();
         let outcome = state.on_key_down(
             VK_J,
             &BindAction::DoNothing,
             &specs(&[VK_J, VK_K]),
             WINDOW,
-            Instant::now(),
+            now,
+            2,
         );
-        assert_eq!(outcome, ChordOutcome::Pending);
+        assert_eq!(outcome, ChordOutcome::Started { due: now + WINDOW });
+        assert!(state.is_live(2), "it waits for its expiry timer");
+        state.expire(2);
+        assert!(!state.is_live(2), "the timer drops it");
     }
 
     #[test]
@@ -172,6 +199,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            3,
         );
         let outcome = state.on_key_down(
             VK_K,
@@ -179,6 +207,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0 + ms(49),
+            4,
         );
         assert_eq!(
             outcome,
@@ -200,6 +229,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            5,
         );
         let outcome = state.on_key_down(
             VK_K,
@@ -207,8 +237,15 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0 + WINDOW,
+            6,
         );
-        assert_eq!(outcome, ChordOutcome::Pending);
+        assert_eq!(
+            outcome,
+            ChordOutcome::Started {
+                due: t0 + WINDOW + WINDOW
+            },
+            "a new entry with a window of its own"
+        );
     }
 
     #[test]
@@ -221,6 +258,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            7,
         );
         state.on_key_down(
             VK_K,
@@ -228,6 +266,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            8,
         );
         // Both chord keys consumed; a third press of J re-arms a fresh
         // pending entry: chord state must not be sticky.
@@ -237,8 +276,9 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            9,
         );
-        assert_eq!(outcome, ChordOutcome::Pending);
+        assert_eq!(outcome, ChordOutcome::Started { due: t0 + WINDOW });
     }
 
     #[test]
@@ -253,6 +293,7 @@ mod tests {
             &specs(&[VK_K, VK_J]),
             WINDOW,
             t0,
+            10,
         );
         let outcome = state.on_key_down(
             VK_K,
@@ -260,6 +301,7 @@ mod tests {
             &specs(&[VK_J, VK_K]),
             WINDOW,
             t0,
+            11,
         );
         assert!(matches!(outcome, ChordOutcome::Completed { .. }));
     }
@@ -270,9 +312,9 @@ mod tests {
         for shift in [VK_LSHIFT, VK_RSHIFT] {
             let t0 = Instant::now();
             let mut state = Chords::new();
-            let first = state.on_key_down(shift, &BindAction::DoNothing, &keys, WINDOW, t0);
-            assert_eq!(first, ChordOutcome::Pending);
-            let second = state.on_key_down(VK_SPACE, &BindAction::DoNothing, &keys, WINDOW, t0);
+            let first = state.on_key_down(shift, &BindAction::DoNothing, &keys, WINDOW, t0, 12);
+            assert_eq!(first, ChordOutcome::Started { due: t0 + WINDOW });
+            let second = state.on_key_down(VK_SPACE, &BindAction::DoNothing, &keys, WINDOW, t0, 13);
             assert!(
                 matches!(second, ChordOutcome::Completed { .. }),
                 "{shift:?}"
@@ -287,6 +329,7 @@ mod tests {
             &left_only,
             WINDOW,
             Instant::now(),
+            14,
         );
         assert_eq!(outcome, ChordOutcome::NotInChord);
     }
@@ -296,8 +339,15 @@ mod tests {
         let t0 = Instant::now();
         let keys = specs(&[VK_SHIFT, VK_SPACE]);
         let mut state = Chords::new();
-        state.on_key_down(VK_RSHIFT, &BindAction::SwitchLanguage, &keys, WINDOW, t0);
-        let outcome = state.on_key_down(VK_SPACE, &BindAction::DoNothing, &keys, WINDOW, t0);
+        state.on_key_down(
+            VK_RSHIFT,
+            &BindAction::SwitchLanguage,
+            &keys,
+            WINDOW,
+            t0,
+            15,
+        );
+        let outcome = state.on_key_down(VK_SPACE, &BindAction::DoNothing, &keys, WINDOW, t0, 16);
         assert_eq!(
             outcome,
             ChordOutcome::Completed {

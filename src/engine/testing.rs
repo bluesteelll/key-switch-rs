@@ -17,9 +17,10 @@
 //! or key-up changes it only if the engine let the event through, or if the
 //! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`]),
 //! and a generic modifier code reads as down while either side is. Timers
-//! that the engine requests fire during [`Scenario::advance_ms`], in due
-//! order; [`Scenario::advance_ms_stalled`] holds them back to model a timer
-//! thread that wakes late.
+//! that the engine requests go into a [`TimerQueue`] through
+//! [`Engine::start_timers`], as on the daemon's main thread, and fire during
+//! [`Scenario::advance_ms`], in due order; [`Scenario::advance_ms_stalled`]
+//! holds them back to model a timer that wakes late.
 //!
 //! The `expect_*` methods check the most recent step: a key event, or an
 //! `advance_ms` together with the timers that fired during it.
@@ -45,19 +46,21 @@
 //! `KeyboardHook::update_bindings` leaves it.
 //!
 //! [`Scenario::remapping_off`] and [`Scenario::remapping_on`] model `swch
-//! off` and `swch on`: each resets the engine, as `KeyboardHook::set_enabled`
-//! does. While remapping is off every key event passes without reaching the
-//! engine, so the modelled OS sees it, and a foreground change is a script
-//! error, because the adapter does not report one then. Timers already
-//! started still fire during `advance_ms`, as the real `hold-timer` threads
-//! do.
+//! off` and `swch on`: each resets the engine and drops the timers the
+//! reset made stale from the queue, as the daemon does. While remapping is
+//! off every key event passes without reaching the engine, so the modelled
+//! OS sees it, and a foreground change is a script error, because the
+//! adapter does not report one then.
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-use super::{Decision, Engine, Env, KeyDirection, KeyEvent, TimerRequest, sort_by_specificity};
+use super::{
+    Decision, Engine, Env, KeyDirection, KeyEvent, Scheduler, TimerQueue, sort_by_specificity,
+};
 use crate::config::{from_ron_str, from_ron_str_with_hotkeys};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
@@ -149,7 +152,7 @@ pub(crate) struct Scenario {
     /// Keys the scenario holds physically, to catch scripts that release a
     /// key they never pressed or repeat a key that is up.
     held: [bool; 256],
-    timers: Vec<TimerRequest>,
+    timers: TimerQueue,
     steps: Vec<Step>,
     /// Printed under a failure message.
     context: Option<String>,
@@ -205,7 +208,7 @@ impl Scenario {
             start: env.now,
             env,
             held: [false; 256],
-            timers: Vec::new(),
+            timers: TimerQueue::new(),
             steps: Vec::new(),
             context: None,
             check_symmetry: false,
@@ -368,6 +371,7 @@ impl Scenario {
             ));
         }
         self.engine.reset(&self.env);
+        self.drop_stale_timers();
         self.enabled = false;
         self.press_suppressed = [None; 256];
         let label = format!("remapping off at {}", self.clock());
@@ -388,6 +392,7 @@ impl Scenario {
             ));
         }
         self.engine.reset(&self.env);
+        self.drop_stale_timers();
         self.enabled = true;
         let label = format!("remapping on at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
@@ -400,20 +405,12 @@ impl Scenario {
     pub(crate) fn advance_ms(mut self, ms: u64) -> Self {
         let target = self.env.now + Duration::from_millis(ms);
         let mut fired = Vec::new();
-        while let Some(index) = self
-            .timers
-            .iter()
-            .enumerate()
-            .filter(|(_, timer)| timer.due <= target)
-            .min_by_key(|(_, timer)| timer.due)
-            .map(|(index, _)| index)
-        {
-            let timer = self.timers.remove(index);
+        while let Some(timer) = self.timers.take_due(target) {
             self.env.now = self.env.now.max(timer.due);
             let decision = self.engine.on_timer(timer.token);
             assert!(!decision.suppress, "a timer has no event to suppress");
             assert!(!decision.mask, "a timer has no event to mask");
-            self.timers.extend(decision.timers);
+            self.engine.start_timers(decision.timers, &mut self.timers);
             fired.extend(decision.fire);
         }
         self.env.now = target;
@@ -437,8 +434,13 @@ impl Scenario {
     /// start them, and tells the engine through [`Engine::forget_timer`].
     #[track_caller]
     pub(crate) fn lose_timers(mut self) -> Self {
-        for timer in std::mem::take(&mut self.timers) {
-            self.engine.forget_timer(timer.token);
+        let lost = RefCell::new(Vec::new());
+        self.timers.retain(&|token| {
+            lost.borrow_mut().push(token);
+            false
+        });
+        for token in lost.into_inner() {
+            self.engine.forget_timer(token);
         }
         let label = format!("timers lost at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
@@ -541,8 +543,9 @@ impl Scenario {
         }
         self.held[vk.0 as usize] = down;
         let label = format!("{what} {key} at {}", self.clock());
-        self.timers.extend(decision.timers);
-        self.push_step(label, Some(suppressed), Some(masked), decision.fire);
+        let Decision { fire, timers, .. } = decision;
+        self.engine.start_timers(timers, &mut self.timers);
+        self.push_step(label, Some(suppressed), Some(masked), fire);
         if self.check_symmetry {
             self.check_press(vk, key, what, suppressed);
         }
@@ -653,6 +656,13 @@ impl Scenario {
                 "{label}: VK 0x{vk:02X} is down in Windows but physically up"
             ));
         }
+    }
+
+    /// Drops every queued timer the engine no longer waits for, as the
+    /// daemon does after a reset.
+    fn drop_stale_timers(&mut self) {
+        let engine = &self.engine;
+        self.timers.retain(&|token| engine.is_live(token));
     }
 
     fn is_held(&self, key: &str) -> bool {

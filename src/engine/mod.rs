@@ -5,15 +5,16 @@
 //! # Architecture
 //!
 //! ```text
-//!   Win32 WH_KEYBOARD_LL                          hook timer threads
-//!          |                                              |
-//!          v                                              v
-//!   hook::keyboard_hook_callback (adapter) ---- Engine::on_timer(token)
+//!   Win32 WH_KEYBOARD_LL               main loop, gesture timer due
+//!          |                                       |
+//!          v                                       v
+//!   hook::keyboard_hook_callback (adapter)   Engine::on_timer(token)
 //!     - drops negative codes and the daemon's own injected events
 //!     - KBDLLHOOKSTRUCT -> KeyEvent
 //!     - Engine::on_key(event, &bindings, &env) -> Decision
-//!     - sends the menu mask key if Decision::mask, starts
-//!       Decision::timers, runs the fast actions of Decision::fire and
+//!     - hands Decision::timers to the main thread's gesture timers
+//!       (Engine::start_timers), sends the menu mask key if
+//!       Decision::mask, runs the fast actions of Decision::fire and
 //!       queues the others for the action executor, then returns
 //!       LRESULT(1) if Decision::suppress, else CallNextHookEx
 //! ```
@@ -21,9 +22,11 @@
 //! The engine is plain Rust with no Win32 calls, no threads, no locks and
 //! no clock of its own. Everything from outside comes in through the
 //! [`Env`] trait: the time of the event, the operating system's view of the
-//! keys held and the foreground window for `when:` conditions. Because
-//! of that, the whole decision path runs under test with a fake `Env`
-//! (`testing::Scenario`), from a RON config and a script of key events.
+//! keys held and the foreground window for `when:` conditions; and the
+//! timers it asks for go out through the [`Scheduler`] trait. Because of
+//! that, the whole decision path runs under test with a fake `Env` and a
+//! [`TimerQueue`] (`testing::Scenario`), from a RON config and a script of
+//! key events.
 //!
 //! What keeps it pure: `#![forbid(unsafe_code)]` below rules out direct
 //! FFI, because every Win32 call through the `windows` crate is `unsafe`.
@@ -42,15 +45,16 @@
 //!   key-down was suppressed or passed, so that its auto-repeats and key-up
 //!   are treated the same way. A foreground change marks the suppressed
 //!   ones as forgotten: their key-ups are no longer due to be suppressed.
-//! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
-//!   `DoubleTap` entries, keyed by virtual-key code.
+//! - `gestures` (`gestures::Gestures`): the pending press of each key, one
+//!   machine for its `Tap`, `Hold` and `DoubleTap` (roadmap item 2.2), and
+//!   the Holds left to a late timer.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
 //! - `mask_owed`: a `MaskOnly` auto-blocker matched the last key-down, so
 //!   the next key event asks for the menu mask key too.
 //!
 //! [`Engine::reset`] (`swch off`, `swch on`) drops every pending entry and
-//! an owed mask, keeps only the Hold generation counter, and takes the held
-//! keys from the OS key state.
+//! an owed mask, starts a new timer generation, and takes the held keys
+//! from the OS key state.
 //!
 //! The binding list is not engine state. The caller passes a snapshot on
 //! every call, already sorted with [`sort_by_specificity`], so a hot reload
@@ -60,43 +64,44 @@
 //! ## Time
 //!
 //! Deadlines are `Instant`s derived from [`Env::now`], stored in the pending
-//! entries. `Tap`, `DoubleTap`, `Chord` and `Sequence` entries expire
-//! lazily: the next event compares its time with the stored deadline.
+//! entries. `Tap`, `DoubleTap`, `Chord` and `Sequence` deadlines are checked
+//! lazily: the next event compares its time with the stored deadline. A
+//! `Chord` or `Sequence` entry also asks for an expiry timer, which frees it
+//! on time and fires nothing (roadmap item 2.2); the lazy check stays the
+//! authority, so a late or missing expiry timer changes no outcome.
 //! `Hold` must fire while no event arrives, so arming one returns a
 //! [`TimerRequest`]; the caller starts a timer and hands the
-//! [`TimerToken`] back to [`Engine::on_timer`] when it is due. Every token
-//! carries the generation of the entry it was armed for, and a token whose
-//! entry is gone or was re-armed does nothing. A late timer from an earlier
-//! press therefore cannot fire or delete a newer press (KS-11).
+//! [`TimerToken`] back to [`Engine::on_timer`] when it is due, through a
+//! [`Scheduler`] ([`Engine::start_timers`]). Every token carries the number
+//! of its arming and the engine's generation, which each reset moves on,
+//! and a token whose entry is gone, was re-armed or predates a reset is
+//! stale ([`Engine::is_live`]) and does nothing. A late timer from an
+//! earlier press therefore cannot fire or delete a newer press (KS-11).
 //!
 //! A timer can also wake late relative to the key-up. A key-up before a
 //! Hold's deadline cancels it; a key-up at or after the deadline does not,
 //! because the key was held for the whole term: the entry stays armed and
 //! its timer fires it whenever it runs. Only [`Engine::on_timer`] ever fires
-//! a Hold, so a caller that runs timer decisions off the hook thread keeps
-//! every Hold action off it. With equal Tap and Hold terms on one key
-//! exactly one of the two fires (KS-25).
+//! a Hold. Of the Tap, the Hold and the DoubleTap of one press exactly one
+//! fires, whatever their terms (KS-25). A Tap that waits for its DoubleTap
+//! window asks for a timer too, at the window's end.
 //!
-//! ## Threads and locking
+//! ## Threads
 //!
-//! The engine is single-threaded data and does not lock. For now the hook
-//! adapter keeps it behind a `Mutex` in `KeyboardHook`, reached only through
-//! `KeyboardHook::with_engine`, because `Hold` timers still run on their own
-//! short-lived `hold-timer` threads and call [`Engine::on_timer`] there; the
-//! adapter then carries out the Hold on that timer thread: a fast action
-//! runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action
-//! executor (roadmap item 2.1). The adapter holds the lock only while the
-//! engine decides and carries out every action after releasing it. `with_engine` refuses a nested call on the same thread
-//! (the event then passes) instead of deadlocking on the lock. `swch on` and
-//! `swch off` take the lock on an IPC connection worker to call
-//! [`Engine::reset`].
+//! The engine is single-threaded data and does not lock. The daemon keeps
+//! it on its main thread (`hook::main_thread`, roadmap item 2.2), the
+//! thread that installs the hooks and pumps their messages, in a
+//! thread-local reached only through `with_main`. Every caller runs there:
+//! both hook callbacks, the main loop's timers and `swch on` and `swch off`,
+//! which call [`Engine::reset`]. `with_main` refuses a nested call on the
+//! same thread (the event then passes) instead of panicking.
 //!
-//! The adapter's [`Env::now`] reads the clock inside the lock, and a timer
-//! thread waits until `Instant::now()` has reached its [`TimerRequest::due`]
-//! before it locks. A key-up and the Hold timer of the same press are
-//! therefore decided in clock order, which is what makes Tap and Hold with
-//! equal terms exclusive. Moving the timers onto the hook thread is roadmap
-//! item 2.2.
+//! The adapter's [`Env::now`] reads the clock once per event, and the main
+//! loop hands a token to [`Engine::on_timer`] only once `Instant::now()` has
+//! reached its [`TimerRequest::due`]. The engine compares `Instant`s, so a
+//! key-up and the Hold timer of the same press are decided in clock order
+//! whichever of the two the loop sees first, which is what makes Tap and
+//! Hold with equal terms exclusive.
 //!
 //! ## Decision rules
 //!
@@ -134,10 +139,20 @@
 //!    - `Tap`, `Hold` and `DoubleTap`: every deferred binding on the same
 //!      keys (in any order) with the same `when:` (as written) that matches
 //!      the press acts with the winner, as one group, so a Tap and a Hold
-//!      on one key arm together. Only the first binding of each trigger
-//!      kind in the group acts. They ignore repeats and arm under the key
-//!      just pressed (so under a key of the combo, whose key-up resolves
-//!      them).
+//!      on one key arm together, as one press that resolves to one of them
+//!      (KS-25). Only the first binding of each trigger kind in the group
+//!      acts. They ignore repeats and arm under the key just pressed (so
+//!      under a key of the combo, whose key-up resolves them). A first
+//!      key-down also ends the DoubleTap window of its key: the DoubleTap
+//!      fires if the same group, keys and `when:`, wins this key-down
+//!      within the window, and the key-down is spent (known issue 74).
+//!    - A first key-down of any key fires the Tap of another key that waits
+//!      for its DoubleTap window, ahead of the new key, and cancels the
+//!      pending gesture of another key whose key-down passed (owner
+//!      decision, roadmap item 2.2, known issue 67): a key pressed during it
+//!      makes it a shortcut, such as Ctrl+C. A Hold whose term has passed
+//!      by the clock stays for its timer, so a late timer changes nothing.
+//!      A gesture whose key-down was swallowed stays.
 //!
 //!    The winner, or any acting member of its group, with `block_default`
 //!    asks for suppression; a losing binding never does. One without it
@@ -173,10 +188,13 @@
 //!    keys whose key-ups it swallows as blocked, but only keys still held
 //!    whose key-down did not pass (KS-30, KS-32).
 //!
-//! On a key-up the key is released, a pending Tap fires if its deadline has
-//! not passed, and a pending Hold is cancelled if its deadline has not
-//! passed. A Hold whose deadline has passed is left armed for its timer,
-//! which fires it even if the timer runs after the key-up (KS-25). The
+//! On a key-up the key is released and its press resolves. A Hold whose
+//! deadline has passed resolves it: the press is left to the Hold's timer,
+//! which fires it even if the timer runs after the key-up, and fires no Tap
+//! (KS-25). Otherwise the Hold is cancelled, and a Tap whose deadline has
+//! not passed fires now, or, if the press opens a DoubleTap window, waits
+//! for the window on a timer of its own (roadmap item 2.2, open question
+//! 5). A DoubleTap window opens if the key-up comes before it closes. The
 //! key-up of a key marked passed always passes. Otherwise it is suppressed
 //! if the key was marked blocked or if a Tap or Hold was pending. A
 //! foreground change forgets which key-ups were due to be suppressed: such
@@ -204,6 +222,7 @@ mod env;
 mod gestures;
 mod keys;
 mod matching;
+mod schedule;
 mod sequences;
 mod winner;
 
@@ -217,7 +236,7 @@ mod scenarios;
 mod properties;
 
 use std::cmp::Reverse;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
@@ -226,13 +245,13 @@ use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::trigger::Trigger;
 
 pub use env::Env;
+pub use schedule::{Scheduler, TimerQueue};
 
 use chords::{ChordOutcome, Chords};
 use env::EnvForeground;
-use gestures::{Gestures, HoldRelease};
+use gestures::Gestures;
 use keys::KeyState;
 use sequences::{SequenceOutcome, Sequences};
-use winner::GroupArms;
 
 /// Whether a key went down (including auto-repeats) or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,12 +284,58 @@ impl KeyEvent {
     }
 }
 
-/// Identifies the pending gesture a timer was started for. Opaque: the
-/// caller only hands it back to [`Engine::on_timer`].
+/// Identifies the pending entry a timer was started for. Opaque: the caller
+/// only hands it back to [`Engine::on_timer`] and asks [`Engine::is_live`]
+/// about it.
+///
+/// `generation` counts [`Engine::reset`] calls, `slot` names the table the
+/// entry is in, and `seq` is the engine-wide number of the arming, so two
+/// armings never share a token, across resets included (KS-11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerToken {
-    vk: u16,
-    generation: u64,
+    generation: u32,
+    slot: TimerSlot,
+    seq: u64,
+}
+
+/// The table a timer's entry is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimerSlot {
+    /// The gesture pending on the press of this virtual-key code.
+    Gesture(u16),
+    /// A pending chord's expiry.
+    Chord,
+    /// A pending sequence's expiry.
+    Sequence,
+}
+
+/// Where the engine's tokens come from.
+#[derive(Default)]
+struct Ids {
+    /// How many resets there were, wrapping.
+    generation: u32,
+    /// The `seq` of the latest arming, wrapping; never reset.
+    last_seq: u64,
+}
+
+impl Ids {
+    /// A number no earlier arming has.
+    fn next_seq(&mut self) -> u64 {
+        self.last_seq = self.last_seq.wrapping_add(1);
+        self.last_seq
+    }
+
+    /// The timer for the entry armed in `slot` as `seq`, due at `due`.
+    fn request(&self, slot: TimerSlot, seq: u64, due: Instant) -> TimerRequest {
+        TimerRequest {
+            token: TimerToken {
+                generation: self.generation,
+                slot,
+                seq,
+            },
+            due,
+        }
+    }
 }
 
 /// A timer the caller must start: call [`Engine::on_timer`] with `token`
@@ -321,6 +386,7 @@ pub struct Engine {
     /// A `MaskOnly` auto-blocker matched the last key-down: the next key
     /// event asks for the menu mask key too.
     mask_owed: bool,
+    ids: Ids,
 }
 
 impl Default for Engine {
@@ -337,6 +403,7 @@ impl Engine {
             chords: Chords::new(),
             sequences: Sequences::new(),
             mask_owed: false,
+            ids: Ids::default(),
         }
     }
 
@@ -364,20 +431,70 @@ impl Engine {
     }
 
     /// Decides a timer that the caller started for a [`TimerRequest`]. A
-    /// token whose gesture was cancelled or re-armed fires nothing.
+    /// token whose entry was cancelled, re-armed or reset fires nothing.
     pub fn on_timer(&mut self, token: TimerToken) -> Decision {
         let mut decision = Decision::default();
-        if let Some(action) = self.gestures.fire_hold(token) {
-            decision.fire.push(action);
+        if token.generation != self.ids.generation {
+            return decision;
+        }
+        match token.slot {
+            TimerSlot::Gesture(vk) => self.gestures.on_timer(vk, token.seq, &mut decision.fire),
+            // An expiry fires nothing: it frees the entry on time.
+            TimerSlot::Chord => self.chords.expire(token.seq),
+            TimerSlot::Sequence => self.sequences.expire(token.seq),
         }
         decision
     }
 
-    /// The caller could not start the timer for `token` (for example, a
-    /// thread could not be spawned). Its Hold is dropped: it never fires,
-    /// and its key can arm a new Hold on the next press.
+    /// Whether an entry still waits for the timer of `token`: one from this
+    /// generation, armed as that `seq`. A stale token does nothing in
+    /// [`on_timer`](Self::on_timer), so a caller may drop it from its queue.
+    pub fn is_live(&self, token: TimerToken) -> bool {
+        token.generation == self.ids.generation
+            && match token.slot {
+                TimerSlot::Gesture(vk) => self.gestures.is_live(vk, token.seq),
+                TimerSlot::Chord => self.chords.is_live(token.seq),
+                TimerSlot::Sequence => self.sequences.is_live(token.seq),
+            }
+    }
+
+    /// Hands the timers of a decision to `scheduler`, after dropping every
+    /// timer it holds that is no longer live, so that it keeps no stale
+    /// timer for long. A timer the scheduler refuses is forgotten
+    /// ([`forget_timer`](Self::forget_timer)). Returns how many it refused.
+    pub fn start_timers(
+        &mut self,
+        timers: Vec<TimerRequest>,
+        scheduler: &mut dyn Scheduler,
+    ) -> u32 {
+        if timers.is_empty() {
+            return 0;
+        }
+        scheduler.retain(&|token| self.is_live(token));
+        let mut refused = 0;
+        for request in timers {
+            if !scheduler.start(request) {
+                self.forget_timer(request.token);
+                refused += 1;
+            }
+        }
+        refused
+    }
+
+    /// The caller could not start the timer for `token`. A Hold is dropped:
+    /// it never fires, and its key can arm a new Hold on the next press
+    /// (KS-33). A Tap that waits for its DoubleTap window is kept: it fires
+    /// at the next key-down, or with the next timer handed back after its
+    /// window closed.
     pub fn forget_timer(&mut self, token: TimerToken) {
-        self.gestures.forget_hold(token);
+        if token.generation != self.ids.generation {
+            return;
+        }
+        match token.slot {
+            TimerSlot::Gesture(vk) => self.gestures.forget(vk, token.seq),
+            // The next key-down drops an expired entry anyway.
+            TimerSlot::Chord | TimerSlot::Sequence => {}
+        }
     }
 
     /// The foreground window changed. Key-ups may have been lost while a
@@ -400,9 +517,9 @@ impl Engine {
     /// Remapping was switched off or on (`swch off`, `swch on`; KS-31).
     ///
     /// Every pending Tap, Hold, DoubleTap, chord and sequence is dropped, so
-    /// none completes across the switch, and a Hold timer still running
-    /// finds nothing to fire. The Hold generation keeps counting, so such a
-    /// timer cannot match a Hold armed after the reset either (KS-11).
+    /// none completes across the switch, and the reset starts a new
+    /// generation: a timer started before it is stale ([`is_live`](Self::is_live))
+    /// and fires nothing, also against an entry armed after it (KS-11).
     ///
     /// The held keys are taken from [`Env::os_key_down`], each on record as
     /// passed: while remapping was off the engine saw no event and Windows
@@ -419,6 +536,7 @@ impl Engine {
         self.sequences = Sequences::new();
         self.mask_owed = false;
         self.keys.reset_from_os(env);
+        self.ids.generation = self.ids.generation.wrapping_add(1);
     }
 
     fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
@@ -431,9 +549,35 @@ impl Engine {
         // 1.6, KS-13). Elected on every key-down, auto-repeats included, so
         // a less specific binding never fires in the winner's place.
         let winner = winner::elect(vk, bindings, &self.keys, &foreground);
-        let mut arms = GroupArms::default();
 
         let mut decision = Decision::default();
+        if !was_repeat {
+            // A Tap of another key that waits for its DoubleTap window has
+            // completed: it fires now, ahead of this key. A pending gesture
+            // of another key whose key-down passed is cancelled, since this
+            // key makes it a shortcut (owner decision, roadmap item 2.2).
+            self.gestures
+                .other_key_down(vk.0, &self.keys, now, &mut decision.fire);
+
+            // A deferred winner's group arms one press, which resolves to
+            // one of its gestures (KS-25). The press also ends this key's
+            // DoubleTap window, completing it if the same group wins it.
+            let group = winner
+                .as_ref()
+                .and_then(|winner| winner.deferred_group(vk, bindings, &self.keys));
+            let seq = self.ids.next_seq();
+            if let Some(due) =
+                self.gestures
+                    .press(vk.0, group.as_ref(), now, seq, &mut decision.fire)
+            {
+                decision
+                    .timers
+                    .push(self.ids.request(TimerSlot::Gesture(vk.0), seq, due));
+            }
+            if group.is_some_and(|group| group.block) {
+                decision.suppress = true;
+            }
+        }
 
         for (index, binding) in bindings.iter().enumerate() {
             match &binding.kind {
@@ -482,52 +626,9 @@ impl Engine {
                                 decision.suppress = true;
                             }
                         }
-                        Trigger::Tap(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            self.gestures.arm_tap(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                            );
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
-                        Trigger::Hold(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            if let Some(timer) = self.gestures.arm_hold(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                            ) {
-                                decision.timers.push(timer);
-                            }
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
-                        Trigger::DoubleTap(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            if let Some(action) = self.gestures.double_tap(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                            ) {
-                                decision.fire.push(action);
-                            }
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
+                        // The winner's gesture group acted above, as one
+                        // press; its repeats arm nothing.
+                        Trigger::Tap(_) | Trigger::Hold(_) | Trigger::DoubleTap(_) => {}
                     }
                 }
                 BindingKind::Sequence { steps, max_gap } => {
@@ -536,15 +637,22 @@ impl Engine {
                     if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
+                    let seq = self.ids.next_seq();
                     match self.sequences.on_key_down(
                         &self.keys,
                         &binding.action,
                         steps,
                         *max_gap,
                         now,
+                        seq,
                     ) {
                         SequenceOutcome::NotMatching => {}
-                        SequenceOutcome::Advanced => decision.suppress = true,
+                        SequenceOutcome::Advanced { due } => {
+                            decision.suppress = true;
+                            decision
+                                .timers
+                                .push(self.ids.request(TimerSlot::Sequence, seq, due));
+                        }
                         SequenceOutcome::Completed {
                             action,
                             last_step_keys,
@@ -561,12 +669,19 @@ impl Engine {
                     if was_repeat || !binding.condition.evaluate(&foreground) {
                         continue;
                     }
+                    let seq = self.ids.next_seq();
                     match self
                         .chords
-                        .on_key_down(vk, &binding.action, keys, *window, now)
+                        .on_key_down(vk, &binding.action, keys, *window, now, seq)
                     {
                         ChordOutcome::NotInChord => {}
                         ChordOutcome::Pending => decision.suppress = true,
+                        ChordOutcome::Started { due } => {
+                            decision.suppress = true;
+                            decision
+                                .timers
+                                .push(self.ids.request(TimerSlot::Chord, seq, due));
+                        }
                         ChordOutcome::Completed { action, keys } => {
                             decision.suppress = true;
                             decision.fire.push(action);
@@ -619,28 +734,30 @@ impl Engine {
     fn on_key_up(&mut self, vk: VIRTUAL_KEY, env: &dyn Env) -> Decision {
         let now = env.now();
         self.keys.release(vk);
+        let was_passed = self.keys.is_passed(vk.0);
 
-        // Resolve every deferred gesture pending for this key. A Tap fires
-        // if its term has not ended. A Hold is cancelled if its term has
-        // not ended, and otherwise left to its timer, which fires it (the
-        // key-up never does). Both can be pending at once on the same key:
-        // they were armed independently and resolve independently.
-        let tap = self.gestures.resolve_tap(vk, now);
-        let tap_fired = tap.is_some();
-        let hold = self.gestures.release_hold(vk, now);
-
+        // Resolve the press of this key. Its Hold is cancelled if its term
+        // has not ended, and otherwise the press is left to the Hold's
+        // timer, which fires it (the key-up never does). Else its Tap fires
+        // if its term has not ended, unless the press opens a DoubleTap
+        // window: then the Tap waits for the window, on a timer of its own.
+        let seq = self.ids.next_seq();
+        let released = self.gestures.release(vk.0, now, was_passed, seq);
         let mut decision = Decision::default();
-        decision.fire.extend(tap);
+        decision.fire.extend(released.fired);
+        if let Some(due) = released.window_due {
+            decision
+                .timers
+                .push(self.ids.request(TimerSlot::Gesture(vk.0), seq, due));
+        }
 
         // A key-up whose key-down reached Windows always reaches it too, or
         // the key stays held there. Otherwise it is suppressed if the
         // key-down is on record as suppressed, or if a Tap or Hold of the
         // press was pending: a focus change may have forgotten the record,
         // and the gesture is still evidence of a swallowed press.
-        let was_passed = self.keys.is_passed(vk.0);
         let was_blocked = self.keys.take_blocked(vk.0);
-        let gesture_bound = tap_fired || hold != HoldRelease::NotPending;
-        decision.suppress = was_blocked || (gesture_bound && !was_passed);
+        decision.suppress = was_blocked || (released.gesture_bound && !was_passed);
         self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
@@ -658,10 +775,15 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F13, VK_F14, VK_MENU, VK_SHIFT};
+    use crate::engine::{Scheduler, TimerQueue};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_SHIFT,
+    };
 
     /// An [`Env`] stopped at one instant with nothing held and no
     /// foreground window: enough to arm a Hold and read its timer token.
@@ -769,6 +891,274 @@ mod tests {
             engine.on_timer(token),
             Decision::default(),
             "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
+        );
+    }
+
+    /// A [`Scheduler`] that refuses every timer, as the main thread's does
+    /// when Windows cannot set its timer.
+    struct Refusing;
+
+    impl Scheduler for Refusing {
+        fn start(&mut self, _request: TimerRequest) -> bool {
+            false
+        }
+        fn retain(&mut self, _live: &dyn Fn(TimerToken) -> bool) {}
+    }
+
+    const HOLD_F13: &str =
+        r#"( bindings: [ (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)) ] )"#;
+
+    fn hold_f13() -> Vec<Binding> {
+        let mut bindings = crate::config::from_ron_str(HOLD_F13).expect("config parses");
+        sort_by_specificity(&mut bindings);
+        bindings
+    }
+
+    #[test]
+    fn a_token_from_before_a_reset_is_stale() {
+        // KS-11 across `swch off` / `swch on`: the reset starts a new
+        // generation, so a timer started before it fires nothing, also
+        // against a Hold armed after it.
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+
+        let before = engine
+            .on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0))
+            .timers[0]
+            .token;
+        assert!(engine.is_live(before));
+        engine.reset(&FixedEnv(t0 + Duration::from_millis(50)));
+        assert!(!engine.is_live(before), "the reset makes the token stale");
+        assert_eq!(engine.on_timer(before), Decision::default());
+
+        let after = engine
+            .on_key(
+                KeyEvent::down(VK_F13),
+                &bindings,
+                &FixedEnv(t0 + Duration::from_millis(100)),
+            )
+            .timers[0]
+            .token;
+        assert_ne!(before, after);
+        assert!(engine.is_live(after));
+        assert!(!engine.is_live(before));
+        assert_eq!(
+            engine.on_timer(before),
+            Decision::default(),
+            "the old token does not fire the new Hold"
+        );
+        assert_eq!(
+            engine.on_timer(after).fire,
+            [BindAction::PressKey(VK_LSHIFT)]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_hold_leaves_its_token_stale() {
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+        let mut queue = TimerQueue::new();
+
+        let mut down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let token = down.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut down.timers), &mut queue),
+            0
+        );
+        assert!(engine.is_live(token));
+
+        let _ = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(50)),
+        );
+        assert!(!engine.is_live(token), "the key-up cancelled the Hold");
+        assert_eq!(engine.on_timer(token), Decision::default());
+
+        // The next arming prunes the stale timer from the queue.
+        let mut again = engine.on_key(
+            KeyEvent::down(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(100)),
+        );
+        engine.start_timers(std::mem::take(&mut again.timers), &mut queue);
+        assert_eq!(queue.len(), 1, "only the live timer is queued");
+    }
+
+    #[test]
+    fn a_timer_the_scheduler_refuses_is_forgotten() {
+        // KS-33: a Hold whose timer cannot be set never fires and does not
+        // keep its key from arming the next press.
+        let t0 = Instant::now();
+        let bindings = hold_f13();
+        let mut engine = Engine::new();
+
+        let mut down = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
+        let token = down.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut down.timers), &mut Refusing),
+            1,
+            "one timer was refused"
+        );
+        assert!(!engine.is_live(token));
+
+        let up = engine.on_key(
+            KeyEvent::up(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(300)),
+        );
+        assert!(up.fire.is_empty(), "the forgotten Hold never fires");
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
+        assert_eq!(engine.on_timer(token), Decision::default());
+
+        let mut queue = TimerQueue::new();
+        let mut again = engine.on_key(
+            KeyEvent::down(VK_F13),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(400)),
+        );
+        let next = again.timers[0].token;
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut again.timers), &mut queue),
+            0
+        );
+        assert!(
+            engine.is_live(next),
+            "the next press arms a Hold of its own"
+        );
+    }
+
+    #[test]
+    fn a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes() {
+        // Orchestrator ruling M6: a Tap that waits for its DoubleTap window
+        // and whose timer the scheduler refused is not dropped. It fires at
+        // the next event, or, as here, at the next timer the caller hands
+        // back once its window has closed by that timer's clock.
+        let t0 = Instant::now();
+        let at = |ms: u64| FixedEnv(t0 + Duration::from_millis(ms));
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: SwitchLanguage, trigger: Tap(200)),
+                (keys: "F13", action: ToggleCapsLock, trigger: DoubleTap(300)),
+                (keys: "F14", action: DoNothing, trigger: Hold(500)),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut queue = TimerQueue::new();
+
+        let mut hold = engine.on_key(KeyEvent::down(VK_F14), &bindings, &at(0));
+        let hold_token = hold.timers[0].token;
+        engine.start_timers(std::mem::take(&mut hold.timers), &mut queue);
+        let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &at(10));
+        let mut up = engine.on_key(KeyEvent::up(VK_F13), &bindings, &at(90));
+        assert!(up.fire.is_empty(), "the Tap waits for the window");
+        assert_eq!(
+            engine.start_timers(std::mem::take(&mut up.timers), &mut Refusing),
+            1,
+            "the window's timer is refused"
+        );
+
+        assert_eq!(
+            engine.on_timer(hold_token).fire,
+            [BindAction::SwitchLanguage, BindAction::DoNothing],
+            "the Hold's timer at 500 ms fires the waiting Tap first"
+        );
+    }
+
+    fn loaded(ron: &str) -> Vec<Binding> {
+        let mut bindings = crate::config::from_ron_str(ron).expect("config parses");
+        sort_by_specificity(&mut bindings);
+        bindings
+    }
+
+    const JK_CHORD: &str =
+        r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: SwitchLanguage) ] )"#;
+
+    #[test]
+    fn a_chord_start_asks_for_a_timer_at_the_end_of_its_window() {
+        // Roadmap item 2.2 (D8): a pending chord expires on its own timer.
+        let t0 = Instant::now();
+        let bindings = loaded(JK_CHORD);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(KeyEvent::down(VK_J), &bindings, &FixedEnv(t0));
+        let [timer] = decision.timers[..] else {
+            panic!("one expiry timer, got {:?}", decision.timers)
+        };
+        assert_eq!(timer.due, t0 + Duration::from_millis(50));
+        assert!(engine.is_live(timer.token));
+    }
+
+    #[test]
+    fn a_chord_expiry_timer_drops_the_pending_chord() {
+        let t0 = Instant::now();
+        let bindings = loaded(JK_CHORD);
+        let mut engine = Engine::new();
+
+        let decision = engine.on_key(KeyEvent::down(VK_J), &bindings, &FixedEnv(t0));
+        let [timer] = decision.timers[..] else {
+            panic!("one expiry timer, got {:?}", decision.timers)
+        };
+        assert_eq!(
+            engine.on_timer(timer.token),
+            Decision::default(),
+            "an expiry fires nothing"
+        );
+        assert!(!engine.is_live(timer.token), "the entry is gone");
+
+        let _ = engine.on_key(
+            KeyEvent::up(VK_J),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(55)),
+        );
+        let k = engine.on_key(
+            KeyEvent::down(VK_K),
+            &bindings,
+            &FixedEnv(t0 + Duration::from_millis(60)),
+        );
+        assert!(k.fire.is_empty(), "K after the window starts a new chord");
+        assert_eq!(k.timers.len(), 1, "with a timer of its own");
+    }
+
+    #[test]
+    fn each_sequence_step_asks_for_a_new_expiry_timer_and_the_old_one_goes_stale() {
+        let t0 = Instant::now();
+        let at = |ms: u64| FixedEnv(t0 + Duration::from_millis(ms));
+        let bindings = loaded(
+            r#"( bindings: [ (sequence: (steps: ["F13", "F14", "F15"], max_gap_ms: 500), action: SwitchLanguage) ] )"#,
+        );
+        let mut engine = Engine::new();
+
+        let first = engine.on_key(KeyEvent::down(VK_F13), &bindings, &at(0));
+        let [start] = first.timers[..] else {
+            panic!("one expiry timer, got {:?}", first.timers)
+        };
+        assert_eq!(start.due, t0 + Duration::from_millis(500));
+        let _ = engine.on_key(KeyEvent::up(VK_F13), &bindings, &at(50));
+
+        let second = engine.on_key(KeyEvent::down(VK_F14), &bindings, &at(100));
+        let [advance] = second.timers[..] else {
+            panic!("one expiry timer, got {:?}", second.timers)
+        };
+        assert_eq!(advance.due, t0 + Duration::from_millis(600));
+        assert!(!engine.is_live(start.token), "the step took a new number");
+        assert!(engine.is_live(advance.token));
+        assert_eq!(
+            engine.on_timer(start.token),
+            Decision::default(),
+            "the stale token neither fires nor drops the sequence"
+        );
+        let _ = engine.on_key(KeyEvent::up(VK_F14), &bindings, &at(150));
+
+        let last = engine.on_key(KeyEvent::down(VK_F15), &bindings, &at(200));
+        assert_eq!(last.fire, [BindAction::SwitchLanguage]);
+        assert!(
+            !engine.is_live(advance.token),
+            "a completed sequence is gone"
         );
     }
 

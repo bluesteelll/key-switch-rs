@@ -115,11 +115,12 @@ impl PartialEq for BindAction {
 
 impl Eq for BindAction {}
 
-/// An action that runs on the thread that fires it (the hook thread, or a
-/// Hold's `hold-timer` thread) before the hook returns, so that its output
-/// stays in order with the keys typed after it (roadmap item 2.1). Each
-/// one only posts a message or sends one key press. Every other action
-/// goes to the action executor; [`BindAction::as_fast`] decides which.
+/// An action that runs on the thread that fires it, the main thread, in the
+/// hook callback before the hook returns or in the main loop for a Hold, so
+/// that its output stays in order with the keys typed after it (roadmap
+/// items 2.1 and 2.2). Each one only posts a message or sends one key
+/// press. Every other action goes to the action executor;
+/// [`BindAction::as_fast`] decides which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastAction {
     SwitchLanguage,
@@ -139,7 +140,15 @@ impl FastAction {
     /// Runs the action on the calling thread. It can run on the hook
     /// thread at every auto-repeat, so a failure is only counted
     /// (`logging::counters`), never logged.
+    ///
+    /// Under test it is only recorded, on the calling thread
+    /// (`fast_actions_run`): a test that carries out a decision must not
+    /// type into, post to or switch the layout of the window that has the
+    /// focus on the machine that runs it, whatever its action.
     pub fn run(self) {
+        #[cfg(test)]
+        FAST_ACTIONS_RUN.with(|ran| ran.borrow_mut().push(self));
+        #[cfg(not(test))]
         match self {
             FastAction::SwitchLanguage => SystemFunction::SwitchLanguage.execute(),
             FastAction::SwitchLanguageBackward => SystemFunction::SwitchLanguageBackward.execute(),
@@ -154,6 +163,20 @@ impl FastAction {
             FastAction::DoNothing => {}
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The fast actions `FastAction::run` was asked to run on this thread,
+    /// in order.
+    static FAST_ACTIONS_RUN: std::cell::RefCell<Vec<FastAction>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the fast actions `FastAction::run` recorded on this thread.
+#[cfg(test)]
+pub(crate) fn fast_actions_run() -> Vec<FastAction> {
+    FAST_ACTIONS_RUN.with(|ran| ran.take())
 }
 
 impl BindAction {
@@ -229,6 +252,8 @@ impl BindAction {
 /// Synthesize a single key press (down + up), for `PressKey` and
 /// `Media(...)`. It runs on the hook thread at every auto-repeat, so a short
 /// count is only counted (`key_press_short`), never logged.
+// Under test `FastAction::run`, its only caller, only records.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     let inputs = [
         INPUT {
@@ -268,6 +293,8 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
 /// Posts `msg` to the foreground window, for `PostMessage`. It runs on the
 /// hook thread, so a failed post is only counted (`post_message_failed`),
 /// never logged.
+// Under test `FastAction::run`, its only caller, only records.
+#[cfg_attr(test, allow(dead_code))]
 fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
     // SAFETY: GetForegroundWindow / PostMessageW have no preconditions on
     // their inputs beyond what we already validate (HWND non-invalid).
@@ -352,7 +379,7 @@ impl std::fmt::Display for BindAction {
 mod tests {
     use super::*;
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_BACK;
-    use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+    use windows::Win32::UI::WindowsAndMessaging::{WM_CLOSE, WM_NULL};
 
     #[test]
     fn only_press_key_volume_up_and_volume_down_repeat_by_default() {
@@ -390,6 +417,23 @@ mod tests {
         for (action, expected) in actions {
             assert_eq!(action.repeats_by_default(), expected, "{action:?}");
         }
+    }
+
+    #[test]
+    fn under_test_a_fast_action_is_only_recorded() {
+        // Every test that carries out a decision relies on this. WM_NULL is
+        // the action here, so that a run that did reach Windows would post
+        // a message that does nothing.
+        let null = FastAction::PostMessage {
+            msg: WM_NULL,
+            wparam: 0,
+            lparam: 0,
+        };
+        assert_eq!(fast_actions_run(), []);
+        null.run();
+        FastAction::DoNothing.run();
+        assert_eq!(fast_actions_run(), [null, FastAction::DoNothing]);
+        assert_eq!(fast_actions_run(), [], "taking them empties the record");
     }
 
     #[test]

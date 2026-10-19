@@ -1,84 +1,150 @@
-//! Pending `Tap`, `Hold` and `DoubleTap` gestures, as plain data.
+//! Pending `Tap`, `Hold` and `DoubleTap` gestures, as plain data: one
+//! machine per press (roadmap item 2.2, KS-25).
 //!
-//! Every entry is keyed by the virtual-key code of the key-down that armed
-//! it, and each gesture kind has its own table, so Tap and Hold on one key
-//! are armed and resolved independently, as before the engine existed.
+//! A first key-down that a gesture group wins (`winner::GroupArming`) arms
+//! one press under the key just pressed, with every gesture of the group:
+//! a Tap deadline, a Hold deadline, for which the engine asks for a timer,
+//! and a DoubleTap window. The press resolves to one of them, never two:
 //!
-//! Time comes in as arguments; nothing here reads a clock or sleeps:
+//! - Its **Hold**, when the Hold's timer fires while the key is held, or
+//!   when the key-up came at or after the Hold's term: the press is then
+//!   left to its timer as a due Hold, which fires even if the timer runs
+//!   after the key-up. Only a timer ever fires a Hold. A press that its Hold
+//!   resolved fires no Tap and opens no DoubleTap window.
+//! - Otherwise, at its key-up, its **Tap** if the key-up came before the
+//!   Tap's term, and its **DoubleTap** window opens if the key-up came
+//!   before the window closed. With both, the Tap waits for the window
+//!   (open question 5): a second press of the key that the same group wins
+//!   within the window fires only the DoubleTap, and otherwise the Tap fires
+//!   when the window closes, on its own timer, or at once when a key goes
+//!   down first. Without a DoubleTap the Tap fires at the key-up, as before.
 //!
-//! - **Tap** stores a deadline. The key-up fires it only before the
-//!   deadline. An entry whose deadline has passed counts as absent, which is
-//!   what the per-press cleanup timer used to achieve by deleting it.
-//! - **DoubleTap** stores a deadline the same way. A second key-down before
-//!   it fires the stored action; a later one arms afresh.
-//! - **Hold** must fire without an event, so arming it returns a
-//!   [`TimerRequest`]. Each armed entry gets a new generation number, and the
-//!   timer token carries it: a timer only fires the entry it was started
-//!   for. A timer left over from an earlier press of the same key finds a
-//!   different generation and does nothing (KS-11).
+//! A DoubleTap window belongs to its group, the keys and `when:` of the
+//! bindings that armed it (known issue 74): a press of the key that another
+//! group wins ends the window instead of completing it, and opens its own.
+//! Identity by keys and `when:`, not by a binding's place in the list,
+//! survives a reload.
 //!
-//!   A key-up before the term cancels the Hold. A key-up at or after the
-//!   term does not: the key was held for the whole term, so the Hold stays
-//!   armed until its timer fires it, even when the timer runs after the
-//!   key-up because its thread woke late. Only the timer ever fires a Hold,
-//!   which keeps Hold actions off the hook thread. With equal Tap and Hold
-//!   terms exactly one of the two fires (KS-25): the Tap needs a key-up
-//!   strictly before the shared deadline, the Hold a key-up at or after it,
-//!   or none before the timer.
+//! A first key-down of another key cancels a pending press whose key-down
+//! passed (owner decision, known issue 67), held or waiting for its second
+//! press, unless its Hold's term has passed by the clock; a press whose
+//! key-down was swallowed stays. A waiting Tap fires instead, ahead of the
+//! new key. Auto-repeats and key-ups of other keys change nothing.
+//!
+//! Time comes in as arguments; nothing here reads a clock or sleeps. Every
+//! press keeps the engine's number of its arming (`seq`), which its timer
+//! token carries, so a timer only acts on the press it was started for
+//! (KS-11). A press that goes on to wait for its DoubleTap window takes a
+//! new number: the timer of its cancelled Hold then finds nothing.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
-
-use super::{TimerRequest, TimerToken};
+use super::keys::KeyState;
+use super::winner::GroupArming;
 use crate::core::windows_actions::BindAction;
+use crate::data::condition::Condition;
+use crate::data::key_combination::KeyCombination;
 
-struct PendingTap {
-    vk: u16,
-    action: BindAction,
-    /// The key-up must arrive strictly before this to fire.
-    due: Instant,
+/// The keys and `when:` of the group that opened a DoubleTap window: what
+/// the group of a second press must have to complete it. `KeyCombination`
+/// compares its keys in any order.
+#[derive(PartialEq)]
+struct GroupKey {
+    keys: KeyCombination,
+    condition: Condition,
 }
 
-struct PendingHold {
+/// The gesture machine of one press of one key.
+struct Press {
     vk: u16,
-    action: BindAction,
-    generation: u64,
-    /// The term ends here; a key-up from this moment on no longer cancels.
-    due: Instant,
-    /// The key went up at or after `due`. The entry only waits for its
-    /// timer and is no longer the key's pending Hold: it neither blocks a
-    /// new arm nor answers the next key-up.
-    released: bool,
+    /// The engine's number of the arming, which this press's timer token
+    /// carries.
+    seq: u64,
+    phase: Phase,
 }
 
-/// What a key-up did to the Hold pending on its key.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum HoldRelease {
-    /// No Hold was pending on the key.
-    NotPending,
-    /// Released before the term: the Hold is gone and its timer will find
-    /// nothing.
-    Cancelled,
-    /// Released at or after the term: the Hold stays armed for its timer,
-    /// which fires it if it has not run yet.
-    Overdue,
+enum Phase {
+    /// The key is held. Each gesture with its deadline and the action it
+    /// fires; the DoubleTap with its group.
+    Held {
+        tap: Option<(Instant, BindAction)>,
+        hold: Option<(Instant, BindAction)>,
+        double: Option<(Instant, BindAction, GroupKey)>,
+    },
+    /// The key went up in time for a DoubleTap: a second press won by
+    /// `group` before `due` fires `double`. `deferred_tap` is the press's
+    /// Tap, which then waits for the window and has a timer at `due`.
+    /// `passed` is whether the press's key-down reached Windows.
+    AwaitSecond {
+        due: Instant,
+        double: BindAction,
+        group: GroupKey,
+        deferred_tap: Option<BindAction>,
+        passed: bool,
+    },
 }
 
-struct PendingDoubleTap {
+impl Phase {
+    /// When the timer this phase waits for is due, if it waits for one: the
+    /// Hold of a held press, the Tap of a press that waits for its window.
+    fn timer_due(&self) -> Option<Instant> {
+        match self {
+            Phase::Held {
+                hold: Some((due, _)),
+                ..
+            }
+            | Phase::AwaitSecond {
+                due,
+                deferred_tap: Some(_),
+                ..
+            } => Some(*due),
+            Phase::Held { .. } | Phase::AwaitSecond { .. } => None,
+        }
+    }
+
+    /// What its timer fires; `None` if it waits for no timer.
+    fn into_timer_action(self) -> Option<BindAction> {
+        match self {
+            Phase::Held {
+                hold: Some((_, action)),
+                ..
+            }
+            | Phase::AwaitSecond {
+                deferred_tap: Some(action),
+                ..
+            } => Some(action),
+            Phase::Held { .. } | Phase::AwaitSecond { .. } => None,
+        }
+    }
+}
+
+/// A press resolved as a Hold whose timer has not run yet. It is no longer
+/// its key's press: it neither blocks the next press nor answers its key-up.
+struct DueHold {
     vk: u16,
-    action: BindAction,
-    /// The second key-down must arrive strictly before this to fire.
+    seq: u64,
     due: Instant,
+    action: BindAction,
+}
+
+/// What a key-up did ([`Gestures::release`]).
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Released {
+    /// The Tap to fire now.
+    pub(super) fired: Option<BindAction>,
+    /// A Tap fired or now waits for its window, or the press had a Hold:
+    /// the gesture is evidence of a swallowed key-down.
+    pub(super) gesture_bound: bool,
+    /// The press waits for its DoubleTap window with its Tap: start a timer
+    /// due then, with the `seq` the key-up passed.
+    pub(super) window_due: Option<Instant>,
 }
 
 #[derive(Default)]
 pub(super) struct Gestures {
-    taps: Vec<PendingTap>,
-    holds: Vec<PendingHold>,
-    double_taps: Vec<PendingDoubleTap>,
-    /// Generation of the most recently armed Hold.
-    last_generation: u64,
+    /// At most one per key.
+    presses: Vec<Press>,
+    due_holds: Vec<DueHold>,
 }
 
 impl Gestures {
@@ -86,501 +152,803 @@ impl Gestures {
         Self::default()
     }
 
-    // ---- Tap ----
-
-    /// Arms a tap for `vk`. While a live tap is pending on the key, the
-    /// first one wins: a second binding, or a press whose key-up was lost,
-    /// does not replace it.
-    pub(super) fn arm_tap(
+    /// A first key-down of `vk`, at `now`, which `group` wins if it is a
+    /// gesture group, as the engine's arming `seq`. Returns the due time of
+    /// the Hold to start a timer for. Actions to fire go to `fire`.
+    ///
+    /// A press of `vk` that waits for its DoubleTap window ends here: with
+    /// a DoubleTap in `group`, the same keys and `when:` and the window
+    /// still open, its DoubleTap fires and this press is spent, arming
+    /// nothing; otherwise its waiting Tap, if any, fires first. A held press
+    /// of `vk` left over from a key-up that was never seen is replaced; its
+    /// Hold, if due by the clock, stays for its timer.
+    pub(super) fn press(
         &mut self,
-        vk: VIRTUAL_KEY,
-        action: &BindAction,
-        term: Duration,
+        vk: u16,
+        group: Option<&GroupArming>,
         now: Instant,
-    ) {
-        if let Some(index) = self.taps.iter().position(|p| p.vk == vk.0) {
-            if now < self.taps[index].due {
-                return;
+        seq: u64,
+        fire: &mut Vec<BindAction>,
+    ) -> Option<Instant> {
+        if let Some(index) = self.presses.iter().position(|p| p.vk == vk) {
+            let earlier = self.presses.remove(index);
+            match earlier.phase {
+                Phase::AwaitSecond {
+                    due,
+                    double,
+                    group: window,
+                    deferred_tap,
+                    ..
+                } => {
+                    let completes = now < due
+                        && group.is_some_and(|group| {
+                            group.double_tap.is_some()
+                                && *group.keys == window.keys
+                                && *group.condition == window.condition
+                        });
+                    if completes {
+                        fire.push(double);
+                        return None;
+                    }
+                    fire.extend(deferred_tap);
+                }
+                Phase::Held { hold, .. } => {
+                    if let Some((due, action)) = hold
+                        && now >= due
+                    {
+                        self.due_holds.push(DueHold {
+                            vk,
+                            seq: earlier.seq,
+                            due,
+                            action,
+                        });
+                    }
+                }
             }
-            self.taps.swap_remove(index);
         }
-        self.taps.push(PendingTap {
-            vk: vk.0,
-            action: action.clone(),
-            due: now + term,
+
+        let group = group?;
+        let tap = group.tap.map(|(term, action)| (now + term, action.clone()));
+        let hold = group
+            .hold
+            .map(|(term, action)| (now + term, action.clone()));
+        let double = group.double_tap.map(|(term, action)| {
+            let key = GroupKey {
+                keys: group.keys.clone(),
+                condition: group.condition.clone(),
+            };
+            (now + term, action.clone(), key)
         });
-    }
-
-    /// Resolves the tap pending on `vk` at its key-up. Returns the action to
-    /// fire if the key was released before the deadline; an expired entry is
-    /// discarded as if it had never been there.
-    pub(super) fn resolve_tap(&mut self, vk: VIRTUAL_KEY, now: Instant) -> Option<BindAction> {
-        let index = self.taps.iter().position(|p| p.vk == vk.0)?;
-        let tap = self.taps.swap_remove(index);
-        (now < tap.due).then_some(tap.action)
-    }
-
-    // ---- Hold ----
-
-    /// Arms a hold for `vk` and returns the timer to start, or `None` if a
-    /// hold is already pending on the key (the first one wins). A released
-    /// entry that still waits for its timer does not count.
-    pub(super) fn arm_hold(
-        &mut self,
-        vk: VIRTUAL_KEY,
-        action: &BindAction,
-        term: Duration,
-        now: Instant,
-    ) -> Option<TimerRequest> {
-        if self.pending_hold_index(vk).is_some() {
-            return None;
-        }
-        self.last_generation = self.last_generation.wrapping_add(1);
-        let due = now + term;
-        self.holds.push(PendingHold {
-            vk: vk.0,
-            action: action.clone(),
-            generation: self.last_generation,
-            due,
-            released: false,
+        let hold_due = hold.as_ref().map(|(due, _)| *due);
+        self.presses.push(Press {
+            vk,
+            seq,
+            phase: Phase::Held { tap, hold, double },
         });
-        Some(TimerRequest {
-            token: TimerToken {
-                vk: vk.0,
-                generation: self.last_generation,
-            },
-            due,
-        })
+        hold_due
     }
 
-    /// Resolves the hold pending on `vk` at its key-up: cancelled before
-    /// its term, left armed for its timer from the term on.
-    pub(super) fn release_hold(&mut self, vk: VIRTUAL_KEY, now: Instant) -> HoldRelease {
-        let Some(index) = self.pending_hold_index(vk) else {
-            return HoldRelease::NotPending;
-        };
-        if now < self.holds[index].due {
-            self.holds.swap_remove(index);
-            HoldRelease::Cancelled
-        } else {
-            self.holds[index].released = true;
-            HoldRelease::Overdue
-        }
-    }
-
-    /// Fires the hold that `token` was started for, if it is still pending
-    /// or was released after its term.
-    pub(super) fn fire_hold(&mut self, token: TimerToken) -> Option<BindAction> {
-        let index = self
-            .holds
+    /// The key-up of `vk` at `now`; `passed` is whether its key-down
+    /// reached Windows, and `seq` the engine's number for a press that goes
+    /// on to wait for its DoubleTap window.
+    pub(super) fn release(&mut self, vk: u16, now: Instant, passed: bool, seq: u64) -> Released {
+        let mut released = Released::default();
+        let Some(index) = self
+            .presses
             .iter()
-            .position(|p| p.vk == token.vk && p.generation == token.generation)?;
-        Some(self.holds.swap_remove(index).action)
-    }
+            .position(|p| p.vk == vk && matches!(p.phase, Phase::Held { .. }))
+        else {
+            return released;
+        };
+        let press = self.presses.remove(index);
+        let Phase::Held { tap, hold, double } = press.phase else {
+            return released;
+        };
 
-    /// Drops the hold that `token` was started for, without firing it,
-    /// because the caller could not start its timer. Without this a Hold
-    /// released after its term would wait forever for a timer that never
-    /// runs.
-    pub(super) fn forget_hold(&mut self, token: TimerToken) {
-        self.holds
-            .retain(|p| !(p.vk == token.vk && p.generation == token.generation));
-    }
-
-    /// The key's pending (not yet released) hold.
-    fn pending_hold_index(&self, vk: VIRTUAL_KEY) -> Option<usize> {
-        self.holds.iter().position(|p| p.vk == vk.0 && !p.released)
-    }
-
-    // ---- DoubleTap ----
-
-    /// Handles a key-down for a DoubleTap binding. If a press of `vk` armed
-    /// an entry less than its term ago, the entry is consumed and its action
-    /// returned. Otherwise a fresh entry is armed with this binding's action.
-    pub(super) fn double_tap(
-        &mut self,
-        vk: VIRTUAL_KEY,
-        action: &BindAction,
-        term: Duration,
-        now: Instant,
-    ) -> Option<BindAction> {
-        if let Some(index) = self.double_taps.iter().position(|p| p.vk == vk.0) {
-            let first = self.double_taps.swap_remove(index);
-            if now < first.due {
-                return Some(first.action);
+        if let Some((due, action)) = hold {
+            released.gesture_bound = true;
+            if now >= due {
+                // Held for the whole term: the Hold resolves the press, and
+                // its timer fires it whenever it runs.
+                self.due_holds.push(DueHold {
+                    vk,
+                    seq: press.seq,
+                    due,
+                    action,
+                });
+                return released;
             }
         }
-        self.double_taps.push(PendingDoubleTap {
-            vk: vk.0,
-            action: action.clone(),
-            due: now + term,
-        });
-        None
+        let tap = tap.filter(|(due, _)| now < *due).map(|(_, action)| action);
+        released.gesture_bound |= tap.is_some();
+        match (tap, double.filter(|(due, ..)| now < *due)) {
+            (tap, Some((due, double, group))) => {
+                released.window_due = tap.as_ref().map(|_| due);
+                self.presses.push(Press {
+                    vk,
+                    seq,
+                    phase: Phase::AwaitSecond {
+                        due,
+                        double,
+                        group,
+                        deferred_tap: tap,
+                        passed,
+                    },
+                });
+            }
+            (Some(tap), None) => released.fired = Some(tap),
+            (None, None) => {}
+        }
+        released
     }
 
-    // ---- All ----
+    /// A first key-down of `vk` at `now`, for the presses of the other
+    /// keys (`keys` is the engine's record of them), as the owner decided
+    /// (roadmap item 2.2, open question 10; AutoHotkey does the same):
+    ///
+    /// - A Tap that waits for its DoubleTap window has completed, so it
+    ///   fires now, ahead of the new key, and its window closes.
+    /// - A pending gesture whose key passed, held or waiting for a second
+    ///   press, is cancelled: a key pressed during it makes it a shortcut,
+    ///   such as Ctrl+C or two capitals with Shift. A held press whose Hold
+    ///   term has passed is not pending any more: it stays for its timer.
+    /// - A gesture whose key was swallowed stays, as before.
+    pub(super) fn other_key_down(
+        &mut self,
+        vk: u16,
+        keys: &KeyState,
+        now: Instant,
+        fire: &mut Vec<BindAction>,
+    ) {
+        let mut index = 0;
+        while index < self.presses.len() {
+            let press = &self.presses[index];
+            let cancel = press.vk != vk
+                && match &press.phase {
+                    Phase::AwaitSecond {
+                        deferred_tap: Some(_),
+                        ..
+                    } => true,
+                    Phase::AwaitSecond { passed, .. } => *passed,
+                    // A Hold whose term has passed has resolved the press by
+                    // the clock, whether or not its timer has run yet, so a
+                    // late timer cannot change the outcome (orchestrator
+                    // ruling I1): it stays for its timer, as a due Hold does.
+                    Phase::Held { hold, .. } => {
+                        keys.is_passed(press.vk)
+                            && !hold.as_ref().is_some_and(|(due, _)| now >= *due)
+                    }
+                };
+            if !cancel {
+                index += 1;
+                continue;
+            }
+            if let Phase::AwaitSecond {
+                deferred_tap: Some(tap),
+                ..
+            } = self.presses.remove(index).phase
+            {
+                fire.push(tap);
+            }
+        }
+    }
 
-    /// Drops every pending entry. The Hold generation keeps counting: if it
-    /// restarted, a timer started before the clear could match a Hold armed
-    /// after it, because a token is a key and a generation (KS-11).
+    /// The timer of `vk` armed as `seq` is due: fires the Hold or the
+    /// waiting Tap it was started for, if that still waits for it. Waiting
+    /// Taps whose windows closed by then fire first, so that one whose own
+    /// timer could not be started is not lost.
+    pub(super) fn on_timer(&mut self, vk: u16, seq: u64, fire: &mut Vec<BindAction>) {
+        let fired = if let Some(index) = self
+            .due_holds
+            .iter()
+            .position(|h| h.vk == vk && h.seq == seq)
+        {
+            let hold = self.due_holds.remove(index);
+            Some((hold.due, hold.action))
+        } else {
+            self.presses
+                .iter()
+                .position(|p| p.vk == vk && p.seq == seq && p.phase.timer_due().is_some())
+                .and_then(|index| {
+                    let press = self.presses.remove(index);
+                    let due = press.phase.timer_due()?;
+                    Some((due, press.phase.into_timer_action()?))
+                })
+        };
+        let Some((due, action)) = fired else {
+            return;
+        };
+        self.fire_closed_windows(due, fire);
+        fire.push(action);
+    }
+
+    /// Fires every Tap that waits for a DoubleTap window closed by `now`.
+    fn fire_closed_windows(&mut self, now: Instant, fire: &mut Vec<BindAction>) {
+        let mut index = 0;
+        while index < self.presses.len() {
+            let closed = matches!(
+                self.presses[index].phase,
+                Phase::AwaitSecond {
+                    due,
+                    deferred_tap: Some(_),
+                    ..
+                } if due <= now
+            );
+            if !closed {
+                index += 1;
+                continue;
+            }
+            if let Phase::AwaitSecond {
+                deferred_tap: Some(tap),
+                ..
+            } = self.presses.remove(index).phase
+            {
+                fire.push(tap);
+            }
+        }
+    }
+
+    /// Whether the press or due Hold of `vk` armed as `seq` waits for a
+    /// timer.
+    pub(super) fn is_live(&self, vk: u16, seq: u64) -> bool {
+        self.due_holds.iter().any(|h| h.vk == vk && h.seq == seq)
+            || self
+                .presses
+                .iter()
+                .any(|p| p.vk == vk && p.seq == seq && p.phase.timer_due().is_some())
+    }
+
+    /// The timer of `vk` armed as `seq` could not be started. A Hold, held
+    /// or due, is dropped: it never fires, and its key arms afresh on the
+    /// next press (KS-33). A Tap that waits for its DoubleTap window stays:
+    /// it fires at the next key-down, or at the next timer due after its
+    /// window closed (orchestrator ruling M6).
+    pub(super) fn forget(&mut self, vk: u16, seq: u64) {
+        self.due_holds.retain(|h| !(h.vk == vk && h.seq == seq));
+        let Some(index) = self.presses.iter().position(|p| p.vk == vk && p.seq == seq) else {
+            return;
+        };
+        if let Phase::Held { tap, hold, double } = &mut self.presses[index].phase {
+            *hold = None;
+            if tap.is_none() && double.is_none() {
+                self.presses.remove(index);
+            }
+        }
+    }
+
+    /// Drops every pending press and due Hold. The engine starts a new
+    /// generation with it, so a timer started before the clear matches
+    /// nothing armed after it (KS-11).
     pub(super) fn clear(&mut self) {
-        self.taps.clear();
-        self.holds.clear();
-        self.double_taps.clear();
+        self.presses.clear();
+        self.due_holds.clear();
     }
 
+    /// Whether the press of `vk` is held, and with a Tap, a Hold and a
+    /// DoubleTap pending.
     #[cfg(test)]
-    fn tap_pending(&self, vk: VIRTUAL_KEY) -> bool {
-        self.taps.iter().any(|p| p.vk == vk.0)
+    fn held(&self, vk: u16) -> Option<(bool, bool, bool)> {
+        self.presses
+            .iter()
+            .find(|p| p.vk == vk)
+            .and_then(|p| match &p.phase {
+                Phase::Held { tap, hold, double } => {
+                    Some((tap.is_some(), hold.is_some(), double.is_some()))
+                }
+                Phase::AwaitSecond { .. } => None,
+            })
     }
 
+    /// Whether the press of `vk` waits for its DoubleTap window, and with
+    /// its Tap.
     #[cfg(test)]
-    fn hold_pending(&self, vk: VIRTUAL_KEY) -> bool {
-        self.pending_hold_index(vk).is_some()
-    }
-
-    #[cfg(test)]
-    fn double_tap_pending(&self, vk: VIRTUAL_KEY) -> bool {
-        self.double_taps.iter().any(|p| p.vk == vk.0)
+    fn awaiting(&self, vk: u16) -> Option<bool> {
+        self.presses
+            .iter()
+            .find(|p| p.vk == vk)
+            .and_then(|p| match &p.phase {
+                Phase::AwaitSecond { deferred_tap, .. } => Some(deferred_tap.is_some()),
+                Phase::Held { .. } => None,
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::Duration;
+
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-    const LONG: Duration = Duration::from_secs(10);
+    use super::*;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
     }
 
+    const LONG: Duration = Duration::from_secs(10);
+    const F13: u16 = VK_F13.0;
+    const F14: u16 = VK_F14.0;
+
+    /// The keys, `when:` and action the groups of these tests borrow.
+    struct Fixture {
+        keys: KeyCombination,
+        condition: Condition,
+        action: BindAction,
+    }
+
+    fn fixture() -> Fixture {
+        Fixture {
+            keys: KeyCombination::new(VK_F13),
+            condition: Condition::Always,
+            action: BindAction::SwitchLanguage,
+        }
+    }
+
+    /// A group with the given gestures, each firing `action`.
+    fn group<'a>(
+        keys: &'a KeyCombination,
+        condition: &'a Condition,
+        terms: [Option<Duration>; 3],
+        action: &'a BindAction,
+    ) -> GroupArming<'a> {
+        let [tap, hold, double_tap] = terms;
+        GroupArming {
+            keys,
+            condition,
+            tap: tap.map(|term| (term, action)),
+            hold: hold.map(|term| (term, action)),
+            double_tap: double_tap.map(|term| (term, action)),
+            block: true,
+        }
+    }
+
     #[test]
-    fn arm_tap_inserts_then_resolve_removes() {
+    fn a_tap_alone_fires_at_a_key_up_before_its_term() {
+        let f = fixture();
+        let tap = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, None],
+            &f.action,
+        );
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        assert!(!state.tap_pending(VK_F13));
-        state.arm_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        assert!(state.tap_pending(VK_F13));
-        assert_eq!(
-            state.resolve_tap(VK_F13, t0 + ms(10)),
-            Some(BindAction::DoNothing)
+        let mut fire = Vec::new();
+
+        assert_eq!(state.press(F13, Some(&tap), t0, 1, &mut fire), None);
+        assert_eq!(state.held(F13), Some((true, false, false)));
+        let released = state.release(F13, t0 + ms(199), false, 2);
+        assert_eq!(released.fired, Some(BindAction::SwitchLanguage));
+        assert!(released.gesture_bound);
+        assert_eq!(released.window_due, None);
+        assert_eq!(state.held(F13), None, "the press is resolved");
+
+        state.press(F13, Some(&tap), t0 + ms(300), 3, &mut fire);
+        let late = state.release(F13, t0 + ms(500), false, 4);
+        assert_eq!(late.fired, None, "released at its term: no Tap");
+        assert!(!late.gesture_bound);
+        assert!(fire.is_empty());
+    }
+
+    #[test]
+    fn a_hold_is_cancelled_before_its_term_and_left_to_its_timer_after_it() {
+        let f = fixture();
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(200)), None],
+            &f.action,
         );
-        assert!(!state.tap_pending(VK_F13));
-    }
-
-    #[test]
-    fn resolve_tap_with_no_pending_returns_none() {
-        let mut state = Gestures::new();
-        assert_eq!(state.resolve_tap(VK_F13, Instant::now()), None);
-    }
-
-    #[test]
-    fn tap_released_at_or_after_its_term_does_not_fire() {
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        state.arm_tap(VK_F13, &BindAction::DoNothing, ms(200), t0);
-        assert_eq!(state.resolve_tap(VK_F13, t0 + ms(200)), None);
-        // The expired entry is gone, not left behind.
-        assert!(!state.tap_pending(VK_F13));
+        let mut fire = Vec::new();
+
+        assert_eq!(
+            state.press(F13, Some(&hold), t0, 1, &mut fire),
+            Some(t0 + ms(200))
+        );
+        assert!(state.is_live(F13, 1));
+        let early = state.release(F13, t0 + ms(199), false, 2);
+        assert!(
+            early.gesture_bound,
+            "a cancelled Hold still binds the key-up"
+        );
+        assert!(!state.is_live(F13, 1), "cancelled");
+        state.on_timer(F13, 1, &mut fire);
+        assert!(fire.is_empty(), "its timer finds nothing");
+
+        state.press(F13, Some(&hold), t0 + ms(300), 3, &mut fire);
+        let late = state.release(F13, t0 + ms(500), false, 4);
+        assert!(late.gesture_bound);
+        assert_eq!(late.fired, None, "a key-up never fires a Hold");
+        assert!(state.is_live(F13, 3), "left to its timer");
+        state.on_timer(F13, 3, &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+        assert!(!state.is_live(F13, 3), "once");
     }
 
     #[test]
-    fn expired_tap_is_replaced_by_the_next_arm() {
+    fn a_due_hold_does_not_block_the_next_press() {
+        let f = fixture();
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(200)), None],
+            &f.action,
+        );
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        state.arm_tap(VK_F13, &BindAction::DoNothing, ms(200), t0);
-        // Key-up lost; the next press comes after the term.
-        state.arm_tap(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(300));
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&hold), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(250), false, 2);
         assert_eq!(
-            state.resolve_tap(VK_F13, t0 + ms(350)),
-            Some(BindAction::SwitchLanguage)
+            state.press(F13, Some(&hold), t0 + ms(260), 3, &mut fire),
+            Some(t0 + ms(460))
         );
+        state.on_timer(F13, 1, &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage], "the first press's Hold");
+        assert!(state.is_live(F13, 3), "the second press waits for its own");
     }
 
     #[test]
-    fn arm_hold_inserts_then_cancel_removes() {
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        let timer = state.arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0);
-        assert_eq!(timer.map(|t| t.due), Some(t0 + LONG));
-        assert!(state.hold_pending(VK_F13));
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(10)),
-            HoldRelease::Cancelled
-        );
-        assert!(!state.hold_pending(VK_F13));
-    }
-
-    #[test]
-    fn cancel_hold_with_no_pending_returns_false() {
-        let mut state = Gestures::new();
-        assert_eq!(
-            state.release_hold(VK_F13, Instant::now()),
-            HoldRelease::NotPending
-        );
-    }
-
-    #[test]
-    fn hold_timer_fires_its_own_entry_once() {
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
-        assert_eq!(
-            state.fire_hold(timer.token),
-            Some(BindAction::SwitchLanguage)
-        );
-        assert_eq!(state.fire_hold(timer.token), None);
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(250)),
-            HoldRelease::NotPending
-        );
-    }
-
-    #[test]
-    fn stale_hold_timer_does_not_fire_a_newer_press() {
-        // KS-11: press 1 is released early, press 2 arms a new hold, then
+    fn a_stale_timer_does_not_fire_a_newer_press() {
+        // KS-11: press 1 is released early, press 2 arms a new Hold, then
         // press 1's timer wakes up.
+        let f = fixture();
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(200)), None],
+            &f.action,
+        );
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0)
-            .unwrap();
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(80)),
-            HoldRelease::Cancelled
-        );
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(150))
-            .unwrap();
-        assert_ne!(first.token, second.token);
+        let mut fire = Vec::new();
 
-        assert_eq!(state.fire_hold(first.token), None);
-        assert!(state.hold_pending(VK_F13));
-        assert_eq!(
-            state.fire_hold(second.token),
-            Some(BindAction::SwitchLanguage)
-        );
+        state.press(F13, Some(&hold), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(80), false, 2);
+        state.press(F13, Some(&hold), t0 + ms(150), 3, &mut fire);
+        state.on_timer(F13, 1, &mut fire);
+        assert!(fire.is_empty());
+        assert_eq!(state.held(F13), Some((false, true, false)));
+        state.on_timer(F13, 3, &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
     }
 
     #[test]
-    fn hold_released_at_or_after_its_due_is_left_to_its_timer() {
+    fn a_tap_and_a_hold_of_one_press_fire_exactly_one() {
+        // KS-25 for every pair of terms: the Hold resolves the press once
+        // its term has passed, whatever the Tap's term.
+        let f = fixture();
         let t0 = Instant::now();
-        let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(200)),
-            HoldRelease::Overdue
-        );
-        // No longer the key's pending hold: a second key-up finds nothing.
-        assert!(!state.hold_pending(VK_F13));
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(210)),
-            HoldRelease::NotPending
-        );
-        // Its own timer still fires it, once.
-        assert_eq!(
-            state.fire_hold(timer.token),
-            Some(BindAction::SwitchLanguage)
-        );
-        assert_eq!(state.fire_hold(timer.token), None);
-
-        // One millisecond before the term the key-up cancels it.
-        let timer = state
-            .arm_hold(VK_F14, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
-        assert_eq!(
-            state.release_hold(VK_F14, t0 + ms(199)),
-            HoldRelease::Cancelled
-        );
-        assert_eq!(state.fire_hold(timer.token), None);
+        for (tap, hold, release, tapped, held) in [
+            (200, 200, 199, true, false),
+            (200, 200, 200, false, true),
+            (300, 200, 250, false, true),
+            (100, 200, 150, false, false),
+            (300, 200, 150, true, false),
+        ] {
+            let both = group(
+                &f.keys,
+                &f.condition,
+                [Some(ms(tap)), Some(ms(hold)), None],
+                &f.action,
+            );
+            let mut state = Gestures::new();
+            let mut fire = Vec::new();
+            state.press(F13, Some(&both), t0, 1, &mut fire);
+            let released = state.release(F13, t0 + ms(release), false, 2);
+            let case = format!("Tap({tap}) + Hold({hold}) released at {release}");
+            assert_eq!(released.fired.is_some(), tapped, "{case}");
+            assert_eq!(state.is_live(F13, 1), held, "{case}");
+        }
     }
 
     #[test]
-    fn hold_left_to_its_timer_does_not_block_a_new_arm() {
+    fn a_double_tap_fires_on_a_second_press_of_its_group_within_its_window() {
+        let f = fixture();
+        let double = group(
+            &f.keys,
+            &f.condition,
+            [None, None, Some(ms(300))],
+            &f.action,
+        );
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, ms(200), t0)
-            .unwrap();
-        assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(250)),
-            HoldRelease::Overdue
-        );
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(260))
-            .expect("a released hold must not block the next press");
-        assert_ne!(first.token, second.token);
+        let mut fire = Vec::new();
 
-        assert_eq!(state.fire_hold(first.token), Some(BindAction::DoNothing));
-        assert!(state.hold_pending(VK_F13));
+        state.press(F13, Some(&double), t0, 1, &mut fire);
+        let released = state.release(F13, t0 + ms(50), false, 2);
+        assert_eq!(released, Released::default(), "no Tap, no timer");
+        assert_eq!(state.awaiting(F13), Some(false));
         assert_eq!(
-            state.fire_hold(second.token),
-            Some(BindAction::SwitchLanguage)
+            state.press(F13, Some(&double), t0 + ms(299), 3, &mut fire),
+            None
         );
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+        assert_eq!(state.held(F13), None, "the second press is spent");
+        assert_eq!(state.awaiting(F13), None);
+
+        // After the window a second press is a first press again.
+        fire.clear();
+        state.press(F13, Some(&double), t0 + ms(400), 4, &mut fire);
+        state.release(F13, t0 + ms(450), false, 5);
+        state.press(F13, Some(&double), t0 + ms(700), 6, &mut fire);
+        assert!(fire.is_empty());
+        assert_eq!(state.held(F13), Some((false, false, true)));
     }
 
     #[test]
-    fn forgotten_hold_never_fires_and_frees_its_key() {
-        // The caller could not start the timer for the first press.
+    fn a_tap_with_a_double_tap_waits_for_the_window_and_its_timer_fires_it() {
+        let f = fixture();
+        let both = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, Some(ms(300))],
+            &f.action,
+        );
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        let timer = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0)
-            .unwrap();
-        state.forget_hold(timer.token);
-        assert!(!state.hold_pending(VK_F13));
-        assert_eq!(state.fire_hold(timer.token), None);
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&both), t0, 1, &mut fire);
+        let released = state.release(F13, t0 + ms(80), false, 2);
+        assert_eq!(released.fired, None, "the Tap waits");
+        assert!(released.gesture_bound);
+        assert_eq!(released.window_due, Some(t0 + ms(300)));
+        assert_eq!(state.awaiting(F13), Some(true));
+        assert!(state.is_live(F13, 2), "the window's timer");
+        assert!(!state.is_live(F13, 1), "the press took a new number");
+
+        state.on_timer(F13, 2, &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+        assert_eq!(state.awaiting(F13), None);
+    }
+
+    #[test]
+    fn a_window_closes_for_a_press_another_group_wins() {
+        // Known issue 74.
+        let caps = KeyCombination::new(VK_CAPITAL);
+        let shift_caps = KeyCombination::from_keys([VK_SHIFT, VK_CAPITAL]);
+        let always = Condition::Always;
+        let first = BindAction::SwitchLanguage;
+        let second = BindAction::ToggleCapsLock;
+        let plain = group(&caps, &always, [None, None, Some(ms(300))], &first);
+        let shifted = group(&shift_caps, &always, [None, None, Some(ms(300))], &second);
+        let t0 = Instant::now();
+        let caps_vk = VK_CAPITAL.0;
+        let mut state = Gestures::new();
+        let mut fire = Vec::new();
+
+        state.press(caps_vk, Some(&plain), t0, 1, &mut fire);
+        state.release(caps_vk, t0 + ms(40), false, 2);
+        state.press(caps_vk, Some(&shifted), t0 + ms(80), 3, &mut fire);
+        assert!(fire.is_empty(), "another group's press ends the window");
+        state.release(caps_vk, t0 + ms(120), false, 4);
+        state.press(caps_vk, Some(&shifted), t0 + ms(160), 5, &mut fire);
+        assert_eq!(fire, [BindAction::ToggleCapsLock]);
+    }
+
+    #[test]
+    fn a_press_won_by_no_group_fires_the_waiting_tap_and_closes_the_window() {
+        let f = fixture();
+        let both = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, Some(ms(300))],
+            &f.action,
+        );
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&both), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(80), false, 2);
+        assert_eq!(state.press(F13, None, t0 + ms(100), 3, &mut fire), None);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+        assert_eq!(state.awaiting(F13), None);
+        assert_eq!(state.held(F13), None);
+    }
+
+    #[test]
+    fn another_key_down_fires_a_waiting_tap() {
+        let f = fixture();
+        let both = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, Some(ms(300))],
+            &f.action,
+        );
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let keys = KeyState::new();
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&both), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(80), false, 2);
+        state.other_key_down(F13, &keys, t0 + ms(90), &mut fire);
+        assert!(fire.is_empty(), "its own key is not another key");
+        state.other_key_down(F14, &keys, t0 + ms(100), &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+        assert_eq!(state.awaiting(F13), None);
+    }
+
+    #[test]
+    fn another_key_down_cancels_a_passing_press_but_not_a_swallowed_one_or_a_due_hold() {
+        // Owner decision (roadmap item 2.2, open question 10), and ruling
+        // I1 for a Hold whose term has passed by the clock.
+        let f = fixture();
+        let tap_hold = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), Some(ms(300)), None],
+            &f.action,
+        );
+        let double = group(
+            &f.keys,
+            &f.condition,
+            [None, None, Some(ms(300))],
+            &f.action,
+        );
+        let t0 = Instant::now();
+        let mut passed = KeyState::new();
+        passed.press(VK_F13);
+        passed.mark_passed(F13);
+        let mut swallowed = KeyState::new();
+        swallowed.press(VK_F13);
+        swallowed.mark_blocked(F13);
+        let mut fire = Vec::new();
+
+        let mut state = Gestures::new();
+        state.press(F13, Some(&tap_hold), t0, 1, &mut fire);
+        state.other_key_down(F14, &swallowed, t0 + ms(50), &mut fire);
         assert_eq!(
-            state.release_hold(VK_F13, t0 + ms(300)),
-            HoldRelease::NotPending
+            state.held(F13),
+            Some((true, true, false)),
+            "swallowed: kept"
+        );
+        state.other_key_down(F14, &passed, t0 + ms(50), &mut fire);
+        assert_eq!(state.held(F13), None, "passed: cancelled");
+        assert!(!state.is_live(F13, 1), "and its Hold's timer is stale");
+
+        let mut state = Gestures::new();
+        state.press(F13, Some(&tap_hold), t0, 1, &mut fire);
+        state.other_key_down(F14, &passed, t0 + ms(300), &mut fire);
+        assert!(
+            state.is_live(F13, 1),
+            "a Hold due by the clock stays for its late timer"
+        );
+
+        let mut state = Gestures::new();
+        state.press(F13, Some(&double), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(50), false, 2);
+        state.other_key_down(F14, &KeyState::new(), t0 + ms(60), &mut fire);
+        assert_eq!(state.awaiting(F13), Some(false), "swallowed window: kept");
+        let mut state = Gestures::new();
+        state.press(F13, Some(&double), t0, 1, &mut fire);
+        state.release(F13, t0 + ms(50), true, 2);
+        state.other_key_down(F14, &KeyState::new(), t0 + ms(60), &mut fire);
+        assert_eq!(state.awaiting(F13), None, "passing window: cancelled");
+        assert!(fire.is_empty(), "nothing fires");
+    }
+
+    #[test]
+    fn a_forgotten_hold_never_fires_and_a_forgotten_window_keeps_its_tap() {
+        let f = fixture();
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(200)), None],
+            &f.action,
+        );
+        let both = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, Some(ms(300))],
+            &f.action,
+        );
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&hold), t0, 1, &mut fire);
+        state.forget(F13, 1);
+        assert_eq!(state.held(F13), None, "a press with nothing left is gone");
+        let released = state.release(F13, t0 + ms(300), false, 2);
+        assert_eq!(released, Released::default());
+        state.on_timer(F13, 1, &mut fire);
+        assert!(fire.is_empty());
+
+        state.press(F13, Some(&both), t0 + ms(400), 3, &mut fire);
+        state.release(F13, t0 + ms(450), false, 4);
+        state.forget(F13, 4);
+        assert_eq!(state.awaiting(F13), Some(true), "the waiting Tap stays");
+        state.other_key_down(F14, &KeyState::new(), t0 + ms(800), &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage]);
+    }
+
+    #[test]
+    fn a_timer_fires_the_taps_whose_windows_closed_before_it() {
+        let f = fixture();
+        let both = group(
+            &f.keys,
+            &f.condition,
+            [Some(ms(200)), None, Some(ms(300))],
+            &f.action,
+        );
+        let hold_action = BindAction::DoNothing;
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(500)), None],
+            &hold_action,
+        );
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let mut fire = Vec::new();
+
+        state.press(F14, Some(&hold), t0, 1, &mut fire);
+        state.press(F13, Some(&both), t0 + ms(10), 2, &mut fire);
+        state.release(F13, t0 + ms(90), false, 3);
+        state.forget(F13, 3);
+        state.on_timer(F14, 1, &mut fire);
+        assert_eq!(fire, [BindAction::SwitchLanguage, BindAction::DoNothing]);
+    }
+
+    #[test]
+    fn a_held_press_left_by_a_lost_key_up_is_replaced() {
+        let f = fixture();
+        let hold = group(
+            &f.keys,
+            &f.condition,
+            [None, Some(ms(100)), None],
+            &f.action,
+        );
+        let t0 = Instant::now();
+        let mut state = Gestures::new();
+        let mut fire = Vec::new();
+
+        state.press(F13, Some(&hold), t0, 1, &mut fire);
+        assert_eq!(
+            state.press(F13, Some(&hold), t0 + ms(50), 2, &mut fire),
+            Some(t0 + ms(150)),
+            "before the term: the stale Hold is dropped"
+        );
+        assert!(!state.is_live(F13, 1));
+        assert_eq!(
+            state.press(F13, Some(&hold), t0 + ms(300), 3, &mut fire),
+            Some(t0 + ms(400))
         );
         assert!(
-            state
-                .arm_hold(VK_F13, &BindAction::SwitchLanguage, ms(200), t0 + ms(400))
-                .is_some()
+            state.is_live(F13, 2),
+            "due by the clock: the stale Hold stays for its timer"
         );
+        assert!(state.is_live(F13, 3));
+        assert!(fire.is_empty());
     }
 
     #[test]
-    fn double_tap_first_press_arms_second_press_fires() {
+    fn clear_drops_every_press_and_due_hold() {
+        let f = fixture();
+        let all = group(
+            &f.keys,
+            &f.condition,
+            [Some(LONG), Some(LONG), Some(LONG)],
+            &f.action,
+        );
+        let hold = group(&f.keys, &f.condition, [None, Some(ms(10)), None], &f.action);
         let t0 = Instant::now();
         let mut state = Gestures::new();
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0),
-            None
-        );
-        assert!(state.double_tap_pending(VK_F13));
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0 + ms(100)),
-            Some(BindAction::DoNothing)
-        );
-        // Pending entry was consumed by second press.
-        assert!(!state.double_tap_pending(VK_F13));
-    }
+        let mut fire = Vec::new();
 
-    #[test]
-    fn double_tap_third_press_arms_fresh_pending() {
-        // Tap, tap (consumed), tap: the third is a "first tap" again.
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0 + ms(10));
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0 + ms(20)),
-            None
-        );
-        assert!(state.double_tap_pending(VK_F13));
-    }
-
-    #[test]
-    fn double_tap_fires_the_first_press_action() {
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.double_tap(VK_F13, &BindAction::SwitchLanguage, LONG, t0);
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0 + ms(10)),
-            Some(BindAction::SwitchLanguage)
-        );
-    }
-
-    #[test]
-    fn double_tap_after_the_term_arms_again() {
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.double_tap(VK_F13, &BindAction::DoNothing, ms(200), t0);
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, ms(200), t0 + ms(200)),
-            None
-        );
-        assert_eq!(
-            state.double_tap(VK_F13, &BindAction::DoNothing, ms(200), t0 + ms(300)),
-            Some(BindAction::DoNothing)
-        );
-    }
-
-    #[test]
-    fn tap_and_hold_pending_simultaneously_on_same_key() {
-        // One key can have both Tap and Hold pending at the same time.
-        // Resolution is independent.
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.arm_tap(VK_CAPITAL, &BindAction::DoNothing, LONG, t0);
-        state.arm_hold(VK_CAPITAL, &BindAction::DoNothing, LONG, t0);
-        assert!(state.tap_pending(VK_CAPITAL));
-        assert!(state.hold_pending(VK_CAPITAL));
-
-        // Resolve tap on key-up: only the tap entry should clear.
-        state.resolve_tap(VK_CAPITAL, t0 + ms(10));
-        assert!(!state.tap_pending(VK_CAPITAL));
-        assert!(state.hold_pending(VK_CAPITAL));
-
-        // Then cancel the hold.
-        state.release_hold(VK_CAPITAL, t0 + ms(10));
-        assert!(!state.hold_pending(VK_CAPITAL));
-    }
-
-    #[test]
-    fn clear_drops_every_entry_and_keeps_the_generation() {
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.arm_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        state.double_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        let first = state
-            .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0)
-            .expect("nothing pending yet");
-
+        state.press(F14, Some(&hold), t0, 1, &mut fire);
+        state.release(F14, t0 + ms(20), false, 2);
+        state.press(F13, Some(&all), t0, 3, &mut fire);
+        assert!(state.is_live(F14, 1), "a due Hold");
         state.clear();
-
-        assert!(!state.tap_pending(VK_F13));
-        assert!(!state.double_tap_pending(VK_F13));
-        assert!(!state.hold_pending(VK_F13));
-        let second = state
-            .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10))
-            .expect("the cleared Hold no longer blocks a new arm");
-        assert_ne!(
-            first.token, second.token,
-            "a Hold armed after a clear gets a new generation"
-        );
-        assert_eq!(
-            state.fire_hold(first.token),
-            None,
-            "a timer from before the clear fires nothing"
-        );
-        assert_eq!(
-            state.fire_hold(second.token),
-            Some(BindAction::SwitchLanguage)
-        );
-    }
-
-    #[test]
-    fn auto_repeat_keydown_does_not_stack() {
-        // A key-down while a live entry is pending must not replace it or
-        // start another timer: the first one wins.
-        let t0 = Instant::now();
-        let mut state = Gestures::new();
-        state.arm_tap(VK_F13, &BindAction::DoNothing, LONG, t0);
-        state.arm_tap(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10));
-        assert!(
-            state
-                .arm_hold(VK_F13, &BindAction::DoNothing, LONG, t0)
-                .is_some()
-        );
-        assert!(
-            state
-                .arm_hold(VK_F13, &BindAction::SwitchLanguage, LONG, t0 + ms(10))
-                .is_none()
-        );
-        assert_eq!(
-            state.resolve_tap(VK_F13, t0 + ms(20)),
-            Some(BindAction::DoNothing)
-        );
-        // After resolve, no second entry should remain.
-        assert!(!state.tap_pending(VK_F13));
+        assert_eq!(state.held(F13), None);
+        assert!(!state.is_live(F14, 1));
+        assert!(!state.is_live(F13, 3));
     }
 }

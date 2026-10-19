@@ -1,0 +1,1006 @@
+//! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
+//! thread that installs both hooks and pumps their messages also owns the
+//! engine and every gesture timer, and serves `swch on` and `swch off`.
+//!
+//! # State
+//!
+//! The engine and the gesture timers live in this thread's [`MainState`], a
+//! thread-local that only [`with_main`] reaches. Every caller of the engine
+//! runs on this thread: the keyboard and foreground hook callbacks, which
+//! Windows dispatches inside this thread's message calls, and the loop's
+//! timer drain and requests. So no lock guards the engine, and none can be
+//! held across a callback or inverted by a thread priority. `with_main`
+//! borrows the state with `try_borrow_mut`: a callback that runs while the
+//! state is borrowed is refused and its event passes, so a re-entered
+//! callback neither panics nor hangs the keyboard. Under the borrow only
+//! the engine decides and the gesture timer is set (`SetWaitableTimer`); no
+//! action runs, nothing is injected or submitted and no message is pumped.
+//!
+//! # The loop
+//!
+//! [`MainThread::run`] waits for its gesture timer and its messages at once,
+//! in the shape of the action executor's loop (roadmap item 2.1):
+//!
+//! 1. Drain, until a whole pass finds nothing: the requests (`swch on` and
+//!    `off`), then every gesture timer whose due time has passed by the
+//!    clock, each decided under the borrow and carried out after it.
+//! 2. Plan: drop the timers no entry waits for, then set the wake for the
+//!    earliest one left unless it is set for it already, or cancel it.
+//! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
+//!    message (`QS_ALLINPUT`, which has `QS_SENDMESSAGE`), also one already
+//!    seen but not removed (`MWMO_INPUTAVAILABLE`).
+//! 4. Pump: `PeekMessageW` until the queue is empty, a `MAIN_WAKE` comes (a
+//!    request waits: back to 1) or `WM_QUIT` (the loop ends).
+//!
+//! The hook callbacks run inside those `PeekMessageW` calls. Windows calls a
+//! low-level hook by sending a message to the thread that installed it, a
+//! sent message wakes the wait, and `PeekMessageW` dispatches sent messages
+//! before it looks at posted ones, so nothing stands between a key event and
+//! its callback. A callback that asks for a timer sets the wake itself
+//! ([`GestureTimers`] as a [`Scheduler`]), so the wait always holds the
+//! earliest deadline, whatever ran inside it. The clock decides: an early,
+//! late or stale signal costs one drain.
+//!
+//! The gesture timer is a high-resolution waitable timer
+//! (`platform::timers`), so a deadline is met within about a millisecond,
+//! not on the 15.6 ms tick of the system clock.
+
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
+
+use windows::Win32::{
+    Foundation::{E_UNEXPECTED, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
+    System::Threading::{GetCurrentThreadId, INFINITE},
+    UI::WindowsAndMessaging::*,
+};
+use windows::core::Error;
+
+use crate::engine::{Decision, Engine, Env, Scheduler, TimerQueue, TimerRequest, TimerToken};
+use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
+use crate::logging::counters::{self, Counter};
+use crate::platform::timers::WaitableTimer;
+
+/// The thread message that wakes the loop for a request.
+pub(crate) const MAIN_WAKE: u32 = WM_APP + 1;
+
+/// How long `swch on` and `off` wait for the main thread's answer. Below the
+/// `swch` client's 5 s reply deadline, so the client gets this reason.
+pub(crate) const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How many requests wait for the main thread before the next is refused.
+const REQUEST_CAPACITY: usize = 8;
+
+thread_local! {
+    /// The main state of this thread, if it is the daemon's main thread.
+    static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many calls `with_main` refused on this thread because the state
+    /// was borrowed.
+    pub(crate) static REFUSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// What the main thread owns: the engine and its gesture timers.
+pub(crate) struct MainState {
+    pub(super) engine: Engine,
+    pub(super) timers: GestureTimers,
+}
+
+/// Runs `f` on this thread's main state and returns what it returns.
+///
+/// `None`, without running `f`, if this thread has no main state, or if the
+/// state is borrowed already: a callback re-entered under the borrow then
+/// passes its event, and nothing panics or waits. `f` must only decide,
+/// reset or set the gesture timer (see the module docs).
+pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
+    MAIN.try_with(|main| {
+        let Ok(mut state) = main.try_borrow_mut() else {
+            #[cfg(test)]
+            REFUSED.with(|refused| refused.set(refused.get() + 1));
+            return None;
+        };
+        state.as_mut().map(f)
+    })
+    .ok()
+    .flatten()
+}
+
+impl MainState {
+    /// Turns remapping on or off (`swch on`, `swch off`; KS-31) and returns
+    /// whether the switch changed. On the main thread, between callbacks:
+    /// an event is decided either before the flip with the old state or
+    /// after it with the reset one. A real change resets the engine, which
+    /// makes every queued gesture timer stale, drops those timers, and stops
+    /// every macro running and every slow action still queued (roadmap item
+    /// 2.1). A change that is no change resets nothing: it would wipe the
+    /// records of keys held and swallowed right now.
+    pub(crate) fn set_enabled(
+        &mut self,
+        hook: &KeyboardHook,
+        enabled: bool,
+        env: &dyn Env,
+    ) -> bool {
+        if !hook.switch_enabled(enabled, self) {
+            return false;
+        }
+        self.engine.reset(env);
+        let engine = &self.engine;
+        self.timers.retain(&|token| engine.is_live(token));
+        hook.cancel_actions();
+        true
+    }
+}
+
+/// The main thread's gesture timers: the queue of every timer the engine
+/// asked for, and one waitable timer set for the earliest.
+pub(crate) struct GestureTimers {
+    pub(super) queue: TimerQueue,
+    wake: WaitableTimer,
+    /// The due time the waitable timer is set for, until it signals or is
+    /// cancelled.
+    armed: Option<Instant>,
+}
+
+/// What [`GestureTimers::plan_wake`] did.
+enum Wake {
+    /// The wake is set for the earliest timer, or no timer is queued.
+    Wait,
+    /// The earliest timer is due: drain without waiting.
+    Due,
+    /// The waitable timer could not be set; `dropped` timers were forgotten.
+    Failed { error: Error, dropped: usize },
+}
+
+/// What to do with the gesture timer, decided without a Win32 call.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    Cancel,
+    Due,
+    Keep,
+    Arm { after: Duration, at: Instant },
+}
+
+/// The plan for a timer set for `armed` when the earliest queued deadline is
+/// `next`. A timer set for that deadline stands: its signal is not a
+/// message, so nothing that ran on this thread since can have taken it.
+fn plan(armed: Option<Instant>, next: Option<Instant>, now: Instant) -> Plan {
+    match next {
+        None => Plan::Cancel,
+        Some(at) if at <= now => Plan::Due,
+        Some(at) if armed == Some(at) => Plan::Keep,
+        Some(at) => Plan::Arm {
+            after: at.duration_since(now),
+            at,
+        },
+    }
+}
+
+impl GestureTimers {
+    pub(crate) fn new() -> windows::core::Result<Self> {
+        Ok(Self {
+            queue: TimerQueue::new(),
+            wake: WaitableTimer::new()?,
+            armed: None,
+        })
+    }
+
+    /// The wait took the timer's signal: it is set for nothing now.
+    fn fired(&mut self) {
+        self.armed = None;
+    }
+
+    fn cancel(&mut self) {
+        if self.armed.take().is_some() {
+            // A timer that fails to stop signals once more, and the loop
+            // takes that for a wake.
+            let _ = self.wake.cancel();
+        }
+    }
+
+    /// Step 2 of the loop: drops the timers no entry of `engine` waits for
+    /// and sets the wake for the earliest one left. If the waitable timer
+    /// cannot be set, every queued timer is forgotten, so that no Hold waits
+    /// for a wake that never comes.
+    fn plan_wake(&mut self, engine: &mut Engine, now: Instant) -> Wake {
+        let live = &*engine;
+        self.queue.retain(&|token| live.is_live(token));
+        match plan(self.armed, self.queue.next_due(), now) {
+            Plan::Cancel => {
+                self.cancel();
+                Wake::Wait
+            }
+            Plan::Due => Wake::Due,
+            Plan::Keep => Wake::Wait,
+            Plan::Arm { after, at } => {
+                // Setting the timer replaces the due time it had.
+                self.armed = None;
+                match self.wake.set(after) {
+                    Ok(()) => {
+                        self.armed = Some(at);
+                        Wake::Wait
+                    }
+                    Err(error) => {
+                        let lost = RefCell::new(Vec::new());
+                        self.queue.retain(&|token| {
+                            lost.borrow_mut().push(token);
+                            false
+                        });
+                        let lost = lost.into_inner();
+                        for token in &lost {
+                            engine.forget_timer(*token);
+                        }
+                        Wake::Failed {
+                            error,
+                            dropped: lost.len(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Scheduler for GestureTimers {
+    /// Queues `request` and, if it is due before the deadline the wake is set
+    /// for, sets the wake for it. Runs in the hook callback, under the
+    /// borrow: one `SetWaitableTimer` at most, no allocation while the
+    /// queue has room. False, with `request` taken out again, if the timer
+    /// could not be set.
+    fn start(&mut self, request: TimerRequest) -> bool {
+        self.queue.start(request);
+        if self.armed.is_none_or(|armed| request.due < armed) {
+            let after = request.due.saturating_duration_since(Instant::now());
+            if self.wake.set(after).is_err() {
+                let token = request.token;
+                self.queue.retain(&|queued| queued != token);
+                return false;
+            }
+            self.armed = Some(request.due);
+        }
+        true
+    }
+
+    fn retain(&mut self, live: &dyn Fn(TimerToken) -> bool) {
+        self.queue.retain(live);
+    }
+}
+
+/// A request to the main thread.
+enum Request {
+    /// `swch on` or `swch off`; the answer is whether the switch changed.
+    SetEnabled {
+        enabled: bool,
+        reply: SyncSender<bool>,
+    },
+}
+
+/// Why a request to the main thread got no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MainThreadError {
+    /// The main thread did not answer within [`REPLY_TIMEOUT`]. The request
+    /// stays queued and is carried out when the main thread reaches it.
+    NoAnswer,
+    /// The main loop has ended, or is ending.
+    ShuttingDown,
+    /// Too many requests wait already.
+    Busy,
+}
+
+impl std::fmt::Display for MainThreadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            MainThreadError::NoAnswer => "the daemon's main thread did not answer within 2 s",
+            MainThreadError::ShuttingDown => "the daemon is shutting down",
+            MainThreadError::Busy => "the daemon is busy; try again",
+        })
+    }
+}
+
+impl std::error::Error for MainThreadError {}
+
+/// How another thread reaches the main thread: the IPC connection workers,
+/// and a test's helper thread.
+#[derive(Clone)]
+pub(crate) struct MainThreadHandle {
+    thread_id: u32,
+    requests: SyncSender<Request>,
+}
+
+impl MainThreadHandle {
+    /// Asks the main thread to turn remapping on or off and waits up to
+    /// [`REPLY_TIMEOUT`] for its answer: whether the switch changed.
+    pub(crate) fn set_enabled(&self, enabled: bool) -> Result<bool, MainThreadError> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        match self
+            .requests
+            .try_send(Request::SetEnabled { enabled, reply })
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(MainThreadError::Busy),
+            Err(TrySendError::Disconnected(_)) => return Err(MainThreadError::ShuttingDown),
+        }
+        self.wake();
+        answer
+            .recv_timeout(REPLY_TIMEOUT)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => MainThreadError::NoAnswer,
+                RecvTimeoutError::Disconnected => MainThreadError::ShuttingDown,
+            })
+    }
+
+    /// Ends the main loop: posts `WM_QUIT` to the main thread, which then
+    /// removes the hooks itself.
+    pub(crate) fn request_exit(&self) -> windows::core::Result<()> {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value and reads no memory of ours; WM_QUIT carries no pointer in
+        // its parameters. A thread id that is no longer valid only makes the
+        // call fail, and that error is returned.
+        unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+    }
+
+    /// Posted after the request it announces, so that a drain that missed
+    /// it is followed by this wake. A lost wake loses no request: it waits
+    /// in the queue until the loop's next wake of any kind.
+    fn wake(&self) {
+        // SAFETY: PostThreadMessageW takes the thread id and the message by
+        // value, reads no memory of ours and returns without waiting;
+        // MAIN_WAKE carries no pointer. An id that is no longer valid only
+        // makes the call fail.
+        let _ = unsafe { PostThreadMessageW(self.thread_id, MAIN_WAKE, WPARAM(0), LPARAM(0)) };
+    }
+
+    /// A handle with no main thread behind it, as one whose main thread has
+    /// ended: every request fails at once.
+    #[cfg(test)]
+    pub(crate) fn without_a_thread() -> Self {
+        let (requests, _) = mpsc::sync_channel(1);
+        Self {
+            thread_id: 0,
+            requests,
+        }
+    }
+}
+
+/// The calling thread as the daemon's main thread: its [`MainState`] and its
+/// requests. Dropping it removes the state, after which every callback on
+/// this thread passes its event, and closes the request queue, after which
+/// every request fails at once. Not `Send`: the state belongs to the thread
+/// that made it.
+pub(crate) struct MainThread {
+    requests: Receiver<Request>,
+    handle: MainThreadHandle,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl MainThread {
+    /// Makes the calling thread the main thread: creates its message queue,
+    /// its gesture timer and its engine. An error if the timer cannot be
+    /// made, or if this thread is a main thread already.
+    pub(crate) fn new() -> windows::core::Result<Self> {
+        let timers = GestureTimers::new()?;
+        if !timers.wake.is_high_resolution() {
+            log::warn!(
+                "gesture timers wake on the 15.6 ms system tick: no high-resolution timer before Windows 10 version 1803"
+            );
+        }
+        let state = MainState {
+            engine: Engine::new(),
+            timers,
+        };
+        let installed = MAIN.with(|main| match main.try_borrow_mut() {
+            Ok(mut slot) if slot.is_none() => {
+                *slot = Some(state);
+                true
+            }
+            _ => false,
+        });
+        if !installed {
+            return Err(Error::new(
+                E_UNEXPECTED,
+                "this thread is the daemon's main thread already",
+            ));
+        }
+        let mut msg = MSG::default();
+        // SAFETY: `msg` is a local that outlives the call, which only writes
+        // it; the call creates this thread's message queue, as
+        // PostThreadMessageW asks of the receiving thread, and removes
+        // nothing.
+        let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+        // SAFETY: GetCurrentThreadId takes no arguments, touches no memory of
+        // ours and cannot fail.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        let (requests_tx, requests) = mpsc::sync_channel(REQUEST_CAPACITY);
+        Ok(Self {
+            requests,
+            handle: MainThreadHandle {
+                thread_id,
+                requests: requests_tx,
+            },
+            _thread_bound: PhantomData,
+        })
+    }
+
+    /// A handle for the threads that send requests.
+    pub(crate) fn handle(&self) -> MainThreadHandle {
+        self.handle.clone()
+    }
+
+    /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
+    /// out every decision on `hook`. An error if the wait fails; the caller
+    /// then removes the hooks.
+    pub(crate) fn run(&self, hook: &KeyboardHook) -> windows::core::Result<()> {
+        let Some(timer) = with_main(|main| main.timers.wake.handle()) else {
+            return Err(Error::new(
+                E_UNEXPECTED,
+                "the main loop runs without its main state",
+            ));
+        };
+        let mut msg = MSG::default();
+        loop {
+            self.drain(hook);
+            match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
+                Some(Wake::Due) => continue,
+                Some(Wake::Failed { error, dropped }) => log::error!(
+                    "could not set the gesture timer ({error}); {dropped} pending gestures dropped"
+                ),
+                Some(Wake::Wait) | None => {}
+            }
+            // SAFETY: the slice holds the gesture timer's handle, which the
+            // WaitableTimer in this thread's main state keeps open: only
+            // dropping `self` removes that state, and `self` is borrowed for
+            // the whole call. The slice lives until the call returns, which
+            // only reads it.
+            let woke = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    Some(&[timer]),
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            if woke == WAIT_OBJECT_0 {
+                with_main(|main| main.timers.fired());
+                continue;
+            }
+            if woke == WAIT_FAILED {
+                return Err(Error::from_thread());
+            }
+            // A message waits. MWMO_INPUTAVAILABLE also counts one queued
+            // before the wait began, such as the messages behind a MAIN_WAKE
+            // that `pump` left for after the drain.
+            if pump(&mut msg) {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Step 1 of the loop: serves the requests and carries out the due
+    /// timers until a whole pass finds neither.
+    fn drain(&self, hook: &KeyboardHook) {
+        loop {
+            let mut busy = false;
+            while let Ok(request) = self.requests.try_recv() {
+                serve(hook, request);
+                busy = true;
+            }
+            while let Some(decision) = with_main(take_due_timer).flatten() {
+                carry_out(hook, decision);
+                busy = true;
+            }
+            if !busy {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for MainThread {
+    fn drop(&mut self) {
+        // In a thread's end the slot may be gone already; and a drop inside
+        // `with_main` leaves the state to the thread's end.
+        let _ = MAIN.try_with(|main| {
+            if let Ok(mut slot) = main.try_borrow_mut() {
+                slot.take();
+            }
+        });
+    }
+}
+
+/// Decides the earliest timer that is due by the clock, if any, and starts
+/// the timers its decision asks for.
+fn take_due_timer(main: &mut MainState) -> Option<Decision> {
+    let request = main.timers.queue.take_due(Instant::now())?;
+    let mut decision = main.engine.on_timer(request.token);
+    let timers = std::mem::take(&mut decision.timers);
+    for _ in 0..main.engine.start_timers(timers, &mut main.timers) {
+        counters::bump(Counter::HoldTimerNotStarted);
+    }
+    Some(decision)
+}
+
+/// Carries out one request. The answer never blocks: a requester that gave
+/// up has dropped its receiver, and its request still took effect.
+fn serve(hook: &KeyboardHook, request: Request) {
+    match request {
+        Request::SetEnabled { enabled, reply } => {
+            let env = HookEnv::new();
+            // `None` only if the loop itself ran inside `with_main`, which it
+            // never does; the requester then hears that the daemon stops.
+            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled, &env)) {
+                let _ = reply.try_send(changed);
+            }
+        }
+    }
+}
+
+/// Step 4 of the loop: takes this thread's messages until its queue is
+/// empty or a `MAIN_WAKE` comes, which goes back to the drain at once. True
+/// on `WM_QUIT`.
+fn pump(msg: &mut MSG) -> bool {
+    // SAFETY: `msg` is the loop's local and outlives every call, which only
+    // writes it and removes the message from this thread's own queue. The
+    // hook callbacks run inside this call.
+    while unsafe { PeekMessageW(msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if msg.message == WM_QUIT {
+            return true;
+        }
+        if msg.hwnd.is_invalid() && msg.message == MAIN_WAKE {
+            return false;
+        }
+        // SAFETY: `msg` was filled by PeekMessageW above and outlives both
+        // calls, which only read it.
+        unsafe {
+            let _ = TranslateMessage(msg);
+            DispatchMessageW(msg);
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use windows::Win32::{Foundation::*, UI::Input::KeyboardAndMouse::*};
+    use windows::core::w;
+
+    use super::*;
+    use crate::core::executor::testing::{FakeRunner, Record, leaked_counters};
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
+    use crate::core::windows_actions::BindAction;
+    use crate::data::binding::Binding;
+    use crate::data::key_combination::KeyCombination;
+    use crate::data::sequence::SequenceStep;
+    use crate::data::trigger::Trigger;
+    use crate::engine::{Engine, Env, KeyEvent, sort_by_specificity};
+    use crate::hook::keyboard_hook::KeyboardHook;
+    use crate::hook::keyboard_hook_callback::decide_event;
+
+    // No test installs a hook or injects input. The loop tests run
+    // `MainThread::run` on a thread of their own with a local hook, send
+    // only `WM_NULL` and `WM_CLOSE` to a message-only window of that thread,
+    // and every action is `DoNothing` or a macro that a recording runner
+    // takes; a fast action is only recorded under test anyway.
+
+    /// An [`Env`] stopped at one instant with nothing held and no
+    /// foreground window.
+    struct QuietEnv(Instant);
+
+    impl Env for QuietEnv {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
+            false
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// A local hook with `binding` on F13, which allows extra modifiers: the
+    /// adapter reads the live key state of this machine.
+    fn hook_with(binding: Binding) -> KeyboardHook {
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![binding.with_allow_extra_modifiers(true)]);
+        hook
+    }
+
+    fn f13_hold(term_ms: u64, action: BindAction) -> Binding {
+        Binding::new(KeyCombination::new(VK_F13), action).with_trigger(Trigger::Hold(term_ms))
+    }
+
+    fn key_macro() -> BindAction {
+        BindAction::Sequence(Arc::new(vec![SequenceStep::PressKey(VK_F13)]))
+    }
+
+    fn f13(msg: u32) -> (WPARAM, u32) {
+        (WPARAM(msg as usize), u32::from(VK_F13.0))
+    }
+
+    /// A message-only `STATIC` window of the calling thread, as an integer,
+    /// since an `HWND` is not `Send`.
+    fn message_only_window() -> isize {
+        // SAFETY: the class name is a static wide literal and the window
+        // name is null; HWND_MESSAGE makes a message-only window, which no
+        // other process enumerates or sends input to. No creation data is
+        // passed.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                None,
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a message-only STATIC window is created");
+        hwnd.0 as isize
+    }
+
+    fn hwnd(raw: isize) -> HWND {
+        HWND(raw as *mut std::ffi::c_void)
+    }
+
+    #[test]
+    fn with_main_refuses_reentry_on_the_same_thread() {
+        // On its own thread, so that a broken refusal fails the test
+        // instead of the suite.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _main = MainThread::new().expect("the main thread is set up");
+            let before = REFUSED.with(Cell::get);
+            let nested = with_main(|_| with_main(|_| ()));
+            let _ = tx.send((nested, REFUSED.with(Cell::get) - before));
+        });
+        let (nested, refused) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("re-entry panicked or hung");
+        assert_eq!(nested, Some(None));
+        assert_eq!(refused, 1, "the refusal is counted");
+    }
+
+    #[test]
+    fn with_main_works_again_after_a_call() {
+        let _main = MainThread::new().expect("the main thread is set up");
+        assert_eq!(with_main(|_| 1), Some(1));
+        assert_eq!(with_main(|_| 2), Some(2));
+    }
+
+    #[test]
+    fn with_main_is_none_without_a_main_state() {
+        assert_eq!(with_main(|_| ()), None);
+        let main = MainThread::new().expect("the main thread is set up");
+        assert_eq!(with_main(|_| ()), Some(()));
+        drop(main);
+        assert_eq!(with_main(|_| ()), None, "dropping it clears the state");
+    }
+
+    #[test]
+    fn a_second_main_thread_on_one_thread_is_refused() {
+        let _main = MainThread::new().expect("the main thread is set up");
+        assert!(MainThread::new().is_err());
+        assert_eq!(with_main(|_| ()), Some(()), "the first one stays");
+    }
+
+    #[test]
+    fn plan_sets_the_timer_only_for_another_deadline() {
+        // The gesture timer's signal is not a message, so nothing the loop
+        // dispatched since it was set can have taken it: a timer set for the
+        // earliest deadline stands.
+        let now = Instant::now();
+        let at = now + ms(100);
+        let sooner = now + ms(50);
+
+        assert_eq!(plan(None, None, now), Plan::Cancel);
+        assert_eq!(plan(Some(at), None, now), Plan::Cancel);
+        assert_eq!(plan(Some(at), Some(now), now), Plan::Due);
+        assert_eq!(plan(None, Some(at), now), Plan::Arm { after: ms(100), at });
+        assert_eq!(
+            plan(Some(at), Some(at), now),
+            Plan::Keep,
+            "set for this deadline: the timer stands"
+        );
+        assert_eq!(
+            plan(Some(at), Some(sooner), now),
+            Plan::Arm {
+                after: ms(50),
+                at: sooner
+            }
+        );
+    }
+
+    #[test]
+    fn a_timer_started_for_an_earlier_deadline_resets_the_wake() {
+        // The wake is set inside `start`, which a hook callback calls, so the
+        // loop's wait always holds the earliest deadline, whatever ran
+        // inside the wait.
+        let mut bindings = crate::config::from_ron_str(
+            r#"( bindings: [
+                (keys: "F13", action: DoNothing, trigger: Hold(100)),
+                (keys: "F14", action: DoNothing, trigger: Hold(50)),
+                (keys: "F15", action: DoNothing, trigger: Hold(200)),
+            ] )"#,
+        )
+        .expect("config parses");
+        sort_by_specificity(&mut bindings);
+        let mut engine = Engine::new();
+        let mut timers = GestureTimers::new().expect("the gesture timer is made");
+        let env = QuietEnv(Instant::now());
+        let mut press = |vk: VIRTUAL_KEY, timers: &mut GestureTimers| {
+            let mut decision = engine.on_key(KeyEvent::down(vk), &bindings, &env);
+            let due = decision.timers[0].due;
+            assert_eq!(
+                engine.start_timers(std::mem::take(&mut decision.timers), timers),
+                0
+            );
+            due
+        };
+
+        assert_eq!(timers.armed, None);
+        let first = press(VK_F13, &mut timers);
+        assert_eq!(timers.armed, Some(first));
+        let earlier = press(VK_F14, &mut timers);
+        assert_eq!(timers.armed, Some(earlier), "an earlier deadline resets it");
+        press(VK_F15, &mut timers);
+        assert_eq!(timers.armed, Some(earlier), "a later one leaves it");
+        assert_eq!(timers.queue.len(), 3);
+    }
+
+    #[test]
+    fn a_message_posted_behind_a_wake_is_dispatched_without_more_input() {
+        // Technical debt m-1 of roadmap item 2.1, for the main loop: `pump`
+        // goes back to the drain at a MAIN_WAKE and leaves the messages
+        // behind it, which are then no longer new input. Without
+        // MWMO_INPUTAVAILABLE the wait would block on them until more input
+        // came; here nothing else comes until the watchdog's WM_QUIT.
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let hook = KeyboardHook::new();
+            let window = message_only_window();
+            let handle = main.handle();
+            // SAFETY: PostThreadMessageW and PostMessageW take their
+            // arguments by value and read no memory of ours; both post to
+            // this thread's own queue, a MAIN_WAKE first and the window's
+            // WM_CLOSE behind it, and neither message carries a pointer.
+            unsafe {
+                PostThreadMessageW(handle.thread_id, MAIN_WAKE, WPARAM(0), LPARAM(0))
+                    .expect("this thread has a message queue");
+                PostMessageW(Some(hwnd(window)), WM_CLOSE, WPARAM(0), LPARAM(0))
+                    .expect("the window takes a posted message");
+            }
+            let _ = ready_tx.send((window, handle));
+            main.run(&hook)
+        });
+        let (window, handle) = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+
+        let begun = Instant::now();
+        let closed = loop {
+            // SAFETY: IsWindow only reads the handle's value; a window that
+            // was destroyed reads as no window.
+            if !unsafe { IsWindow(Some(hwnd(window))) }.as_bool() {
+                break true;
+            }
+            if begun.elapsed() > Duration::from_secs(1) {
+                break false;
+            }
+            thread::sleep(ms(1));
+        };
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        assert!(
+            closed,
+            "the WM_CLOSE posted behind a MAIN_WAKE was not dispatched within 1 s"
+        );
+    }
+
+    #[test]
+    fn a_message_sent_from_another_thread_is_handled_while_the_loop_waits_on_its_timer() {
+        // A low-level hook call is a message sent to the thread that
+        // installed the hook. A wait blind to sent messages would leave each
+        // one to the 1 s timeout below.
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let hook = hook_with(f13_hold(10_000, BindAction::DoNothing));
+            let window = message_only_window();
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            let armed = decide_event(&hook, wparam, vk, 0).is_some();
+            let queued = with_main(|main| main.timers.queue.len());
+            let _ = ready_tx.send((window, main.handle(), armed, queued));
+            main.run(&hook)
+        });
+        let (window, handle, armed, queued) = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert!(armed, "the F13 key-down reached the engine");
+        assert_eq!(queued, Some(1), "a Hold timer 10 s out is queued");
+
+        let mut trips = Vec::new();
+        let mut failed = 0;
+        for _ in 0..100 {
+            let begun = Instant::now();
+            // SAFETY: `window` belongs to the loop thread, which keeps it
+            // until it ends after the WM_QUIT below; WM_NULL carries no
+            // pointer and no result pointer is passed.
+            let answered = unsafe {
+                SendMessageTimeoutW(
+                    hwnd(window),
+                    WM_NULL,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    None,
+                )
+            };
+            trips.push(begun.elapsed());
+            if answered == LRESULT(0) {
+                failed += 1;
+            }
+        }
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+
+        assert_eq!(failed, 0, "every sent message is answered: {trips:?}");
+        trips.sort();
+        let median = trips[trips.len() / 2];
+        assert!(
+            median < ms(2),
+            "a sent message took {median:?} in the median; sorted: {trips:?}"
+        );
+    }
+
+    #[test]
+    fn a_200_ms_hold_fires_within_a_few_ms_of_its_deadline() {
+        // A wake on the system clock tick (about 15.6 ms) is about 7.8 ms
+        // late on average, and a high-resolution timer under 1 ms. 5 ms sits
+        // between the two; the median of five ignores one press in which a
+        // loaded machine did not run the thread at once. The key-down's time
+        // is read before the engine reads its own, so no lateness is
+        // negative.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let hook = hook_with(f13_hold(200, key_macro()));
+        hook.attach_executor(Some(executor.handle()));
+        let main = MainThread::new().expect("the main thread is set up");
+        let handle = main.handle();
+        let (fired_tx, fired) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            for _ in 0..5 {
+                let record = records.recv_timeout(Duration::from_secs(2));
+                let _ = handle.request_exit();
+                let _ = fired_tx.send(record.map(|record| record.at));
+            }
+        });
+
+        let mut late = Vec::new();
+        for _ in 0..5 {
+            let pressed = Instant::now();
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            assert!(decide_event(&hook, wparam, vk, 0).is_some());
+            main.run(&hook).expect("the loop ends on WM_QUIT");
+            let at = fired
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the waiter answers")
+                .expect("the Hold fired within 2 s");
+            let (wparam, vk) = f13(WM_KEYUP);
+            assert!(decide_event(&hook, wparam, vk, 0).is_some());
+            let held = at.duration_since(pressed);
+            assert!(
+                held >= ms(200),
+                "the Hold fired early, {held:?} after its key-down"
+            );
+            late.push(held - ms(200));
+        }
+        waiter.join().expect("the waiter does not panic");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        late.sort();
+        let median = late[late.len() / 2];
+        assert!(
+            median < ms(5),
+            "a 200 ms Hold fired {median:?} late in the median; sorted: {late:?}"
+        );
+    }
+
+    #[test]
+    fn remapping_switches_through_the_main_thread_and_drops_pending_timers() {
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        // Leaked, so that the loop thread and this one share it, as the
+        // daemon's threads share the process-wide hook.
+        let hook: &'static KeyboardHook =
+            Box::leak(Box::new(hook_with(f13_hold(300, key_macro()))));
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            let armed = decide_event(hook, wparam, vk, 0).is_some();
+            let _ = ready_tx.send((main.handle(), armed));
+            main.run(hook)
+        });
+        let (handle, armed) = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert!(armed, "a 300 ms Hold is armed");
+
+        assert_eq!(handle.set_enabled(false), Ok(true));
+        assert!(!hook.is_enabled());
+        assert_eq!(handle.set_enabled(false), Ok(false), "already off");
+        assert!(
+            records.recv_timeout(ms(500)).is_err(),
+            "a Hold armed before remapping went off never fires"
+        );
+        assert_eq!(handle.set_enabled(true), Ok(true));
+        assert!(hook.is_enabled());
+
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_switch_request_to_an_ended_main_thread_fails_at_once() {
+        let handle = thread::spawn(|| {
+            MainThread::new()
+                .expect("the main thread is set up")
+                .handle()
+        })
+        .join()
+        .expect("the scratch thread does not panic");
+
+        let begun = Instant::now();
+        assert_eq!(
+            handle.set_enabled(false),
+            Err(MainThreadError::ShuttingDown)
+        );
+        let took = begun.elapsed();
+        assert!(took < ms(100), "the request waited {took:?}");
+    }
+}

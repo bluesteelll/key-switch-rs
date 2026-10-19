@@ -1,6 +1,5 @@
-use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::{ArcSwap, ArcSwapOption, Guard};
 use windows::{
@@ -14,31 +13,14 @@ use windows::{
 use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
-use crate::engine::{self, Engine};
-use crate::hook::keyboard_hook_callback::{self, HookEnv};
+use crate::engine;
+use crate::hook::keyboard_hook_callback;
+use crate::hook::main_thread::MainState;
 
-thread_local! {
-    /// Set while this thread runs a closure inside
-    /// [`KeyboardHook::with_engine`]. Per thread, so it needs no atomics.
-    static DECIDING: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Marks this thread as deciding until dropped, also on unwind.
-struct DecidingGuard;
-
-impl DecidingGuard {
-    fn enter() -> Self {
-        DECIDING.with(|deciding| deciding.set(true));
-        Self
-    }
-}
-
-impl Drop for DecidingGuard {
-    fn drop(&mut self) {
-        DECIDING.with(|deciding| deciding.set(false));
-    }
-}
-
+/// What the hooks share with the other threads: the binding list, the hook
+/// handles, the remapping switch and the action executor. The engine is not
+/// here: it belongs to the main thread (`hook::main_thread`, roadmap item
+/// 2.2).
 pub struct KeyboardHook {
     /// Bindings list. Hot path reads via `ArcSwap::load()` which is
     /// effectively lock-free (no atomic CAS on the read side). Hot-reload
@@ -52,20 +34,12 @@ pub struct KeyboardHook {
     /// Whether remapping is on (`swch on`, `swch off`). While it is off the
     /// hooks stay installed and their callbacks pass every event untouched.
     ///
-    /// Written only by [`set_enabled`](Self::set_enabled), with a
-    /// `swap(AcqRel)` under the engine lock; read with `load(Acquire)` by
-    /// the callbacks, once before the lock and once under it. The flag
-    /// publishes no other data, since the engine state is behind the lock,
-    /// so a stale read before the lock only lets one event reach the lock,
-    /// where the check under it decides.
+    /// Written only by [`switch_enabled`](Self::switch_enabled), on the main
+    /// thread, between callbacks, with a `swap(AcqRel)`; read with
+    /// `load(Acquire)` by the callbacks, on that thread too, and by `swch
+    /// status` on an IPC worker. The flag publishes no other data: the
+    /// engine state belongs to the main thread.
     enabled: AtomicBool,
-    /// The decision core: held and blocked keys and every pending gesture.
-    /// Behind a lock until roadmap item 2.2 moves the Hold timers onto the
-    /// hook thread, because a `hold-timer` thread must reach it too, and so
-    /// must the IPC worker that resets it in
-    /// [`set_enabled`](Self::set_enabled). Only
-    /// [`with_engine`](Self::with_engine) touches it.
-    engine: Mutex<Engine>,
     /// The action executor that `Launch`, `OpenUrl` and `Sequence` go to
     /// (roadmap item 2.1). Stored only by the main thread, around the hooks'
     /// lifetime ([`attach_executor`](Self::attach_executor)); read with one
@@ -82,33 +56,8 @@ impl KeyboardHook {
             hook_handle: AtomicPtr::new(std::ptr::null_mut()),
             foreground_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
-            engine: Mutex::new(Engine::new()),
             executor: ArcSwapOption::empty(),
         }
-    }
-
-    /// Runs `f` on the engine under its lock and returns what `f` returns.
-    ///
-    /// Returns `None`, without locking, when this thread is already inside
-    /// `with_engine`. `std::sync::Mutex` may deadlock or panic on such a
-    /// re-entrant lock, and the hook callback is re-entered on its own
-    /// thread if anything under the lock pumps messages; the caller then
-    /// passes the event instead of hanging the keyboard. Nothing under the
-    /// lock does that today (see the adapter's module docs).
-    ///
-    /// `f` must only decide or reset: no action, `SendInput` or thread spawn
-    /// under the lock. A lock poisoned by an earlier panic is taken over as
-    /// it is: the engine's state is plain data, and a panic in the hook
-    /// callback cannot be unwound into a usable state anyway.
-    pub(crate) fn with_engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
-        if DECIDING.with(Cell::get) {
-            return None;
-        }
-        let mut engine = self.engine.lock().unwrap_or_else(PoisonError::into_inner);
-        // Declared after the lock guard, so it is dropped first: the flag is
-        // cleared before the lock is released.
-        let _deciding = DecidingGuard::enter();
-        Some(f(&mut engine))
     }
 
     /// Atomically replace the binding list. Callable any number of times
@@ -146,7 +95,7 @@ impl KeyboardHook {
 
     /// Stops every macro running and every slow action still queued on the
     /// attached executor, if any; a step already running finishes first.
-    fn cancel_actions(&self) {
+    pub(crate) fn cancel_actions(&self) {
         if let Some(executor) = &*self.executor.load() {
             executor.cancel_pending();
         }
@@ -159,53 +108,27 @@ impl KeyboardHook {
         self.bindings.load()
     }
 
-    /// Whether remapping is on. See [`set_enabled`](Self::set_enabled).
+    /// Whether remapping is on. See `switch_enabled`.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Turns remapping on or off (`swch on`, `swch off`). Returns
-    /// `Some(true)` if the switch changed, `Some(false)` if it was already in
-    /// that position, and `None`, changing nothing, if this thread is already
-    /// inside [`with_engine`](Self::with_engine).
-    ///
-    /// The hooks stay installed either way; only the main thread installs
-    /// and removes them (KS-01). A real change resets the engine
-    /// ([`Engine::reset`], KS-31), and the flag flips under the same engine
-    /// lock, so an event decided under the lock sees either the old position
-    /// with the old state or the new position after the reset. A change that
-    /// is no change resets nothing: it would wipe the records of keys held
-    /// and swallowed right now.
-    ///
-    /// A real change also stops every macro running and every slow action
-    /// still queued (roadmap item 2.1), after the lock is released: the
-    /// executor's epoch is not engine data. A repeated `on` or `off` stops
-    /// nothing.
-    ///
-    /// Runs on the calling thread, an IPC connection worker in the daemon.
-    /// Under the lock the reset only reads the OS key state, which may be
-    /// read from any thread. Roadmap item 2.2 removes the engine lock; the
-    /// flip and the reset must then move to the thread that owns the engine.
-    pub fn set_enabled(&self, enabled: bool) -> Option<bool> {
-        let env = HookEnv::new();
-        let changed = self.with_engine(|engine| {
-            if self.enabled.swap(enabled, Ordering::AcqRel) == enabled {
-                return false;
-            }
-            engine.reset(&env);
-            true
-        });
-        if changed == Some(true) {
-            self.cancel_actions();
-        }
-        changed
+    /// Flips the remapping switch and returns whether it changed. Only
+    /// `MainState::set_enabled` calls it, and resets the engine with it: the
+    /// `&mut MainState` it takes exists only on the main thread, inside
+    /// `with_main`, so no other thread can flip the switch apart from the
+    /// reset, between two events (roadmap item 2.2). The hooks stay
+    /// installed either way; only the main thread installs and removes them
+    /// (KS-01).
+    pub(crate) fn switch_enabled(&self, enabled: bool, _main: &mut MainState) -> bool {
+        self.enabled.swap(enabled, Ordering::AcqRel) != enabled
     }
 
     /// Installs the keyboard hook and the foreground hook.
     ///
-    /// Main thread only: the thread that pumps `GetMessageW`, because both
-    /// hooks belong to the thread that installs them and are called through
-    /// its message loop (KS-01).
+    /// Main thread only: the thread that runs the main loop
+    /// (`hook::main_thread`), because both hooks belong to the thread that
+    /// installs them and are called through its message loop (KS-01).
     pub(crate) fn install(&self) -> Result<()> {
         if !self.hook_handle.load(Ordering::Acquire).is_null() {
             return Err(Error::new(
@@ -326,7 +249,17 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
+    use crate::hook::keyboard_hook_callback::HookEnv;
+    use crate::hook::main_thread::{MainThread, with_main};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    /// Turns remapping on or off on `hook` through this thread's main
+    /// state, as the main thread serves `swch on` and `off`, and returns
+    /// whether the switch changed.
+    fn set_enabled(hook: &KeyboardHook, enabled: bool) -> bool {
+        with_main(|main| main.set_enabled(hook, enabled, &HookEnv::new()))
+            .expect("this thread has a free main state")
+    }
 
     fn three_bindings() -> Vec<Binding> {
         vec![
@@ -433,40 +366,18 @@ mod tests {
     }
 
     #[test]
-    fn with_engine_refuses_reentry_on_the_same_thread() {
-        // On its own thread, so a broken guard fails the test after the
-        // timeout instead of hanging the suite.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let hook = KeyboardHook::new();
-            let nested = hook.with_engine(|_| hook.with_engine(|_| ()));
-            let _ = tx.send(nested);
-        });
-        let nested = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("re-entry deadlocked");
-        assert_eq!(nested, Some(None));
-    }
-
-    #[test]
-    fn with_engine_works_again_after_a_call() {
-        let hook = KeyboardHook::new();
-        assert_eq!(hook.with_engine(|_| 1), Some(1));
-        assert_eq!(hook.with_engine(|_| 2), Some(2));
-    }
-
-    #[test]
     fn toggling_reports_changes_and_never_installs_a_hook() {
+        let _main = MainThread::new().expect("the main thread is set up");
         let hook = KeyboardHook::new();
         assert!(hook.is_enabled(), "remapping starts on");
-        assert_eq!(hook.set_enabled(true), Some(false), "already on");
+        assert!(!set_enabled(&hook, true), "already on");
         assert!(!hook.is_installed());
-        assert_eq!(hook.set_enabled(false), Some(true));
+        assert!(set_enabled(&hook, false));
         assert!(!hook.is_enabled());
         assert!(!hook.is_installed());
-        assert_eq!(hook.set_enabled(false), Some(false), "already off");
+        assert!(!set_enabled(&hook, false), "already off");
         assert!(!hook.is_installed());
-        assert_eq!(hook.set_enabled(true), Some(true));
+        assert!(set_enabled(&hook, true));
         assert!(hook.is_enabled());
         assert!(!hook.is_installed(), "a toggle never installs a hook");
     }
@@ -492,8 +403,9 @@ mod tests {
 
     #[test]
     fn turning_remapping_off_drops_a_pending_hold_and_a_repeated_on_keeps_it() {
-        // KS-31. No timer thread is started: the test hands the tokens back
-        // to the engine itself, so nothing fires outside the assertions.
+        // KS-31. No loop runs: the test hands the tokens back to the engine
+        // itself, so nothing fires outside the assertions.
+        let _main = MainThread::new().expect("the main thread is set up");
         let hook = KeyboardHook::new();
         hook.update_bindings(vec![
             Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
@@ -502,16 +414,18 @@ mod tests {
         ]);
         let t0 = Instant::now();
         let key = |event: KeyEvent, at: Duration| {
-            hook.with_engine(|engine| engine.on_key(event, &hook.bindings(), &QuietEnv(t0 + at)))
-                .expect("not inside with_engine")
+            with_main(|main| {
+                main.engine
+                    .on_key(event, &hook.bindings(), &QuietEnv(t0 + at))
+            })
+            .expect("the main state is free")
         };
         let timer = |token: TimerToken| {
-            hook.with_engine(|engine| engine.on_timer(token))
-                .expect("not inside with_engine")
+            with_main(|main| main.engine.on_timer(token)).expect("the main state is free")
         };
 
         let first = key(KeyEvent::down(VK_F13), Duration::ZERO).timers[0].token;
-        assert_eq!(hook.set_enabled(true), Some(false));
+        assert!(!set_enabled(&hook, true));
         assert_eq!(
             timer(first).fire,
             [BindAction::DoNothing],
@@ -520,7 +434,7 @@ mod tests {
 
         let _ = key(KeyEvent::up(VK_F13), Duration::from_millis(300));
         let second = key(KeyEvent::down(VK_F13), Duration::from_millis(400)).timers[0].token;
-        assert_eq!(hook.set_enabled(false), Some(true));
+        assert!(set_enabled(&hook, false));
         assert_eq!(
             timer(second),
             Decision::default(),
@@ -579,8 +493,9 @@ mod tests {
 
     #[test]
     fn swch_off_stops_a_running_macro_within_100_ms() {
+        let _main = MainThread::new().expect("the main thread is set up");
         a_running_macro_stops_within_100_ms(|hook| {
-            assert_eq!(hook.set_enabled(false), Some(true));
+            assert!(set_enabled(hook, false));
         });
     }
 
@@ -591,6 +506,7 @@ mod tests {
 
     #[test]
     fn a_repeated_swch_on_keeps_the_running_macro() {
+        let _main = MainThread::new().expect("the main thread is set up");
         let (hook, executor, records) = hook_with_executor();
         hook.submit(
             macro_of(vec![
@@ -602,7 +518,7 @@ mod tests {
         );
         assert_eq!(next_record(&records).text(), "key F13");
 
-        assert_eq!(hook.set_enabled(true), Some(false), "already on");
+        assert!(!set_enabled(&hook, true), "already on");
 
         assert_eq!(next_record(&records).text(), "key F14");
         hook.attach_executor(None);
@@ -622,17 +538,20 @@ mod tests {
 
     #[test]
     fn set_enabled_refuses_a_nested_call() {
-        // On its own thread, so a broken guard fails the test after the
-        // timeout instead of hanging the suite.
+        // A switch asked for while the main state is borrowed is refused and
+        // changes nothing. On its own thread, so a broken refusal fails the
+        // test after the timeout instead of the suite.
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let _main = MainThread::new().expect("the main thread is set up");
             let hook = KeyboardHook::new();
-            let nested = hook.with_engine(|_| hook.set_enabled(false));
+            let env = HookEnv::new();
+            let nested = with_main(|_| with_main(|main| main.set_enabled(&hook, false, &env)));
             let _ = tx.send((nested, hook.is_enabled()));
         });
         let (nested, enabled) = rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("set_enabled deadlocked inside with_engine");
+            .expect("set_enabled panicked or hung inside with_main");
         assert_eq!(nested, Some(None));
         assert!(enabled, "a refused call leaves remapping on");
     }

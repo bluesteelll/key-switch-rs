@@ -9,7 +9,10 @@
 //! that lets the key through next to a loser that would swallow it, and a
 //! deferred winner next to an `Immediate` loser. The `mask_only` config is
 //! the `default` one with the experimental `MaskOnly` auto-blocker in place
-//! of the one that swallows (roadmap item 1.2, KS-05).
+//! of the one that swallows (roadmap item 1.2, KS-05). The `tap_double_tap`
+//! config puts a Tap, a Hold and a DoubleTap on one key, and a Tap and a
+//! DoubleTap on a passing modifier, so that a Tap waits for its DoubleTap
+//! window and another key-down ends it (roadmap item 2.2).
 //!
 //! The scripts come from an in-house SplitMix64 generator with fixed seeds,
 //! so every run is the same, and a failure names its config, seed and mode
@@ -91,7 +94,7 @@ const DEFAULT_BINDINGS: &str = r#"( bindings: [
     (keys: "Alt+Shift+K", action: ToggleCapsLock),
 ] )"#;
 
-const CONFIGS: [Config; 8] = [
+const CONFIGS: [Config; 9] = [
     Config {
         name: "default",
         blocker: Some(BlockerMode::Swallow),
@@ -166,11 +169,23 @@ const CONFIGS: [Config; 8] = [
             (keys: "F15", action: ToggleCapsLock, block_default: false, when: Not(AppEquals("game.exe"))),
         ] )"#,
     },
-    // Last, so that the scripts of the configs above keep their seeds.
+    // These come last, in the order they were added, so that the scripts
+    // of the configs above keep their seeds.
     Config {
         name: "mask_only",
         blocker: Some(BlockerMode::MaskOnly),
         ron: DEFAULT_BINDINGS,
+    },
+    Config {
+        name: "tap_double_tap",
+        blocker: None,
+        ron: r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "CapsLock", action: PressKey("LShift"), trigger: Hold(400)),
+            (keys: "CapsLock", action: ToggleCapsLock, trigger: DoubleTap(300)),
+            (keys: "LShift", action: SwitchLanguage, trigger: Tap(200)),
+            (keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(300)),
+        ] )"#,
     },
 ];
 
