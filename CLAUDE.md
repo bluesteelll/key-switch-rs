@@ -20,11 +20,13 @@ One package with a library, two binaries, a build script and the book:
   (`BindAction`, `FastAction`), `executor/` (`mod.rs` the `action-executor` thread, `runs.rs` the pure macro runs,
   `testing.rs` the `FakeRunner`).
 - `src/platform/`: `timers.rs` (`WaitableTimer`, a high-resolution waitable timer for threads that wait on deadlines),
-  `priority.rs` (`RaisedPriority`: the main thread runs at `THREAD_PRIORITY_HIGHEST`).
+  `priority.rs` (`RaisedPriority`: the main thread runs at `THREAD_PRIORITY_HIGHEST`), `foreground.rs`
+  (`ForegroundCache`: the executable per (HWND, pid), the title read live), `desktop.rs` (`UOI_IO`).
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
-  `main_thread.rs` (`MainState` with the engine and the gesture timers, `with_main`, the `MainThread::run` loop),
-  `config_watcher.rs`, `ipc_server.rs`.
+  `main_thread.rs` (`MainState` with the engine, the gesture timers and the foreground cache, `with_main`, the
+  `MainThread::run` loop, reload requests, input signals), `control_window.rs` (`ControlWindow`, the hidden
+  top-level window for session notifications and session end), `config_watcher.rs`, `ipc_server.rs`.
 - `src/ipc.rs` (the pipe protocol: one request line, one reply line) and `src/system/` (`system_function.rs`,
   `registry.rs`, `single_instance.rs`, `known_folder.rs`).
 - `src/logging/`: `mod.rs` (`init`, `attach_file`, `flush`, `FATAL_TARGET`), `sink.rs` (line format, rotation),
@@ -33,7 +35,7 @@ One package with a library, two binaries, a build script and the book:
   `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
   `fire`, `timers`, and `mask`, the menu mask key of roadmap 1.2). `Env` supplies the clock, the OS key state and the
   foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`; `schedule.rs` has the
-  `Scheduler` trait and the pure `TimerQueue`. Scenario tests live in
+  `Scheduler` trait and the pure `TimerQueue`. `Engine::reset(env, ResetReason)` answers `InputSignal`s. Scenario tests live in
   `engine::scenarios` on the `engine::testing` harness (`Scenario`, fake `Env`). New matching, suppression and
   gesture logic goes here; the hook callback only adapts Win32 to it and carries out the `Decision`.
 - `build.rs` + `app.manifest`: the release daemon embeds a `requireAdministrator` manifest. Only
@@ -60,8 +62,9 @@ The three gates are the definition of green, both locally and in `ci.yml`. A tes
 live hook, injected input or a registry write is `#[ignore = "manual: <what a human checks>"]`, and
 `cargo test` does not run it. Report those tests as manual checks. Do not count them as passes.
 The latency bench (`#[ignore = "bench: ..."]`, rows R1-R8, `KS_BENCH_LOAD=1` adds R8) is counted apart and never as a pass.
-Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rule of
-`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10; a breach is a defect unless the cut justified the extra work.
+Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rules of
+`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8) and `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
+against 5.4 us); a breach is a defect unless the cut justified the extra work.
 
 ## Coding principles
 
@@ -73,7 +76,8 @@ Every lane runs it on its parent and on HEAD (3 runs each) and applies the compa
    The hook path runs only `FastAction`s inline; every other action goes through `KeyboardHook::submit` to the executor.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
-   if and only if its key-down was.
+   if and only if its key-down was, unless Windows has the key down (the OS witness, roadmap 2.3), so Windows
+   gets a key-up exactly when it has the key down. The witness is the one sanctioned read of the event's own key.
 3. **Injected-event sentinel.** Every synthesized event sets `dwExtraInfo: injected_sentinel()`
    (`core/constants.rs`, PID-mixed `(pid << 32) | 0xDEADBEEF`). The callback passes those events
    through via `is_injected_event` before it mutates any state. A `SendInput` path without the
@@ -86,7 +90,9 @@ Every lane runs it on its parent and on HEAD (3 runs each) and applies the compa
    not shared: they live in `hook::main_thread::MAIN`, a thread-local `RefCell<Option<MainState>>` of the main thread,
    reached only through `with_main` (`try_borrow_mut`: a re-entrant call is refused and the event passes, never a
    panic or a deadlock). No action, `SendInput` or message pump runs under the borrow except the one
-   `SetWaitableTimer` the timers need. The remapping switch flips only on main, with the `MainState`. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
+   `SetWaitableTimer` the timers need. The remapping switch flips only on main, with the `MainState`; a reload
+   swaps the bindings on main (`MainState::reload`). The hook path never queries a process: `when:` reads the
+   foreground cache, which the foreground callback fills, and the title of another process's window. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
    The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`).
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
@@ -94,7 +100,10 @@ Every lane runs it on its parent and on HEAD (3 runs each) and applies the compa
 6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows, the engine and
    the gesture timers, and runs `MainThread::run` at `THREAD_PRIORITY_HIGHEST`: drain the requests and due timers,
    then `MsgWaitForMultipleObjectsEx(QS_ALLINPUT, MWMO_INPUTAVAILABLE)` on its high-resolution timer, then pump.
-   Hold and waiting-Tap actions run there. `swch on`/`off` are requests the main thread serves. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
+   Hold and waiting-Tap actions run there. `swch on`/`off` and reloads are requests the main thread serves. Main
+   installs and removes three hooks (keyboard, foreground, desktop switch) and owns the control window, which is
+   dropped after `uninstall` and before `executor.stop()`. A window procedure or WinEvent callback only notes a
+   signal and posts `MAIN_WAKE`; resets run in the drain, and a lost-input reset reads no OS state. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
    APIs needs its own pump. `Launch`, `OpenUrl` and `Sequence` run on the `action-executor` thread, which owns its STA,
    its bounded queue, its `Delay` timer and its message pump; main starts it before the hooks and stops it after
    they are removed. The `log-writer` thread alone writes the console
