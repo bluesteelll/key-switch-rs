@@ -27,9 +27,9 @@
 //!   alike (`check_press_symmetry`), and no key is left down in Windows
 //!   (`check_nothing_stuck`).
 //! - Focus mode, which adds foreground changes and key-ups the hook never
-//!   sees: no key is left down in Windows. A focus change makes the engine
-//!   let through the key-up of a press whose key-down it swallowed (roadmap
-//!   item 2.3), so whole-press symmetry is not checked there.
+//!   sees: no key is left down in Windows. A key-up the hook never sees
+//!   makes the key's next press read as an auto-repeat of the old one
+//!   (known issue 63), so whole-press symmetry is not checked there.
 //! - Focus mode again: an auto-repeat fires only an action that repeats
 //!   (`check_repeats_fire_only`, KS-10). `PressKey("Left")` is the only
 //!   `Immediate` action of the configs that repeats by default; deferred

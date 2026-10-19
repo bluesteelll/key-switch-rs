@@ -466,6 +466,14 @@ minor version; such entries sit under **Changed** and start with
   review m2). Tests:
   `engine::tests::a_refused_window_timer_drops_no_gesture`,
   `hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops`.
+- `swch off` and `swch on` keep a swallowed key's release swallowed: the
+  reset still takes the keys Windows holds as pressed, but a key whose
+  key-down the daemon swallowed keeps that record. A foreground change no
+  longer forgets swallowed key-downs, in every daemon, elevated or not
+  (roadmap item 2.3). Such a release reaches Windows only when Windows has
+  the key down (known issue 78). Tests:
+  `engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed`,
+  `engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes`.
 
 ### Fixed
 
@@ -819,6 +827,13 @@ minor version; such entries sit under **Changed** and start with
   `engine::tests::only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key`,
   `the_witness_of_a_generic_shift_key_up_reads_the_generic_state`,
   `engine::properties::nothing_is_left_down_in_windows_when_the_hook_misses_key_downs`.
+- The release of a key whose press the daemon swallowed no longer reaches
+  Windows alone after a foreground change or `swch on`: holding Win+Alt+T
+  while the terminal it opens takes the foreground keeps the T repeats and
+  the T release from Windows (KS-06 status, known issue 55, roadmap item
+  2.3). Tests:
+  `engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed`,
+  `win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed`.
 
 ## [0.1.0] - 2026-05-20
 

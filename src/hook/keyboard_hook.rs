@@ -249,7 +249,6 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
-    use crate::hook::keyboard_hook_callback::HookEnv;
     use crate::hook::main_thread::{MainThread, with_main};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -257,7 +256,7 @@ mod tests {
     /// state, as the main thread serves `swch on` and `off`, and returns
     /// whether the switch changed.
     fn set_enabled(hook: &KeyboardHook, enabled: bool) -> bool {
-        with_main(|main| main.set_enabled(hook, enabled, &HookEnv::new()))
+        with_main(|main| main.set_enabled(hook, enabled))
             .expect("this thread has a free main state")
     }
 
@@ -545,8 +544,7 @@ mod tests {
         std::thread::spawn(move || {
             let _main = MainThread::new().expect("the main thread is set up");
             let hook = KeyboardHook::new();
-            let env = HookEnv::new();
-            let nested = with_main(|_| with_main(|main| main.set_enabled(&hook, false, &env)));
+            let nested = with_main(|_| with_main(|main| main.set_enabled(&hook, false)));
             let _ = tx.send((nested, hook.is_enabled()));
         });
         let (nested, enabled) = rx

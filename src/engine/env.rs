@@ -40,11 +40,13 @@ pub trait Env {
     /// event is exactly the question: down means Windows holds a key-down
     /// of it that the engine did not swallow, so the key-up passes (roadmap
     /// item 2.3). Its resync asks about modifiers, leaving out every
-    /// modifier whose key-down it swallowed. An auto-blocker asks, without overwriting
-    /// anything, about the held keys outside its hotkey, to learn whether
-    /// Windows would see more than the hotkey. A reset (`swch off`, `swch
-    /// on`), which has no event, asks about every keyboard code to learn
-    /// which keys Windows has down.
+    /// modifier whose key-down it swallowed. An auto-blocker asks, without
+    /// overwriting anything, about the held keys outside its hotkey, to
+    /// learn whether Windows would see more than the hotkey. The reset of
+    /// `swch off` and `swch on`, which has no event, asks about every
+    /// keyboard code to learn which keys Windows has down; the reset of
+    /// keyboard input leaving this desktop asks nothing, because the OS
+    /// state is no witness then.
     fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool;
 
     /// Base name of the foreground window's executable (`"code.exe"`), or

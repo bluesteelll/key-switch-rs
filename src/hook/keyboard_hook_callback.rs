@@ -425,7 +425,7 @@ mod tests {
 
     impl Drop for RemappingOnAtEnd {
         fn drop(&mut self) {
-            let _ = with_main(|main| main.set_enabled(get_hook(), true, &HookEnv::new()));
+            let _ = with_main(|main| main.set_enabled(get_hook(), true));
         }
     }
 
@@ -433,7 +433,7 @@ mod tests {
     /// state, as the main thread serves `swch on` and `off`, and returns
     /// whether the switch changed.
     fn set_enabled(hook: &KeyboardHook, enabled: bool) -> bool {
-        with_main(|main| main.set_enabled(hook, enabled, &HookEnv::new()))
+        with_main(|main| main.set_enabled(hook, enabled))
             .expect("this thread has a free main state")
     }
 

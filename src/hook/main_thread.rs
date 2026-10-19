@@ -57,7 +57,9 @@ use windows::Win32::{
 };
 use windows::core::Error;
 
-use crate::engine::{Decision, Engine, Env, Scheduler, TimerQueue, TimerRequest, TimerToken};
+use crate::engine::{
+    Decision, Engine, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
+};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
 use crate::logging::counters::{self, Counter};
@@ -114,25 +116,33 @@ impl MainState {
     /// Turns remapping on or off (`swch on`, `swch off`; KS-31) and returns
     /// whether the switch changed. On the main thread, between callbacks:
     /// an event is decided either before the flip with the old state or
-    /// after it with the reset one. A real change resets the engine, which
-    /// makes every queued gesture timer stale, drops those timers, and stops
-    /// every macro running and every slow action still queued (roadmap item
-    /// 2.1). A change that is no change resets nothing: it would wipe the
-    /// records of keys held and swallowed right now.
-    pub(crate) fn set_enabled(
-        &mut self,
-        hook: &KeyboardHook,
-        enabled: bool,
-        env: &dyn Env,
-    ) -> bool {
+    /// after it with the reset one. A real change resets the transient
+    /// state ([`reset_transient_state`](Self::reset_transient_state)). A
+    /// change that is no change resets nothing: it would drop the gestures
+    /// pending right now.
+    pub(crate) fn set_enabled(&mut self, hook: &KeyboardHook, enabled: bool) -> bool {
         if !hook.switch_enabled(enabled, self) {
             return false;
         }
-        self.engine.reset(env);
+        self.reset_transient_state(hook, ResetReason::RemappingSwitched);
+        true
+    }
+
+    /// Drops every pending gesture, chord, sequence and owed mask, starts a
+    /// new timer generation and drops the timers it made stale, takes the
+    /// held keys as `reason` says ([`Engine::reset`]), and stops every macro
+    /// running and every slow action still queued (roadmap items 2.1 and
+    /// 2.3). On the main thread, between two events.
+    pub(crate) fn reset_transient_state(&mut self, hook: &KeyboardHook, reason: ResetReason) {
+        self.reset_engine(reason);
+        hook.cancel_actions();
+    }
+
+    /// The engine half of [`reset_transient_state`](Self::reset_transient_state).
+    fn reset_engine(&mut self, reason: ResetReason) {
+        self.engine.reset(&HookEnv::new(), reason);
         let engine = &self.engine;
         self.timers.retain(&|token| engine.is_live(token));
-        hook.cancel_actions();
-        true
     }
 }
 
@@ -531,10 +541,9 @@ fn take_due_timer(main: &mut MainState) -> Option<Decision> {
 fn serve(hook: &KeyboardHook, request: Request) {
     match request {
         Request::SetEnabled { enabled, reply } => {
-            let env = HookEnv::new();
             // `None` only if the loop itself ran inside `with_main`, which it
             // never does; the requester then hears that the daemon stops.
-            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled, &env)) {
+            if let Some(changed) = with_main(|main| main.set_enabled(hook, enabled)) {
                 let _ = reply.try_send(changed);
             }
         }

@@ -8,8 +8,13 @@
 //! held if either Shift slot or the generic one is set, `LShift` only if
 //! the left one is. For an auto-blocker it also visits every code held.
 //!
-//! A reset (`swch off`, `swch on`) rebuilds the table from the OS key state:
-//! [`KeyState::reset_from_os`].
+//! A reset rebuilds the table: from the OS key state when remapping is
+//! switched off or on ([`KeyState::resync_from_os`]), and with every key
+//! released when keyboard input leaves this desktop
+//! ([`KeyState::release_all`], roadmap item 2.3). A swallowed key-down's
+//! record survives both, and every foreground change, so the key's
+//! auto-repeats and key-up stay swallowed (rule L); only the key's own
+//! next key-down or its key-up replaces it.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -43,7 +48,7 @@ const MENU_KEYS: [VIRTUAL_KEY; 5] = [VK_LMENU, VK_RMENU, VK_MENU, VK_LWIN, VK_RW
 
 /// Mouse buttons. They have virtual-key codes, and the OS key state reports
 /// them, but the keyboard hook never sees them, so
-/// [`KeyState::reset_from_os`] leaves them out.
+/// [`KeyState::resync_from_os`] leaves them out.
 const MOUSE_BUTTONS: [VIRTUAL_KEY; 5] =
     [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2];
 
@@ -63,11 +68,6 @@ enum LastDown {
     Passed,
     /// The key-down was suppressed.
     Suppressed,
-    /// The key-down was suppressed, then a foreground change forgot it: its
-    /// key-up is no longer due to be suppressed. Windows still never saw the
-    /// key go down, so its auto-repeats stay suppressed and the resync
-    /// leaves it alone.
-    Forgotten,
 }
 
 /// Held and suppressed keys, one entry per virtual-key code.
@@ -95,10 +95,10 @@ impl KeyState {
     /// Reconciles the modifier flags with the OS key state. `skip` is the
     /// key of the event being delivered: its OS state is not updated until
     /// the hook returns, so it would read as stale. A modifier whose
-    /// key-down was suppressed, even one a foreground change forgot, is left
-    /// alone as well: Windows never saw it go down, so its key state says up
-    /// while the key is held, and overwriting the flag would also turn the
-    /// key's next auto-repeat into a fresh press (KS-14).
+    /// key-down was suppressed is left alone as well: Windows never saw it
+    /// go down, so its key state says up while the key is held, and
+    /// overwriting the flag would also turn the key's next auto-repeat into
+    /// a fresh press (KS-14).
     pub(super) fn sync_modifiers(&mut self, env: &dyn Env, skip: Option<VIRTUAL_KEY>) {
         for modifier in MODIFIERS {
             let index = modifier.0 as usize;
@@ -109,38 +109,49 @@ impl KeyState {
         }
     }
 
-    /// Starts over from the OS key state, after remapping was switched off
-    /// or on. Every keyboard code the OS reports held is held and on record
-    /// as passed: the engine saw no event while remapping was off, Windows
-    /// saw every key-down, so the key's auto-repeats and its key-up must
-    /// reach Windows too. Every other key is up with nothing on record.
+    /// Rebuilds the table from the OS key state, after remapping was
+    /// switched off or on. Every keyboard code the OS reports held is held
+    /// and on record as passed: the engine saw no event while remapping was
+    /// off, Windows saw every key-down, so the key's auto-repeats and its
+    /// key-up must reach Windows too. Every other key is up. Its record is
+    /// dropped, except a swallowed key-down's: Windows is no witness for a
+    /// key it never saw go down (KS-14), so its key-up, if one is still
+    /// due, stays swallowed, unless Windows has the key down by then (the
+    /// witness of `Engine::on_key_up`).
     ///
     /// Mouse buttons are left out: a seeded button would stay held for
     /// good, and an auto-blocker would then never see its hotkey alone. A
     /// key pressed just before the reset may not show in the OS state yet;
     /// its first auto-repeat then reads as a fresh press.
-    pub(super) fn reset_from_os(&mut self, env: &dyn Env) {
-        *self = Self::new();
-        // 1..=254 is the documented virtual-key range, and every code is
-        // below 256, so its slot is its index.
-        for code in 1..=254u16 {
+    pub(super) fn resync_from_os(&mut self, env: &dyn Env) {
+        // Every code is below 256, so its slot is its index. 1..=254 is the
+        // documented virtual-key range: the OS is not asked about 0 or 255.
+        for code in 0..=255u16 {
             let vk = VIRTUAL_KEY(code);
-            if MOUSE_BUTTONS.contains(&vk) || !env.os_key_down(vk) {
-                continue;
-            }
             let index = usize::from(code);
-            self.active[index] = true;
-            self.last_down[index] = LastDown::Passed;
+            let held =
+                (1..=254).contains(&code) && !MOUSE_BUTTONS.contains(&vk) && env.os_key_down(vk);
+            self.active[index] = held;
+            if held {
+                self.last_down[index] = LastDown::Passed;
+            } else if self.last_down[index] != LastDown::Suppressed {
+                self.last_down[index] = LastDown::Unknown;
+            }
         }
     }
 
-    /// Whether the latest key-down at `index` was suppressed, forgotten by a
-    /// foreground change or not.
+    /// Releases every key and keeps every record, without asking the OS:
+    /// keyboard input left this desktop, so any key held may lose its
+    /// key-up there (roadmap item 2.3). The next key-down of each key is a
+    /// first press, and a key-up that does come later passes or is
+    /// swallowed as its key-down was. Calling it twice is calling it once.
+    pub(super) fn release_all(&mut self) {
+        self.active = [false; 256];
+    }
+
+    /// Whether the latest key-down at `index` was suppressed.
     fn key_down_swallowed(&self, index: usize) -> bool {
-        matches!(
-            self.last_down[index],
-            LastDown::Suppressed | LastDown::Forgotten
-        )
+        self.last_down[index] == LastDown::Suppressed
     }
 
     /// Records a key-down. Returns true if the key was already held, which
@@ -187,9 +198,7 @@ impl KeyState {
     }
 
     /// Whether the key-down of `vk` is on record as suppressed, leaving the
-    /// record in place. A key-down that a foreground change forgot counts
-    /// too: Windows never saw it, so the key's auto-repeats must not reach
-    /// Windows either.
+    /// record in place.
     pub(super) fn is_blocked(&self, vk: u16) -> bool {
         slot(vk).is_some_and(|index| self.key_down_swallowed(index))
     }
@@ -207,18 +216,6 @@ impl KeyState {
                     == LastDown::Suppressed
             }
             None => false,
-        }
-    }
-
-    /// Forgets every suppressed key-down, so that no key-up stays due to be
-    /// suppressed. The record still says the key-down never reached the OS,
-    /// so the key's auto-repeats stay suppressed. A passed key-down stays on
-    /// record: the OS saw it, so its repeats and key-up must still pass.
-    pub(super) fn forget_blocked(&mut self) {
-        for record in &mut self.last_down {
-            if *record == LastDown::Suppressed {
-                *record = LastDown::Forgotten;
-            }
         }
     }
 
@@ -386,27 +383,56 @@ mod tests {
     }
 
     #[test]
-    fn forget_blocked_resets_every_flag() {
+    fn resync_from_os_keeps_swallowed_records_frees_their_keys_and_takes_os_keys_as_passed() {
+        // Roadmap item 2.3: `swch off` and `swch on` keep a swallowed
+        // key-down's record, so its key-up stays swallowed (rule L).
         let mut state = KeyState::new();
-        state.mark_blocked(20);
+        state.press(VK_CAPITAL);
+        state.mark_blocked(VK_CAPITAL.0);
+        state.press(VK_F13);
+        state.mark_passed(VK_F13.0);
         state.mark_blocked(200);
-        state.forget_blocked();
-        assert!(!state.take_blocked(20));
-        assert!(!state.take_blocked(200));
+
+        state.resync_from_os(&Down(&[VK_A]));
+
+        assert!(!state.is_active(VK_CAPITAL), "the OS has CapsLock up");
+        assert!(
+            state.is_blocked(VK_CAPITAL.0),
+            "Windows never saw CapsLock go down: its key-up stays swallowed"
+        );
+        assert!(state.is_blocked(200), "whether or not the key was held");
+        assert!(!state.is_active(VK_F13));
+        assert!(
+            !state.is_passed(VK_F13.0),
+            "a passed key the OS has up has no key-up due"
+        );
+        assert!(state.is_active(VK_A), "a key the OS has down is held");
+        assert!(state.is_passed(VK_A.0), "and on record as passed");
     }
 
     #[test]
-    fn forget_blocked_keeps_passed_key_downs() {
+    fn release_all_frees_every_key_and_keeps_every_record() {
+        // Roadmap item 2.3: keyboard input left this desktop. The OS is not
+        // asked, so the reset does not race the switch to the other desktop.
         let mut state = KeyState::new();
-        state.mark_blocked(20);
-        state.mark_passed(65);
-        state.forget_blocked();
+        state.press(VK_CAPITAL);
+        state.mark_blocked(VK_CAPITAL.0);
+        state.press(VK_LSHIFT);
+        state.mark_passed(VK_LSHIFT.0);
+        state.press(VIRTUAL_KEY(255));
+
+        state.release_all();
+        state.release_all();
+
+        for key in [VK_CAPITAL, VK_LSHIFT, VIRTUAL_KEY(255)] {
+            assert!(!state.is_active(key), "{key:?} is released");
+        }
+        assert!(state.is_blocked(VK_CAPITAL.0), "a swallowed record stays");
+        assert!(state.is_passed(VK_LSHIFT.0), "a passed record stays");
         assert!(
-            state.is_blocked(20),
-            "a forgotten key-down was still swallowed, so its repeats are too"
+            !state.press(VK_CAPITAL),
+            "the next key-down is a first press"
         );
-        assert!(!state.is_passed(20));
-        assert!(state.is_passed(65));
     }
 
     #[test]
@@ -510,7 +536,6 @@ mod tests {
         state.mark_passed(VK_F14.0);
         state.press(VK_J);
         state.mark_blocked(VK_J.0);
-        state.forget_blocked();
 
         state.mark_completed(VK_F14.0);
         state.mark_completed(VK_J.0);
@@ -523,7 +548,7 @@ mod tests {
         );
         assert!(
             state.take_blocked(VK_J.0),
-            "a held key whose swallowed key-down a focus change forgot has its key-up swallowed again"
+            "a held key whose key-down was swallowed keeps its key-up swallowed"
         );
         assert!(
             !state.is_blocked(VK_K.0),
@@ -564,14 +589,14 @@ mod tests {
     }
 
     #[test]
-    fn reset_from_os_takes_held_keyboard_keys_as_passed_and_skips_mouse_buttons() {
+    fn resync_from_os_takes_held_keyboard_keys_as_passed_and_skips_mouse_buttons() {
         let mut state = KeyState::new();
         state.press(VK_J);
         state.mark_blocked(VK_J.0);
         state.press(VK_F13);
         state.mark_passed(VK_F13.0);
 
-        state.reset_from_os(&KeysAndButtonsDown);
+        state.resync_from_os(&KeysAndButtonsDown);
 
         for key in [VK_A, VK_LSHIFT, VK_SHIFT] {
             assert!(state.is_active(key), "{key:?} is held in Windows");
@@ -588,8 +613,8 @@ mod tests {
         }
         assert!(!state.is_active(VK_J));
         assert!(
-            !state.is_blocked(VK_J.0),
-            "a record from before the reset is gone"
+            state.is_blocked(VK_J.0),
+            "a swallowed record from before the reset stays"
         );
         assert!(!state.is_active(VK_F13));
         assert!(!state.is_passed(VK_F13.0));
@@ -645,10 +670,10 @@ mod tests {
             !state.alt_or_win_down_in_windows(),
             "a Win whose key-down was swallowed does not count"
         );
-        state.forget_blocked();
+        state.release_all();
         assert!(
             !state.alt_or_win_down_in_windows(),
-            "nor does one a foreground change forgot"
+            "nor does a Win that a reset freed"
         );
 
         // The resync skips the swallowed LWin and writes the rest.
@@ -667,22 +692,25 @@ mod tests {
     }
 
     #[test]
-    fn forgotten_modifier_is_left_alone_by_the_resync() {
+    fn a_swallowed_modifier_freed_by_a_reset_is_left_alone_by_the_modifier_resync() {
+        // Input left this desktop while LShift, swallowed, was held. Its
+        // record stays, so the modifier resync never takes its OS state,
+        // which says nothing about a key-down Windows did not see (KS-14).
         let mut state = KeyState::new();
         state.press(VK_LSHIFT);
         state.mark_blocked(VK_LSHIFT.0);
-        state.forget_blocked();
+        state.release_all();
 
-        state.sync_modifiers(&NothingDown, None);
+        state.sync_modifiers(&Down(&[VK_LSHIFT]), None);
 
         assert!(
-            state.is_active(VK_LSHIFT),
-            "a focus change does not make Windows see the key-down"
+            !state.is_active(VK_LSHIFT),
+            "the resync skips a modifier whose key-down was swallowed"
         );
         assert!(!state.is_passed(VK_LSHIFT.0));
         assert!(
-            !state.take_blocked(VK_LSHIFT.0),
-            "its key-up is no longer due to be suppressed"
+            state.take_blocked(VK_LSHIFT.0),
+            "its key-up is still due to be swallowed"
         );
     }
 }

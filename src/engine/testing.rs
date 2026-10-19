@@ -57,10 +57,11 @@
 //! [`Scenario::session_locked`], [`Scenario::session_unlocked`],
 //! [`Scenario::desktop_switched_away`] and
 //! [`Scenario::desktop_switched_back`] model the input signals the daemon's
-//! main thread notes (roadmap item 2.3): a lock or a switch to another
-//! desktop resets the engine, the two signals that input came back record
-//! a step only. Like a foreground change, each is a script error while
-//! remapping is off.
+//! main thread notes (roadmap item 2.3), through [`InputSignal::reset`] as
+//! the daemon's drain does: a lock or a switch to another desktop resets
+//! the engine with [`ResetReason::InputLeft`], and the two signals that
+//! input came back reset nothing. Like a foreground change, each is a
+//! script error while remapping is off.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -69,7 +70,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::{
-    Decision, Engine, Env, KeyDirection, KeyEvent, Scheduler, TimerQueue, sort_by_specificity,
+    Decision, Engine, Env, InputSignal, KeyDirection, KeyEvent, ResetReason, Scheduler, TimerQueue,
+    sort_by_specificity,
 };
 use crate::config::{from_ron_str, from_ron_str_with_hotkeys};
 use crate::core::windows_actions::BindAction;
@@ -387,14 +389,14 @@ impl Scenario {
     /// [`up_unseen`](Self::up_unseen).
     #[track_caller]
     pub(crate) fn session_locked(self) -> Self {
-        self.input_signal("session locked", true)
+        self.input_signal(InputSignal::SessionLocked)
     }
 
     /// The session was unlocked (`WTS_SESSION_UNLOCK`): keyboard input is
     /// back on this desktop.
     #[track_caller]
     pub(crate) fn session_unlocked(self) -> Self {
-        self.input_signal("session unlocked", false)
+        self.input_signal(InputSignal::SessionUnlocked)
     }
 
     /// Keyboard input switched to another desktop
@@ -402,31 +404,32 @@ impl Scenario {
     /// Ctrl+Alt+Del screen, a UAC prompt on the secure desktop).
     #[track_caller]
     pub(crate) fn desktop_switched_away(self) -> Self {
-        self.input_signal("keyboard input switched to another desktop", true)
+        self.input_signal(InputSignal::DesktopSwitchedAway)
     }
 
     /// Keyboard input switched back to this desktop.
     #[track_caller]
     pub(crate) fn desktop_switched_back(self) -> Self {
-        self.input_signal("keyboard input switched back to this desktop", false)
+        self.input_signal(InputSignal::DesktopSwitchedBack)
     }
 
-    /// One input signal, which resets the engine if `resets`. Like a
-    /// foreground change, a script error while remapping is off: the daemon
-    /// drops the signals then.
+    /// One input signal, which resets the engine as the main thread's
+    /// drain does: [`InputSignal::reset`] decides. Like a foreground change,
+    /// a script error while remapping is off: the daemon drops the signals
+    /// then.
     #[track_caller]
-    fn input_signal(mut self, what: &str, resets: bool) -> Self {
+    fn input_signal(mut self, signal: InputSignal) -> Self {
         if !self.enabled {
             self.fail(&format!(
-                "{what} at {}: the daemon acts on none while remapping is off",
+                "{signal} at {}: the daemon acts on none while remapping is off",
                 self.clock()
             ));
         }
-        if resets {
-            self.engine.reset(&self.env);
+        if let Some(reason) = signal.reset() {
+            self.engine.reset(&self.env, reason);
             self.drop_stale_timers();
         }
-        let label = format!("{what} at {}", self.clock());
+        let label = format!("{signal} at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
     }
@@ -444,7 +447,7 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.reset(&self.env);
+        self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = false;
         self.press_suppressed = [None; 256];
@@ -465,7 +468,7 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.reset(&self.env);
+        self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = true;
         let label = format!("remapping on at {}", self.clock());

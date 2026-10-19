@@ -142,7 +142,7 @@ The daemon's main thread (roadmap item 2.2):
 - Owns the decision core (`engine::Engine`: held and blocked keys, pending gestures) and its gesture timers in a thread-local reached only through `with_main`; both hook callbacks run on this thread, so no lock guards the engine, and a callback re-entered while the state is borrowed passes its event instead of panicking or hanging
 - Runs the main loop: it waits for its gesture timer and its messages at once (`MsgWaitForMultipleObjectsEx`), pumps with `PeekMessageW`, in which the hook callbacks run, and fires every gesture timer that is due. The timer is one high-resolution waitable timer, so a `Hold` fires within about 1 ms of its term; no thread is started per press (KS-33)
 - A gesture timer fires on this thread: a fast `Hold` action runs here, and a slow one goes to the action executor
-- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows) and stops every running macro and queued `Launch`/`OpenUrl` on the action executor
+- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl` on the action executor
 
 #### `app.rs`
 
@@ -534,12 +534,13 @@ the `T` types two capitals and leaves CapsLock alone. Write
   `sequence` completes while it is held. The resync of modifiers from
   the Windows key state leaves alone a modifier whose key-down was
   swallowed, because Windows never saw it go down: it still counts as held
-  for matching, and its auto-repeats stay auto-repeats (KS-14). One gap
-  remains:
-  - A foreground change while the key is held forgets that its release is
-    due to be swallowed (the release might go to another window). Its
-    repeats stay swallowed, but its release reaches Windows unless a `Tap`
-    or `Hold` of the press is still pending (roadmap item 2.3).
+  for matching, and its auto-repeats stay auto-repeats (KS-14). The
+  release of a key whose key-down was swallowed is swallowed too, across a
+  foreground change and `swch off`/`swch on`, so Windows never gets a
+  key-up whose press it did not see (roadmap item 2.3). It reaches Windows
+  only when Windows has that key down, so the key does not stick (known
+  issue 78). A key released while remapping is off reaches Windows as a
+  lone key-up (known issue 59).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized
