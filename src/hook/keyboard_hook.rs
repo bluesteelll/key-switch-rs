@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -7,7 +8,7 @@ use windows::{
         Foundation::{E_FAIL, E_UNEXPECTED},
         UI::WindowsAndMessaging::{EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND},
     },
-    core::{Error, Result},
+    core::{Error, HRESULT, Result},
 };
 
 use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
@@ -202,7 +203,10 @@ impl KeyboardHook {
         Ok(())
     }
 
-    /// True if the low-level keyboard hook is currently installed.
+    /// True while the daemon holds a keyboard hook handle. Windows removes a
+    /// hook whose callback ran past `LowLevelHooksTimeout` without a word
+    /// (KS-08), so this does not say that the hook is still called: the hook
+    /// watchdog finds that out, from raw keyboard input (roadmap item 2.4).
     pub fn is_installed(&self) -> bool {
         !self.hook_handle.load(Ordering::Acquire).is_null()
     }
@@ -245,6 +249,74 @@ impl KeyboardHook {
             installer.unhook_keyboard(handle)?;
         }
         Ok(())
+    }
+
+    /// Replaces the keyboard hook with a new one, for the hook watchdog
+    /// (roadmap item 2.4, KS-08). Main thread only, outside every callback:
+    /// the main loop's drain serves the watchdog's request, so `install`,
+    /// `uninstall` and this never overlap.
+    ///
+    /// - No keyboard hook installed (before `install`, or after `uninstall`
+    ///   at exit or at the session end): `NotInstalled`, and no call.
+    /// - Otherwise the new hook goes in first, at the head of the chain, and
+    ///   only then the old one comes off. Windows calls a low-level hook only
+    ///   inside a message call of this thread, and none happens between the
+    ///   two calls, so every key event sees exactly one hook of ours: never
+    ///   two, and never none.
+    /// - A new hook that Windows refuses is an error, and the old one stays
+    ///   installed and held: the daemon never has fewer hooks than before.
+    pub(crate) fn reinstall_keyboard_hook(&self) -> Result<Reinstalled> {
+        self.reinstall_keyboard_hook_with(&installer::SYSTEM)
+    }
+
+    /// [`reinstall_keyboard_hook`](Self::reinstall_keyboard_hook) through
+    /// `installer`.
+    pub(crate) fn reinstall_keyboard_hook_with(
+        &self,
+        installer: &impl Installer,
+    ) -> Result<Reinstalled> {
+        if self.hook_handle.load(Ordering::Acquire).is_null() {
+            return Ok(Reinstalled::NotInstalled);
+        }
+        let new = installer.set_keyboard_hook()?;
+        let previous = self.hook_handle.swap(new, Ordering::AcqRel);
+        let old = match installer.unhook_keyboard(previous) {
+            Ok(()) => OldHook::StillInstalled,
+            Err(error) => OldHook::Gone(error.code()),
+        };
+        Ok(Reinstalled::Replaced { old })
+    }
+}
+
+/// What [`KeyboardHook::reinstall_keyboard_hook`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reinstalled {
+    /// No keyboard hook is installed, so none was installed either.
+    NotInstalled,
+    /// A new hook replaced the old one, which went as `old` says.
+    Replaced { old: OldHook },
+}
+
+/// What became of the old keyboard hook in a reinstall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OldHook {
+    /// It was still installed, and is removed now.
+    StillInstalled,
+    /// Removing it failed with this error: Windows had removed it already,
+    /// as it does after a callback that ran past `LowLevelHooksTimeout`.
+    Gone(HRESULT),
+}
+
+impl fmt::Display for OldHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OldHook::StillInstalled => f.write_str("the old hook was still installed"),
+            OldHook::Gone(code) => write!(
+                f,
+                "Windows had removed the old hook: {}",
+                Error::from(*code)
+            ),
+        }
     }
 }
 
@@ -581,9 +653,9 @@ mod tests {
         assert_eq!(
             fake.take_calls(),
             [
-                Call::SetKeyboard(1),
-                Call::SetWinEvent(2),
-                Call::SetWinEvent(3)
+                Call::InstallKeyboard(1),
+                Call::InstallWinEvent(2),
+                Call::InstallWinEvent(3)
             ]
         );
         hook
@@ -595,7 +667,7 @@ mod tests {
         hook.uninstall_with(fake)
             .expect("the fake removes the keyboard hook");
         fake.take_calls().into_iter().find_map(|call| match call {
-            Call::UnhookKeyboard(handle) => Some(handle),
+            Call::RemoveKeyboard(handle) => Some(handle),
             _ => None,
         })
     }
@@ -621,7 +693,7 @@ mod tests {
         );
         assert_eq!(
             fake.take_calls(),
-            [Call::SetKeyboard(4), Call::UnhookKeyboard(1)],
+            [Call::InstallKeyboard(4), Call::RemoveKeyboard(1)],
             "the new hook first, then the old one off"
         );
         assert_eq!(fake.keyboard_hooks(), [4], "one keyboard hook, the new one");
@@ -643,7 +715,7 @@ mod tests {
         assert_eq!(error.code(), E_ACCESSDENIED);
         assert_eq!(
             fake.take_calls(),
-            [Call::SetKeyboardRefused],
+            [Call::KeyboardRefused],
             "the old hook is left alone"
         );
         assert_eq!(fake.keyboard_hooks(), [1]);
@@ -691,6 +763,10 @@ mod tests {
             Ok(Reinstalled::Replaced {
                 old: OldHook::Gone(ERROR_INVALID_HOOK_HANDLE.into())
             })
+        );
+        assert_eq!(
+            fake.take_calls(),
+            [Call::InstallKeyboard(4), Call::RemoveKeyboard(1)]
         );
         assert_eq!(fake.keyboard_hooks(), [4]);
         assert_eq!(removed_keyboard_hook(hook, &fake), Some(4));

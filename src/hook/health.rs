@@ -1,8 +1,11 @@
 //! The keyboard hook's health (roadmap item 2.4, KS-08): the heartbeat that
 //! the keyboard callback bumps at every call, which the hook watchdog
-//! compares with the raw keyboard input Windows reports.
+//! compares with the raw keyboard input Windows reports, and what the
+//! watchdog asks the main thread when the two disagree.
 
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// The heartbeat, alone on its cache line: the main thread writes it at
 /// every key event, and the watchdog thread reads it only at its ticks, so
@@ -33,13 +36,6 @@ impl HealthState {
     }
 
     /// How many calls the keyboard callback has had.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "first used by Hook: reinstall the keyboard hook on the main thread"
-        )
-    )]
     pub(crate) fn callbacks(&self) -> u64 {
         self.heartbeat.0.load(Ordering::Acquire)
     }
@@ -48,6 +44,44 @@ impl HealthState {
 impl Default for HealthState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The hook watchdog's request to the main thread: keys arrived and the
+/// keyboard callback stayed silent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReinstallRequest {
+    /// The heartbeat the watchdog read when it decided. The main thread
+    /// reinstalls only if it has not moved since.
+    pub(crate) seen: u64,
+    /// How long no callback was seen while keys arrived.
+    pub(crate) silent_for: Duration,
+    /// Which attempt this is since the last callback seen, from 1.
+    pub(crate) attempt: u32,
+}
+
+/// What the main thread did with a [`ReinstallRequest`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReinstallOutcome {
+    /// The hook answered once the main thread was free, and was kept.
+    Alive,
+    /// A new hook replaced the old one.
+    Reinstalled,
+    /// Windows refused the new hook, and the old one was kept.
+    Failed,
+    /// No keyboard hook is installed, so none was: the daemon is shutting
+    /// down, or the session ends.
+    NotInstalled,
+}
+
+impl fmt::Display for ReinstallOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ReinstallOutcome::Alive => "the hook answered and was kept",
+            ReinstallOutcome::Reinstalled => "the hook was reinstalled",
+            ReinstallOutcome::Failed => "the new hook was refused; the old one was kept",
+            ReinstallOutcome::NotInstalled => "no keyboard hook is installed",
+        })
     }
 }
 
@@ -63,6 +97,28 @@ mod tests {
             health.callback_seen();
         }
         assert_eq!(health.callbacks(), 3);
+    }
+
+    #[test]
+    fn every_reinstall_outcome_has_its_own_text() {
+        let texts: Vec<String> = [
+            ReinstallOutcome::Alive,
+            ReinstallOutcome::Reinstalled,
+            ReinstallOutcome::Failed,
+            ReinstallOutcome::NotInstalled,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            texts,
+            [
+                "the hook answered and was kept",
+                "the hook was reinstalled",
+                "the new hook was refused; the old one was kept",
+                "no keyboard hook is installed",
+            ]
+        );
     }
 
     #[test]

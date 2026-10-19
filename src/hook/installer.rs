@@ -209,15 +209,15 @@ impl Installer for System {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Call {
     /// A keyboard hook was installed as this handle.
-    SetKeyboard(usize),
+    InstallKeyboard(usize),
     /// The install of a keyboard hook was refused.
-    SetKeyboardRefused,
+    KeyboardRefused,
     /// The keyboard hook with this handle was asked to go.
-    UnhookKeyboard(usize),
+    RemoveKeyboard(usize),
     /// A WinEvent hook was installed as this handle.
-    SetWinEvent(usize),
+    InstallWinEvent(usize),
     /// The WinEvent hook with this handle was asked to go.
-    UnhookWinEvent(usize),
+    RemoveWinEvent(usize),
 }
 
 /// The state of a [`FakeInstaller`].
@@ -296,7 +296,7 @@ impl Installer for FakeInstaller {
     fn set_keyboard_hook(&self) -> Result<RawHandle> {
         let mut state = self.state.borrow_mut();
         if std::mem::take(&mut state.refuse_next_keyboard_hook) {
-            state.calls.push(Call::SetKeyboardRefused);
+            state.calls.push(Call::KeyboardRefused);
             let count = state.keyboard.len();
             state.keyboard_counts.push(count);
             return Err(windows::Win32::Foundation::E_ACCESSDENIED.into());
@@ -304,7 +304,7 @@ impl Installer for FakeInstaller {
         state.last += 1;
         let number = state.last;
         state.keyboard.push(number);
-        state.calls.push(Call::SetKeyboard(number));
+        state.calls.push(Call::InstallKeyboard(number));
         let count = state.keyboard.len();
         state.keyboard_counts.push(count);
         Ok(Self::handle(number))
@@ -313,7 +313,7 @@ impl Installer for FakeInstaller {
     fn unhook_keyboard(&self, hook: RawHandle) -> Result<()> {
         let mut state = self.state.borrow_mut();
         let number = hook.addr();
-        state.calls.push(Call::UnhookKeyboard(number));
+        state.calls.push(Call::RemoveKeyboard(number));
         let installed = state.keyboard.contains(&number);
         state.keyboard.retain(|&live| live != number);
         let count = state.keyboard.len();
@@ -330,14 +330,14 @@ impl Installer for FakeInstaller {
         state.last += 1;
         let number = state.last;
         state.win_event.push(number);
-        state.calls.push(Call::SetWinEvent(number));
+        state.calls.push(Call::InstallWinEvent(number));
         Some(Self::handle(number))
     }
 
     fn unhook_win_event(&self, hook: RawHandle) -> Result<()> {
         let mut state = self.state.borrow_mut();
         let number = hook.addr();
-        state.calls.push(Call::UnhookWinEvent(number));
+        state.calls.push(Call::RemoveWinEvent(number));
         state.win_event.retain(|&live| live != number);
         Ok(())
     }
