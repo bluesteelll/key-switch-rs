@@ -808,6 +808,17 @@ minor version; such entries sit under **Changed** and start with
   `[INFO] continuing without hot-reload` and runs on (roadmap item 2.3, a
   leftover of item 2.2). Test:
   `hook::config_watcher::tests::the_watcher_thread_has_no_panic_path`.
+- The release of a key whose press the daemon swallowed reaches Windows
+  when Windows has that key down: a key released and pressed again where
+  the daemon cannot see it (a higher-integrity window while the daemon is
+  not elevated, the secure desktop) no longer stays stuck. The hook reads
+  the key's state in Windows once, and only at a key-up it would swallow
+  (roadmap item 2.3, ruling R1; known issue 78). Tests:
+  `engine::scenarios::a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_is_released_in_windows`,
+  `a_swallowed_lshift_key_up_stays_swallowed_while_the_right_shift_is_down_in_windows`,
+  `engine::tests::only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key`,
+  `the_witness_of_a_generic_shift_key_up_reads_the_generic_state`,
+  `engine::properties::nothing_is_left_down_in_windows_when_the_hook_misses_key_downs`.
 
 ## [0.1.0] - 2026-05-20
 

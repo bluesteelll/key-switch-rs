@@ -930,6 +930,12 @@ What still cannot be intercepted:
   phantom-held modifiers do not leak across the transition.
 - Anti-cheat-protected processes that explicitly block low-level hooks
   (some games' kernel-mode anti-cheat drivers).
+- A key whose press the daemon swallowed, then released and pressed again
+  where the hook cannot see it (an elevated window while the daemon is not
+  elevated, the secure desktop), keeps its auto-repeats swallowed until it
+  is released. Its release reaches Windows, because the hook finds the key
+  down in Windows, so it does not stay stuck (roadmap item 2.3, known
+  issue 78).
 
 For a fully unattended/no-UAC-prompt setup, the alternative is
 `uiAccess="true"` in the manifest — but that requires a binary signed with a

@@ -196,10 +196,12 @@
 //! for the window on a timer of its own (roadmap item 2.2, open question
 //! 5). A DoubleTap window opens if the key-up comes before it closes. The
 //! key-up of a key marked passed always passes. Otherwise it is suppressed
-//! if the key was marked blocked or if a Tap or Hold was pending. A
-//! foreground change forgets which key-ups were due to be suppressed: such
-//! a key-up passes unless a Tap or Hold of its press is pending (roadmap
-//! item 2.3).
+//! if the key was marked blocked or if a Tap or Hold was pending, unless
+//! [`Env::os_key_down`] reports the key down before the event: Windows then
+//! saw a key-down the hook did not, and the key-up passes so that the key
+//! does not stay down there (the witness, roadmap item 2.3). A foreground
+//! change forgets which key-ups were due to be suppressed: such a key-up
+//! passes unless a Tap or Hold of its press is pending.
 //!
 //! On every key event, once its record is updated, the decision asks for
 //! the menu mask key (`Decision::mask`, roadmap item 1.2, KS-12) if the
@@ -756,9 +758,22 @@ impl Engine {
         // the key stays held there. Otherwise it is suppressed if the
         // key-down is on record as suppressed, or if a Tap or Hold of the
         // press was pending: a focus change may have forgotten the record,
-        // and the gesture is still evidence of a swallowed press.
+        // and the gesture is still evidence of a swallowed press. The record
+        // is consumed either way.
         let was_blocked = self.keys.take_blocked(vk.0);
-        decision.suppress = was_blocked || (released.gesture_bound && !was_passed);
+        let swallow = was_blocked || (released.gesture_bound && !was_passed);
+        // The witness (roadmap item 2.3, ruling R1): Windows has this key
+        // down although the engine swallowed its latest key-down, so
+        // Windows saw a key-down the hook did not (a higher-integrity
+        // window, the secure desktop, a press while remapping was off, an
+        // injector). Swallowing the key-up would leave the key down there
+        // for good. The hook runs before the key state takes this event, so
+        // the read is the state before the key-up. The `&&` keeps every
+        // key-up that passes from asking the OS anything. A generic modifier
+        // code (an injector's `VK_SHIFT`) reads the generic state, either
+        // side, because Windows applies it to a side the event does not
+        // name.
+        decision.suppress = swallow && !env.os_key_down(vk);
         self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
@@ -783,7 +798,7 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::engine::{Scheduler, TimerQueue};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_SHIFT,
+        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_RSHIFT, VK_SHIFT,
     };
 
     /// An [`Env`] stopped at one instant with nothing held and no
@@ -1126,6 +1141,54 @@ mod tests {
             "a swallowed key-up asks the OS about its key once"
         );
         assert_eq!(env.asked(VK_F14), 0, "a key-up that passes asks nothing");
+    }
+
+    /// An [`Env`] stopped at one instant in which Windows has the right
+    /// Shift down, so the generic Shift reads as down too.
+    struct RightShiftDown(Instant);
+
+    impl Env for RightShiftDown {
+        fn now(&self) -> Instant {
+            self.0
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            vk == VK_RSHIFT || vk == VK_SHIFT
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_witness_of_a_generic_shift_key_up_reads_the_generic_state() {
+        // Critic OQ2 of roadmap item 2.3: a real keyboard reports sided
+        // codes, but another program can inject the generic VK_SHIFT, which
+        // Windows applies to a side the event does not name. The witness
+        // then asks about either side: with nothing down the swallowed
+        // key-up stays swallowed; with a Shift down in Windows it passes.
+        let bindings = loaded(r#"( bindings: [ (keys: "Shift", action: DoNothing) ] )"#);
+        let t0 = Instant::now();
+
+        let mut engine = Engine::new();
+        let down = engine.on_key(KeyEvent::down(VK_SHIFT), &bindings, &FixedEnv(t0));
+        assert!(down.suppress, "the generic Shift key-down is swallowed");
+        let up = engine.on_key(KeyEvent::up(VK_SHIFT), &bindings, &FixedEnv(t0));
+        assert!(
+            up.suppress,
+            "no Shift is down in Windows: the key-up stays swallowed"
+        );
+
+        let mut engine = Engine::new();
+        let down = engine.on_key(KeyEvent::down(VK_SHIFT), &bindings, &RightShiftDown(t0));
+        assert!(down.suppress, "the generic Shift key-down is swallowed");
+        let up = engine.on_key(KeyEvent::up(VK_SHIFT), &bindings, &RightShiftDown(t0));
+        assert!(
+            !up.suppress,
+            "a Shift is down in Windows: the generic key-up passes"
+        );
     }
 
     #[test]

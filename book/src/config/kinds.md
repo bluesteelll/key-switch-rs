@@ -163,6 +163,7 @@ To "suppress" means not to pass the key event on to the OS and the applications.
 
 - If a key-down is suppressed, its auto-repeats and its key-up are suppressed too. A binding that stops matching while the key is held does not let the repeats through.
 - If a key-down reaches Windows, its auto-repeats and its key-up reach Windows too, even when a binding starts matching while the key is held or a `chord` or `sequence` completes.
+- One exception keeps a key from sticking: the key-up of a key whose key-down was suppressed passes when Windows has that key down. The hook reads the key's state in Windows (`GetAsyncKeyState`), which inside the hook is still the state before the key-up. Down means Windows saw a key-down the hook did not, for example the key was released and pressed again in a higher-integrity window while the daemon was not elevated, or on the secure desktop; swallowing that release would leave the key down in Windows (roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset), [§19](known-issues.md#s19) row 78).
 
 | Mechanism | What is suppressed | `block_default` |
 |---|---|---|

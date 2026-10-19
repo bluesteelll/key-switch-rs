@@ -35,9 +35,12 @@ pub trait Env {
     ///
     /// The OS state only changes for events the hook lets through, and the
     /// state of the key being delivered lags until the hook returns. The
-    /// engine therefore never asks about the key of the current event. Its
-    /// resync asks about modifiers, leaving out every modifier whose
-    /// key-down it swallowed. An auto-blocker asks, without overwriting
+    /// engine therefore never asks about the key of the current event,
+    /// except at a key-up it would swallow, where the state before the
+    /// event is exactly the question: down means Windows holds a key-down
+    /// of it that the engine did not swallow, so the key-up passes (roadmap
+    /// item 2.3). Its resync asks about modifiers, leaving out every
+    /// modifier whose key-down it swallowed. An auto-blocker asks, without overwriting
     /// anything, about the held keys outside its hotkey, to learn whether
     /// Windows would see more than the hotkey. A reset (`swch off`, `swch
     /// on`), which has no event, asks about every keyboard code to learn

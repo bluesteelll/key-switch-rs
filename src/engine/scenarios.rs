@@ -2035,6 +2035,26 @@ fn a_swallowed_key_released_while_remapping_is_off_and_pressed_again_unseen_is_r
         .expect_passed();
 }
 
+#[test]
+fn a_swallowed_lshift_key_up_stays_swallowed_while_the_right_shift_is_down_in_windows() {
+    // Ruling on critic OQ2: the witness asks about the sided code the hook
+    // reported, never the generic one, so the right Shift held in Windows
+    // does not let the left one's swallowed key-up through, which would be
+    // a key-up Windows never saw the press of.
+    Scenario::from_ron(r#"( bindings: [ (keys: "LShift", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .down("LShift")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .down("RShift")
+        .expect_passed()
+        .expect_down_in_windows("RShift")
+        .up("LShift")
+        .expect_suppressed()
+        .up("RShift")
+        .expect_passed();
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the
