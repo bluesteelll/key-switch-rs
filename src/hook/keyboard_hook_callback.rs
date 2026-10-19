@@ -1377,6 +1377,50 @@ mod tests {
         );
     }
 
+    /// Roadmap item 2.4 (cut D10, Q3): the hold of the keyboard callback for
+    /// the watchdog's manual check exists only in debug builds. Its module is
+    /// declared under `#[cfg(debug_assertions)]`, and so is every call of it
+    /// in the callback and in `App::run`, so a release build, the elevated
+    /// daemon, has no code for it.
+    #[test]
+    fn the_debug_hold_is_compiled_only_into_debug_builds() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read =
+            |file: &str| std::fs::read_to_string(root.join(file)).expect("read a source file");
+        let cfg = "#[cfg(debug_assertions)]";
+
+        let modules = read("src/hook/mod.rs");
+        let lines: Vec<&str> = modules.lines().collect();
+        let declared = lines
+            .iter()
+            .position(|line| line.trim().ends_with("mod debug_hold;"))
+            .expect("src/hook/mod.rs declares debug_hold");
+        assert!(
+            declared > 0 && lines[declared - 1].trim() == cfg,
+            "the line before `mod debug_hold;` is {cfg}"
+        );
+
+        let mut report = Vec::new();
+        for file in ["src/hook/keyboard_hook_callback.rs", "src/core/app.rs"] {
+            let text = read(file);
+            let lines = non_test_lines(&text);
+            let mut calls = 0;
+            for (index, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains("debug_hold::") {
+                    continue;
+                }
+                calls += 1;
+                if index == 0 || lines[index - 1].trim() != cfg {
+                    report.push(format!("{file}:{}: {}", index + 1, line.trim()));
+                }
+            }
+            if calls == 0 {
+                report.push(format!("no call site of debug_hold:: in {file}"));
+            }
+        }
+        assert!(report.is_empty(), "{}", report.join("\n"));
+    }
+
     #[test]
     #[ignore = "manual: injects vk 0xE8 down and up into the live input stream; run it with --ignored while Notepad has focus and check that it passes and nothing is typed and no menu opens"]
     fn the_menu_mask_key_is_inserted_into_the_input_stream() {
