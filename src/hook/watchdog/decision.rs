@@ -837,6 +837,39 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_counts_as_that_many_raw_events() {
+        // Ruling L1: a drain hands the decision its count in one call, which
+        // is the same as one call per raw event at the drain's instant.
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        for count in [1, 2, 7, 250] {
+            let mut batched = Watchdog::new(start, 0);
+            let mut single = Watchdog::new(start, 0);
+            batched.raw_batch(count, at(10));
+            for _ in 0..count {
+                single.raw_event(at(10));
+            }
+            assert_eq!(format!("{batched:?}"), format!("{single:?}"), "{count}");
+            for ms in [260, 510] {
+                assert_eq!(
+                    batched.tick(at(ms), 0, false),
+                    single.tick(at(ms), 0, false),
+                    "{count} raw events, the tick at {ms} ms"
+                );
+            }
+            assert_eq!(format!("{batched:?}"), format!("{single:?}"), "{count}");
+        }
+        let mut idle = Watchdog::new(start, 0);
+        let before = format!("{idle:?}");
+        idle.raw_batch(0, at(10));
+        assert_eq!(
+            format!("{idle:?}"),
+            before,
+            "an empty batch changes nothing"
+        );
+    }
+
+    #[test]
     fn a_declined_request_needs_fresh_evidence() {
         // Keyboard input is not on this desktop at the decision: the
         // evidence is dropped, and a new request needs a new window.

@@ -1279,8 +1279,13 @@ mod tests {
     }
 
     /// The watchdog's loop on this thread, on a fake clock in whole
-    /// milliseconds, with a fake timer that signals `early` ms before its
-    /// due time, and a wait that times out where the loop's would.
+    /// milliseconds, as the real wait runs it (cut L1.7): a raw key event is
+    /// queued, and brings a pass only while the wait includes raw input,
+    /// that is while the watchdog is idle; every pass drains the queue, at
+    /// most `per_pass` events if set, as many as a drain's time budget
+    /// reads, and a drain that leaves events is followed by another at the
+    /// next ms, without a wait. The fake timer signals `early` ms before its
+    /// due time, and the wait times out where the loop's would.
     struct Drive {
         ticker: Ticker<FakeTimer>,
         start: Instant,
@@ -1294,10 +1299,25 @@ mod tests {
         early: u64,
         /// When the wait times out, in ms.
         timeout: Option<u64>,
-        /// When each request was sent, in ms.
+        /// When each request was sent, in ms, and the requests.
         requests: Vec<u64>,
-        /// How many passes the loop made.
+        sent_requests: Vec<ReinstallRequest>,
+        /// How many passes the loop made, and when the last one ran.
         passes: u64,
+        last_pass: Option<u64>,
+        /// Raw key events queued and not read yet, and all of them.
+        queued: u64,
+        raws: u64,
+        /// The passes that a raw key event brought.
+        raw_wakes: u64,
+        /// How many raw key events one drain reads at most, if not all.
+        per_pass: Option<u64>,
+        /// The last drain left raw key events in the queue.
+        left: bool,
+        /// The passes that read raw key events: when, and how many.
+        reads: Vec<(u64, u64)>,
+        /// What the watchdog did to the timer, and when.
+        timer_calls: Vec<(u64, TimerCall)>,
     }
 
     impl Drive {
@@ -1317,7 +1337,16 @@ mod tests {
                 early: 0,
                 timeout: None,
                 requests: Vec::new(),
+                sent_requests: Vec::new(),
                 passes: 0,
+                last_pass: None,
+                queued: 0,
+                raws: 0,
+                raw_wakes: 0,
+                per_pass: None,
+                left: false,
+                reads: Vec::new(),
+                timer_calls: Vec::new(),
             }
         }
 
@@ -1325,18 +1354,54 @@ mod tests {
             self.start + Duration::from_millis(ms)
         }
 
-        /// One pass of the loop at `ms`, and what it did to the timer and
-        /// the requester.
+        /// A raw key event at `ms`: queued, and a pass if the wait includes
+        /// raw input and no drain is due anyway.
+        fn raw(&mut self, ms: u64) {
+            self.queued += 1;
+            self.raws += 1;
+            let mask = wake_mask(Source::Keyboard.batched_wake(), self.ticker.is_ticking());
+            if !self.left && mask.contains(QS_RAWINPUT) {
+                self.raw_wakes += 1;
+                self.pass(ms);
+            }
+        }
+
+        /// The main thread answers the newest request with `outcome`.
+        fn answer(&self, outcome: ReinstallOutcome) {
+            let waiting = self
+                .recorder
+                .waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            waiting
+                .last()
+                .expect("a request waits for its answer")
+                .try_send(outcome)
+                .expect("the request is not answered yet");
+        }
+
+        /// One pass of the loop at `ms`: the drain, then the pass, and what
+        /// it did to the timer and the requester.
         fn pass(&mut self, ms: u64) {
+            let read = self
+                .per_pass
+                .map_or(self.queued, |most| most.min(self.queued));
+            self.queued -= read;
+            self.left = self.queued > 0;
+            if read > 0 {
+                self.reads.push((ms, read));
+            }
             let context = Context {
                 health: self.health,
                 counters: self.counters,
                 requests: &self.recorder,
                 input_here: self.input_here,
             };
-            self.ticker.pass(self.at(ms), &context);
+            self.ticker.pass(self.at(ms), read, self.left, &context);
             self.passes += 1;
+            self.last_pass = Some(ms);
             for call in self.ticker.timer.calls.borrow_mut().drain(..) {
+                self.timer_calls.push((ms, call));
                 self.due = match call {
                     TimerCall::Set(after) => {
                         Some(ms + u64::try_from(after.as_millis()).expect("a short wait"))
@@ -1344,8 +1409,9 @@ mod tests {
                     TimerCall::Cancel => None,
                 };
             }
-            while self.sent.try_recv().is_ok() {
+            while let Ok((_, request)) = self.sent.try_recv() {
                 self.requests.push(ms);
+                self.sent_requests.push(request);
             }
             self.timeout = self.ticker.wake_by().map(|at| {
                 let after = at.saturating_duration_since(self.at(ms));
@@ -1353,26 +1419,32 @@ mod tests {
             });
         }
 
-        /// Runs the clock from `from` to `to` ms: at each ms the raw events
-        /// `raw` names, each followed by a pass, then the timer's signal or
-        /// the wait's timeout, if one is due, followed by a pass.
-        fn run(&mut self, from: u64, to: u64, raw: impl Fn(u64) -> bool) {
+        /// Runs the clock from `from` to `to` ms: at each ms `script`, then
+        /// one pass if a drain left raw key events, the timer signals or
+        /// the wait times out.
+        fn run_script(&mut self, from: u64, to: u64, mut script: impl FnMut(u64, &mut Self)) {
             for ms in from..=to {
-                if raw(ms) {
-                    let now = self.at(ms);
-                    self.ticker.raw_event(now, self.health);
-                    self.pass(ms);
-                }
-                if let Some(due) = self.due
-                    && ms + self.early >= due
-                {
+                script(ms, self);
+                let signal = self.due.is_some_and(|due| ms + self.early >= due);
+                let timeout = self.timeout.is_some_and(|timeout| ms >= timeout);
+                if signal {
                     self.due = None;
                     self.ticker.fired();
-                    self.pass(ms);
-                } else if self.timeout.is_some_and(|timeout| ms >= timeout) {
+                }
+                if self.left || signal || timeout {
                     self.pass(ms);
                 }
             }
+        }
+
+        /// As [`run_script`](Self::run_script), with a raw key event at each
+        /// ms that `raw` names.
+        fn run(&mut self, from: u64, to: u64, raw: impl Fn(u64) -> bool) {
+            self.run_script(from, to, |ms, drive| {
+                if raw(ms) {
+                    drive.raw(ms);
+                }
+            });
         }
     }
 
@@ -1402,7 +1474,8 @@ mod tests {
     fn a_timer_that_refuses_once_is_set_again_at_the_next_pass() {
         // Ruling I1: a failed set is counted, the wait times out at the tick
         // instead, and the pass sets the timer again. The set that fails is
-        // the first after the burst, so no raw event brings a pass.
+        // the one at the tick of 500 ms, after the burst, and while the
+        // watchdog ticks no raw event brings a pass.
         let mut drive = Drive::new(Recorder::new());
         drive.run(0, 300, a_burst);
         drive.ticker.timer.refusals.set(1);
@@ -1426,10 +1499,249 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_of_the_main_thread_is_taken_at_the_next_pass() {
+    fn while_ticking_raw_key_events_wake_nothing() {
+        // Ruling L1: once the first raw key event of a burst has started the
+        // ticks, the others wait in the queue for the tick's drain.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 3000, |ms, d| {
+            if ms.is_multiple_of(30) {
+                d.raw(ms);
+            }
+            if ms % 30 == 1 {
+                d.health.callback_seen();
+            }
+        });
+        assert_eq!(drive.raw_wakes, 1, "the first raw key event only");
+        assert!(drive.passes <= 22, "{} passes", drive.passes);
+        assert_eq!(drive.ticker.stats().raw_keys, 101);
+        assert_eq!(drive.requests, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn the_first_raw_key_event_after_idle_wakes_the_watchdog() {
+        // Ruling L1: idle, the wait includes raw input, so the first key of
+        // a burst wakes the thread and starts the ticks.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 6000, |ms, d| {
+            if ms == 0 || ms == 5000 {
+                d.raw(ms);
+                d.health.callback_seen();
+            }
+        });
+        assert_eq!(drive.raw_wakes, 2);
+        let calls = &drive.timer_calls;
+        assert!(
+            calls
+                .iter()
+                .any(|&(ms, call)| ms < 5000 && call == TimerCall::Cancel),
+            "ticking stopped before 5000 ms: {calls:?}"
+        );
+        assert!(
+            calls.contains(&(5000, TimerCall::Set(TICK))),
+            "and started again at 5000 ms: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_batch_read_at_a_tick_counts_all_its_events() {
+        let mut drive = Drive::new(Recorder::new());
+        drive.run(0, 5000, |ms| ms.is_multiple_of(30));
+        assert!(drive.reads.contains(&(250, 8)), "{:?}", drive.reads);
+        assert_eq!(drive.requests, [1000]);
+        let request = drive.sent_requests[0];
+        assert_eq!(request.seen, 0);
+        assert!(request.silent_for >= SILENCE, "{request:?}");
+    }
+
+    /// The requests of ten seconds of `script` with a callback that keeps
+    /// up.
+    fn keeps_up(script: impl FnMut(u64, &mut Drive)) -> Vec<u64> {
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 10_000, script);
+        drive.requests
+    }
+
+    #[test]
+    fn batched_reads_of_a_callback_that_keeps_up_ask_for_nothing() {
+        // The decision's a_callback_that_keeps_up_asks_for_nothing on the
+        // batched loop: the callback 1 ms before each raw event, 1 ms after
+        // it, and callbacks late in each tick interval whose raw events land
+        // early in the next.
+        let before = keeps_up(|ms, d| match ms % 30 {
+            0 => d.health.callback_seen(),
+            1 => d.raw(ms),
+            _ => {}
+        });
+        assert_eq!(before, [] as [u64; 0], "callback before its raw event");
+        let after = keeps_up(|ms, d| match ms % 30 {
+            0 => d.raw(ms),
+            1 => d.health.callback_seen(),
+            _ => {}
+        });
+        assert_eq!(after, [] as [u64; 0], "callback after its raw event");
+        let across = keeps_up(|ms, d| {
+            if ms == 0 {
+                d.raw(ms);
+                d.health.callback_seen();
+            }
+            match ms % 250 {
+                230..=249 => d.health.callback_seen(),
+                1..=20 if ms > 250 => d.raw(ms),
+                _ => {}
+            }
+        });
+        assert_eq!(across, [] as [u64; 0], "raw events across the tick");
+    }
+
+    #[test]
+    fn a_batch_is_evidence_only_from_the_next_tick() {
+        // Ruling M5 on batched reads: a key down and up whose raw events
+        // are read at a tick and whose callbacks come just after it is no
+        // evidence at that tick, and the next tick sees the callbacks.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 5000, |ms, d| {
+            if ms == 0 {
+                d.raw(ms);
+                d.health.callback_seen();
+            }
+            if ms == 1248 || ms == 1249 {
+                d.raw(ms);
+            }
+            if ms == 1251 || ms == 1252 {
+                d.health.callback_seen();
+            }
+        });
+        assert!(drive.reads.contains(&(1250, 2)), "{:?}", drive.reads);
+        assert_eq!(drive.requests, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn a_single_batched_raw_event_stops_ticking_after_two_seconds() {
+        // Ruling M1 on batched reads: idle again at most ACTIVE_FOR and a
+        // tick after the last key, and no pass after that.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run(0, 10_000, |ms| ms == 0);
+        assert_eq!(drive.requests, [] as [u64; 0]);
+        let &(at, call) = drive.timer_calls.last().expect("the timer was used");
+        assert_eq!(call, TimerCall::Cancel, "{:?}", drive.timer_calls);
+        assert!(at <= 2250, "{:?}", drive.timer_calls);
+        assert_eq!(drive.last_pass, Some(at), "no pass after it");
+    }
+
+    #[test]
+    fn a_busy_main_thread_gives_one_request_with_batched_reads() {
+        // The anti-loop rule on batched reads: the request waits while the
+        // main thread is busy; then the hook calls that waited are
+        // dispatched (+50), and the hook keeps up.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 20_000, |ms, d| {
+            if ms.is_multiple_of(30) {
+                d.raw(ms);
+            }
+            if ms == 10_000 {
+                for _ in 0..50 {
+                    d.health.callback_seen();
+                }
+                d.answer(ReinstallOutcome::Alive);
+            }
+            if ms > 10_000 && ms % 30 == 1 {
+                d.health.callback_seen();
+            }
+        });
+        assert_eq!(drive.requests.len(), 1, "{:?}", drive.requests);
+    }
+
+    #[test]
+    fn batched_reinstalls_without_callbacks_are_spaced_out() {
+        // The backoff on batched reads: each answer is taken at the next
+        // tick, so each window starts a tick after its request.
+        let mut drive = Drive::new(Recorder::answering(Some(ReinstallOutcome::Reinstalled)));
+        drive.run(0, 40_000, |ms| ms.is_multiple_of(30));
+        assert_eq!(drive.requests, [1000, 3250, 7500, 15_750, 32_000]);
+        for (index, gap) in drive
+            .requests
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .enumerate()
+        {
+            let window = 1000 << (index + 1);
+            assert!(
+                (window..window + 500).contains(&gap),
+                "gap {index}: {gap} ms: {:?}",
+                drive.requests
+            );
+        }
+    }
+
+    #[test]
+    fn raw_events_read_with_an_answer_are_no_evidence_after_it() {
+        // Rule 4 on batched reads: the drain of the pass that takes the
+        // answer is counted before it, so its raw events are no evidence
+        // after the answer.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 10_000, |ms, d| {
+            if ms <= 990 && ms.is_multiple_of(30) {
+                d.raw(ms);
+            }
+            if ms == 1001 {
+                d.answer(ReinstallOutcome::Reinstalled);
+            }
+            if ms == 1001 || ms == 1003 {
+                d.raw(ms);
+            }
+        });
+        assert_eq!(drive.requests, [1000]);
+    }
+
+    /// A flood of 10 000 raw key events at 100 ms, of which the hook saw
+    /// `callbacks`, while the watchdog ticks; each drain reads 20 of them,
+    /// so the flood is read over two ticks after the one that counted its
+    /// callbacks.
+    fn a_flood(callbacks: u64) -> Drive {
+        let mut drive = Drive::new(Recorder::new());
+        drive.per_pass = Some(20);
+        drive.run_script(0, 5000, |ms, d| {
+            if ms == 0 {
+                d.raw(ms);
+                d.health.callback_seen();
+            }
+            if ms == 100 {
+                for _ in 0..10_000 {
+                    d.raw(ms);
+                }
+                for _ in 0..callbacks {
+                    d.health.callback_seen();
+                }
+            }
+        });
+        drive
+    }
+
+    #[test]
+    fn a_flood_whose_callbacks_were_counted_at_one_tick_draws_no_request() {
+        // Ruling V3-I1, the critic's row: the callbacks counted at the tick
+        // of 250 ms explain the raw events read until 749 ms.
+        let drive = a_flood(10_000);
+        assert_eq!(
+            drive.reads.last().map(|&(ms, _)| ms),
+            Some(749),
+            "read over two ticks"
+        );
+        assert_eq!(drive.requests, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn a_hook_that_dies_during_a_flood_is_reinstalled_once() {
+        // Ruling V3-I1: the hook saw only half of the flood.
+        let drive = a_flood(5_000);
+        assert_eq!(drive.requests.len(), 1, "{:?}", drive.requests);
+    }
+
+    #[test]
+    fn a_reply_is_taken_at_the_next_tick() {
         // The main thread answers each request at once with Reinstalled and
-        // the callback stays silent: the answer frees the next request,
-        // which waits for the doubled window.
+        // the callback stays silent: the answer, taken at the next tick,
+        // frees the next request, which waits for the doubled window.
         let mut drive = Drive::new(Recorder::answering(Some(ReinstallOutcome::Reinstalled)));
         drive.run(0, 6000, |ms| ms.is_multiple_of(30));
         assert_eq!(drive.requests.len(), 2, "{:?}", drive.requests);
@@ -1455,21 +1767,35 @@ mod tests {
     }
 
     #[test]
-    fn raw_input_before_the_hook_is_installed_is_no_evidence() {
+    fn raw_input_before_the_hook_is_installed_is_read_and_not_counted() {
         // Ruling I3: the watchdog starts before the hooks, and counts raw
         // input only while the keyboard hook is installed, so a key typed
-        // before `install` draws no reinstall of the new hook.
+        // before `install` draws no reinstall of the new hook. It is read,
+        // and the thread stays idle, so it wakes for each such event.
         let mut drive = Drive::new(Recorder::new());
         drive.health.set_hook_installed(false);
         drive.run(0, 600, |ms| ms.is_multiple_of(30));
-        assert_eq!(drive.due, None, "no tick while no hook is installed");
+        assert_eq!(drive.raw_wakes, 21, "one wake per raw event while idle");
+        assert!(
+            !drive
+                .timer_calls
+                .iter()
+                .any(|&(_, call)| matches!(call, TimerCall::Set(_))),
+            "no tick while no hook is installed: {:?}",
+            drive.timer_calls
+        );
         drive.health.set_hook_installed(true);
         drive.run(601, 4000, |ms| ms.is_multiple_of(30));
         assert_eq!(drive.requests.len(), 1, "{:?}", drive.requests);
         assert!(
-            drive.requests[0] >= 610 + 1000,
+            drive.requests[0] >= 630 + 1000,
             "the silence starts at the first raw event counted: {:?}",
             drive.requests
+        );
+        assert_eq!(
+            drive.ticker.stats().raw_keys,
+            drive.raws - drive.queued,
+            "every raw key event read is in the stop line"
         );
     }
 
