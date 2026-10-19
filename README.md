@@ -70,7 +70,7 @@ key-switch-rs/
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── platform/
     │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
-    │   ├── foreground.rs       - the foreground window for when:: executable cached per window, title read live
+    │   ├── foreground.rs       - the foreground window for when: executable cached per window, title read live
     │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
     ├── system/
