@@ -405,6 +405,14 @@ mod tests {
         }
     }
 
+    /// The sources of the package under `root` that the scan reads, sorted.
+    fn scanned_sources(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        rust_files(&root.join("src"), &mut files);
+        files.sort();
+        files
+    }
+
     /// The index of the line that opens the tests module of a source file
     /// (`#[cfg(test)]` followed by `mod tests {`), or the line count.
     fn tests_start(lines: &[&str]) -> usize {
@@ -464,6 +472,113 @@ mod tests {
         None
     }
 
+    /// What the scan found in the sources it read.
+    #[derive(Default)]
+    struct Findings {
+        /// The installer calls outside the `win32` block, as
+        /// `<file>:<line>: <code>`.
+        stray: Vec<String>,
+        /// The installer calls the `win32` block makes.
+        inside: Vec<&'static str>,
+        /// The lines of the `win32` block, once the installer file is read.
+        block: Option<std::ops::RangeInclusive<usize>>,
+    }
+
+    /// Scans `text`, the source at `relative` (from the manifest folder,
+    /// with `/`), into `findings`.
+    fn scan_source(relative: &str, text: &str, findings: &mut Findings) {
+        let lines: Vec<&str> = text.lines().collect();
+        let allowed = if relative == INSTALLER_FILE {
+            findings.block = cfg_not_test_block(&lines, WIN32_BLOCK);
+            findings.block.clone()
+        } else {
+            None
+        };
+        for (index, line) in lines[..tests_start(&lines)].iter().enumerate() {
+            let number = index + 1;
+            let code = code_of(line);
+            let calls: Vec<&str> = INSTALLERS
+                .into_iter()
+                .filter(|call| code.contains(call))
+                .collect();
+            if allowed
+                .as_ref()
+                .is_some_and(|block| block.contains(&number))
+            {
+                findings.inside.extend(calls);
+            } else if !calls.is_empty() {
+                findings
+                    .stray
+                    .push(format!("{relative}:{number}: {}", line.trim()));
+            }
+        }
+    }
+
+    /// The stray calls the scan finds in `lines`, the source of a file
+    /// that is not the installer's. Each line is its own string literal, so
+    /// that the scan of this file reads none of them as code.
+    fn stray_in(lines: &[&str]) -> Vec<String> {
+        let mut findings = Findings::default();
+        scan_source(
+            "src/hook/keyboard_hook.rs",
+            &lines.join("\n"),
+            &mut findings,
+        );
+        findings.stray
+    }
+
+    #[test]
+    fn an_installer_call_in_a_tests_module_is_found() {
+        // Review I1 of round 1: a test module is compiled only into the
+        // test build, so a call there is the one ruling S4 is about.
+        let stray = stray_in(&[
+            "fn production() {}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            concat!(
+                "    fn probe() { unsafe { SetWindows",
+                "HookExW(WH_KEYBOARD_LL, None, None, 0) }; }"
+            ),
+            "}",
+        ]);
+        assert_eq!(stray.len(), 1, "the call in the tests module: {stray:?}");
+        assert!(
+            stray[0].starts_with("src/hook/keyboard_hook.rs:6: "),
+            "{stray:?}"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_the_hook_installer_is_found() {
+        // Review I1 of round 1: besides SetWindowsHookExW the `windows`
+        // crate exports the ANSI SetWindowsHookExA and the obsolete
+        // SetWindowsHookW and SetWindowsHookA, and each puts a hook in.
+        for call in [
+            concat!("SetWindows", "HookExW"),
+            concat!("SetWindows", "HookExA"),
+            concat!("SetWindows", "HookW"),
+            concat!("SetWindows", "HookA"),
+        ] {
+            let line = format!("    unsafe {{ {call}(WH_KEYBOARD_LL, None) }};");
+            let stray = stray_in(&["fn production() {", &line, "}"]);
+            assert_eq!(stray.len(), 1, "{call} is not found: {stray:?}");
+        }
+    }
+
+    #[test]
+    fn the_build_script_is_scanned() {
+        // Review I1 of round 1: Cargo runs build.rs at every build, and
+        // `lib.rs` compiles it into the library's test harness.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let files = scanned_sources(root);
+        assert!(
+            files.contains(&root.join("build.rs")),
+            "build.rs is not among the scanned sources"
+        );
+    }
+
     #[test]
     fn the_hook_installers_are_compiled_out_of_the_tests() {
         // Ruling S1 and S4 of roadmap item 2.4: every call that installs a
@@ -474,14 +589,10 @@ mod tests {
         // them may name a call, or the one public way to the hooks,
         // `core::app` (`App::run`).
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut files = Vec::new();
-        rust_files(&root.join("src"), &mut files);
-        files.sort();
+        let files = scanned_sources(root);
         assert!(files.len() > 40, "the scan found the sources: {files:?}");
 
-        let mut stray = Vec::new();
-        let mut inside = Vec::new();
-        let mut block = None;
+        let mut findings = Findings::default();
         for file in &files {
             let text = std::fs::read_to_string(file).expect("read a source file");
             let relative = file
@@ -489,30 +600,13 @@ mod tests {
                 .expect("a file under the manifest folder")
                 .to_string_lossy()
                 .replace('\\', "/");
-            let lines: Vec<&str> = text.lines().collect();
-            let allowed = if relative == INSTALLER_FILE {
-                block = cfg_not_test_block(&lines, WIN32_BLOCK);
-                block.clone()
-            } else {
-                None
-            };
-            for (index, line) in lines[..tests_start(&lines)].iter().enumerate() {
-                let number = index + 1;
-                let code = code_of(line);
-                let calls: Vec<&str> = INSTALLERS
-                    .into_iter()
-                    .filter(|call| code.contains(call))
-                    .collect();
-                if allowed
-                    .as_ref()
-                    .is_some_and(|block| block.contains(&number))
-                {
-                    inside.extend(calls);
-                } else if !calls.is_empty() {
-                    stray.push(format!("{relative}:{number}: {}", line.trim()));
-                }
-            }
+            scan_source(&relative, &text, &mut findings);
         }
+        let Findings {
+            stray,
+            inside,
+            block,
+        } = findings;
 
         let mut integration = Vec::new();
         for entry in std::fs::read_dir(root.join("tests")).expect("list tests") {
