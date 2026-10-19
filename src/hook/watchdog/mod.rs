@@ -2178,6 +2178,37 @@ mod tests {
     }
 
     #[test]
+    fn a_ticking_watchdog_thread_is_not_woken_by_synthetic_raw_events() {
+        // Ruling L1: while the watchdog ticks, raw key events wait in the
+        // queue and are read at the ticks, so the thread wakes about four
+        // times a second whatever the typing rate. The synthetic source
+        // stands for raw input with posted messages (cut L1.2).
+        let health = leaked_health();
+        let (recorder, _requests) = Recorder::new();
+        let watchdog = HookWatchdog::start_synthetic(health, recorder, leaked_counters())
+            .expect("the watchdog thread starts");
+        watchdog.post_synthetic_raw();
+        thread::sleep(Duration::from_millis(50));
+        let begun = Instant::now();
+        let mut posts = 1;
+        while begun.elapsed() < Duration::from_secs(1) {
+            health.callback_seen();
+            watchdog.post_synthetic_raw();
+            posts += 1;
+            thread::sleep(Duration::from_millis(5));
+        }
+        let stats = watchdog
+            .stop_counting()
+            .expect("the thread is joined within 1 s");
+        assert_eq!(stats.raw_keys, posts, "every raw key event is read");
+        assert!(
+            stats.wakes <= 12,
+            "a ticking watchdog woke {} times for {posts} raw key events (at most 12)",
+            stats.wakes
+        );
+    }
+
+    #[test]
     fn synthetic_raw_events_with_a_live_heartbeat_send_no_request() {
         let health = leaked_health();
         let requests = three_seconds_of_raw_events(health, || health.callback_seen());
