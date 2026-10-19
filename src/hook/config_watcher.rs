@@ -397,6 +397,28 @@ mod tests {
         assert_eq!(hook.bindings().len(), 1, "the live bindings stay");
     }
 
+    /// Roadmap item 2.3 (a leftover of item 2.2, like KS-33): a watcher
+    /// thread that cannot be started is an error the daemon logs, not a
+    /// panic. The non-test lines of this file name no panicking unwrap; the
+    /// tokens are assembled, so the test does not match itself.
+    #[test]
+    fn the_watcher_thread_has_no_panic_path() {
+        let tokens = [concat!(".exp", "ect("), concat!(".unw", "rap()")];
+        let text = include_str!("config_watcher.rs");
+        let sites: Vec<String> = text
+            .lines()
+            .enumerate()
+            .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+            .filter(|(_, line)| tokens.iter().any(|token| line.contains(token)))
+            .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+            .collect();
+        assert!(
+            sites.is_empty(),
+            "panic paths in src/hook/config_watcher.rs:\n{}",
+            sites.join("\n")
+        );
+    }
+
     #[test]
     fn a_spawned_watcher_keeps_the_bindings_when_the_file_is_deleted() {
         let dir = TempDir::new("deleted-live");
