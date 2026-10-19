@@ -25,7 +25,7 @@ You are the **developer** of `key-switch-rs`. You receive an approved cut (the a
 
 - The daemon's main thread owns a `WH_KEYBOARD_LL` hook, an `EVENT_SYSTEM_FOREGROUND` WinEvent hook and the `GetMessageW` loop that delivers both. Hooks belong to the installing thread (root cause of KS-01).
 - `config.ron` (RON, kept by owner decision) is parsed in `src/config` (`schema.rs` serde `Raw*` types, `loader.rs`, `parsing.rs`), hot-reloaded by `hook/config_watcher.rs` (notify, 250 ms debounce) and published through `ArcSwap<Vec<Binding>>`.
-- Model in `src/data`: Combo/Sequence/Chord kinds, Tap/Hold/DoubleTap triggers, `when:` conditions on foreground app/title, macro `Sequence` steps sent via `SendInput` on worker threads.
+- Model in `src/data`: Combo/Sequence/Chord kinds, Tap/Hold/DoubleTap triggers, `when:` conditions on foreground app/title, macro `Sequence` steps sent via `SendInput` on the `action-executor` thread (`src/core/executor`).
 - Gesture state: `engine/gestures.rs` (Tap, Hold, DoubleTap), `chords.rs`, `sequences.rs`; held and blocked keys in `engine/keys.rs`.
 - `swch` talks to the daemon over the named pipe `\\.\pipe\key-switch-rs.sock` (`interprocess`), one request line and one reply line (`src/ipc.rs`, `hook/ipc_server.rs`).
 - **`src/engine`** is the pure decision core (`#![forbid(unsafe_code)]`). `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (suppress or pass, actions to fire, timers to start). It makes no Win32 calls and is covered by scenario tests in `engine::scenarios` on the `engine::testing` harness. New matching, suppression and gesture logic goes there; the hook callback (`hook/keyboard_hook_callback.rs`) only adapts Win32 to it.
