@@ -268,6 +268,31 @@ mod tests {
     }
 
     #[test]
+    fn the_hook_health_names_the_first_problem_in_its_precedence() {
+        // Documented order: not watched, then reinstall failed, then the
+        // timer failing.
+        let all = HookHealth {
+            last_attempt_failed: true,
+            timer_failing: true,
+            ..healthy()
+        };
+        assert_eq!(
+            HookHealth {
+                watched: false,
+                ..all
+            }
+            .to_string(),
+            "hook not watched, reinstalls: 0",
+            "no watchdog outranks every other problem"
+        );
+        assert_eq!(
+            all.to_string(),
+            "hook reinstall failed, reinstalls: 0",
+            "a failed reinstall outranks a failing timer"
+        );
+    }
+
+    #[test]
     fn the_hook_health_reads_ok_not_watched_or_failed_with_its_reinstalls() {
         // Roadmap item 2.4: `swch status` shows the hook's health after the
         // binding count; `reinstalls: N` is the acceptance's own token.
