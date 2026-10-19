@@ -2393,6 +2393,27 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_of_exactly_the_largest_finite_timeout_is_not_infinite() {
+        // INFINITE is u32::MAX, so a due time of exactly that many
+        // milliseconds fits a u32 and only the cap keeps it finite.
+        assert_eq!(
+            wait_ms(Duration::from_millis(u64::from(INFINITE))),
+            INFINITE - 1,
+            "the largest u32 of milliseconds waits one less than INFINITE"
+        );
+        assert_eq!(
+            wait_ms(Duration::from_millis(u64::from(INFINITE) - 1)),
+            INFINITE - 1,
+            "the largest finite timeout stays itself"
+        );
+        assert_eq!(
+            wait_ms(Duration::from_millis(u64::from(INFINITE) - 2)),
+            INFINITE - 2,
+            "one below the cap is not capped"
+        );
+    }
+
+    #[test]
     fn the_buffered_read_of_a_thread_without_raw_input_reads_nothing() {
         // Critic OQ3, an FFI smoke test of the buffered read's sizes on a
         // thread of its own with a sink window and no raw input
