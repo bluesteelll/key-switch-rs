@@ -1,5 +1,5 @@
 //! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
-//! thread that installs both hooks and pumps their messages also owns the
+//! thread that installs the hooks and pumps their messages also owns the
 //! engine and every gesture timer, and serves `swch on` and `swch off` and
 //! config reloads (roadmap item 2.3).
 //!

@@ -136,7 +136,7 @@ impl KeyboardHook {
     /// desktop-switch hook.
     ///
     /// Main thread only: the thread that runs the main loop
-    /// (`hook::main_thread`), because both hooks belong to the thread that
+    /// (`hook::main_thread`), because the hooks belong to the thread that
     /// installs them and are called through its message loop (KS-01).
     pub(crate) fn install(&self) -> Result<()> {
         if !self.hook_handle.load(Ordering::Acquire).is_null() {

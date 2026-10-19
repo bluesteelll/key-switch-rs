@@ -43,8 +43,8 @@
 //!
 //! # Threads
 //!
-//! Both callbacks run on the main thread, which installed the hooks, pumps
-//! their messages and owns the engine and every gesture timer
+//! The three callbacks run on the main thread, which installed the hooks,
+//! pumps their messages and owns the engine and every gesture timer
 //! (`hook::main_thread`, roadmap item 2.2). A gesture that must fire while
 //! no event arrives, a `Hold` or a `Tap` that waits for its DoubleTap
 //! window, asks for a timer, and so does a pending chord or sequence for its
@@ -56,8 +56,10 @@
 //!
 //! `swch on` and `swch off` are requests that the main loop serves between
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is
-//! reset with no event decided in between. They never install or remove a
-//! hook; only the main thread does.
+//! reset with no event decided in between. So are a config reload and the
+//! input signals that `desktop_switched` and the control window note
+//! (roadmap item 2.3). None of them installs or removes a hook; only the
+//! main thread does.
 //!
 //! The engine reads the clock once per event, here, and the loop takes a
 //! timer only once its due time has passed. The engine decides by

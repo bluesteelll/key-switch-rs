@@ -13,7 +13,7 @@
 //!      compared, so its letter case or a relative form cannot hide a save
 //!      (KS-21).
 //!   3. A worker thread debounces those events (editors fire several per
-//!      save), parses the config and hands the list to an [`ApplyReload`]
+//!      save), parses the config and hands the list to an `ApplyReload`
 //!      sink: the daemon's main thread (`MainThreadHandle`), which swaps
 //!      the list with `KeyboardHook::update_bindings` and resets the engine
 //!      in one step, between two key events (roadmap item 2.3, KS-31). The
