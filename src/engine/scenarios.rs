@@ -1919,6 +1919,32 @@ fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppress
 }
 
 #[test]
+fn win_alt_t_held_across_a_focus_change_does_not_launch_again_on_its_repeats() {
+    // The same script as above, pinning the damage a repeat read as a new
+    // press would do: a second Launch of the window that took the
+    // foreground (tester mutation M20: a focus change that frees the key).
+    Scenario::from_ron(r#"( bindings: [ (keys: "Win+Alt+T", action: Launch(exe: "wt.exe")) ] )"#)
+        .down("Win")
+        .expect_passed()
+        .down("Alt")
+        .expect_passed()
+        .down("T")
+        .expect_suppressed()
+        .expect_fired(&[launch("wt.exe")])
+        .foreground_changed()
+        .advance_ms(500)
+        .repeat("T")
+        .expect_suppressed()
+        .expect_fired(&[])
+        .advance_ms(33)
+        .repeat("T")
+        .expect_suppressed()
+        .expect_fired(&[])
+        .up("T")
+        .expect_suppressed();
+}
+
+#[test]
 fn press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding()
 {
     // F13's key-up was lost with no signal that input left this desktop
