@@ -68,6 +68,7 @@ key-switch-rs/
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── platform/
+    │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
@@ -153,7 +154,7 @@ Main application:
 - Starts the action executor before it installs the hooks, and stops it after it removed them, waiting at most 2 s for a step that still runs
 - Sets up the main thread's engine and gesture timer before it installs the hooks; a gesture timer it cannot create stops the daemon
 - Ctrl+C handler for correct shutdown
-- Runs the main loop (`main_thread.rs`) on the thread that installed the hooks
+- Runs the main loop (`main_thread.rs`) on the thread that installed the hooks, at `THREAD_PRIORITY_HIGHEST` while it runs (every keystroke waits for that thread), and at normal priority again for the shutdown; a priority it cannot set is logged, and the daemon runs on
 
 #### `executor/`
 

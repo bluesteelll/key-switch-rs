@@ -20,6 +20,7 @@ use crate::hook::main_thread::{MainThread, MainThreadHandle};
 use crate::hook::{config_watcher, keyboard_hook_callback};
 use crate::ipc;
 use crate::logging::counters;
+use crate::platform::priority::RaisedPriority;
 
 static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -251,10 +252,23 @@ impl App {
             None => None,
         };
 
+        // Every keystroke on the desktop waits for this thread while it runs
+        // the loop, so it runs at THREAD_PRIORITY_HIGHEST meanwhile (roadmap
+        // item 2.2), and at normal priority again for the shutdown.
+        let raised = match RaisedPriority::raise() {
+            Ok(raised) => Some(raised),
+            Err(error) => {
+                log::warn!(
+                    "could not raise the main thread's priority ({error}); it runs at normal priority"
+                );
+                None
+            }
+        };
         // This is the thread that installed both hooks, so their callbacks
         // are dispatched from this loop (KS-01), and the gesture timers fire
         // in it (roadmap item 2.2).
         let ran = main.run(hook);
+        drop(raised);
         // From here a `swch on` or `off` is answered at once, "the daemon is
         // shutting down": the request queue closes with the main state.
         drop(main);

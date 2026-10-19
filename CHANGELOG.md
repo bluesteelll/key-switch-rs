@@ -252,6 +252,15 @@ minor version; such entries sit under **Changed** and start with
   `a_message_posted_behind_a_wake_is_dispatched_without_more_input`,
   `hook::keyboard_hook_callback::tests::the_gesture_path_starts_no_thread`,
   `a_thousand_hold_presses_through_the_adapter_keep_at_most_one_timer_queued`.
+- The main thread runs at `THREAD_PRIORITY_HIGHEST` while it runs its loop
+  (roadmap item 2.2): every keystroke on the desktop waits for that thread,
+  and under full CPU load the latency bench (row R8) measured a sent
+  message reaching it at a p99 of 205 to 394 us at that priority, against
+  252 to 2632 us at normal priority. Base priority 10, below the 11 that
+  Microsoft warns about; a priority that cannot be set logs
+  `[WARN] could not raise the main thread's priority (...); it runs at
+  normal priority`. Test:
+  `platform::priority::tests::raise_sets_highest_and_drop_restores_normal`.
 - Chord and sequence entries expire on their own timers (roadmap item
   2.2): a pending `chord` asks for a timer at the end of its window, and
   every `sequence` start or step for one at its new deadline, which drops
