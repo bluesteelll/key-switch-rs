@@ -786,6 +786,35 @@ mod tests {
     }
 
     #[test]
+    fn the_install_marks_the_hook_installed_and_the_removal_clears_it() {
+        // Ruling I3: the watchdog counts raw input only while this flag
+        // says the keyboard hook is installed.
+        let fake = FakeInstaller::new();
+        let hook = installed(&fake);
+        assert!(
+            hook.health().hook_installed(),
+            "an installed hook is marked installed"
+        );
+        removed_keyboard_hook(hook, &fake);
+        assert!(
+            !hook.health().hook_installed(),
+            "a removed hook is no longer marked installed"
+        );
+    }
+
+    #[test]
+    fn a_refused_install_leaves_the_hook_unmarked() {
+        let fake = FakeInstaller::new();
+        fake.refuse_next_keyboard_hook();
+        let hook = leaked();
+        assert!(hook.install_with(&fake).is_err(), "the install is refused");
+        assert!(
+            !hook.health().hook_installed(),
+            "no hook, no mark: the watchdog counts no raw input"
+        );
+    }
+
+    #[test]
     fn set_enabled_refuses_a_nested_call() {
         // A switch asked for while the main state is borrowed is refused and
         // changes nothing. On its own thread, so a broken refusal fails the
