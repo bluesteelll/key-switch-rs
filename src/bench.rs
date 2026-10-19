@@ -76,7 +76,10 @@
 //!   the idle watchdog: a raw key event right before the call, so that the
 //!   thread's one wake and first pass run next to it, on another core. A
 //!   watchdog per sample, started and stopped outside the timing; it takes
-//!   about a quarter of a second per sample.
+//!   about a quarter of a second per sample. A declared row, measured and
+//!   reported, not gated (ruling L2): it times the worst order of cut Q6,
+//!   a key's raw input before its hook call, and the wake happens once per
+//!   burst of keys.
 
 use std::fmt::Write as _;
 use std::io::Write as _;

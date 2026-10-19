@@ -31,12 +31,15 @@
 //! events wait in the queue, and each tick, four times a second while keys
 //! are typed, reads them all in one drain (`GetRawInputBuffer`, 76 keyboard
 //! records per call on x64). The first key event after the thread went
-//! idle ends its wait, once per burst of keys, and that pass runs on
-//! another core next to the key's own callback, which it slows down by
-//! about 50 us at the median on the developer's machine (bench row R16
-//! against R12); whether a key's raw input reaches this thread before or
-//! after its hook call is not documented (cut Q6). Idle, the thread waits
-//! with no wake-up.
+//! idle ends its wait, once per burst of keys, and that wake and its pass
+//! run on another core. A keyboard callback that runs at the same time is
+//! about 50 us slower at the median on the developer's machine (bench row
+//! R16 against R12, a declared row, measured and not gated: ruling L2).
+//! That is the worst order. Whether a key's raw input reaches this thread
+//! before its hook call, so that the key's own callback meets the wake, or
+//! after it, so that only a key event in the microseconds that follow can,
+//! is not documented (cut Q6; manual check M6 settles it). Idle, the thread
+//! waits with no wake-up.
 //!
 //! # Raw input in this process
 //!
