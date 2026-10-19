@@ -65,18 +65,27 @@ key-switch-rs/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, remapping switch
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── control_window.rs   - hidden control window: session notifications, session end
+    │   ├── debug_hold.rs       - debug builds only: holds the callback for the watchdog's manual check (KS_DEBUG_HOOK_HOLD)
     │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals, hook reinstall
     │   ├── health.rs           - the keyboard callback's heartbeat, what the watchdog asks the main thread
     │   ├── installer.rs        - the Win32 calls that install hooks and raw input, compiled only outside tests
     │   ├── watchdog/           - the hook watchdog: raw keyboard input against the heartbeat (mod.rs), the pure decision (decision.rs)
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
+    ├── logging/
+    │   ├── mod.rs              - init, attach_file, flush: the logger behind the log facade
+    │   ├── writer.rs           - the log-writer thread: console and daemon.log, the counters report
+    │   ├── sink.rs             - the line format and the rotation of daemon.log
+    │   ├── counters.rs         - what the hook path counts instead of logging
+    │   ├── panic.rs            - the panic hook: the message through the writer, with a bounded wait
+    │   └── testing.rs          - test-only capture of log lines
     ├── platform/
     │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
     │   ├── foreground.rs       - the foreground window for when: executable cached per window, title read live
     │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
     ├── system/
+    │   ├── known_folder.rs     - the LocalAppData folder of daemon.log
     │   ├── registry.rs         - Windows registry hotkey reader
     │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
     │   └── system_function.rs  - Windows system functions
