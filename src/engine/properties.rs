@@ -44,6 +44,15 @@
 //!   that was pressed again unseen reaches Windows because Windows has the
 //!   key down. Such an Alt or Win does not count for the menu mask (known
 //!   issue 78), so the mask rule is not checked, nor is symmetry.
+//! - FocusWhole mode, foreground changes with no lost or unseen event:
+//!   every press is suppressed or passed as a whole, across the focus
+//!   changes (rule L, roadmap item 2.3), and the mask rule holds.
+//! - Unlock mode, the Unseen steps with the four input signals of a lock
+//!   or a desktop switch drawn next to the focus change: no key is left
+//!   down in Windows and no key-up reaches Windows alone
+//!   (`check_no_lone_key_up`, the KS-06 status). A key held through a lock
+//!   reads its next repeat as a press (known issue 76), so symmetry is not
+//!   checked.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
 
@@ -202,12 +211,27 @@ enum Mode {
     /// The Focus steps, and key-downs the hook does not see (roadmap item
     /// 2.3, ruling R1).
     Unseen,
+    /// Focus changes only, with no lost or unseen event (roadmap item 2.3).
+    FocusWhole,
+    /// The Unseen steps, with the four input signals besides the focus
+    /// change (roadmap item 2.3).
+    Unlock,
 }
 
 impl Mode {
-    /// Whether the script changes the foreground and loses key-ups.
-    fn loses_events(self) -> bool {
-        matches!(self, Mode::Focus | Mode::Unseen)
+    /// Whether the script changes the foreground.
+    fn changes_focus(self) -> bool {
+        self != Mode::Strict
+    }
+
+    /// Whether the script loses key-ups.
+    fn loses_key_ups(self) -> bool {
+        matches!(self, Mode::Focus | Mode::Unseen | Mode::Unlock)
+    }
+
+    /// Whether the script presses keys the hook does not see.
+    fn presses_unseen(self) -> bool {
+        matches!(self, Mode::Unseen | Mode::Unlock)
     }
 }
 
@@ -233,7 +257,7 @@ fn step(
     let delay = |rng: &mut SplitMix64| DELAYS_MS[rng.below(DELAYS_MS.len())];
     match rng.below(100) {
         0..35 => match pick(rng, held, false) {
-            Some(index) if mode == Mode::Unseen && rng.below(10) == 0 => {
+            Some(index) if mode.presses_unseen() && rng.below(10) == 0 => {
                 held[index] = true;
                 scenario.down_unseen(KEYS[index])
             }
@@ -253,7 +277,7 @@ fn step(
         60..85 => match pick(rng, held, true) {
             Some(index) => {
                 held[index] = false;
-                if mode.loses_events() && rng.below(10) == 0 {
+                if mode.loses_key_ups() && rng.below(10) == 0 {
                     scenario.up_unseen(KEYS[index])
                 } else {
                     scenario.up(KEYS[index])
@@ -265,7 +289,14 @@ fn step(
             }
         },
         85..95 => scenario.advance_ms(delay(rng)),
-        95..97 if mode.loses_events() => scenario.foreground_changed(),
+        95..97 if mode == Mode::Unlock => match rng.below(5) {
+            0 => scenario.foreground_changed(),
+            1 => scenario.session_locked(),
+            2 => scenario.session_unlocked(),
+            3 => scenario.desktop_switched_away(),
+            _ => scenario.desktop_switched_back(),
+        },
+        95..97 if mode.changes_focus() => scenario.foreground_changed(),
         95..97 => scenario.advance_ms(delay(rng)),
         _ => scenario.advance_ms_stalled(delay(rng)),
     }
@@ -293,11 +324,14 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
     // does not cover. An Alt or Win pressed again where the hook cannot see
     // it, after its swallowed key-down, does not count for the mask
     // (known issue 78), so the rule is not checked with unseen presses.
-    if config.blocker != Some(BlockerMode::MaskOnly) && mode != Mode::Unseen {
+    if config.blocker != Some(BlockerMode::MaskOnly) && !mode.presses_unseen() {
         scenario = scenario.check_mask_rule();
     }
-    if mode == Mode::Strict {
+    if matches!(mode, Mode::Strict | Mode::FocusWhole) {
         scenario = scenario.check_press_symmetry();
+    }
+    if mode == Mode::Unlock {
+        scenario = scenario.check_no_lone_key_up();
     }
     if repeat_check {
         scenario = scenario.check_repeats_fire_only(&[BindAction::PressKey(VK_LEFT)]);
@@ -341,4 +375,14 @@ fn auto_repeats_fire_only_actions_that_repeat() {
 #[test]
 fn nothing_is_left_down_in_windows_when_the_hook_misses_key_downs() {
     run_all(Mode::Unseen, false);
+}
+
+#[test]
+fn every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes() {
+    run_all(Mode::FocusWhole, false);
+}
+
+#[test]
+fn no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches() {
+    run_all(Mode::Unlock, false);
 }

@@ -203,15 +203,17 @@ fn modifier_lost_by_the_os_is_resynced_before_matching() {
 }
 
 #[test]
-fn foreground_change_forgets_pending_key_up_suppression() {
-    // A key-up that the hook might never see must not stay armed to
-    // swallow the key's next release.
+fn a_foreground_change_keeps_a_swallowed_key_up_swallowed() {
+    // Rule L (roadmap item 2.3, the KS-06 status): Windows never saw F13 go
+    // down, so its release must not reach Windows alone, whatever window
+    // took the foreground meanwhile.
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
+        .check_no_lone_key_up()
         .down("F13")
         .expect_suppressed()
         .foreground_changed()
         .up("F13")
-        .expect_passed();
+        .expect_suppressed();
 }
 
 // ---- when: conditions ----
@@ -1188,9 +1190,9 @@ fn key_outside_the_chord_passes() {
 
 #[test]
 fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
-    // The focus change forgets that J's key-up is due to be swallowed; the
-    // chord completing on K marks every chord key again, so J's key-up is
-    // swallowed as well and the app never sees an unmatched J key-up.
+    // J's swallowed key-down keeps its key-up swallowed across the focus
+    // change, and the chord completing on K marks every chord key, so the
+    // app never sees an unmatched J key-up.
     Scenario::from_ron(
         r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 500), action: SwitchLanguage) ] )"#,
     )
@@ -1847,12 +1849,10 @@ fn immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once() 
 }
 
 #[test]
-fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
-    // The focus change forgets that F13's key-up is due to be swallowed,
-    // but not that its key-down was: its repeats stay swallowed, so the new
-    // window gets the Left presses and no raw F13. The key-up passes, like
-    // every key-up whose swallowed key-down a focus change forgot
-    // (foreground_change_forgets_pending_key_up_suppression).
+fn immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed() {
+    // F13's key-down was swallowed, so its repeats stay swallowed after the
+    // focus change, and the new window gets the Left presses and no raw
+    // F13. Its key-up is swallowed too (a_foreground_change_keeps_a_swallowed_key_up_swallowed).
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: PressKey("Left")) ] )"#)
         .down("F13")
         .expect_suppressed()
@@ -1867,7 +1867,7 @@ fn immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
         .expect_suppressed()
         .expect_fired(&[BindAction::PressKey(VK_LEFT)])
         .up("F13")
-        .expect_passed()
+        .expect_suppressed()
         .expect_nothing_fired();
 }
 
@@ -1891,13 +1891,14 @@ fn capslock_held_across_a_focus_change_does_not_reach_windows() {
         .repeat("CapsLock")
         .expect_suppressed()
         .up("CapsLock")
-        .expect_passed();
+        .expect_suppressed();
 }
 
 #[test]
-fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
+fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed() {
     // Roadmap item 2.3's acceptance for an Immediate binding: the window
-    // the binding opens takes the foreground while T is still held.
+    // the binding opens takes the foreground while T is still held. T was
+    // swallowed, so are its repeats and its release (rule L).
     Scenario::from_ron(r#"( bindings: [ (keys: "Win+Alt+T", action: Launch(exe: "wt.exe")) ] )"#)
         .down("Win")
         .expect_passed()
@@ -1914,19 +1915,20 @@ fn win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed() {
         .repeat("T")
         .expect_suppressed()
         .up("T")
-        .expect_passed();
+        .expect_suppressed();
 }
 
 #[test]
-fn press_after_a_lost_key_up_reads_as_a_repeat_and_fires_only_a_repeating_binding() {
-    // F13's key-up went to another desktop, so the engine still holds F13
-    // and reads the next press as a repeat (KS-29). Its key-down was
-    // swallowed, so the repeat is swallowed too. A binding that does not
-    // repeat fires nothing on it (KS-10); its release passes, and the press
-    // after it fires again. A binding that repeats fires on it. Windows
-    // never saw F13 go down, so its key state cannot repair the record:
-    // roadmap item 2.3's resync leaves such keys alone, and no roadmap item
-    // repairs them yet.
+fn press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding()
+{
+    // F13's key-up was lost with no signal that input left this desktop
+    // (known issue 63's remainder), so the engine still holds F13 and reads
+    // the next press as a repeat (KS-29). Its key-down was swallowed, so
+    // the repeat is swallowed too. A binding that does not repeat fires
+    // nothing on it (KS-10); its release is swallowed with it, and the
+    // press after it fires again. A binding that repeats fires on it. A
+    // lock or a switch to another desktop releases the key instead
+    // (nothing_is_stuck_after_win_l).
     Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
         .down("F13")
         .expect_suppressed()
@@ -1938,7 +1940,7 @@ fn press_after_a_lost_key_up_reads_as_a_repeat_and_fires_only_a_repeating_bindin
         .expect_suppressed()
         .expect_nothing_fired()
         .up("F13")
-        .expect_passed()
+        .expect_suppressed()
         .down("F13")
         .expect_suppressed()
         .expect_fired(&[BindAction::SwitchLanguage]);
@@ -1957,7 +1959,7 @@ fn press_after_a_lost_key_up_reads_as_a_repeat_and_fires_only_a_repeating_bindin
 
 #[test]
 fn repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change() {
-    // A focus change forgets only swallowed key-downs. CapsLock's key-down
+    // A focus change keeps every key's record. CapsLock's key-down
     // reached Windows, so its repeats and its key-up still pass once Ctrl
     // is released and "CapsLock" matches.
     Scenario::from_ron(r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage) ] )"#)
@@ -2052,6 +2054,260 @@ fn a_swallowed_lshift_key_up_stays_swallowed_while_the_right_shift_is_down_in_wi
         .up("LShift")
         .expect_suppressed()
         .up("RShift")
+        .expect_passed();
+}
+
+// ---- Keyboard input leaving the desktop (roadmap item 2.3, KS-29) ----
+
+/// F13 switches the layout, swallowing F13.
+const F13_SWITCHES: &str = r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#;
+
+#[test]
+fn a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed() {
+    // Rule L across a reset: Windows never saw F13 go down, so the release
+    // after the unlock must not reach it alone.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .down("F13")
+        .expect_suppressed()
+        .session_locked()
+        .session_unlocked()
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed()
+{
+    // `swch off` and `swch on` while F13 is held: Windows never saw F13 go
+    // down, so the resync keeps its record and its release stays swallowed.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .down("F13")
+        .expect_suppressed()
+        .remapping_off()
+        .remapping_on()
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn nothing_is_stuck_after_win_l() {
+    // KS-29's example. Win+L locks the session while L is down, and both
+    // keys are released on the lock screen, where the hook sees nothing.
+    // Input leaving the desktop releases every key, so the first L after
+    // the unlock is a press, which Ctrl+Alt+L wins and swallows, and not a
+    // repeat that would reach Windows as Ctrl+Alt+L too.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+Alt+L", action: PressKey("F13")) ] )"#)
+        .check_nothing_stuck()
+        .down("Win")
+        .expect_passed()
+        .down("L")
+        .expect_passed()
+        .session_locked()
+        .up_unseen("Win")
+        .up_unseen("L")
+        .session_unlocked()
+        .down("LCtrl")
+        .expect_nothing_fired()
+        .down("LAlt")
+        .expect_nothing_fired()
+        .down("L")
+        .expect_fired(&[BindAction::PressKey(VK_F13)])
+        .expect_suppressed()
+        .up("L")
+        .expect_suppressed()
+        .up("LAlt")
+        .up("LCtrl");
+}
+
+#[test]
+fn after_a_lock_the_next_press_of_a_passing_key_is_a_new_press() {
+    // Owner decision on open question 9, for a key whose key-down passed.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: SwitchLanguage, block_default: false) ] )"#,
+    )
+    .check_no_lone_key_up()
+    .down("F13")
+    .expect_passed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .session_locked()
+    .up_unseen("F13")
+    .session_unlocked()
+    .advance_ms(1000)
+    .down("F13")
+    .expect_passed()
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("F13")
+    .expect_passed();
+}
+
+#[test]
+fn after_a_lock_the_next_press_of_a_swallowed_non_repeating_key_fires() {
+    // Owner decision on open question 9 (2026-10-18): F13 was held when
+    // the session locked and released on the lock screen. Its next press
+    // fires, and its release stays swallowed with it.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .session_locked()
+        .up_unseen("F13")
+        .session_unlocked()
+        .advance_ms(1000)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn after_input_leaves_for_the_secure_desktop_the_next_press_of_a_swallowed_key_fires() {
+    // The same through Ctrl+Alt+Del or a UAC prompt on the secure desktop,
+    // which send no session notification.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .desktop_switched_away()
+        .up_unseen("F13")
+        .desktop_switched_back()
+        .advance_ms(1000)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_late_unlock_notification_keeps_a_press_made_after_the_unlock() {
+    // Ruling R2: a signal that input came back resets nothing, however late
+    // it arrives, so the repeat of a key pressed after the return stays a
+    // repeat and SwitchLanguage fires once.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .session_unlocked()
+        .down("F13")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .session_unlocked()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .session_locked()
+        .session_unlocked()
+        .down("F13")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .session_unlocked()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order() {
+    // Ruling R2: one unlock gives a switch back and an unlock notification,
+    // in either order and in separate drains.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .session_locked()
+        .desktop_switched_away()
+        .desktop_switched_back()
+        .down("F13")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .session_unlocked()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .session_locked()
+        .desktop_switched_away()
+        .session_unlocked()
+        .down("F13")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .desktop_switched_back()
+        .advance_ms(500)
+        .repeat("F13")
+        .expect_suppressed()
+        .expect_nothing_fired()
+        .up("F13")
+        .expect_suppressed()
+        .expect_total_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_hold_armed_between_two_return_notifications_fires() {
+    // Ruling R2: the second return signal drops no gesture armed after the
+    // first.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "F13", action: SwitchLanguage, trigger: Hold(300)) ] )"#,
+    )
+    .session_locked()
+    .session_unlocked()
+    .down("F13")
+    .expect_suppressed()
+    .desktop_switched_back()
+    .advance_ms(300)
+    .expect_fired(&[BindAction::SwitchLanguage])
+    .up("F13")
+    .expect_suppressed();
+}
+
+#[test]
+fn a_second_lock_releases_a_key_pressed_after_the_first() {
+    // A genuine new episode begins with input leaving again, and that
+    // signal releases the key pressed since the first return.
+    Scenario::from_ron(F13_SWITCHES)
+        .check_no_lone_key_up()
+        .session_locked()
+        .session_unlocked()
+        .down("F13")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .desktop_switched_away()
+        .up_unseen("F13")
+        .desktop_switched_back()
+        .advance_ms(1000)
+        .down("F13")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("F13")
+        .expect_suppressed();
+}
+
+#[test]
+fn a_swallowed_key_pressed_again_on_the_lock_screen_is_released_in_windows() {
+    // Ruling R1 after a reset that never saw the key go down again:
+    // CapsLock is released and pressed again on the lock screen and released
+    // after the unlock. Windows has it down, so its release reaches Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .down("CapsLock")
+        .expect_suppressed()
+        .session_locked()
+        .up_unseen("CapsLock")
+        .down_unseen("CapsLock")
+        .session_unlocked()
+        .up("CapsLock")
         .expect_passed();
 }
 
@@ -2263,8 +2519,8 @@ fn non_repeating_winner_keeps_the_immediate_slot_on_a_repeat() {
 
 #[test]
 fn capslock_held_across_a_focus_change_switches_the_language_once() {
-    // The repeats stay swallowed after the focus change and fire nothing;
-    // the release passes (foreground_change_forgets_pending_key_up_suppression).
+    // The repeats stay swallowed after the focus change and fire nothing,
+    // and so does the release (a_foreground_change_keeps_a_swallowed_key_up_swallowed).
     let scenario = template()
         .down("CapsLock")
         .expect_suppressed()
@@ -2273,7 +2529,7 @@ fn capslock_held_across_a_focus_change_switches_the_language_once() {
         .advance_ms(500);
     repeats(scenario, "CapsLock", 3, &[])
         .up("CapsLock")
-        .expect_passed()
+        .expect_suppressed()
         .expect_total_fired(&[BindAction::SwitchLanguage]);
 }
 
@@ -2677,10 +2933,9 @@ fn key_up_of_a_suppressed_press_is_suppressed_only_once() {
 
 #[test]
 fn suppressed_modifier_stays_an_auto_repeat_across_a_focus_change() {
-    // The focus change forgets that Shift's key-down was swallowed, but
-    // Windows still never saw it go down, so the resync leaves Shift held
-    // and its repeat is not a second press for the DoubleTap. Whether that
-    // repeat and the key-up reach Windows is roadmap item 2.3's policy.
+    // Windows never saw Shift's key-down, so the resync leaves Shift held
+    // across the focus change and its repeat is not a second press for the
+    // DoubleTap; the repeat and the key-up stay swallowed (rule L).
     // `block_default: true` keeps Shift's key-down swallowed (roadmap item
     // 1.3).
     Scenario::from_ron(
@@ -2705,8 +2960,7 @@ fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
     // The chord opens a window that takes the foreground while J and K are
     // still held. K, pressed last, auto-repeats. Its key-down was swallowed,
     // so Windows must not see its repeats either (no "kkk" in the new
-    // window). The key-ups pass, like every key-up whose swallowed key-down
-    // a focus change forgot.
+    // window), nor their key-ups.
     Scenario::from_ron(
         r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 50), action: Launch(exe: "wt.exe")) ] )"#,
     )
@@ -2725,9 +2979,9 @@ fn chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed() {
     .repeat("K")
     .expect_suppressed()
     .up("J")
-    .expect_passed()
+    .expect_suppressed()
     .up("K")
-    .expect_passed()
+    .expect_suppressed()
     .expect_total_fired(&[launch("wt.exe")]);
 }
 
@@ -2753,7 +3007,7 @@ fn deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed() {
     .repeat("CapsLock")
     .expect_suppressed()
     .up("CapsLock")
-    .expect_passed()
+    .expect_suppressed()
     .expect_total_fired(&[launch("wt.exe")]);
 
     // A Tap still pending at the key-up: the key-up stays swallowed with it.
@@ -2796,7 +3050,7 @@ fn immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppre
         .repeat("F13")
         .expect_suppressed()
         .up("F13")
-        .expect_passed()
+        .expect_suppressed()
         .expect_total_fired(&[launch("wt.exe")]);
 }
 
@@ -3744,8 +3998,8 @@ fn passing_and_blocking_deferred_bindings_on_one_key_keep_its_press_whole() {
 
 #[test]
 fn passing_tap_fires_after_a_foreground_change_and_its_key_up_passes() {
-    // A foreground change forgets only swallowed key-downs. F13's passed,
-    // so its key-up still reaches Windows, and its Tap still fires.
+    // A foreground change keeps every key's record. F13's key-down
+    // passed, so its key-up reaches Windows, and its Tap still fires.
     Scenario::from_ron(PASSING_TAP_F13)
         .check_press_symmetry()
         .check_nothing_stuck()
@@ -5175,15 +5429,19 @@ fn releasing_a_key_that_is_up_is_a_script_error() {
 }
 
 #[test]
-#[should_panic(expected = "press of F13: key-down suppressed, up passed")]
-fn press_symmetry_check_reports_a_key_up_that_differs_from_its_key_down() {
-    // A foreground change forgets that F13's key-down was swallowed, so its
-    // key-up passes (roadmap item 2.3).
-    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: SwitchLanguage) ] )"#)
+#[should_panic(expected = "press of F13: key-down suppressed, repeat passed")]
+fn press_symmetry_check_reports_a_repeat_after_a_lock_that_differs_from_its_key_down() {
+    // A lock frees every key held, so F13, still auto-repeating after it,
+    // reads its next repeat as a press (known issue 76). Ctrl is up by
+    // then, so "Ctrl+F13" does not match and that press passes.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+F13", action: DoNothing) ] )"#)
         .check_press_symmetry()
+        .down("LCtrl")
         .down("F13")
-        .foreground_changed()
-        .up("F13");
+        .expect_suppressed()
+        .up("LCtrl")
+        .session_locked()
+        .repeat("F13");
 }
 
 #[test]

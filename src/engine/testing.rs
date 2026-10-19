@@ -31,15 +31,17 @@
 //! transcript of the scenario, and with the context set by
 //! [`Scenario::with_context`], such as the seed of a generated script.
 //!
-//! Four checks can also run on every later step:
+//! Five checks can also run on every later step:
 //! [`Scenario::check_press_symmetry`] (every auto-repeat and the key-up of a
 //! press are suppressed or passed like its key-down),
 //! [`Scenario::check_nothing_stuck`] (no key is down in the modelled OS
-//! while the script has it up), [`Scenario::check_repeats_fire_only`] (an
-//! auto-repeat fires only actions from a given list) and
-//! [`Scenario::check_mask_rule`] (a key event asks for the menu mask exactly
-//! when it is suppressed while Windows has Alt or Win down). A timer never
-//! asks for the mask: [`Scenario::advance_ms`] asserts it.
+//! while the script has it up), [`Scenario::check_no_lone_key_up`] (no
+//! key-up passes while the modelled OS has its key up),
+//! [`Scenario::check_repeats_fire_only`] (an auto-repeat fires only actions
+//! from a given list) and [`Scenario::check_mask_rule`] (a key event asks
+//! for the menu mask exactly when it is suppressed while Windows has Alt or
+//! Win down). A timer never asks for the mask: [`Scenario::advance_ms`]
+//! asserts it.
 //!
 //! [`Scenario::reload`] models a hot reload: the bindings are replaced, and
 //! the engine keeps its state, pending gestures and held keys included, as
@@ -51,6 +53,14 @@
 //! off every key event passes without reaching the engine, so the modelled
 //! OS sees it, and a foreground change is a script error, because the
 //! adapter does not report one then.
+//!
+//! [`Scenario::session_locked`], [`Scenario::session_unlocked`],
+//! [`Scenario::desktop_switched_away`] and
+//! [`Scenario::desktop_switched_back`] model the input signals the daemon's
+//! main thread notes (roadmap item 2.3): a lock or a switch to another
+//! desktop resets the engine, the two signals that input came back record
+//! a step only. Like a foreground change, each is a script error while
+//! remapping is off.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -168,6 +178,8 @@ pub(crate) struct Scenario {
     repeat_fire_allowed: Option<Vec<BindAction>>,
     /// Whether [`check_mask_rule`](Self::check_mask_rule) is on.
     check_mask: bool,
+    /// Whether [`check_no_lone_key_up`](Self::check_no_lone_key_up) is on.
+    check_lone: bool,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
 }
@@ -216,6 +228,7 @@ impl Scenario {
             check_stuck: false,
             repeat_fire_allowed: None,
             check_mask: false,
+            check_lone: false,
             enabled: true,
         }
     }
@@ -255,6 +268,17 @@ impl Scenario {
     /// do not combine this check with one.
     pub(crate) fn check_mask_rule(mut self) -> Self {
         self.check_mask = true;
+        self
+    }
+
+    /// From now on, every key-up that passes while remapping is on must
+    /// find its key down in the modelled OS before the event: no key-up
+    /// reaches Windows without its key-down (the lone key-up of the KS-06
+    /// status, roadmap item 2.3). While remapping is off every event passes
+    /// unread, so a key swallowed before `swch off` and released while off
+    /// is not checked (known issue 59).
+    pub(crate) fn check_no_lone_key_up(mut self) -> Self {
+        self.check_lone = true;
         self
     }
 
@@ -353,6 +377,56 @@ impl Scenario {
         }
         self.engine.on_foreground_changed(&self.env);
         let label = format!("foreground change at {}", self.clock());
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    /// The session was locked (`WTS_SESSION_LOCK`): keyboard input leaves
+    /// this desktop, and the engine is reset as the daemon's main thread
+    /// resets it. The script then releases the keys held there with
+    /// [`up_unseen`](Self::up_unseen).
+    #[track_caller]
+    pub(crate) fn session_locked(self) -> Self {
+        self.input_signal("session locked", true)
+    }
+
+    /// The session was unlocked (`WTS_SESSION_UNLOCK`): keyboard input is
+    /// back on this desktop.
+    #[track_caller]
+    pub(crate) fn session_unlocked(self) -> Self {
+        self.input_signal("session unlocked", false)
+    }
+
+    /// Keyboard input switched to another desktop
+    /// (`EVENT_SYSTEM_DESKTOPSWITCH` while another desktop has input: the
+    /// Ctrl+Alt+Del screen, a UAC prompt on the secure desktop).
+    #[track_caller]
+    pub(crate) fn desktop_switched_away(self) -> Self {
+        self.input_signal("keyboard input switched to another desktop", true)
+    }
+
+    /// Keyboard input switched back to this desktop.
+    #[track_caller]
+    pub(crate) fn desktop_switched_back(self) -> Self {
+        self.input_signal("keyboard input switched back to this desktop", false)
+    }
+
+    /// One input signal, which resets the engine if `resets`. Like a
+    /// foreground change, a script error while remapping is off: the daemon
+    /// drops the signals then.
+    #[track_caller]
+    fn input_signal(mut self, what: &str, resets: bool) -> Self {
+        if !self.enabled {
+            self.fail(&format!(
+                "{what} at {}: the daemon acts on none while remapping is off",
+                self.clock()
+            ));
+        }
+        if resets {
+            self.engine.reset(&self.env);
+            self.drop_stale_timers();
+        }
+        let label = format!("{what} at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
     }
@@ -537,6 +611,7 @@ impl Scenario {
         let suppressed = decision.suppress;
         let masked = decision.mask;
         let down = direction == KeyDirection::Down;
+        let lone = self.check_lone && self.enabled && !down && !suppressed && !self.env.os_down(vk);
         // The OS only learns about events the hook passes on.
         if !suppressed {
             self.env.os_down[vk.0 as usize] = down;
@@ -546,6 +621,10 @@ impl Scenario {
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
         self.push_step(label, Some(suppressed), Some(masked), fire);
+        if lone {
+            let label = &self.last_step().label;
+            self.fail(&format!("{label}: Windows got a lone key-up of {key}"));
+        }
         if self.check_symmetry {
             self.check_press(vk, key, what, suppressed);
         }
