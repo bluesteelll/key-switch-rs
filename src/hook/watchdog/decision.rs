@@ -137,8 +137,11 @@ impl Watchdog {
         SILENCE * (1 << self.attempts.min(MAX_BACKOFF_SHIFT))
     }
 
-    /// Reads the heartbeat, `callbacks`, at a tick that is due by `now`.
-    pub(crate) fn tick(&mut self, now: Instant, callbacks: u64) -> Verdict {
+    /// Reads the heartbeat, `callbacks`, at a tick that is due by `now`;
+    /// `backlog` says that the drain right before it left raw input in the
+    /// queue.
+    pub(crate) fn tick(&mut self, now: Instant, callbacks: u64, backlog: bool) -> Verdict {
+        let _ = backlog;
         let answered = callbacks.wrapping_sub(self.last_callbacks);
         let arrived = self.raw_events.saturating_sub(self.raw_at_last_tick);
         self.last_callbacks = callbacks;
@@ -253,6 +256,8 @@ mod tests {
         ticks: Vec<u64>,
         /// When a tick stopped the ticking, in ms.
         idle: Vec<u64>,
+        /// Whether the drain before the next tick leaves raw input queued.
+        backlog: bool,
     }
 
     impl Feeder {
@@ -265,6 +270,7 @@ mod tests {
                 requests: Vec::new(),
                 ticks: Vec::new(),
                 idle: Vec::new(),
+                backlog: false,
             }
         }
 
@@ -275,6 +281,13 @@ mod tests {
         fn raw(&mut self, ms: u64) {
             let now = self.at(ms);
             self.watchdog.raw_event(now);
+        }
+
+        /// `count` raw key events read at `ms`.
+        fn raws(&mut self, ms: u64, count: u64) {
+            for _ in 0..count {
+                self.raw(ms);
+            }
         }
 
         fn callback(&mut self) {
@@ -302,7 +315,7 @@ mod tests {
                 let now = self.at(ms);
                 if self.watchdog.next_tick().is_some_and(|due| due <= now) {
                     self.ticks.push(ms);
-                    match self.watchdog.tick(now, self.callbacks) {
+                    match self.watchdog.tick(now, self.callbacks, self.backlog) {
                         Verdict::Reinstall { request, next_tick } => {
                             assert_eq!(next_tick, now + TICK, "a request ticks on");
                             self.requests.push((ms, request));
@@ -644,6 +657,163 @@ mod tests {
             }
         });
         assert_eq!(f.request_times(), [1000]);
+    }
+
+    #[test]
+    fn a_burst_read_over_several_ticks_is_matched_by_the_callbacks_counted_before_it() {
+        // Ruling V3-I1, the critic's trace: an injected burst of 10 000 key
+        // events reaches the hook at once, and its raw input is read over
+        // three ticks because each drain ran out of its time budget. The
+        // callbacks counted at the first tick explain every raw event read
+        // after it, so a second of silence after the burst draws nothing.
+        let mut f = Feeder::new();
+        f.run(0, 5000, |ms, f| match ms {
+            0 => {
+                f.raw(ms);
+                f.callback();
+            }
+            100 => f.callbacks += 10_000,
+            249 => {
+                f.raws(ms, 1_000);
+                f.backlog = true;
+            }
+            499 => f.raws(ms, 4_864),
+            749 => {
+                f.raws(ms, 4_136);
+                f.backlog = false;
+            }
+            _ => {}
+        });
+        assert!(f.ticks.contains(&750), "{:?}", f.ticks);
+        assert_eq!(f.request_times(), [] as [u64; 0]);
+    }
+
+    #[test]
+    fn a_hook_that_dies_during_a_burst_asks_for_exactly_one_reinstall() {
+        // Ruling V3-I1: Windows removed the hook after 5 000 of the burst's
+        // 10 000 events. Raw events beyond the callbacks counted are
+        // evidence, also when they are read at a later tick.
+        let mut f = Feeder::new();
+        f.run(0, 5000, |ms, f| match ms {
+            0 => {
+                f.raw(ms);
+                f.callback();
+            }
+            100 => f.callbacks += 5_000,
+            249 => {
+                f.raws(ms, 6_000);
+                f.backlog = true;
+            }
+            499 => {
+                f.raws(ms, 4_000);
+                f.backlog = false;
+            }
+            _ => {}
+        });
+        let times = f.request_times();
+        assert_eq!(times.len(), 1, "{times:?}");
+        assert!((1250..=1500).contains(&times[0]), "{times:?}");
+    }
+
+    #[test]
+    fn a_hook_that_dies_after_a_burst_asks_for_exactly_one_reinstall() {
+        // Ruling V3-I1: the burst held 500 events that the hook saw and
+        // raw input did not (keys the daemon swallowed), then the hook died
+        // and typing went on. Callbacks that no raw event matched are no
+        // credit once a drain has emptied the queue, so the silence counts
+        // from the burst's tick.
+        let mut f = Feeder::new();
+        f.run(0, 10_000, |ms, f| {
+            match ms {
+                0 => {
+                    f.raw(ms);
+                    f.callback();
+                }
+                100 => f.callbacks += 10_500,
+                249 => f.raws(ms, 10_000),
+                _ => {}
+            }
+            if ms >= 300 {
+                typing(ms, f);
+            }
+        });
+        let times = f.request_times();
+        assert_eq!(times.len(), 1, "{times:?}");
+        assert!((1250..=1500).contains(&times[0]), "{times:?}");
+    }
+
+    /// Ten minutes of typing every 30 ms, with the hook alive and the
+    /// counts apart by `drift`, which adds raw events or callbacks.
+    fn ten_minutes_of_drift(drift: impl Fn(u64, &mut Feeder)) -> Feeder {
+        let mut f = Feeder::new();
+        f.run(0, 600_000, |ms, f| {
+            typing(ms, f);
+            drift(ms, f);
+        });
+        f
+    }
+
+    #[test]
+    fn long_drift_with_a_live_hook_asks_for_nothing() {
+        // Ruling V3-I1: raw events the hook legitimately does not see
+        // (another desktop, UIPI) and callbacks raw input does not see
+        // (keys the daemon swallows) never add up to a request: a tick that
+        // sees the callback alive drops the evidence, and the credit that
+        // a drain has settled.
+        let more_raw = ten_minutes_of_drift(|ms, f| {
+            if ms % 30 == 1 {
+                f.callback();
+            }
+            if ms % 250 == 125 {
+                f.raw(ms);
+            }
+        });
+        assert_eq!(
+            more_raw.request_times(),
+            [] as [u64; 0],
+            "raw input sees more"
+        );
+        let more_callbacks = ten_minutes_of_drift(|ms, f| {
+            if ms % 30 == 1 || ms % 100 == 50 {
+                f.callback();
+            }
+        });
+        assert_eq!(
+            more_callbacks.request_times(),
+            [] as [u64; 0],
+            "the hook sees more"
+        );
+        let one_in_eight = ten_minutes_of_drift(|ms, f| {
+            if ms % 240 == 1 {
+                f.callback();
+            }
+        });
+        assert_eq!(
+            one_in_eight.request_times(),
+            [] as [u64; 0],
+            "the hook sees one key in eight"
+        );
+    }
+
+    #[test]
+    fn a_hook_that_dies_after_long_drift_is_found_within_its_window() {
+        // Ruling V3-I1: ten minutes in which the hook saw more than raw
+        // input leave no credit that hides its death.
+        let mut f = Feeder::new();
+        let mut last_callback = 0;
+        f.run(0, 610_000, |ms, f| {
+            typing(ms, f);
+            if ms < 600_000 && (ms % 30 == 1 || ms % 100 == 50) {
+                f.callback();
+                last_callback = ms;
+            }
+        });
+        let times = f.request_times();
+        assert_eq!(times.len(), 1, "{times:?}");
+        assert!(
+            (last_callback + 1000..=last_callback + 1500).contains(&times[0]),
+            "the last callback at {last_callback} ms: {times:?}"
+        );
     }
 
     #[test]

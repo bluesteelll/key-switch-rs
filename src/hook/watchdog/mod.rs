@@ -233,7 +233,9 @@ impl<T: TickTimer> Ticker<T> {
                 // longer the hook's state (ruling M3).
                 context.health.hook_answered();
             }
-            if let Verdict::Reinstall { request, .. } = self.watchdog.tick(now, callbacks) {
+            // The per-event pump reads every queued message before the
+            // pass, so no raw input is left behind.
+            if let Verdict::Reinstall { request, .. } = self.watchdog.tick(now, callbacks, false) {
                 self.ask(now, request, context);
             }
         }
