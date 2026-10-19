@@ -247,12 +247,14 @@ minor version; such entries sit under **Changed** and start with
   `[WARN] debug build: the keyboard callback holds 1.5 s at each ScrollLock key-down (KS_DEBUG_HOOK_HOLD)`.
   A release build has no code for it
   (`hook::keyboard_hook_callback::tests::the_debug_hold_is_compiled_only_into_debug_builds`).
-- Bench rows R14, R14/settled and R15 (roadmap item 2.4): the keyboard
-  callback of an ordinary key with the hook watchdog's thread running and
-  fed one raw key event before each call (R14), the same with the
-  watchdog done with each event before the call (R14/settled), and what
-  raw input read on the main thread would have cost per key event (R15),
-  the design the watchdog's own thread replaces.
+- Bench rows R14, R14c, R15 and R16 (roadmap item 2.4): the keyboard
+  callback of an ordinary key in steady typing, one key event every
+  millisecond, with the hook watchdog ticking and reading the raw input in
+  batches (R14); the same pacing and post with no watchdog (R14c, R14's
+  baseline); what raw input read on the main thread would have cost per
+  key event (R15), the design the watchdog's own thread replaces; and the
+  key-down callback of the first key of a burst, which wakes the idle
+  watchdog once (R16).
 
 ### Changed
 
