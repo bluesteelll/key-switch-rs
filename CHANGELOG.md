@@ -456,6 +456,16 @@ minor version; such entries sit under **Changed** and start with
   (roadmap item 2.1): those actions run on the hook thread, which never
   logs, so a failed post is counted in `post_message_failed` and the error
   text is no longer shown.
+- When the gesture timer cannot be set, the log line and the
+  `hold_timer_not_started` counter count only the `Hold`s that were
+  dropped: the line reads
+  `[ERROR] could not set the gesture timer (...); N pending Holds dropped`.
+  A `Tap` that waits for its DoubleTap window and whose timer was refused
+  is kept and fires at the next key event, and a chord or sequence still
+  expires by its deadline, so neither is counted (roadmap item 2.3, 2.2
+  review m2). Tests:
+  `engine::tests::a_refused_window_timer_drops_no_gesture`,
+  `hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops`.
 
 ### Fixed
 

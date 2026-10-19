@@ -461,7 +461,9 @@ impl Engine {
     /// Hands the timers of a decision to `scheduler`, after dropping every
     /// timer it holds that is no longer live, so that it keeps no stale
     /// timer for long. A timer the scheduler refuses is forgotten
-    /// ([`forget_timer`](Self::forget_timer)). Returns how many it refused.
+    /// ([`forget_timer`](Self::forget_timer)). Returns how many Holds were
+    /// dropped with the refused timers: a refused window or expiry timer
+    /// drops nothing.
     pub fn start_timers(
         &mut self,
         timers: Vec<TimerRequest>,
@@ -471,29 +473,28 @@ impl Engine {
             return 0;
         }
         scheduler.retain(&|token| self.is_live(token));
-        let mut refused = 0;
+        let mut dropped = 0;
         for request in timers {
-            if !scheduler.start(request) {
-                self.forget_timer(request.token);
-                refused += 1;
+            if !scheduler.start(request) && self.forget_timer(request.token) {
+                dropped += 1;
             }
         }
-        refused
+        dropped
     }
 
     /// The caller could not start the timer for `token`. A Hold is dropped:
     /// it never fires, and its key can arm a new Hold on the next press
     /// (KS-33). A Tap that waits for its DoubleTap window is kept: it fires
     /// at the next key-down, or with the next timer handed back after its
-    /// window closed.
-    pub fn forget_timer(&mut self, token: TimerToken) {
+    /// window closed. Returns whether a Hold was dropped.
+    pub fn forget_timer(&mut self, token: TimerToken) -> bool {
         if token.generation != self.ids.generation {
-            return;
+            return false;
         }
         match token.slot {
             TimerSlot::Gesture(vk) => self.gestures.forget(vk, token.seq),
             // The next key-down drops an expired entry anyway.
-            TimerSlot::Chord | TimerSlot::Sequence => {}
+            TimerSlot::Chord | TimerSlot::Sequence => false,
         }
     }
 

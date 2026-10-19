@@ -152,7 +152,8 @@ enum Wake {
     Wait,
     /// The earliest timer is due: drain without waiting.
     Due,
-    /// The waitable timer could not be set; `dropped` timers were forgotten.
+    /// The waitable timer could not be set: every queued timer was
+    /// forgotten, and `dropped` Holds with them.
     Failed { error: Error, dropped: usize },
 }
 
@@ -230,14 +231,12 @@ impl GestureTimers {
                             lost.borrow_mut().push(token);
                             false
                         });
-                        let lost = lost.into_inner();
-                        for token in &lost {
-                            engine.forget_timer(*token);
-                        }
-                        Wake::Failed {
-                            error,
-                            dropped: lost.len(),
-                        }
+                        let dropped = lost
+                            .into_inner()
+                            .into_iter()
+                            .filter(|token| engine.forget_timer(*token))
+                            .count();
+                        Wake::Failed { error, dropped }
                     }
                 }
             }
@@ -450,7 +449,7 @@ impl MainThread {
             match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
                 Some(Wake::Due) => continue,
                 Some(Wake::Failed { error, dropped }) => log::error!(
-                    "could not set the gesture timer ({error}); {dropped} pending gestures dropped"
+                    "could not set the gesture timer ({error}); {dropped} pending Holds dropped"
                 ),
                 Some(Wake::Wait) | None => {}
             }

@@ -402,18 +402,25 @@ impl Gestures {
     /// or due, is dropped: it never fires, and its key arms afresh on the
     /// next press (KS-33). A Tap that waits for its DoubleTap window stays:
     /// it fires at the next key-down, or at the next timer due after its
-    /// window closed (orchestrator ruling M6).
-    pub(super) fn forget(&mut self, vk: u16, seq: u64) {
+    /// window closed (orchestrator ruling M6). Returns whether a Hold was
+    /// dropped.
+    pub(super) fn forget(&mut self, vk: u16, seq: u64) -> bool {
+        let due_holds = self.due_holds.len();
         self.due_holds.retain(|h| !(h.vk == vk && h.seq == seq));
-        let Some(index) = self.presses.iter().position(|p| p.vk == vk && p.seq == seq) else {
-            return;
-        };
-        if let Phase::Held { tap, hold, double } = &mut self.presses[index].phase {
-            *hold = None;
-            if tap.is_none() && double.is_none() {
-                self.presses.remove(index);
-            }
+        if self.due_holds.len() != due_holds {
+            return true;
         }
+        let Some(index) = self.presses.iter().position(|p| p.vk == vk && p.seq == seq) else {
+            return false;
+        };
+        let Phase::Held { tap, hold, double } = &mut self.presses[index].phase else {
+            return false;
+        };
+        let dropped = hold.take().is_some();
+        if tap.is_none() && double.is_none() {
+            self.presses.remove(index);
+        }
+        dropped
     }
 
     /// Drops every pending press and due Hold. The engine starts a new
@@ -853,7 +860,7 @@ mod tests {
         let mut fire = Vec::new();
 
         state.press(F13, Some(&hold), t0, 1, &mut fire);
-        state.forget(F13, 1);
+        assert!(state.forget(F13, 1), "the Hold is dropped");
         assert_eq!(state.held(F13), None, "a press with nothing left is gone");
         let released = state.release(F13, t0 + ms(300), false, 2);
         assert_eq!(released, Released::default());
@@ -862,7 +869,7 @@ mod tests {
 
         state.press(F13, Some(&both), t0 + ms(400), 3, &mut fire);
         state.release(F13, t0 + ms(450), false, 4);
-        state.forget(F13, 4);
+        assert!(!state.forget(F13, 4), "no Hold is dropped");
         assert_eq!(state.awaiting(F13), Some(true), "the waiting Tap stays");
         state.other_key_down(F14, &KeyState::new(), t0 + ms(800), &mut fire);
         assert_eq!(fire, [BindAction::SwitchLanguage]);
