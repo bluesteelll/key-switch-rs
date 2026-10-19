@@ -121,6 +121,13 @@ pub fn get_hook() -> &'static KeyboardHook {
     &KEYBOARD_HOOK
 }
 
+/// Taken by every test that drives the process-wide hook through
+/// `get_hook()`, in this file and in `hook::control_window`. One of them
+/// turns remapping off, which would break the swallow asserts of another
+/// running at the same time.
+#[cfg(test)]
+pub(crate) static GLOBAL_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The engine's [`Env`], backed by the OS key state and the main thread's
 /// foreground cache. One is created on the stack per event, and one per
 /// reset. The executable name comes from the cache, with no Win32 call; the
@@ -394,7 +401,7 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
-    use std::sync::{Arc, Mutex, PoisonError, mpsc};
+    use std::sync::{Arc, PoisonError, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -408,7 +415,8 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
-    use crate::hook::main_thread::{MainThread, REFUSED, with_main};
+    use crate::engine::InputSignal;
+    use crate::hook::main_thread::{MainThread, REFUSED, take_pending_signals, with_main};
     use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
     // No test installs a hook. Every test that reaches the engine makes its
@@ -424,11 +432,6 @@ mod tests {
     // every F13 binding sets `allow_extra_modifiers`: under exact matching a
     // modifier the user happens to hold while the tests run would otherwise
     // stop it matching.
-
-    /// Taken by every test that drives the process-wide hook through
-    /// `get_hook()`. One of them turns remapping off, which would break the
-    /// swallow asserts of another running at the same time.
-    static GLOBAL_HOOK: Mutex<()> = Mutex::new(());
 
     /// Turns the process-wide hook's remapping back on when dropped, also on
     /// unwind, so a failed test leaves the next one remapping on.
@@ -1000,6 +1003,68 @@ mod tests {
             refused, 1,
             "with remapping on the keyboard callback asks for the main state"
         );
+    }
+
+    #[test]
+    fn a_desktop_switch_is_classified_by_where_input_is() {
+        // Roadmap item 2.3 (cut D16): `UOI_IO` of this thread's desktop says
+        // where keyboard input is after the switch.
+        assert_eq!(
+            desktop_switch_note(Ok(true)),
+            DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedBack)
+        );
+        assert_eq!(
+            desktop_switch_note(Ok(false)),
+            DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedAway)
+        );
+        assert_eq!(
+            desktop_switch_note(Err(E_ACCESSDENIED.into())),
+            DesktopSwitchNote::Unknown(E_ACCESSDENIED)
+        );
+    }
+
+    /// Calls the extern desktop-switch callback as the WinEvent dispatcher
+    /// would.
+    fn call_desktop_switched() {
+        // SAFETY: `desktop_switched` reads none of its handle arguments, so
+        // the null handles are never dereferenced or passed on. It asks only
+        // where this thread's desktop's input is, which reads.
+        unsafe {
+            desktop_switched(
+                HWINEVENTHOOK::default(),
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+    }
+
+    #[test]
+    fn a_desktop_switch_notes_a_signal_only_while_remapping_is_on() {
+        // The callback reads the process-wide hook's switch, hence
+        // `GLOBAL_HOOK`. Which signal it notes depends on whether this
+        // machine's desktop has input now: either direction, or unknown if
+        // Windows refuses the question; all three are accepted.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+
+        call_desktop_switched();
+        let pending = take_pending_signals().expect("a switch is noted");
+        let signals: Vec<InputSignal> = pending.signals().collect();
+        match (signals.as_slice(), pending.unknown()) {
+            ([InputSignal::DesktopSwitchedBack], None)
+            | ([InputSignal::DesktopSwitchedAway], None)
+            | ([], Some(_)) => {}
+            other => panic!("one note of a desktop switch, got {other:?}"),
+        }
+
+        assert!(set_enabled(get_hook(), false));
+        call_desktop_switched();
+        assert_eq!(take_pending_signals(), None, "remapping off: nothing noted");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! main thread's, for its gesture timers (roadmap item 2.2). `priority`
 //! raises the main thread while it runs its loop (roadmap item 2.2).
 
+pub mod desktop;
 pub mod foreground;
 pub mod priority;
 pub mod timers;

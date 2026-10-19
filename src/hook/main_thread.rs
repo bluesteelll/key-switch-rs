@@ -670,14 +670,16 @@ mod tests {
     use windows::core::w;
 
     use super::*;
-    use crate::core::executor::testing::{FakeRunner, Record, leaked_counters};
-    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
+    use crate::core::executor::testing::{
+        FakeRunner, Record, leaked_counters, next_record, wait_until,
+    };
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Submitted, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
-    use crate::engine::{Engine, Env, KeyEvent, sort_by_specificity};
+    use crate::engine::{Engine, Env, InputSignal, KeyEvent, sort_by_specificity};
     use crate::hook::keyboard_hook::KeyboardHook;
     use crate::hook::keyboard_hook_callback::decide_event;
 
@@ -1295,6 +1297,182 @@ mod tests {
                 .any(|line| line.contains("config reload carried out late: 1 bindings live")),
             "{lines:?}"
         );
+    }
+
+    /// `[F15, Delay(10000), F16]`: a macro that runs until it is stopped.
+    fn long_macro() -> BindAction {
+        BindAction::Sequence(Arc::new(vec![
+            SequenceStep::PressKey(VK_F15),
+            SequenceStep::Delay(10_000),
+            SequenceStep::PressKey(VK_F16),
+        ]))
+    }
+
+    /// The bindings of the lock tests: an F13 Hold(300) of `key_macro()`
+    /// and an F14 `SwitchLanguage` that swallows F14 and does not repeat.
+    fn lock_test_hook() -> &'static KeyboardHook {
+        let hook = KeyboardHook::new();
+        hook.update_bindings(vec![
+            f13_hold(300, key_macro()).with_allow_extra_modifiers(true),
+            Binding::new(KeyCombination::new(VK_F14), BindAction::SwitchLanguage)
+                .with_allow_extra_modifiers(true),
+        ]);
+        Box::leak(Box::new(hook))
+    }
+
+    #[test]
+    fn a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key() {
+        // Roadmap item 2.3's acceptance "nothing is stuck after Win+L",
+        // through the request path and without a session change: the lock
+        // signal, as the control window notes it, is drained by the loop,
+        // which drops the armed Hold, stops the running macro and releases
+        // F14, swallowed and held when the session locked.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let runs = executor.handle();
+        let hook = lock_test_hook();
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let pressed = [
+                f13(WM_KEYDOWN),
+                (WPARAM(WM_KEYDOWN as usize), u32::from(VK_F14.0)),
+            ]
+            .map(|(wparam, vk)| decide_event(hook, wparam, vk, 0));
+            assert!(
+                pressed.iter().all(Option::is_some),
+                "both key-downs reach the engine"
+            );
+            assert_eq!(
+                hook.submit(long_macro(), TargetWindow::NONE),
+                Submitted::Queued
+            );
+            let _ = ready_tx.send(main.handle());
+            wait_until("the macro waits in its Delay", || runs.active_runs() == 1);
+            note_input_signal(InputSignal::SessionLocked);
+            main.run(hook).expect("the loop ends on WM_QUIT");
+            let down = decide_event(hook, WPARAM(WM_KEYDOWN as usize), u32::from(VK_F14.0), 0)
+                .expect("the key-down reaches the engine");
+            let up = decide_event(hook, WPARAM(WM_KEYUP as usize), u32::from(VK_F14.0), 0)
+                .expect("the key-up reaches the engine");
+            (down, up)
+        });
+        let handle = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert_eq!(next_record(&records).text(), "key F15", "the macro runs");
+
+        let begun = Instant::now();
+        wait_until("the macro is gone", || executor.handle().active_runs() == 0);
+        let stopped = begun.elapsed();
+        assert!(
+            records.recv_timeout(ms(500)).is_err(),
+            "neither the Hold armed before the lock nor the macro's F16 runs"
+        );
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        let (down, up) = looper.join().expect("the loop thread does not panic");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert!(
+            stopped < ms(100),
+            "the macro stopped {stopped:?} after the lock"
+        );
+        assert_eq!(
+            down.fire,
+            [BindAction::SwitchLanguage],
+            "the first F14 after the lock is a press, not a repeat (owner decision, open question 9)"
+        );
+        assert!(down.suppress);
+        assert!(up.suppress, "its key-up follows its swallowed key-down");
+    }
+
+    #[test]
+    fn a_late_return_signal_keeps_a_running_macro_and_an_armed_hold() {
+        // Ruling R2 at the adapter: signals that input came back reset
+        // nothing, so a Hold armed and a macro started after the return
+        // survive them.
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let runs = executor.handle();
+        let hook = lock_test_hook();
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            note_input_signal(InputSignal::SessionLocked);
+            main.drain(hook);
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            assert!(decide_event(hook, wparam, vk, 0).is_some(), "the Hold arms");
+            assert_eq!(
+                hook.submit(long_macro(), TargetWindow::NONE),
+                Submitted::Queued
+            );
+            wait_until("the macro waits in its Delay", || runs.active_runs() == 1);
+            note_input_signal(InputSignal::SessionUnlocked);
+            note_input_signal(InputSignal::DesktopSwitchedBack);
+            let _ = ready_tx.send(main.handle());
+            main.run(hook)
+        });
+        let handle = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert_eq!(next_record(&records).text(), "key F15", "the macro runs");
+        thread::sleep(ms(100));
+        let running = executor.handle().active_runs();
+        let held = records.recv_timeout(ms(500));
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert_eq!(running, 1, "the macro started after the return still runs");
+        assert_eq!(
+            held.expect("the Hold armed after the return fires").text(),
+            "key F13"
+        );
+    }
+
+    #[test]
+    fn the_drain_logs_one_line_per_input_signal() {
+        // Critique M1 and ruling R2: one timestamped line per signal, in
+        // `InputSignal::ALL` order within one drain, and one reset however
+        // many departure signals the drain finds.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        let ((), lines) = crate::logging::testing::capture(|| {
+            for signal in InputSignal::ALL {
+                note_input_signal(signal);
+            }
+            note_unknown_desktop_switch(E_ACCESSDENIED);
+            main.drain(&hook);
+        });
+        let expected = [
+            "[INFO] session locked",
+            "[INFO] session unlocked",
+            "[INFO] keyboard input switched to another desktop",
+            "[INFO] keyboard input switched back to this desktop",
+            "[WARN] keyboard input switched desktops, but the daemon could not tell where it went",
+            "[INFO] state reset: keyboard input left this desktop",
+        ];
+        for text in expected {
+            assert_eq!(
+                lines.iter().filter(|line| line.contains(text)).count(),
+                1,
+                "{text:?} once in {lines:?}"
+            );
+        }
+        assert_eq!(take_pending_signals(), None, "the drain took them");
     }
 
     #[test]
