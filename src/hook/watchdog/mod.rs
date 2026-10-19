@@ -2851,4 +2851,50 @@ mod tests {
             sites.join("\n")
         );
     }
+
+    #[test]
+    fn the_buffered_read_answers_through_the_method_that_clears_its_buffer() {
+        // Ruling L2 (R-m2): the clear lives in `RawBuffer::take`, and no test
+        // can feed `GetRawInputBuffer` records, so a caller that walked the
+        // buffer itself would keep the key codes and still pass the tests of
+        // `take`. The only buffered read must hand its return value to `take`.
+        let text = source("src/hook/watchdog/mod.rs");
+        let lines = non_test_lines(&text);
+        let reads = fn_lines(&lines, "impl RawReads for KeyboardReads<'_> {");
+        let takes = reads.iter().filter(|line| line.contains(".take(")).count();
+        let walks = reads
+            .iter()
+            .filter(|line| line.contains("count_raw_keys("))
+            .count();
+        assert_eq!(
+            takes, 1,
+            "the buffered read answers through RawBuffer::take"
+        );
+        assert_eq!(
+            walks, 0,
+            "the buffered read does not walk the buffer itself"
+        );
+    }
+
+    #[test]
+    fn a_counted_batch_leaves_no_byte_of_the_whole_buffer() {
+        // Ruling L2 (R-m2): the clear covers the buffer to its last byte, not
+        // only the records at its front: a full batch reaches the end.
+        let nonzero = |buffer: &RawBuffer| buffer.0.iter().filter(|&&byte| byte != 0).count();
+        let mut buffer = empty_buffer();
+        let mut at = 0;
+        let mut batch = 0_u32;
+        while at + KEYBOARD_RECORD <= RAW_BUFFER_BYTES {
+            at = put_key(&mut buffer.0, at, 0x1E, VK_A.0);
+            batch += 1;
+        }
+        let last = RAW_BUFFER_BYTES - 1;
+        buffer.0[last] = 0xFF;
+        assert_eq!(
+            buffer.take(batch),
+            records(u64::from(batch), 0),
+            "a full buffer's keys are counted before the clear"
+        );
+        assert_eq!(nonzero(&buffer), 0, "bytes of a full batch are left");
+    }
 }
