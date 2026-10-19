@@ -853,8 +853,10 @@ keys you press or the text you type; lines about the config quote the
 config, key names included. What the keyboard hook must not log at every
 key press, a `SendInput` that Windows cut short, a `PostMessage` or
 language switch that Windows refused, a Hold whose timer could not be set,
-or a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
-queue dropped or that found the executor stopped, it counts. It also records how long its longest callback ran. While a count
+a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
+queue dropped or that found the executor stopped, or a key event that found
+the daemon's decision state in use and passed undecided
+(`main_state_refused`), it counts. It also records how long its longest callback ran. While a count
 is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
 gives all of them, ending with `longest_callback_us=<microseconds>`.

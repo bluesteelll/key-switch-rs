@@ -117,7 +117,7 @@ minor version; such entries sit under **Changed** and start with
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=12`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
@@ -170,6 +170,12 @@ minor version; such entries sit under **Changed** and start with
   `a_late_return_signal_keeps_a_running_macro_and_an_armed_hold`. Manual
   checks: lock and unlock with Win+L, Ctrl+Alt+Del and a UAC prompt, and
   sign out, with the timestamps in `daemon.log`.
+- A `main_state_refused` counter in the
+  `[WARN] counters since the last report: ...` line (roadmap item 2.4): a
+  hook callback that found the daemon's decision state in use passes its
+  event undecided and is counted, never logged on the hook path. Nothing
+  re-enters that state today, so a count is a defect worth reporting.
+  Test: `hook::main_thread::tests::a_refused_reentry_is_counted_in_main_state_refused`.
 
 ### Changed
 

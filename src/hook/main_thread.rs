@@ -194,11 +194,15 @@ pub(crate) struct MainState {
 ///
 /// `None`, without running `f`, if this thread has no main state, or if the
 /// state is borrowed already: a callback re-entered under the borrow then
-/// passes its event, and nothing panics or waits. `f` must only decide,
-/// reset or set the gesture timer (see the module docs).
+/// passes its event, and nothing panics or waits. Such a refusal is counted
+/// in `main_state_refused` (roadmap item 2.4); a thread without a main
+/// state is no refusal. `f` must only decide, reset or set the gesture
+/// timer (see the module docs).
 pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
     MAIN.try_with(|main| {
         let Ok(mut state) = main.try_borrow_mut() else {
+            // Counted, never logged: this runs in the hook callback.
+            counters::bump(Counter::MainStateRefused);
             #[cfg(test)]
             REFUSED.with(|refused| refused.set(refused.get() + 1));
             return None;
