@@ -915,6 +915,76 @@ mod tests {
         );
     }
 
+    /// The non-test lines of `text`: those before its `#[cfg(test)]` and
+    /// `mod tests {` pair, or every line if it has none.
+    fn non_test_lines(text: &str) -> Vec<&str> {
+        let lines: Vec<&str> = text.lines().collect();
+        let end = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len());
+        lines[..end].to_vec()
+    }
+
+    /// Roadmap item 2.2, KS-33: no thread is started on the gesture path, so
+    /// the thread count does not grow with the presses. The non-test lines
+    /// of every file under `src/hook` but the IPC server and the config
+    /// watcher (which start their own threads once, at startup), of every
+    /// file under `src/engine`, and of the files the fast actions and the
+    /// gesture timer run in, name no way to start a thread. The tokens are
+    /// assembled, so this test does not match itself.
+    #[test]
+    fn the_gesture_path_starts_no_thread() {
+        let tokens = [
+            concat!("thread::", "spawn"),
+            concat!("thread::", "Builder"),
+            concat!("thread::", "scope"),
+            concat!("use std::", "thread"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for folder in ["src/hook", "src/engine"] {
+            for entry in std::fs::read_dir(root.join(folder)).expect("list a source folder") {
+                let path = entry.expect("a folder entry").path();
+                let starts_its_own = ["ipc_server.rs", "config_watcher.rs"]
+                    .iter()
+                    .any(|name| path.file_name().is_some_and(|file| file == *name));
+                if path.extension().is_some_and(|extension| extension == "rs") && !starts_its_own {
+                    files.push(path);
+                }
+            }
+        }
+        for file in [
+            "src/core/windows_actions.rs",
+            "src/system/system_function.rs",
+            "src/platform/timers.rs",
+        ] {
+            files.push(root.join(file));
+        }
+        files.sort();
+        assert!(files.len() >= 15, "the scan found the sources: {files:?}");
+
+        let mut sites = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read a source file");
+            let relative = file
+                .strip_prefix(root)
+                .expect("a file under the manifest folder")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (index, line) in non_test_lines(&text).iter().enumerate() {
+                if tokens.iter().any(|token| line.contains(token)) {
+                    sites.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "threads started on the gesture path:\n{}",
+            sites.join("\n")
+        );
+    }
+
     #[test]
     #[ignore = "manual: injects vk 0xE8 down and up into the live input stream; run it with --ignored while Notepad has focus and check that it passes and nothing is typed and no menu opens"]
     fn the_menu_mask_key_is_inserted_into_the_input_stream() {
