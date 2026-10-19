@@ -53,8 +53,9 @@ fn rank(binding: &Binding) -> (usize, bool) {
 /// The winner is the first candidate in list order whose rank is strictly
 /// greater than that of every earlier candidate. A binding that cannot
 /// outrank the winner so far is skipped before its keys are compared, and
-/// its `when:` is evaluated only once its keys match: on the hook thread a
-/// condition may capture the foreground window (KS-08).
+/// its `when:` is evaluated only once its keys match: the executable comes
+/// from the main thread's foreground cache and a title condition reads the
+/// window's title (roadmap item 2.3).
 pub(super) fn elect<'a>(
     vk: VIRTUAL_KEY,
     bindings: &'a [Binding],
