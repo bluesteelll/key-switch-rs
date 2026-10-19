@@ -1052,6 +1052,43 @@ mod tests {
         assert!(!health.snapshot().watched, "not watched once it stopped");
     }
 
+    /// Counts the windows `EnumThreadWindows` reports.
+    unsafe extern "system" fn count_window(_window: HWND, count: LPARAM) -> windows::core::BOOL {
+        // SAFETY: `count` is the address of the `usize` that
+        // `top_level_windows_of` passes, alive for the whole enumeration.
+        unsafe { *(count.0 as *mut usize) += 1 };
+        windows::core::BOOL(1)
+    }
+
+    /// How many top-level windows the thread `thread_id` has, which only
+    /// reads.
+    fn top_level_windows_of(thread_id: u32) -> usize {
+        let mut count = 0usize;
+        // SAFETY: the callback only adds to `count`, a local that outlives
+        // the call, through the address passed as its LPARAM.
+        let _ = unsafe {
+            EnumThreadWindows(
+                thread_id,
+                Some(count_window),
+                LPARAM(&mut count as *mut usize as isize),
+            )
+        };
+        count
+    }
+
+    #[test]
+    fn the_watchdog_thread_has_no_top_level_window() {
+        // Critic OQ3: a message-only window is not top-level, and its thread
+        // gets no default IME window, which would be one, so the stop has
+        // no IME teardown to wait for.
+        let (recorder, _requests) = Recorder::new();
+        let watchdog = HookWatchdog::start_synthetic(leaked_health(), recorder, leaked_counters())
+            .expect("the watchdog thread starts");
+        let windows = top_level_windows_of(watchdog.thread_id);
+        assert!(watchdog.stop(), "the thread is joined within 1 s");
+        assert_eq!(windows, 0);
+    }
+
     /// Posts a synthetic raw event every 20 ms for 3 s, calling `before`
     /// right before each, and returns the requests with when they came,
     /// from the first raw event.
