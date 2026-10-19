@@ -336,6 +336,40 @@ enum Source {
 }
 
 impl Source {
+    /// The queue bit of the raw key events this source batches: what the
+    /// wait leaves out while ticking ([`wake_mask`]).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+        )
+    )]
+    fn batched_wake(self) -> QUEUE_STATUS_FLAGS {
+        match self {
+            Source::Keyboard => QS_RAWINPUT,
+            #[cfg(test)]
+            Source::Synthetic => QS_POSTMESSAGE,
+        }
+    }
+
+    /// The message of the raw key events this source batches: what the
+    /// pump leaves in the queue for the drain ([`pump_ranges`]).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+        )
+    )]
+    fn batched_message(self) -> u32 {
+        match self {
+            Source::Keyboard => WM_INPUT,
+            #[cfg(test)]
+            Source::Synthetic => SYNTHETIC_RAW,
+        }
+    }
+
     fn input_here(self) -> fn() -> windows::core::Result<bool> {
         match self {
             Source::Keyboard => desktop::input_is_on_this_desktop,
@@ -662,6 +696,42 @@ fn run_loop<R: RequestReinstall>(
         }
         ticker.pass(Instant::now(), context);
     }
+}
+
+/// The wait's wake mask: every kind of input, less the batched input
+/// `batched` while `leave_out`. While the watchdog ticks, raw input waits in
+/// the queue for the tick's drain and wakes nothing (ruling L1); idle, the
+/// first raw key event of a burst ends the wait.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn wake_mask(batched: QUEUE_STATUS_FLAGS, leave_out: bool) -> QUEUE_STATUS_FLAGS {
+    if leave_out {
+        QS_ALLINPUT & !batched
+    } else {
+        QS_ALLINPUT
+    }
+}
+
+/// The message ranges the pump takes: every message but `skip`, a message
+/// above 0 and below 0xFFFF, which stays in the queue for the drain. As
+/// Microsoft's batched read does: "only PeekMessage with explicit message
+/// range filters ..., skipping WM_INPUT entirely" (Using Raw Input), since
+/// "GetMessage removes the current WM_INPUT from the raw input queue"
+/// (Raw Input Overview).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "first used by Hook: the hook watchdog reads raw input in batches at its ticks"
+    )
+)]
+fn pump_ranges(skip: u32) -> [(u32, u32); 2] {
+    [(0, skip - 1), (skip + 1, 0xFFFF)]
 }
 
 /// `after` in whole milliseconds for a wait, rounded up so that the wait
