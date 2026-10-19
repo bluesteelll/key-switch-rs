@@ -1102,6 +1102,117 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing() {
+        // Roadmap item 2.3's acceptance (KS-31): the swap and the reset are
+        // one step on the main thread, between two events, so the key-up
+        // that follows a reload finds no Tap of the old bindings to fire.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::SwitchLanguage)
+                .with_trigger(Trigger::Tap(10_000)),
+        );
+        let (wparam, vk) = f13(WM_KEYDOWN);
+        let down = decide_event(&hook, wparam, vk, 0).expect("the key-down reaches the engine");
+        assert!(down.suppress, "the Tap swallows its key-down");
+
+        with_main(|main| {
+            main.reload(
+                &hook,
+                vec![
+                    Binding::new(KeyCombination::new(VK_F13), BindAction::ToggleCapsLock)
+                        .with_trigger(Trigger::Tap(10_000))
+                        .with_allow_extra_modifiers(true),
+                ],
+            );
+        })
+        .expect("the main state is free");
+        assert_eq!(
+            hook.bindings()[0].action,
+            BindAction::ToggleCapsLock,
+            "the new bindings are live"
+        );
+
+        let (wparam, vk) = f13(WM_KEYUP);
+        let up = decide_event(&hook, wparam, vk, 0).expect("the key-up reaches the engine");
+        assert!(up.fire.is_empty(), "the old Tap fired: {:?}", up.fire);
+        assert!(up.suppress, "the key-up follows its swallowed key-down");
+    }
+
+    #[test]
+    fn a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold() {
+        let (tx, records) = mpsc::channel::<Record>();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        // Leaked, so that the loop thread and this one share it, as the
+        // daemon's threads share the process-wide hook.
+        let hook: &'static KeyboardHook =
+            Box::leak(Box::new(hook_with(f13_hold(300, key_macro()))));
+        hook.attach_executor(Some(executor.handle()));
+        let (ready_tx, ready) = mpsc::channel();
+        let looper = thread::spawn(move || {
+            let main = MainThread::new().expect("the main thread is set up");
+            let (wparam, vk) = f13(WM_KEYDOWN);
+            let armed = decide_event(hook, wparam, vk, 0).is_some();
+            let _ = ready_tx.send((main.handle(), armed));
+            main.run(hook)
+        });
+        let (handle, armed) = ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop thread is ready");
+        assert!(armed, "a 300 ms Hold is armed");
+
+        assert_eq!(
+            handle.reload(vec![f13_hold(300, BindAction::DoNothing)]),
+            Ok(())
+        );
+        assert_eq!(
+            hook.bindings()[0].action,
+            BindAction::DoNothing,
+            "the new bindings are live once the main thread answers"
+        );
+        assert!(
+            records.recv_timeout(ms(500)).is_err(),
+            "a Hold armed before the reload never fires"
+        );
+
+        handle
+            .request_exit()
+            .expect("the loop thread takes WM_QUIT");
+        looper
+            .join()
+            .expect("the loop thread does not panic")
+            .expect("the loop ends on WM_QUIT without an error");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands() {
+        // Critic OQ4: a reload that the main thread reaches after the
+        // watcher's 2 s wait still goes live, and says so.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        let (reply, answer) = mpsc::sync_channel(1);
+        drop(answer);
+        let ((), lines) = crate::logging::testing::capture(|| {
+            serve(
+                &hook,
+                Request::Reload {
+                    bindings: vec![f13_hold(300, BindAction::DoNothing)],
+                    reply,
+                },
+            );
+        });
+        assert_eq!(hook.bindings().len(), 1, "the reload went live");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("config reload carried out late: 1 bindings live")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
     fn a_switch_request_to_an_ended_main_thread_fails_at_once() {
         let handle = thread::spawn(|| {
             MainThread::new()
