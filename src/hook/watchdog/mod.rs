@@ -711,6 +711,7 @@ fn qualifies(make_code: u16, vkey: u16) -> bool {
 mod tests {
     use std::cell::RefCell;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -737,6 +738,8 @@ mod tests {
         sent: mpsc::Sender<(Instant, ReinstallRequest)>,
         waiting: Mutex<Vec<SyncSender<ReinstallOutcome>>>,
         answer: Option<ReinstallOutcome>,
+        /// How many of the next requests the queue refuses as full.
+        refusals: AtomicU32,
     }
 
     impl Recorder {
@@ -752,6 +755,7 @@ mod tests {
                 sent,
                 waiting: Mutex::new(Vec::new()),
                 answer,
+                refusals: AtomicU32::new(0),
             };
             (recorder, requests)
         }
@@ -762,6 +766,15 @@ mod tests {
             &self,
             request: ReinstallRequest,
         ) -> Result<Receiver<ReinstallOutcome>, MainThreadError> {
+            if self
+                .refusals
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(MainThreadError::Busy);
+            }
             let (reply, answer) = mpsc::sync_channel(1);
             if let Some(outcome) = self.answer {
                 let _ = reply.try_send(outcome);
@@ -812,6 +825,10 @@ mod tests {
 
     fn input_unknown() -> windows::core::Result<bool> {
         Err(E_ACCESSDENIED.into())
+    }
+
+    fn input_elsewhere() -> windows::core::Result<bool> {
+        Ok(false)
     }
 
     /// The watchdog's loop on this thread, on a fake clock in whole
@@ -1016,6 +1033,47 @@ mod tests {
         assert!(
             drive.counters.get(Counter::WatchdogDesktopCheckFailed) >= 1,
             "the declined decision is counted"
+        );
+    }
+
+    #[test]
+    fn a_request_is_not_sent_while_input_is_on_another_desktop() {
+        // The desktop check says the keys go elsewhere (a lock, the secure
+        // desktop): the hook could not have seen them, so no request is sent,
+        // and a plain "elsewhere" is no failed check.
+        let mut drive = Drive::new(Recorder::new());
+        drive.input_here = input_elsewhere;
+        drive.run(0, 3000, |ms| ms.is_multiple_of(30));
+        assert_eq!(
+            drive.requests,
+            [] as [u64; 0],
+            "no request while input is on another desktop"
+        );
+        assert_eq!(
+            drive.counters.get(Counter::WatchdogDesktopCheckFailed),
+            0,
+            "a desktop that is not ours is not a failed check"
+        );
+    }
+
+    #[test]
+    fn a_request_the_main_threads_queue_refused_is_asked_again() {
+        // A full queue sends nothing: the decision is not outstanding, and a
+        // later tick asks again. A watchdog that kept waiting for a reply
+        // that never comes would never ask again.
+        let mut drive = Drive::new(Recorder::new());
+        drive.recorder.refusals.store(2, Ordering::Release);
+        drive.run(0, 4000, |ms| ms.is_multiple_of(30));
+        assert_eq!(
+            drive.recorder.refusals.load(Ordering::Acquire),
+            0,
+            "both refusals were used"
+        );
+        assert_eq!(drive.requests.len(), 1, "{:?}", drive.requests);
+        assert!(
+            drive.requests[0] > 1000,
+            "the first decision, at about 1000 ms, was refused: {:?}",
+            drive.requests
         );
     }
 
