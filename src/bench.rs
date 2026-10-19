@@ -42,6 +42,16 @@
 //!   at `THREAD_PRIORITY_NORMAL` and then at `THREAD_PRIORITY_HIGHEST`, and
 //!   the round trips of the same sends. It loads every core for a few
 //!   seconds, as a build does, which is why it is opt-in.
+//! - R9: the key-down callback of F13 bound to `DoNothing` with
+//!   `when: AppEquals("no-such.exe")`, which the bench machine's real
+//!   foreground window does not satisfy (read only): the cost of a `when:`
+//!   on the executable name. Each key-up is called, not timed.
+//! - R10: the same with `when: TitleContains("no-such-title")`: the cost
+//!   of a `when:` on the title.
+//! - R11: the key-up callback of a swallowed F13 press bound to
+//!   `DoNothing`; each key-down is called, not timed.
+//! - R12: the key-down and key-up callbacks of the unbound A: an ordinary
+//!   key.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -65,6 +75,7 @@ use crate::core::executor::testing::{FakeRunner, leaked_counters};
 use crate::core::executor::{Executor, QUEUE_CAPACITY};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
+use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
 use crate::data::sequence::SequenceStep;
 use crate::data::trigger::Trigger;
@@ -329,6 +340,58 @@ fn r5_hold_press(count: usize) -> Vec<Duration> {
         call_keyboard_callback(VK_F13, WM_KEYDOWN);
         samples.push(begun.elapsed());
         call_keyboard_callback(VK_F13, WM_KEYUP);
+    }
+    samples
+}
+
+/// R9 and R10: the key-down callback of F13 bound to `DoNothing` under
+/// `condition`, which does not hold, so the binding's keys match, its
+/// `when:` is asked and the key passes; each key-up is called, not timed.
+fn r9_conditional_key_down(condition: Condition, count: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_condition(condition)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_F13, WM_KEYUP);
+    }
+    samples
+}
+
+/// R11: the key-up callback of a swallowed F13 press bound to `DoNothing`;
+/// each key-down is called, not timed.
+fn r11_swallowed_key_up(count: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        call_keyboard_callback(VK_F13, WM_KEYDOWN);
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYUP));
+        samples.push(begun.elapsed());
+    }
+    samples
+}
+
+/// R12: every key-down and key-up of the unbound A, with F13 bound to
+/// `DoNothing`, through the extern callback: an ordinary key.
+fn r12_ordinary_key(events: usize) -> Vec<Duration> {
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+            .with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(events);
+    for msg in [WM_KEYDOWN, WM_KEYUP].iter().cycle().take(events) {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_A, *msg));
+        samples.push(begun.elapsed());
     }
     samples
 }
@@ -668,6 +731,31 @@ fn latency_bench() {
     if std::env::var_os("KS_BENCH_LOAD").is_some_and(|load| load == "1") {
         rows.extend(r8_under_load(300));
     }
+    rows.extend([
+        Row {
+            id: "R9",
+            what: "keyboard_hook_callback, F13 key-down, when: AppEquals (no match)",
+            samples: r9_conditional_key_down(Condition::AppEquals("no-such.exe".to_owned()), 2_000),
+        },
+        Row {
+            id: "R10",
+            what: "keyboard_hook_callback, F13 key-down, when: TitleContains (no match)",
+            samples: r9_conditional_key_down(
+                Condition::TitleContains("no-such-title".to_owned()),
+                2_000,
+            ),
+        },
+        Row {
+            id: "R11",
+            what: "keyboard_hook_callback, key-up of a swallowed F13",
+            samples: r11_swallowed_key_up(2_000),
+        },
+        Row {
+            id: "R12",
+            what: "keyboard_hook_callback, unbound A down and up",
+            samples: r12_ordinary_key(2_000),
+        },
+    ]);
     get_hook().update_bindings(Vec::new());
 
     let mut table = format!(
