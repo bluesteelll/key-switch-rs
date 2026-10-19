@@ -26,6 +26,7 @@ use interprocess::os::windows::{
     ToWtf16, local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
 
+use crate::hook::health::HookHealth;
 use crate::ipc::{Command, format_err, format_ok};
 
 /// What the IPC commands do to the daemon. Called on the connection
@@ -49,6 +50,8 @@ pub struct DaemonStatus {
     pub enabled: bool,
     /// How many bindings are live.
     pub bindings: usize,
+    /// The keyboard hook's health (roadmap item 2.4).
+    pub hook: HookHealth,
 }
 
 /// The pipe's security descriptor (KS-02), in the security descriptor
@@ -184,9 +187,15 @@ fn dispatch(cmd: Command, control: &dyn DaemonControl) -> String {
             Err(e) => format_err(&format!("could not turn remapping off: {e}")),
         },
         Command::Status => {
-            let DaemonStatus { enabled, bindings } = control.status();
+            let DaemonStatus {
+                enabled,
+                bindings,
+                hook,
+            } = control.status();
             let state = if enabled { "running" } else { "disabled" };
-            format_ok(&format!("{state} ({bindings} bindings live)"))
+            // The start stays "running (N bindings live", which swch and the
+            // probe of `swch open` read; the hook's health follows.
+            format_ok(&format!("{state} ({bindings} bindings live; {hook})"))
         }
         Command::Exit => match control.request_exit() {
             Ok(()) => format_ok("shutting down"),
@@ -204,7 +213,6 @@ mod tests {
     use interprocess::local_socket::Stream;
 
     use super::*;
-    use crate::hook::health::HookHealth;
 
     /// A stand-in for the daemon: a flag, three bindings and a count of
     /// exit requests. With `fail` every request it can refuse fails.

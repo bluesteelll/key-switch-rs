@@ -776,7 +776,7 @@ Release builds ship two binaries:
 
 ```text
 > swch open      # swch: daemon launched (UAC prompt on every launch)
-> swch status    # running (3 bindings live) with the default config
+> swch status    # running (3 bindings live; hook ok, reinstalls: 0) with the default config
 > swch off       # disabled       (remapping off; every key reaches Windows)
 > swch on        # enabled        (remapping on again)
 > swch exit      # shutting down  (daemon process terminates)
@@ -789,7 +789,7 @@ Release builds ship two binaries:
 | `swch open`   | Launch the daemon (a UAC prompt on every launch of a release build). Does nothing if a daemon already answers, refuses this console, is busy, or does not answer within 5 s. |
 | `swch on`     | Turn remapping back on (idempotent). |
 | `swch off`    | Turn remapping off (idempotent): the hook stays installed and passes every key through; pending Tap/Hold/DoubleTap, chords and sequences are dropped, and a running macro stops within 100 ms (a step already running finishes first). Useful for games or temporarily passing the OS's defaults through. |
-| `swch status` | Print "running" or "disabled" (remapping on or off) and the live binding count. |
+| `swch status` | Print "running" or "disabled" (remapping on or off), the live binding count and the keyboard hook's health: `hook ok`, `hook not watched` (the hook watchdog does not run), `hook reinstall failed` (Windows refused a new hook until the hook answers again) or `hook watchdog timer failing`, then how many times the watchdog had the hook reinstalled and when it did last, in UTC: `running (3 bindings live; hook ok, reinstalls: 1, last 2026-10-19T09:41:07.123Z)`. |
 | `swch exit`   | Cleanly shut down the daemon (`PostThreadMessageW(WM_QUIT)`). |
 | `swch help`   | Print usage.                                                |
 
@@ -932,7 +932,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
 - **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles and the remapping switch, and the decision core owned by the main thread, which runs the hooks and every gesture timer, so no lock is taken on the key path; binding list can be hot-swapped atomically; a reload stops the macros still running, which belong to the old list
 - **Timers on the main thread**: a `Hold` sets the main thread's one high-resolution waitable timer instead of starting a thread, and fires within about 1 ms of its term
-- **Hook watchdog**: Windows removes a low-level keyboard hook whose callback runs past `LowLevelHooksTimeout`, without a word (KS-08). A `hook-watchdog` thread receives the raw input of every keyboard on a message-only window of its own and compares it with a heartbeat the keyboard callback bumps; when keys arrive and the callback stays silent for more than 1 s, the main thread reinstalls the hook (the new one first, then the old one off) and logs it. The main thread pays one atomic increment per key; Windows sends one `WM_INPUT` per key event to the watchdog thread, never to the main thread, which reads it on another core; idle, the watchdog does not wake up. It keeps no key data and never injects input
+- **Hook watchdog**: Windows removes a low-level keyboard hook whose callback runs past `LowLevelHooksTimeout`, without a word (KS-08). A `hook-watchdog` thread receives the raw input of every keyboard on a message-only window of its own and compares it with a heartbeat the keyboard callback bumps; when keys arrive and the callback stays silent for more than 1 s, the main thread reinstalls the hook (the new one first, then the old one off), logs it, and `swch status` counts it. The main thread pays one atomic increment per key; Windows sends one `WM_INPUT` per key event to the watchdog thread, never to the main thread, which reads it on another core; idle, the watchdog does not wake up. It keeps no key data and never injects input
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed

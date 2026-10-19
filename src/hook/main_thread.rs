@@ -69,7 +69,7 @@
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use windows::Win32::{
     Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
@@ -852,6 +852,7 @@ fn reinstall_if_silent(
         // replace, and nothing to say.
         Ok(Reinstalled::NotInstalled) => ReinstallOutcome::NotInstalled,
         Ok(Reinstalled::Replaced { old }) => {
+            hook.health().record_reinstall(SystemTime::now());
             log::warn!(
                 "the keyboard hook got no key event for {} ms while keys were typed; reinstalled it ({old}; longest_callback_us={})",
                 request.silent_for.as_millis(),
@@ -863,6 +864,7 @@ fn reinstall_if_silent(
             ReinstallOutcome::Reinstalled
         }
         Err(error) => {
+            hook.health().record_failed_attempt();
             log::error!("could not reinstall the keyboard hook ({error}); the old one is kept");
             ReinstallOutcome::Failed
         }

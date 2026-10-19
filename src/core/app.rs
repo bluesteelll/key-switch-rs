@@ -88,6 +88,7 @@ impl DaemonControl for DaemonHandle {
         DaemonStatus {
             enabled: self.hook.is_enabled(),
             bindings: self.hook.bindings().len(),
+            hook: self.hook.health().snapshot(),
         }
     }
 

@@ -149,16 +149,20 @@ struct Ticker<T> {
     reply: Option<Receiver<ReinstallOutcome>>,
     /// Whether a raw key event was counted yet, for the one log line.
     raw_input_seen: bool,
+    /// The heartbeat at the last tick.
+    seen: u64,
 }
 
 impl<T: TickTimer> Ticker<T> {
     fn new(now: Instant, timer: T, health: &HealthState) -> Self {
+        let seen = health.callbacks();
         Self {
-            watchdog: Watchdog::new(now, health.callbacks()),
+            watchdog: Watchdog::new(now, seen),
             timer,
             armed: None,
             reply: None,
             raw_input_seen: false,
+            seen,
         }
     }
 
@@ -199,11 +203,17 @@ impl<T: TickTimer> Ticker<T> {
     /// the decision's next tick, or cancels it (ruling I1).
     fn pass<R: RequestReinstall>(&mut self, now: Instant, context: &Context<'_, R>) {
         self.take_answer(now);
-        if self.watchdog.next_tick().is_some_and(|due| due <= now)
-            && let Verdict::Reinstall { request, .. } =
-                self.watchdog.tick(now, context.health.callbacks())
-        {
-            self.ask(now, request, context);
+        if self.watchdog.next_tick().is_some_and(|due| due <= now) {
+            let callbacks = context.health.callbacks();
+            if callbacks != self.seen {
+                self.seen = callbacks;
+                // The hook answers: a failed reinstall before it is no
+                // longer the hook's state (ruling M3).
+                context.health.hook_answered();
+            }
+            if let Verdict::Reinstall { request, .. } = self.watchdog.tick(now, callbacks) {
+                self.ask(now, request, context);
+            }
         }
         self.arm(now, context);
     }
@@ -275,8 +285,14 @@ impl<T: TickTimer> Ticker<T> {
                 // Setting the timer replaces the due time it had.
                 self.armed = None;
                 match self.timer.set(after) {
-                    Ok(()) => self.armed = Some(at),
-                    Err(_) => context.counters.bump(Counter::WatchdogTimerNotSet),
+                    Ok(()) => {
+                        self.armed = Some(at);
+                        context.health.set_timer_failing(false);
+                    }
+                    Err(_) => {
+                        context.counters.bump(Counter::WatchdogTimerNotSet);
+                        context.health.set_timer_failing(true);
+                    }
                 }
             }
         }
@@ -467,6 +483,23 @@ impl Drop for SinkWindow {
     }
 }
 
+/// Says that the watchdog runs, from its start until it is dropped, also
+/// on unwind, so that `swch status` never reads `hook ok` without it.
+struct Watched<'a>(&'a HealthState);
+
+impl<'a> Watched<'a> {
+    fn new(health: &'a HealthState) -> Self {
+        health.set_watched(true);
+        Self(health)
+    }
+}
+
+impl Drop for Watched<'_> {
+    fn drop(&mut self) {
+        self.0.set_watched(false);
+    }
+}
+
 /// The sink window's raw keyboard registration; removed when dropped,
 /// before the window is destroyed. Not `Send`: it belongs to the thread of
 /// its window.
@@ -524,6 +557,7 @@ fn run_watchdog<R: RequestReinstall>(
         Ok(timer) => timer,
         Err(error) => return fail("could not create its tick timer", error),
     };
+    let _watched = Watched::new(health);
     // A starter that gave up waits no more, and nobody would stop this
     // thread.
     if ready.send(Ok(thread_id)).is_err() {

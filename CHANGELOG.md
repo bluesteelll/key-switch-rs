@@ -213,6 +213,17 @@ minor version; such entries sit under **Changed** and start with
   `engine::scenarios::a_swallowed_key_released_while_the_hook_was_gone_fires_at_its_next_press_after_the_reinstall`.
   Manual checks: a debug build's 1.5 s hold of the callback, 10 minutes of
   idle, typing in an elevated window, a lock and a UAC prompt.
+- `swch status` reports the keyboard hook's health after the binding count
+  (roadmap item 2.4): `hook ok`, `hook not watched` (the watchdog does not
+  run), `hook reinstall failed` (until the hook answers again or a later
+  reinstall succeeds) or `hook watchdog timer failing`, then
+  `reinstalls: N` and, after a reinstall, `last <UTC time>`:
+  `OK: running (3 bindings live; hook ok, reinstalls: 1, last 2026-10-19T09:41:07.123Z)`.
+  The IPC workers read it from atomics, so the answer comes also while the
+  main thread is stuck. Tests:
+  `hook::health::tests::the_hook_health_reads_ok_not_watched_or_failed_with_its_reinstalls`,
+  `hook::ipc_server::tests::dispatch_status_appends_the_hook_health`,
+  `tests/ipc_roundtrip.rs::status_reports_the_hook_health_over_the_pipe`.
 
 ### Changed
 
@@ -578,6 +589,11 @@ minor version; such entries sit under **Changed** and start with
   Manual check:
   `cargo test --locked -- --ignored --exact platform::foreground::tests::the_foreground_cache_names_the_focused_notepad`,
   then focus Notepad within 5 s.
+- The reply of `swch status` goes on after the binding count with the
+  hook's health: `running (3 bindings live; hook ok, reinstalls: 0)` instead
+  of `running (3 bindings live)` (roadmap item 2.4). It still starts the
+  same way, so `swch open` and scripts that look for `running (` are not
+  affected; one that compares the whole line must follow.
 
 ### Fixed
 

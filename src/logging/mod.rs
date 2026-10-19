@@ -166,6 +166,13 @@ pub fn flush() -> bool {
     }
 }
 
+/// `at` in UTC, as the log writes it: `2026-10-16T09:41:07.123Z`.
+pub(crate) fn utc_timestamp(at: SystemTime) -> String {
+    let mut text = String::new();
+    sink::write_timestamp(&mut text, at);
+    text
+}
+
 /// The folder of the log files for the account whose `%LOCALAPPDATA%` is
 /// `local_app_data`.
 pub fn log_dir(local_app_data: &Path) -> PathBuf {
