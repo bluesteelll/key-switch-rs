@@ -775,7 +775,8 @@ fn wait_ms(after: Duration) -> u32 {
 /// Takes every message but `skip`, the batched raw input, from this
 /// thread's queue until none is left, and dispatches it; true at `WM_QUIT`.
 /// It filters by message, never by window, so that `WM_QUIT`, a thread
-/// message, is always seen (critic OQ2).
+/// message, is always seen (critic OQ2): the stop's WM_QUIT is posted, and a
+/// peek filtered to another message leaves it in the queue.
 fn pump(msg: &mut MSG, skip: u32) -> bool {
     loop {
         let mut took = false;
@@ -1105,6 +1106,8 @@ impl RawReads for KeyboardReads<'_> {
         if !found.as_bool() {
             return Read::Empty;
         }
+        // A posted WM_QUIT stays for the pump; a quit that PostQuitMessage
+        // set passes any filter.
         if self.msg.message == WM_QUIT {
             return Read::Quit;
         }
@@ -1168,8 +1171,8 @@ impl RawReads for SyntheticReads<'_> {
         if !found.as_bool() {
             return Read::Empty;
         }
-        // "PeekMessage always retrieves WM_QUIT messages, no matter which
-        // values you specify for wMsgFilterMin and wMsgFilterMax".
+        // A posted WM_QUIT stays for the pump; a quit that PostQuitMessage
+        // set passes any filter.
         if self.msg.message == WM_QUIT {
             return Read::Quit;
         }
@@ -2551,6 +2554,60 @@ mod tests {
             .expect("the thread is joined within 1 s");
         assert_eq!(stats.raw_keys, 5, "{stats:?}");
         assert!(stats.wakes >= 1, "{stats:?}");
+    }
+
+    #[test]
+    fn a_range_filtered_peek_leaves_a_posted_wm_quit_for_the_pump() {
+        // Critic OQ2, a characterisation of Windows: the HookWatchdog stops
+        // the thread with PostThreadMessageW(WM_QUIT), a queued message,
+        // which a peek filtered to another message leaves in the queue. The
+        // PeekMessageW note "PeekMessage always retrieves WM_QUIT messages,
+        // no matter which values you specify for wMsgFilterMin and
+        // wMsgFilterMax" holds for the quit that PostQuitMessage sets, not
+        // for a posted one: so the pump, whose ranges hold WM_QUIT, is what
+        // sees the stop, never the drain's filtered read.
+        const OTHER: u32 = WM_APP + 0x31;
+        let (posted, after_posted, quit_state) = thread::spawn(|| {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a local that outlives the call, which only
+            // writes it; the call makes this thread's queue and removes
+            // nothing.
+            let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
+            // SAFETY: GetCurrentThreadId reads no memory of ours;
+            // PostThreadMessageW takes the id and the message by value, and
+            // WM_QUIT carries no pointer.
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_QUIT, WPARAM(0), LPARAM(0)) }
+                .expect("a thread posts to its own queue");
+            // SAFETY: as the first peek; this one removes only from this
+            // thread's own queue.
+            let posted = unsafe { PeekMessageW(&mut msg, None, OTHER, OTHER, PM_REMOVE) }
+                .as_bool()
+                .then_some(msg.message);
+            let mut ranges = None;
+            for (low, high) in pump_ranges(OTHER) {
+                // SAFETY: as above.
+                if unsafe { PeekMessageW(&mut msg, None, low, high, PM_REMOVE) }.as_bool() {
+                    ranges = Some(msg.message);
+                }
+            }
+            // SAFETY: PostQuitMessage takes its exit code by value and sets
+            // this thread's quit state.
+            unsafe { PostQuitMessage(0) };
+            // SAFETY: as above.
+            let quit_state = unsafe { PeekMessageW(&mut msg, None, OTHER, OTHER, PM_REMOVE) }
+                .as_bool()
+                .then_some(msg.message);
+            (posted, ranges, quit_state)
+        })
+        .join()
+        .expect("the probe thread ends");
+        assert_eq!(posted, None, "a filtered peek leaves a posted WM_QUIT");
+        assert_eq!(after_posted, Some(WM_QUIT), "the pump's ranges take it");
+        assert_eq!(
+            quit_state,
+            Some(WM_QUIT),
+            "PostQuitMessage's quit passes any filter"
+        );
     }
 
     #[test]
