@@ -402,7 +402,7 @@ of every binding before triggers existed). Deferred triggers — `Tap`,
 **The whole point**: two bindings on the same combo and `when:` with
 different triggers coexist. They win a press together (see
 [Which binding wins](#combo-syntax-the-keys-field)), Tap and Hold both arm
-on key-down, and with equal terms exactly one of them fires (see below).
+on key-down, as one gesture, and exactly one of them fires (see below).
 
 ```ron
 // CapsLock — quick press switches language, holding sends one LShift press.
@@ -437,9 +437,9 @@ to keep the left Shift for the gesture alone.
 
 - Key-down of one of the binding's own keys (see "Which key fires a
   binding"): the winning group (see "Which binding wins") arms its gestures
-  (`Tap`, `Hold`, `DoubleTap`), one per trigger, in the decision core
-  (`src/engine/gestures.rs`) under that key, and that key's key-up resolves
-  them — a `Tap` and a `Hold` on the same key resolve independently. A key
+  (`Tap`, `Hold`, `DoubleTap`), one per trigger, as one press in the
+  decision core (`src/engine/gestures.rs`) under that key, and that key's
+  key-up resolves it: exactly one of the gestures fires (KS-25). A key
   pressed while the gesture is pending passes and arms nothing.
 - For `Tap`: the entry stores a deadline `<ms>` after the key-down; the
   key-up fires the action only before the deadline. No thread is involved.
@@ -452,10 +452,22 @@ to keep the left Shift for the gesture alone.
   fires its Hold even if the timer runs late. Each timer carries the
   number of the press that started it, so a timer from an earlier press
   never acts on a newer one, nor one from before a `swch off`.
-- For `DoubleTap`: the first key-down arms the entry with a deadline; a
-  second key-down before the deadline consumes it and fires the action.
-- With equal terms (`Tap(200)` + `Hold(200)`) exactly one of the two fires:
-  `Tap` if the key is released before 200 ms, `Hold` otherwise.
+- For `DoubleTap`: the first key-down arms the window with a deadline,
+  and a key-up before it opens the window; a second key-down before the
+  deadline that the same group (the same keys and `when:`) wins fires the
+  action, and that press arms nothing else. A press that another group
+  wins, such as `Shift+CapsLock` after a `CapsLock` press, ends the window.
+- `Tap` and `Hold` of one press: the Hold resolves the press once its term
+  has passed, so with `Tap(300)` + `Hold(200)` a release at 250 ms fires
+  only the Hold. With equal terms (`Tap(200)` + `Hold(200)`): `Tap` if the
+  key is released before 200 ms, `Hold` otherwise. With `Tap(100)` +
+  `Hold(200)` a release between 100 and 200 ms fires nothing, so prefer
+  equal terms.
+- `Tap` and `DoubleTap` on the same keys: the `Tap` waits until the
+  DoubleTap window closes, so a double press fires only the `DoubleTap`.
+  A single press fires the `Tap` at the press plus the DoubleTap term, or
+  at once when another key goes down first (ahead of that key). Only a
+  group with both pays that latency.
 
 **Behaviour rules:**
 
@@ -494,7 +506,8 @@ to keep the left Shift for the gesture alone.
   With `block_default: true` Windows never sees that key while the binding
   matches it, so the key's own shortcuts (`Win+E`) stop working.
 - Auto-repeat key-down events from a stuck/held key do not stack new
-  pending entries; the first gesture wins until resolved.
+  pending entries; the press's gestures stay as armed until it resolves.
+  A press that follows a key-up the hook never saw replaces the stale one.
 - An `Immediate` binding fires on an auto-repeat only if its `repeat` is
   on: by default for `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)`.
   Every other action fires once per press. Its repeats are still swallowed

@@ -45,8 +45,9 @@
 //!   key-down was suppressed or passed, so that its auto-repeats and key-up
 //!   are treated the same way. A foreground change marks the suppressed
 //!   ones as forgotten: their key-ups are no longer due to be suppressed.
-//! - `gestures` (`gestures::Gestures`): pending `Tap`, `Hold` and
-//!   `DoubleTap` entries, keyed by virtual-key code.
+//! - `gestures` (`gestures::Gestures`): the pending press of each key, one
+//!   machine for its `Tap`, `Hold` and `DoubleTap` (roadmap item 2.2), and
+//!   the Holds left to a late timer.
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
 //! - `mask_owed`: a `MaskOnly` auto-blocker matched the last key-down, so
 //!   the next key event asks for the menu mask key too.
@@ -78,8 +79,9 @@
 //! Hold's deadline cancels it; a key-up at or after the deadline does not,
 //! because the key was held for the whole term: the entry stays armed and
 //! its timer fires it whenever it runs. Only [`Engine::on_timer`] ever fires
-//! a Hold. With equal Tap and Hold terms on one key exactly one of the two
-//! fires (KS-25).
+//! a Hold. Of the Tap, the Hold and the DoubleTap of one press exactly one
+//! fires, whatever their terms (KS-25). A Tap that waits for its DoubleTap
+//! window asks for a timer too, at the window's end.
 //!
 //! ## Threads
 //!
@@ -134,10 +136,15 @@
 //!    - `Tap`, `Hold` and `DoubleTap`: every deferred binding on the same
 //!      keys (in any order) with the same `when:` (as written) that matches
 //!      the press acts with the winner, as one group, so a Tap and a Hold
-//!      on one key arm together. Only the first binding of each trigger
-//!      kind in the group acts. They ignore repeats and arm under the key
-//!      just pressed (so under a key of the combo, whose key-up resolves
-//!      them).
+//!      on one key arm together, as one press that resolves to one of them
+//!      (KS-25). Only the first binding of each trigger kind in the group
+//!      acts. They ignore repeats and arm under the key just pressed (so
+//!      under a key of the combo, whose key-up resolves them). A first
+//!      key-down also ends the DoubleTap window of its key: the DoubleTap
+//!      fires if the same group, keys and `when:`, wins this key-down
+//!      within the window, and the key-down is spent (known issue 74).
+//!    - A first key-down of any key fires the Tap of another key that waits
+//!      for its DoubleTap window, ahead of the new key.
 //!
 //!    The winner, or any acting member of its group, with `block_default`
 //!    asks for suppression; a losing binding never does. One without it
@@ -173,10 +180,13 @@
 //!    keys whose key-ups it swallows as blocked, but only keys still held
 //!    whose key-down did not pass (KS-30, KS-32).
 //!
-//! On a key-up the key is released, a pending Tap fires if its deadline has
-//! not passed, and a pending Hold is cancelled if its deadline has not
-//! passed. A Hold whose deadline has passed is left armed for its timer,
-//! which fires it even if the timer runs after the key-up (KS-25). The
+//! On a key-up the key is released and its press resolves. A Hold whose
+//! deadline has passed resolves it: the press is left to the Hold's timer,
+//! which fires it even if the timer runs after the key-up, and fires no Tap
+//! (KS-25). Otherwise the Hold is cancelled, and a Tap whose deadline has
+//! not passed fires now, or, if the press opens a DoubleTap window, waits
+//! for the window on a timer of its own (roadmap item 2.2, open question
+//! 5). A DoubleTap window opens if the key-up comes before it closes. The
 //! key-up of a key marked passed always passes. Otherwise it is suppressed
 //! if the key was marked blocked or if a Tap or Hold was pending. A
 //! foreground change forgets which key-ups were due to be suppressed: such
@@ -218,7 +228,7 @@ mod scenarios;
 mod properties;
 
 use std::cmp::Reverse;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
@@ -231,10 +241,9 @@ pub use schedule::{Scheduler, TimerQueue};
 
 use chords::{ChordOutcome, Chords};
 use env::EnvForeground;
-use gestures::{Gestures, HoldRelease};
+use gestures::Gestures;
 use keys::KeyState;
 use sequences::{SequenceOutcome, Sequences};
-use winner::GroupArms;
 
 /// Whether a key went down (including auto-repeats) or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,11 +426,7 @@ impl Engine {
             return decision;
         }
         match token.slot {
-            TimerSlot::Gesture(vk) => {
-                if let Some(action) = self.gestures.fire_hold(vk, token.seq) {
-                    decision.fire.push(action);
-                }
-            }
+            TimerSlot::Gesture(vk) => self.gestures.on_timer(vk, token.seq, &mut decision.fire),
         }
         decision
     }
@@ -459,15 +464,17 @@ impl Engine {
         refused
     }
 
-    /// The caller could not start the timer for `token`. Its Hold is
-    /// dropped: it never fires, and its key can arm a new Hold on the next
-    /// press.
+    /// The caller could not start the timer for `token`. A Hold is dropped:
+    /// it never fires, and its key can arm a new Hold on the next press
+    /// (KS-33). A Tap that waits for its DoubleTap window is kept: it fires
+    /// at the next key-down, or with the next timer handed back after its
+    /// window closed.
     pub fn forget_timer(&mut self, token: TimerToken) {
         if token.generation != self.ids.generation {
             return;
         }
         match token.slot {
-            TimerSlot::Gesture(vk) => self.gestures.forget_hold(vk, token.seq),
+            TimerSlot::Gesture(vk) => self.gestures.forget(vk, token.seq),
         }
     }
 
@@ -523,9 +530,33 @@ impl Engine {
         // 1.6, KS-13). Elected on every key-down, auto-repeats included, so
         // a less specific binding never fires in the winner's place.
         let winner = winner::elect(vk, bindings, &self.keys, &foreground);
-        let mut arms = GroupArms::default();
 
         let mut decision = Decision::default();
+        if !was_repeat {
+            // A Tap of another key that waits for its DoubleTap window has
+            // completed: it fires now, ahead of this key (roadmap item 2.2).
+            self.gestures
+                .other_key_down(vk.0, &self.keys, now, &mut decision.fire);
+
+            // A deferred winner's group arms one press, which resolves to
+            // one of its gestures (KS-25). The press also ends this key's
+            // DoubleTap window, completing it if the same group wins it.
+            let group = winner
+                .as_ref()
+                .and_then(|winner| winner.deferred_group(vk, bindings, &self.keys));
+            let seq = self.ids.next_seq();
+            if let Some(due) =
+                self.gestures
+                    .press(vk.0, group.as_ref(), now, seq, &mut decision.fire)
+            {
+                decision
+                    .timers
+                    .push(self.ids.request(TimerSlot::Gesture(vk.0), seq, due));
+            }
+            if group.is_some_and(|group| group.block) {
+                decision.suppress = true;
+            }
+        }
 
         for (index, binding) in bindings.iter().enumerate() {
             match &binding.kind {
@@ -574,58 +605,9 @@ impl Engine {
                                 decision.suppress = true;
                             }
                         }
-                        Trigger::Tap(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            self.gestures.arm_tap(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                            );
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
-                        Trigger::Hold(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            let seq = self.ids.next_seq();
-                            if let Some(due) = self.gestures.arm_hold(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                                seq,
-                            ) {
-                                decision.timers.push(self.ids.request(
-                                    TimerSlot::Gesture(vk.0),
-                                    seq,
-                                    due,
-                                ));
-                            }
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
-                        Trigger::DoubleTap(term_ms) => {
-                            if was_repeat || !arms.claim(binding.trigger) {
-                                continue;
-                            }
-                            if let Some(action) = self.gestures.double_tap(
-                                vk,
-                                &binding.action,
-                                Duration::from_millis(term_ms),
-                                now,
-                            ) {
-                                decision.fire.push(action);
-                            }
-                            if binding.block_default {
-                                decision.suppress = true;
-                            }
-                        }
+                        // The winner's gesture group acted above, as one
+                        // press; its repeats arm nothing.
+                        Trigger::Tap(_) | Trigger::Hold(_) | Trigger::DoubleTap(_) => {}
                     }
                 }
                 BindingKind::Sequence { steps, max_gap } => {
@@ -717,28 +699,30 @@ impl Engine {
     fn on_key_up(&mut self, vk: VIRTUAL_KEY, env: &dyn Env) -> Decision {
         let now = env.now();
         self.keys.release(vk);
+        let was_passed = self.keys.is_passed(vk.0);
 
-        // Resolve every deferred gesture pending for this key. A Tap fires
-        // if its term has not ended. A Hold is cancelled if its term has
-        // not ended, and otherwise left to its timer, which fires it (the
-        // key-up never does). Both can be pending at once on the same key:
-        // they were armed independently and resolve independently.
-        let tap = self.gestures.resolve_tap(vk, now);
-        let tap_fired = tap.is_some();
-        let hold = self.gestures.release_hold(vk, now);
-
+        // Resolve the press of this key. Its Hold is cancelled if its term
+        // has not ended, and otherwise the press is left to the Hold's
+        // timer, which fires it (the key-up never does). Else its Tap fires
+        // if its term has not ended, unless the press opens a DoubleTap
+        // window: then the Tap waits for the window, on a timer of its own.
+        let seq = self.ids.next_seq();
+        let released = self.gestures.release(vk.0, now, seq);
         let mut decision = Decision::default();
-        decision.fire.extend(tap);
+        decision.fire.extend(released.fired);
+        if let Some(due) = released.window_due {
+            decision
+                .timers
+                .push(self.ids.request(TimerSlot::Gesture(vk.0), seq, due));
+        }
 
         // A key-up whose key-down reached Windows always reaches it too, or
         // the key stays held there. Otherwise it is suppressed if the
         // key-down is on record as suppressed, or if a Tap or Hold of the
         // press was pending: a focus change may have forgotten the record,
         // and the gesture is still evidence of a swallowed press.
-        let was_passed = self.keys.is_passed(vk.0);
         let was_blocked = self.keys.take_blocked(vk.0);
-        let gesture_bound = tap_fired || hold != HoldRelease::NotPending;
-        decision.suppress = was_blocked || (gesture_bound && !was_passed);
+        decision.suppress = was_blocked || (released.gesture_bound && !was_passed);
         self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
@@ -756,6 +740,8 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;

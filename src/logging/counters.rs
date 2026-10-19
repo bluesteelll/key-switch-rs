@@ -24,9 +24,10 @@ pub enum Counter {
     /// `SendInput` inserted fewer than the two events of a `PressKey`,
     /// `Media` or `ToggleCapsLock` key press.
     KeyPressShort,
-    /// A gesture timer could not be set on the main thread, so that Hold
-    /// never fired. The name dates from the `hold-timer` threads before
-    /// roadmap item 2.2, and log readers know it.
+    /// A gesture timer could not be set on the main thread: that Hold never
+    /// fired, or that Tap, which waited for its DoubleTap window, fired at
+    /// the next key-down instead. The name dates from the `hold-timer`
+    /// threads before roadmap item 2.2, and log readers know it.
     HoldTimerNotStarted,
     /// A log line was dropped because the log writer's queue was full.
     LogLinesDropped,

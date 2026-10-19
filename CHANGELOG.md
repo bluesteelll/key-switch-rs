@@ -208,6 +208,19 @@ minor version; such entries sit under **Changed** and start with
   cleanup thread per press. Scenario tests (`engine::testing::Scenario`: a
   RON config, a script of key events and a fake clock) cover every binding
   kind and trigger.
+- **Breaking:** `Tap`, `Hold` and `DoubleTap` on one key are one gesture
+  (roadmap item 2.2, KS-25): of one press exactly one fires.
+  `Tap(300)` + `Hold(200)` released at 250 ms fires only the Hold; a
+  double press of a `Tap` + `DoubleTap` key fires only the `DoubleTap`; a
+  press that completes a `DoubleTap` or that its `Hold` resolved arms or
+  opens nothing more. With a `DoubleTap` on the same keys and `when:` the
+  `Tap` waits for its window (roadmap open question 5): it fires at the
+  press plus the DoubleTap term, or at once when another key goes down, and
+  into the window that has the focus then (known issues, row 75). Tests:
+  `engine::scenarios::tap_and_double_tap_on_one_key_wait_for_the_double_tap_window_before_the_tap`,
+  `a_double_press_of_a_tap_and_double_tap_key_fires_only_the_double_tap`,
+  `another_key_fires_a_tap_that_waits_for_the_double_tap_window`,
+  `a_hold_closes_the_double_tap_window`, `a_double_tap_press_arms_no_hold`.
 - Gesture timers run on the main thread (roadmap item 2.2): the thread
   that installs the hooks and pumps their messages owns the decision core
   and every gesture timer, so a `Hold` starts no thread and the engine has
@@ -581,12 +594,21 @@ minor version; such entries sit under **Changed** and start with
   `engine::scenarios::win_q_post_message_masks_the_swallowed_q_and_its_release`,
   `alt_then_shift_with_the_template_blocker_masks_the_swallowed_shift`; the
   engine's property runs check the rule on every generated event.
-- KS-25 (equal terms): with `Tap(n)` and `Hold(n)` on one key, exactly one
-  fires: `Tap` when the key is released before `n` ms, `Hold` when it is
-  held for `n` ms or more. A Hold whose key is released after its term but
-  before its timer thread wakes now fires when the timer wakes, still on
-  that thread, instead of being cancelled. Different terms behave as before
-  until roadmap item 2.2.
+- KS-25: with a `Tap` and a `Hold` on one key, exactly one fires, whatever
+  their terms: with `Tap(n)` and `Hold(n)`, `Tap` when the key is released
+  before `n` ms, `Hold` when it is held for `n` ms or more; with
+  `Tap(300)` and `Hold(200)` a release at 250 ms fires only the Hold, where
+  it used to fire both (roadmap item 2.2). A Hold whose key is released
+  after its term but before its timer runs fires when the timer runs,
+  instead of being cancelled. With `Tap(100)` and `Hold(200)` a release
+  between the terms still fires nothing. Tests:
+  `engine::scenarios::tap_300_and_hold_200_released_at_250_fire_only_the_hold`,
+  `tap_and_hold_with_equal_terms_fire_exactly_one`.
+- Known issue 74: a `DoubleTap` window belongs to its bindings' keys and
+  `when:`, so a CapsLock press that a `Shift+CapsLock` `DoubleTap` wins no
+  longer completes a `CapsLock` `DoubleTap` and fires its action; it ends
+  that window and opens its own (roadmap item 2.2). Test:
+  `engine::scenarios::a_double_tap_entry_is_not_consumed_by_a_press_another_group_wins`.
 - KS-13: specificity decides across every trigger. Of the matching `keys`
   bindings only the winner (or its `Tap`/`Hold`/`DoubleTap` group) acts. A
   less specific binding with `block_default: true` no longer swallows the

@@ -65,18 +65,18 @@
 - `block_default` decides whether the press, the auto-repeats and the release of the trigger key reach the application ([§10](kinds.md#s10)); the gesture is armed and fires either way. Without the field it is `false` for a combination made only of modifiers (`"LShift"`, `"Ctrl+Shift"`, `"Win"`) and `true` otherwise, so `"CapsLock"` with `Tap(200)` still swallows CapsLock and `"LShift"` with `DoubleTap(250)` lets the left Shift type capitals. Combo keys pressed earlier (for example Ctrl) do reach the application. Before `feat/deferred-block-default` (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap)) the trigger key was always suppressed, whatever `block_default` said.
 - Auto-repeat does not re-arm the gesture, so `Hold` fires once per press.
 - `Tap` and `DoubleTap` store a deadline and start no thread; the next event of the key checks it. A `Hold` starts no thread either: it asks the daemon's main thread for a timer, and the main thread wakes for the earliest one on one high-resolution waitable timer, within about 1 ms of the term, not on the 15.6 ms system tick (roadmap [item 2.2](../roadmap.md#22-timers-on-the-main-thread), `src/hook/main_thread.rs`). If Windows refuses that timer, the daemon counts it in `hold_timer_not_started`, which the `[WARN] counters since the last report: ...` line reports, and the Hold is dropped ([KS-33](../audit.md#ks-33), fixed; [§18.6](errors.md#s18-6)).
-- The `when` condition is checked only on key-down. `Tap` runs on release even if the window has changed in the meantime; `Hold` runs on its timer whatever window is active.
+- The `when` condition is checked only on key-down. `Tap` runs on release even if the window has changed in the meantime; `Hold` runs on its timer whatever window is active, and so does a `Tap` that waits for its DoubleTap window ([§11.6](#s11-6)).
 
 <a id="s11-5"></a>
 ### 11.5 How `Tap`, `Hold` and `DoubleTap` each resolve
 
-[src/engine/gestures.rs:1-27](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L1-L27) describes the rules; [src/engine/mod.rs:617-644](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L617-L644) applies them on key-up.
+`src/engine/gestures.rs` describes the rules (roadmap item 2.2). A first key-down that a gesture group wins arms one press of the key, with every gesture of the group: the `Tap`, `Hold` and `DoubleTap` on the same keys with the same `when` ([§11.7](#s11-7)). The press resolves to exactly one of them ([§11.6](#s11-6)).
 
-**`Tap(ms)`.** On key-down an entry with the deadline "press time + `ms`" is stored. While a live entry for this key exists, a new one is ignored ([src/engine/gestures.rs:91-112](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L91-L112)). At the key-up of the same key the entry is removed, and the action fires if the release came strictly before the deadline ([L114-L121](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L114-L121)). The action fires on the hook thread ([§13.1](actions.md#s13-1)). If the key is released later, nothing happens; with `block_default: true` the keystroke is lost.
+**`Tap(ms)`.** The press stores the deadline "press time + `ms`". At the key-up of the same key the action fires if the release came strictly before the deadline. The action fires on the hook thread ([§13.1](actions.md#s13-1)). If the key is released later, nothing happens; with `block_default: true` the keystroke is lost. With a `DoubleTap` in the group the Tap waits for the DoubleTap window ([§11.6](#s11-6)).
 
-**`Hold(ms)`.** Arming gives the entry a new generation number and asks for a timer ([L125-L154](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L125-L154)). The main thread's loop takes the timer once the deadline has passed and asks the engine to fire the entry with its token; a token whose entry is gone, re-armed or from before a `swch off` fires nothing ([L171-L179](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L171-L179)). A key-up before the deadline cancels the gesture. A key-up at or after the deadline does not: the key was held for the whole term, so the timer fires the Hold even if the loop takes it a few milliseconds after the release ([L156-L169](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L156-L169)). `Hold` is the only trigger whose action fires outside a key event, in the main loop between two events, on the same thread as every other trigger: a fast action runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action executor ([§13.1](actions.md#s13-1)). `Hold` is no longer the only safe trigger for `Launch` and `OpenUrl` ([KS-08](../audit.md#ks-08), fixed on `feat/action-executor`). It fires once. It does not hold a modifier down: `Hold` with `PressKey("LShift")` produces one short Shift press.
+**`Hold(ms)`.** Arming gives the press a new number and asks for a timer. The main thread's loop takes the timer once the deadline has passed and asks the engine to fire the press with its token; a token whose press is gone, re-armed or from before a `swch off` fires nothing. A key-up before the deadline cancels the gesture. A key-up at or after the deadline does not: the key was held for the whole term, so the timer fires the Hold even if the loop takes it a few milliseconds after the release, and the press fires nothing else. `Hold` is the only trigger whose action fires outside a key event, in the main loop between two events, on the same thread as every other trigger: a fast action runs there, and `Launch`, `OpenUrl` and `Sequence` go to the action executor ([§13.1](actions.md#s13-1)). `Hold` is no longer the only safe trigger for `Launch` and `OpenUrl` ([KS-08](../audit.md#ks-08), fixed on `feat/action-executor`). It fires once. It does not hold a modifier down: `Hold` with `PressKey("LShift")` produces one short Shift press.
 
-**`DoubleTap(ms)`.** The first press only stores an entry with the deadline "press time + `ms`"; nothing runs. If the same key is pressed again strictly before the deadline, the entry is consumed and the action fires on that key-down, on the hook thread ([§13.1](actions.md#s13-1); [L197-L219](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L197-L219)). A later press arms afresh, so a third press starts a new cycle. A single press does nothing; with `block_default: true` the keystroke is lost.
+**`DoubleTap(ms)`.** The first press stores the window's end, "press time + `ms`"; nothing runs. If the key goes up before the window's end, the window opens, and if the same key is pressed again strictly before it, won by the same group (the same keys and `when`), the action fires on that key-down, on the hook thread ([§13.1](actions.md#s13-1)), and that press is spent: it arms nothing. A press of the key that another group wins, such as `Shift+CapsLock` after a `CapsLock` press, ends the window instead (known issue 74, fixed). A later press arms afresh, so a third press starts a new cycle. A single press does nothing; with `block_default: true` the keystroke is lost.
 
 > [!NOTE]
 > Until `16a0461` every armed press started its own sleeper thread with no generation number, so a timer from an earlier press removed or fired the entry of the next one ([KS-11](../audit.md#ks-11), fixed): two quick taps lost the second, and a Hold could fire early on the next press.
@@ -84,26 +84,32 @@
 <a id="s11-6"></a>
 ### 11.6 `Tap` and `Hold` (or `DoubleTap`) on the same key
 
-These are two separate bindings. With the same keys and the same `when` they win the press as one group ([§16.2](matching.md#s16-2)), and both gestures are armed independently and resolve independently. With different `when` conditions they compete like any two bindings, and where both conditions hold only the winner arms ([§19](known-issues.md#s19) row 70). The result for a group depends on how long the key is held, `t`:
+These are two separate bindings. With the same keys and the same `when` they win the press as one group ([§16.2](matching.md#s16-2)), and the press is one gesture, of which exactly one fires, whatever the terms ([KS-25](../audit.md#ks-25), fixed on `feat/main-thread-timers`). With different `when` conditions they compete like any two bindings, and where both conditions hold only the winner arms ([§19](known-issues.md#s19) row 70). The result for a group depends on how long the key is held, `t`:
 
 | Duration `t` | Result |
 |---|---|
 | `t < Tap` and `t < Hold` | Tap |
-| `t ≥ Hold` and `t ≥ Tap` | Hold |
-| `Hold ≤ t < Tap` (possible when `Tap > Hold`) | **both**: Hold at the `Hold` mark, Tap on release |
-| `Tap ≤ t < Hold` (possible when `Tap < Hold`) | nothing |
+| `t ≥ Hold` | Hold only: the Hold resolves the press at the `Hold` mark, and its release fires no Tap |
+| `Tap ≤ t < Hold` (possible when `Tap < Hold`) | nothing: too long for the Tap, too short for the Hold |
 
-With **equal** values, for example `Tap(200)` and `Hold(200)`, exactly one of the two fires: Tap if the key is released before 200 ms, Hold otherwise ([KS-25](../audit.md#ks-25), fixed for equal terms in `16a0461`). The engine decides the key-up and the Hold timer on one clock, so a release near the boundary never fires both or neither ([src/engine/mod.rs:71-77](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/mod.rs#L71-L77)). Use equal values for a dual-role key:
+With **equal** values, for example `Tap(200)` and `Hold(200)`, Tap fires if the key is released before 200 ms, Hold otherwise. The engine decides the key-up and the Hold timer on one clock, so a release near the boundary never fires both or neither, also when the timer runs late. Equal values leave no gap, so use them for a dual-role key:
 
 ```ron
 ( keys: "F13", action: Media(PlayPause), trigger: Tap(200) ),
 ( keys: "F13", action: Media(Next),      trigger: Hold(200) ),
 ```
 
-> [!WARNING]
-> With **different** values nothing arbitrates between the two gestures, so the rows "both" and "nothing" above can happen ([KS-25](../audit.md#ks-25), rest open until roadmap [item 2.2](../roadmap.md#22-timers-on-the-main-thread)).
+**`Tap` and `DoubleTap` on the same key.** The Tap waits until the DoubleTap window closes, so that a double press fires only the DoubleTap ([open question 5](../roadmap.md#open-questions-for-the-owner), decided in roadmap item 2.2). A single quick press fires the Tap when the window closes, the DoubleTap term after the press, or at once when another key goes down first, ahead of that key; a press that another binding wins, or a press of the key after the window, fires it too, first. A double press within the window fires only the DoubleTap. A press held past the window, or a Tap released after the window closed, fires the Tap at the release, as without a DoubleTap. A press that its Hold resolved opens no window.
 
-**`Tap` and `DoubleTap` on the same key** are also allowed, but the ambiguity is not resolved in any way. A double press produces three actions: Tap (release 1), DoubleTap (press 2), Tap (release 2). A single press produces Tap ([Tap versus DoubleTap disambiguation](../gaps.md#tap-versus-doubletap-disambiguation)).
+```ron
+( keys: "F9", action: PressKey("A"), trigger: Tap(200) ),
+( keys: "F9", action: PressKey("B"), trigger: DoubleTap(300) ),
+```
+
+Tap F9: `a` about 0.3 s after the press. Double-tap F9: only `b`. Tap F9 and type `x` at once: `ax`, in that order.
+
+> [!NOTE]
+> The waiting Tap costs latency, up to the DoubleTap term after the press, and only for a group that has both a `Tap` and a `DoubleTap`. It fires into the window that has the focus when it fires, without checking its `when` again, and with the modifiers held at that moment ([§19](known-issues.md#s19) row 75).
 
 <a id="s11-7"></a>
 ### 11.7 Several deferred bindings of the same type on one press
@@ -111,10 +117,10 @@ With **equal** values, for example `Tap(200)` and `Hold(200)`, exactly one of th
 Since `feat/one-winner` this happens only within one group: bindings on the same keys with the same `when` (written the same way), which win the press together ([§16.2](matching.md#s16-2)). Bindings with other keys or another `when` compete, and only the winner arms: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap` with `allow_extra_modifiers: true`, pressing Shift+F13 runs only the first one, because it has more keys.
 
 - Of several bindings with the same trigger in a group, only the first in the file acts; the others are skipped entirely: they arm nothing and do not ask for suppression ([src/engine/winner.rs:117-140](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/winner.rs#L117-L140)). The loader warns about such a binding, whatever its term ([§18.6](errors.md#s18-6)).
-- A `Tap`, a `Hold` and a `DoubleTap` of one group all act ([§11.6](#s11-6)).
+- A `Tap`, a `Hold` and a `DoubleTap` of one group arm together, as one press, and exactly one of them fires ([§11.6](#s11-6)).
 
 > [!NOTE]
-> Fixed on `feat/one-winner`: of two `DoubleTap` bindings on the same keys and `when`, only the first acts, and it fires on the second press. The second binding used to take the first binding's entry, so the first binding's action ran already on the **first** press ([src/engine/gestures.rs:200-219](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L200-L219)).
+> Fixed on `feat/one-winner`: of two `DoubleTap` bindings on the same keys and `when`, only the first acts, and it fires on the second press. The second binding used to take the first binding's entry, so the first binding's action ran already on the **first** press ([src/engine/gestures.rs:200-219](https://github.com/bluesteelll/key-switch-rs/blob/20af28d/src/engine/gestures.rs#L200-L219)). Fixed on `feat/main-thread-timers`: a DoubleTap window belongs to its group, so a press of the key that another group wins no longer completes it ([§19](known-issues.md#s19) row 74).
 
 <a id="s11-8"></a>
 ### 11.8 Defects
