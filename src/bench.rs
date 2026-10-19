@@ -52,6 +52,10 @@
 //!   `DoNothing`; each key-down is called, not timed.
 //! - R12: the key-down and key-up callbacks of the unbound A: an ordinary
 //!   key.
+//! - R13: R7 with the daemon's control window, and so the thread's default
+//!   IME window, created on the loop thread before it runs (roadmap item
+//!   2.3). It may write a session-notification warning to the log, which
+//!   the bench does not show.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -81,6 +85,7 @@ use crate::data::sequence::SequenceStep;
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
 use crate::engine::{Engine, Env, KeyDirection, KeyEvent, sort_by_specificity};
+use crate::hook::control_window::{CONTROL_CLASS, ControlWindow};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
 use crate::hook::main_thread::MainThread;
@@ -517,6 +522,34 @@ fn r7_round_trip(count: usize) -> Vec<Duration> {
     samples
 }
 
+/// R13: R7 with the daemon's control window, and with it the thread's
+/// default IME window, on the loop thread (roadmap item 2.3). The window's
+/// class exists once per process, so the row takes the class lock.
+fn r13_round_trip_with_the_control_window(count: usize) -> Vec<Duration> {
+    let _class = CONTROL_CLASS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (ready_tx, ready) = mpsc::channel();
+    let helper = thread::spawn(move || {
+        let main = MainThread::new().expect("invariant: the helper's main thread is set up");
+        let control =
+            ControlWindow::create().expect("invariant: the helper's control window is created");
+        let hook = KeyboardHook::new();
+        let hwnd = message_only_window();
+        let _ = ready_tx.send((hwnd, main.handle()));
+        main.run(&hook)
+            .expect("invariant: the main loop ends on WM_QUIT");
+        // SAFETY: `hwnd` is this thread's own window, destroyed once here.
+        let _ = unsafe { DestroyWindow(HWND(hwnd as *mut std::ffi::c_void)) };
+        drop(control);
+    });
+    let (hwnd, main) = ready
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the helper made its windows");
+    let samples = round_trips(hwnd, count);
+    main.request_exit().expect("the helper has a message queue");
+    helper.join().expect("the helper does not panic");
+    samples
+}
+
 /// The message R8 sends to its probe window.
 const PROBE: u32 = WM_APP + 7;
 
@@ -757,6 +790,11 @@ fn latency_bench() {
             id: "R12",
             what: "keyboard_hook_callback, unbound A down and up",
             samples: r12_ordinary_key(2_000),
+        },
+        Row {
+            id: "R13",
+            what: "SendMessageTimeoutW(WM_NULL) round trip to the loop with the control window",
+            samples: r13_round_trip_with_the_control_window(1_000),
         },
     ]);
     get_hook().update_bindings(Vec::new());

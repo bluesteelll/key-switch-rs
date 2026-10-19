@@ -1,8 +1,273 @@
+//! The daemon's control window (roadmap item 2.3): a hidden top-level
+//! window owned by the main thread, which receives what Windows sends to
+//! windows and not to threads.
+//!
+//! - `WM_WTSSESSION_CHANGE`, once the window is registered for the
+//!   notifications of this session (`WTSRegisterSessionNotification`): a
+//!   lock or an unlock is noted for the main loop as an input signal
+//!   (`main_thread::note_input_signal`). The loop resets the transient state
+//!   when keyboard input left this desktop; the procedure itself resets
+//!   nothing, because it may run inside another message call.
+//! - `WM_QUERYENDSESSION` is answered with TRUE, and at `WM_ENDSESSION` for
+//!   a session that ends the daemon removes its hooks, logs one line,
+//!   flushes the log and ends its loop.
+//!
+//! It is not a message-only window (`HWND_MESSAGE`), which "does not
+//! receive broadcast messages": the tray of roadmap item 4.6 needs the
+//! `TaskbarCreated` broadcast. It is never shown or activated and has no
+//! taskbar or Alt+Tab entry. `MAIN_WAKE` stays a thread message.
+//!
+//! Every handle has a guard, dropped in the order Windows asks for: the
+//! session registration first ("it must call
+//! WTSUnRegisterSessionNotification before being destroyed"), then the
+//! window, on the thread that made it, then the class, which
+//! `UnregisterClassW` refuses while a window of it exists. The window must
+//! not outlive the loop that pumps it: a `SendMessage` to a top-level window
+//! whose thread no longer pumps would hang its sender, so `App::run` drops
+//! it right after the hooks are removed, before the executor's bounded
+//! stop.
+
+use windows::{
+    Win32::{
+        Foundation::*,
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            RemoteDesktop::{
+                NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
+                WTSUnRegisterSessionNotification,
+            },
+        },
+        UI::WindowsAndMessaging::*,
+    },
+    core::{Error, PCWSTR, w},
+};
+
+use crate::engine::InputSignal;
+use crate::hook::keyboard_hook::KeyboardHook;
+use crate::hook::keyboard_hook_callback::get_hook;
+use crate::hook::main_thread::note_input_signal;
+use crate::logging;
+
+/// The class of the control window, registered for this process.
+const CLASS_NAME: PCWSTR = w!("key-switch-rs control");
+
+/// Taken by every test that registers the control window's class, which
+/// exists once per process: the window test and bench row R13.
+#[cfg(test)]
+pub(crate) static CONTROL_CLASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Whether the control window gets the session notifications. The daemon
+/// only needs the warning `create` logs; the tests name both outcomes.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionNotifications {
+    Registered,
+    /// `WTSRegisterSessionNotification` failed, for example before Remote
+    /// Desktop Services have started: a lock is then answered only by the
+    /// switch to the lock screen's desktop.
+    Unavailable,
+}
+
+/// The control window and its registrations. Not `Send`: it holds a window
+/// handle, and the window belongs to the thread that made it. The fields
+/// drop in their order.
+pub(crate) struct ControlWindow {
+    _session: Option<SessionRegistration>,
+    _window: OwnedWindow,
+    _class: RegisteredClass,
+}
+
+/// The registered class; unregistered when dropped.
+struct RegisteredClass {
+    instance: HINSTANCE,
+}
+
+impl Drop for RegisteredClass {
+    fn drop(&mut self) {
+        // SAFETY: the class name is a static wide literal and `instance` is
+        // the module handle the class was registered with; no window of the
+        // class exists any more, because the window guard drops first.
+        if let Err(error) = unsafe { UnregisterClassW(CLASS_NAME, Some(self.instance)) } {
+            log::warn!("could not unregister the control window class: {error}");
+        }
+    }
+}
+
+/// The window; destroyed when dropped, on the thread that made it.
+struct OwnedWindow(HWND);
+
+impl Drop for OwnedWindow {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is the window `create` made on this thread, which
+        // nothing else destroys; HWND is not Send, so this drop runs on the
+        // creating thread, as DestroyWindow requires.
+        if let Err(error) = unsafe { DestroyWindow(self.0) } {
+            log::warn!("could not destroy the control window: {error}");
+        }
+    }
+}
+
+/// The window's registration for the session notifications; undone when
+/// dropped, before the window is destroyed.
+struct SessionRegistration(HWND);
+
+impl Drop for SessionRegistration {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is the live window this registration was made
+        // for; the window guard drops after this one.
+        if let Err(error) = unsafe { WTSUnRegisterSessionNotification(self.0) } {
+            log::warn!("could not unregister the session notifications: {error}");
+        }
+    }
+}
+
+impl ControlWindow {
+    /// Registers the class, creates the window and registers it for the
+    /// notifications of this session. An error if the class or the window
+    /// cannot be made; a session registration that fails is logged and
+    /// leaves [`SessionNotifications::Unavailable`].
+    pub(crate) fn create() -> windows::core::Result<Self> {
+        // SAFETY: a null module name asks for the handle of the file that
+        // made this process; the call reads no memory of ours.
+        let instance = HINSTANCE::from(unsafe { GetModuleHandleW(None) }?);
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(control_window_proc),
+            hInstance: instance,
+            lpszClassName: CLASS_NAME,
+            ..Default::default()
+        };
+        // SAFETY: `class` is a local that outlives the call, which only
+        // reads it; its procedure is a 'static extern "system" fn and its
+        // name a static wide literal.
+        if unsafe { RegisterClassW(&class) } == 0 {
+            return Err(Error::from_thread());
+        }
+        let class = RegisteredClass { instance };
+        // SAFETY: the class was registered above with this module handle;
+        // the window name is a static wide literal and no creation data is
+        // passed. WS_POPUP without WS_VISIBLE is never shown,
+        // WS_EX_TOOLWINDOW keeps it off the taskbar and Alt+Tab, and
+        // WS_EX_NOACTIVATE keeps it from being activated.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                CLASS_NAME,
+                w!("key-switch-rs"),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                Some(instance),
+                None,
+            )
+        }?;
+        let window = OwnedWindow(hwnd);
+        // SAFETY: `hwnd` is the live window made above, on this thread.
+        let session = match unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) }
+        {
+            Ok(()) => Some(SessionRegistration(hwnd)),
+            Err(error) => {
+                log::warn!(
+                    "could not register for session notifications ({error}); a lock is answered only by the switch to the lock screen's desktop"
+                );
+                None
+            }
+        };
+        Ok(Self {
+            _session: session,
+            _window: window,
+            _class: class,
+        })
+    }
+
+    /// Whether the window gets the session notifications.
+    #[cfg(test)]
+    pub(crate) fn session_notifications(&self) -> SessionNotifications {
+        match self._session {
+            Some(_) => SessionNotifications::Registered,
+            None => SessionNotifications::Unavailable,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hwnd(&self) -> HWND {
+        self._window.0
+    }
+}
+
+/// The input signal of a `WM_WTSSESSION_CHANGE` with `wparam`: the lock and
+/// the unlock; every other session change is none.
+fn session_signal(wparam: WPARAM) -> Option<InputSignal> {
+    match u32::try_from(wparam.0).ok()? {
+        WTS_SESSION_LOCK => Some(InputSignal::SessionLocked),
+        WTS_SESSION_UNLOCK => Some(InputSignal::SessionUnlocked),
+        _ => None,
+    }
+}
+
+/// Whether a `WM_ENDSESSION` says that the session ends.
+fn session_ends(wparam: WPARAM) -> bool {
+    wparam.0 != 0
+}
+
+/// The session ends: "the session can end any time after all applications
+/// have returned from processing this message" (Microsoft Learn,
+/// WM_ENDSESSION), so the hooks go and the log is written before the
+/// procedure returns, and the main loop is asked to end. On the main
+/// thread, outside the main state's borrow and with the hooks removed
+/// before the flush, which waits at most 1 s.
+fn end_session(hook: &KeyboardHook) {
+    if let Err(error) = hook.uninstall() {
+        log::warn!("could not remove the keyboard hook: {error}");
+    }
+    log::info!("the session is ending; removing the keyboard hook and exiting");
+    logging::flush();
+    // SAFETY: PostQuitMessage takes the exit code by value and only marks
+    // this thread's queue; the main loop ends at the WM_QUIT.
+    unsafe { PostQuitMessage(0) };
+}
+
+/// The control window's procedure. It notes signals and answers the
+/// session end; nothing in it can panic.
+unsafe extern "system" fn control_window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_WTSSESSION_CHANGE => {
+            if let Some(signal) = session_signal(wparam)
+                && get_hook().is_enabled()
+            {
+                note_input_signal(signal);
+            }
+            LRESULT(0)
+        }
+        // "Applications should respect the user's intentions and return
+        // TRUE" (WM_QUERYENDSESSION).
+        WM_QUERYENDSESSION => LRESULT(1),
+        WM_ENDSESSION => {
+            if session_ends(wparam) {
+                end_session(get_hook());
+            }
+            LRESULT(0)
+        }
+        // Only the guard destroys the window.
+        WM_CLOSE => LRESULT(0),
+        // SAFETY: passes the message on with the exact arguments the system
+        // gave this window procedure.
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::PoisonError;
 
-    use windows::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
     use windows::core::BOOL;
 
     use super::*;

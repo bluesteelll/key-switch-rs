@@ -64,10 +64,12 @@ key-switch-rs/
     ├── hook/
     │   ├── keyboard_hook.rs    - Windows API hook wrapper, ArcSwap binding list, remapping switch
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
-    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off
+    │   ├── control_window.rs   - hidden control window: session notifications, session end
+    │   ├── main_thread.rs      - the main thread: engine, gesture timers, main loop, swch on/off, reloads, input signals
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
     ├── platform/
+    │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
     │   ├── foreground.rs       - the foreground window for when:: executable cached per window, title read live
     │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
@@ -121,7 +123,7 @@ key-switch-rs/
 
 Windows API wrapper:
 
-- Installs the low-level keyboard hook (`WH_KEYBOARD_LL`) and the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) once, on the main thread, and removes them at shutdown
+- Installs the low-level keyboard hook (`WH_KEYBOARD_LL`), the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) and the desktop-switch hook (`EVENT_SYSTEM_DESKTOPSWITCH`) once, on the main thread, and removes them at shutdown
 - Bindings list in `ArcSwap<Vec<Binding>>` — lock-free reads on the hot path, atomic swap for hot-reload
 - Holds the remapping switch that `swch on` / `swch off` flip (`is_enabled`); only the main thread flips it, together with a reset of the decision core (see `main_thread.rs`)
 - Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
@@ -145,13 +147,16 @@ The daemon's main thread (roadmap item 2.2):
 - Runs the main loop: it waits for its gesture timer and its messages at once (`MsgWaitForMultipleObjectsEx`), pumps with `PeekMessageW`, in which the hook callbacks run, and fires every gesture timer that is due. The timer is one high-resolution waitable timer, so a `Hold` fires within about 1 ms of its term; no thread is started per press (KS-33)
 - A gesture timer fires on this thread: a fast `Hold` action runs here, and a slow one goes to the action executor
 - Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl` on the action executor
+- Serves config reloads the same way: the watcher thread hands over the new list, and the main thread swaps it in and drops the pending gestures in one step (roadmap item 2.3)
+- Answers the input signals that the control window (a lock, an unlock) and the desktop-switch hook (Ctrl+Alt+Del, a UAC prompt on the secure desktop, and back) note: when keyboard input leaves the desktop it drops the pending gestures, stops the running macros and releases every held key, so the next press of each key is a press; a signal that input came back only reads the foreground window again. Each signal is logged (roadmap item 2.3, KS-29)
 
 #### `app.rs`
 
 Main application:
 
 - Manage bindings via builder pattern
-- Install keyboard + foreground-change hooks
+- Install keyboard + foreground-change + desktop-switch hooks
+- Creates the hidden control window (`hook/control_window.rs`) before it installs the hooks, and destroys it right after it removed them: it receives the session notifications (`WTSRegisterSessionNotification`) and the session end; at sign-out the daemon removes its hooks, writes the log and exits
 - Creates the IPC pipe before it installs the hooks; a pipe it cannot create stops the daemon (KS-20)
 - Starts the action executor before it installs the hooks, and stops it after it removed them, waiting at most 2 s for a step that still runs
 - Sets up the main thread's engine and gesture timer before it installs the hooks; a gesture timer it cannot create stops the daemon
@@ -886,13 +891,17 @@ elevated without a prompt; `swch` then talks to it normally.
 - Windows API via official `windows` crate v0.62 with feature flags:
   - `Win32_Foundation`
   - `Win32_Globalization` (`CompareStringOrdinal`: the config watcher compares file names the way the file system does)
+  - `Win32_Graphics_Gdi` (`RegisterClassW` and `WNDCLASSW` for the control window)
   - `Win32_UI_WindowsAndMessaging`
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
   - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
   - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns; `CoInitializeEx` for the action executor's single-threaded apartment)
   - `Win32_System_Console`
+  - `Win32_System_LibraryLoader` (`GetModuleHandleW` for the control window's class)
   - `Win32_System_Registry`
+  - `Win32_System_RemoteDesktop` (`WTSRegisterSessionNotification` for the lock and unlock notifications)
+  - `Win32_System_StationsAndDesktops` (`GetThreadDesktop`, `GetUserObjectInformationW`: whether this desktop has keyboard input)
   - `Win32_System_Threading`
   - `Win32_Security` (`CreateMutexW` for the single-instance guard)
 - `serde` + `ron` for `config.ron` parsing — native Rust enum-variant literal syntax
@@ -920,7 +929,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed
-- **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition
+- **Focus-transition repair**: re-syncs modifier state via `GetAsyncKeyState` whenever a higher-integrity window (Task Manager, UAC consent, lock screen) returns focus, so phantom-held modifiers do not leak across the transition; when keyboard input leaves the desktop (a lock, Ctrl+Alt+Del, a UAC prompt on the secure desktop) every held key is released, so nothing is stuck after Win+L
 - **Per-process sentinel**: injected-event marker is mixed with the process ID so this daemon does not collide with other input-synthesizing apps (AHK, PowerToys)
 - **Table-driven matching**: a binding's keys are looked up in the engine's per-key table of held keys; no list of held keys is built per key press
 - **Independently blocked keys**: multiple keys can be blocked simultaneously; each key's release is tracked independently
@@ -936,10 +945,17 @@ What still cannot be intercepted:
 
 - The **Secure Desktop** (Ctrl+Alt+Del menu, UAC consent prompt itself, the
   lock screen, Windows logon). These run under Winlogon on an isolated
-  desktop that no user-mode process — even SYSTEM — can hook. The
-  focus-transition repair (`SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND`)
-  resyncs modifier state when control returns from the secure desktop, so
-  phantom-held modifiers do not leak across the transition.
+  desktop that no user-mode process — even SYSTEM — can hook. When
+  keyboard input leaves for such a desktop (`WTS_SESSION_LOCK`, or
+  `EVENT_SYSTEM_DESKTOPSWITCH` while another desktop has input), the daemon
+  releases every held key, so the next press of each key is a press (roadmap
+  item 2.3). A key held through the whole lock and still auto-repeating
+  afterwards reads its first repeat as a press, so its binding fires once
+  more (known issue 76). A Ctrl+Alt+Del or UAC round trip while the
+  daemon's main thread is busy for all of it and a UAC prompt with the
+  secure desktop switched off by policy are not answered, and a lock signal
+  that arrives only after a very short unlock resets after the return
+  (known issue 79).
 - Anti-cheat-protected processes that explicitly block low-level hooks
   (some games' kernel-mode anti-cheat drivers).
 - A key whose press the daemon swallowed, then released and pressed again

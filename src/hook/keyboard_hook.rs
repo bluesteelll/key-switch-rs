@@ -31,6 +31,10 @@ pub struct KeyboardHook {
     bindings: ArcSwap<Vec<Binding>>,
     hook_handle: AtomicPtr<std::ffi::c_void>,
     foreground_hook: AtomicPtr<std::ffi::c_void>,
+    /// The `EVENT_SYSTEM_DESKTOPSWITCH` hook (roadmap item 2.3). Stored with
+    /// `Release` in `install` and taken with `swap(AcqRel)` in `uninstall`,
+    /// both on the main thread, like the other two handles.
+    desktop_hook: AtomicPtr<std::ffi::c_void>,
     /// Whether remapping is on (`swch on`, `swch off`). While it is off the
     /// hooks stay installed and their callbacks pass every event untouched.
     ///
@@ -55,6 +59,7 @@ impl KeyboardHook {
             bindings: ArcSwap::from_pointee(Vec::new()),
             hook_handle: AtomicPtr::new(std::ptr::null_mut()),
             foreground_hook: AtomicPtr::new(std::ptr::null_mut()),
+            desktop_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
             executor: ArcSwapOption::empty(),
         }
@@ -127,7 +132,8 @@ impl KeyboardHook {
         self.enabled.swap(enabled, Ordering::AcqRel) != enabled
     }
 
-    /// Installs the keyboard hook and the foreground hook.
+    /// Installs the keyboard hook, the foreground hook and the
+    /// desktop-switch hook.
     ///
     /// Main thread only: the thread that runs the main loop
     /// (`hook::main_thread`), because both hooks belong to the thread that
@@ -183,6 +189,34 @@ impl KeyboardHook {
         }
         self.foreground_hook.store(we_hook.0, Ordering::Release);
 
+        // A switch of the input desktop (a lock, Ctrl+Alt+Del, a UAC prompt
+        // on the secure desktop, and back) is noted for the main loop, which
+        // resets when keyboard input left this desktop (roadmap item 2.3).
+        //
+        // SAFETY: as for the foreground hook: WINEVENT_OUTOFCONTEXT delivers
+        // the events to this thread's message queue, which the main loop
+        // pumps, and the callback is a 'static extern "system" fn with no
+        // captured state.
+        let desktop_hook = unsafe {
+            SetWinEventHook(
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                EVENT_SYSTEM_DESKTOPSWITCH,
+                None,
+                Some(keyboard_hook_callback::desktop_switched),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+        };
+        if desktop_hook.is_invalid() {
+            let _ = self.uninstall();
+            return Err(Error::new(
+                windows::Win32::Foundation::E_FAIL,
+                "SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH",
+            ));
+        }
+        self.desktop_hook.store(desktop_hook.0, Ordering::Release);
+
         Ok(())
     }
 
@@ -191,12 +225,25 @@ impl KeyboardHook {
         !self.hook_handle.load(Ordering::Acquire).is_null()
     }
 
-    /// Removes both hooks. A foreground hook that cannot be removed is
+    /// Removes the three hooks. A WinEvent hook that cannot be removed is
     /// logged; the keyboard hook's failure is returned.
     ///
     /// Main thread only, like [`install`](Self::install):
     /// `UnhookWinEvent` fails on any other thread.
     pub(crate) fn uninstall(&self) -> Result<()> {
+        let desktop_handle = self
+            .desktop_hook
+            .swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !desktop_handle.is_null() {
+            // SAFETY: the handle came from SetWinEventHook in `install`, and
+            // the swap above took it out of the field, so it is unhooked at
+            // most once.
+            let removed = unsafe { UnhookWinEvent(HWINEVENTHOOK(desktop_handle)) };
+            if let Err(error) = removed.ok() {
+                log::warn!("could not remove the desktop-switch hook: {error}");
+            }
+        }
+
         let we_handle = self
             .foreground_hook
             .swap(std::ptr::null_mut(), Ordering::AcqRel);

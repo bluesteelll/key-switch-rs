@@ -31,6 +31,10 @@
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
+//! `desktop_switched` notes a switch of the input desktop for the main
+//! loop, which resets the transient state when keyboard input left this
+//! desktop (roadmap item 2.3). It does nothing while remapping is off.
+//!
 //! `foreground_changed` hands foreground switches to the main thread's
 //! foreground cache, which reads the new window's executable name there
 //! and not on the key path (`platform::foreground`, roadmap item 2.3), and
@@ -97,14 +101,18 @@ use windows::Win32::{
     Foundation::*,
     UI::{Accessibility::HWINEVENTHOOK, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+use windows::core::HRESULT;
 
 use crate::core::constants;
 use crate::core::executor::TargetWindow;
 use crate::core::windows_actions::BindAction;
-use crate::engine::{Decision, Env, KeyEvent};
+use crate::engine::{Decision, Env, InputSignal, KeyEvent};
 use crate::hook::keyboard_hook::KeyboardHook;
-use crate::hook::main_thread::{MainState, with_main};
+use crate::hook::main_thread::{
+    MainState, note_input_signal, note_unknown_desktop_switch, with_main,
+};
 use crate::logging::counters::{self, Counter};
+use crate::platform::desktop;
 use crate::platform::foreground::ForegroundCache;
 
 /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
@@ -395,6 +403,50 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     }
     // `None` only on re-entry, which nothing triggers today (module docs).
     let _ = with_main(|main| main.foreground_changed(hwnd));
+}
+
+/// What a desktop switch tells the main loop (roadmap item 2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DesktopSwitchNote {
+    /// Keyboard input left this desktop or came back to it.
+    Signal(InputSignal),
+    /// Windows would not say where input is now.
+    Unknown(HRESULT),
+}
+
+/// Classifies a desktop switch by whether this thread's desktop has
+/// keyboard input after it (`platform::desktop::input_is_on_this_desktop`).
+/// Asked when the switch is delivered, so a late switch event reads where
+/// input is now, never where it was.
+pub(crate) fn desktop_switch_note(input_here: windows::core::Result<bool>) -> DesktopSwitchNote {
+    match input_here {
+        Ok(true) => DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedBack),
+        Ok(false) => DesktopSwitchNote::Signal(InputSignal::DesktopSwitchedAway),
+        Err(error) => DesktopSwitchNote::Unknown(error.code()),
+    }
+}
+
+/// `EVENT_SYSTEM_DESKTOPSWITCH` callback installed via `SetWinEventHook`,
+/// on the main thread: notes where keyboard input went for the main loop's
+/// drain, which resets when it left this desktop (roadmap item 2.3). Two
+/// user32 reads and a flag here, nothing on the keyboard path; while
+/// remapping is off it does nothing.
+pub(crate) unsafe extern "system" fn desktop_switched(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if !get_hook().is_enabled() {
+        return;
+    }
+    match desktop_switch_note(desktop::input_is_on_this_desktop()) {
+        DesktopSwitchNote::Signal(signal) => note_input_signal(signal),
+        DesktopSwitchNote::Unknown(error) => note_unknown_desktop_switch(error),
+    }
 }
 
 #[cfg(test)]
@@ -990,6 +1042,12 @@ mod tests {
             refused, 0,
             "with remapping off neither callback asked for the main state"
         );
+        call_desktop_switched();
+        assert_eq!(
+            take_pending_signals(),
+            None,
+            "with remapping off the desktop-switch callback notes nothing"
+        );
 
         assert!(set_enabled(get_hook(), true));
         let refused = with_main(|_| {
@@ -1234,6 +1292,7 @@ mod tests {
             "src/system/system_function.rs",
             "src/platform/timers.rs",
             "src/platform/foreground.rs",
+            "src/platform/desktop.rs",
         ] {
             files.push(root.join(file));
         }

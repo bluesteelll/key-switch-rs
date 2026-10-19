@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Win32Runner};
 use crate::data::binding::Binding;
+use crate::hook::control_window::ControlWindow;
 use crate::hook::ipc_server::{self, DaemonControl, DaemonStatus};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{MainThread, MainThreadHandle};
@@ -165,8 +166,9 @@ impl App {
     /// Runs the daemon on the calling thread, which becomes its main
     /// thread, until `WM_QUIT`: creates the IPC pipe, starts the action
     /// executor, sets up the main thread's engine and gesture timer
-    /// (`hook::main_thread`), installs both hooks, serves the pipe, runs the
-    /// main loop, removes the hooks and stops the executor.
+    /// (`hook::main_thread`), creates the control window (roadmap item 2.3),
+    /// installs the hooks, serves the pipe, runs the main loop, removes the
+    /// hooks, destroys the control window and stops the executor.
     ///
     /// A pipe that cannot be created, an executor that cannot be started or
     /// a gesture timer that cannot be made is an error before any hook is
@@ -205,9 +207,17 @@ impl App {
         let bindings = std::mem::take(&mut self.pending_bindings);
         hook.update_bindings(bindings);
         let mut executor = AttachedExecutor::attach(hook, executor);
+        // Before the hooks, after the executor guard, so that on every
+        // return it is destroyed before the guard's stop, which waits up to
+        // 2 s: a top-level window must not outlive the loop that pumps it
+        // (roadmap item 2.3). It takes the session notifications and the
+        // session end.
+        let control_window = ControlWindow::create()
+            .map_err(|error| format!("could not create the control window: {error}"))?;
         // On failure the listener is dropped on return, which closes the
-        // pipe, and the executor is stopped; a failed foreground hook has
-        // already removed the keyboard hook inside `install`.
+        // pipe, the control window is destroyed and the executor is
+        // stopped; a failed WinEvent hook has already removed the keyboard
+        // hook inside `install`.
         hook.install()?;
         // Once the foreground hook is live, so that a window change after
         // this read is a foreground event (roadmap item 2.3).
@@ -280,6 +290,10 @@ impl App {
 
         log::info!("Removing keyboard hook...");
         hook.uninstall()?;
+        // After the hooks, so that the session service and the IME teardown
+        // never run while the keyboard hook waits for this thread, and before
+        // the executor's stop, which may wait 2 s.
+        drop(control_window);
         executor.stop();
 
         ran.map_err(|error| format!("the main message loop failed: {error}"))?;

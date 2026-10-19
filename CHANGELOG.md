@@ -139,6 +139,37 @@ minor version; such entries sit under **Changed** and start with
   while every core is busy, with the loop thread at normal and at highest
   priority. Not part of the default `cargo test` run, which still prints
   nothing.
+- A hidden control window owned by the daemon's main thread (roadmap item
+  2.3): it receives the session notifications (lock, unlock) and the
+  session end, and a second WinEvent hook, `EVENT_SYSTEM_DESKTOPSWITCH`,
+  reports a switch of the input desktop. When keyboard input leaves the
+  desktop (a lock, the Ctrl+Alt+Del screen, or a UAC prompt while
+  "Switch to the secure desktop when prompting for elevation" is on, the
+  default), the daemon drops the pending gestures, stops the running
+  macros and releases every held key; it does that when input leaves, not
+  when it returns, so nothing done after the return is lost, however late
+  the return signals arrive. Each signal is logged:
+  `[INFO] session locked`, `[INFO] keyboard input switched to another desktop`,
+  `[INFO] state reset: keyboard input left this desktop`,
+  `[INFO] keyboard input switched back to this desktop`,
+  `[INFO] session unlocked`. At sign-out or shutdown the daemon removes its
+  hook, writes `[INFO] the session is ending; removing the keyboard hook and exiting`,
+  flushes the log and exits. New startup errors:
+  `[FATAL] could not create the control window: ...` and
+  `[FATAL] SetWinEventHook failed for EVENT_SYSTEM_DESKTOPSWITCH`; a
+  session registration that fails is a warning. The window is never shown
+  and is destroyed right after the hooks are removed. New `windows`
+  features: `Win32_Graphics_Gdi`, `Win32_System_LibraryLoader`,
+  `Win32_System_RemoteDesktop`, `Win32_System_StationsAndDesktops`
+  (`Cargo.lock` is unchanged). Bench row R13 measures the main loop with
+  the window on its thread. Tests:
+  `hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop`,
+  `the_session_messages_note_the_lock_and_the_unlock`,
+  `the_session_end_messages_are_answered_and_end_the_loop`,
+  `hook::main_thread::tests::the_drain_logs_one_line_per_input_signal`,
+  `a_late_return_signal_keeps_a_running_macro_and_an_armed_hold`. Manual
+  checks: lock and unlock with Win+L, Ctrl+Alt+Del and a UAC prompt, and
+  sign out, with the timestamps in `daemon.log`.
 
 ### Changed
 
@@ -870,6 +901,19 @@ minor version; such entries sit under **Changed** and start with
   (roadmap item 2.3). Tests:
   `engine::scenarios::a_tap_armed_before_a_reload_fires_nothing_at_its_key_up`,
   `hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing`.
+- KS-29 (an unverified report): after Win+L, Ctrl+Alt+Del or a UAC prompt
+  on the secure desktop, the next press of a key held when input left is a
+  press: a swallowed, non-repeating trigger such as the template's
+  CapsLock switches the layout again, and after Win+L the first L of a
+  `Ctrl+Alt+L` binding is a press that the binding swallows, not an
+  auto-repeat that reaches Windows too (known issue 63, owner decision
+  2026-10-18, roadmap item 2.3). A key held through the whole lock and still auto-repeating reads
+  its first repeat as a press (known issue 76). Tests:
+  `engine::scenarios::nothing_is_stuck_after_win_l`,
+  `after_a_lock_the_next_press_of_a_swallowed_non_repeating_key_fires`,
+  `after_a_lock_the_next_press_of_a_passing_key_is_a_new_press`,
+  `hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key`,
+  `engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches`.
 
 ## [0.1.0] - 2026-05-20
 

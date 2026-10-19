@@ -49,7 +49,7 @@
 //! (`platform::timers`), so a deadline is met within about a millisecond,
 //! not on the 15.6 ms tick of the system clock.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
@@ -59,11 +59,11 @@ use windows::Win32::{
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::WindowsAndMessaging::*,
 };
-use windows::core::Error;
+use windows::core::{Error, HRESULT};
 
 use crate::data::binding::Binding;
 use crate::engine::{
-    Decision, Engine, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
+    Decision, Engine, InputSignal, ResetReason, Scheduler, TimerQueue, TimerRequest, TimerToken,
 };
 use crate::hook::config_watcher::ApplyReload;
 use crate::hook::keyboard_hook::KeyboardHook;
@@ -85,6 +85,90 @@ const REQUEST_CAPACITY: usize = 8;
 thread_local! {
     /// The main state of this thread, if it is the daemon's main thread.
     static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+
+    /// The input signals noted on this thread since the last drain
+    /// (roadmap item 2.3). A `Cell` of plain data: the control window's
+    /// procedure and the desktop-switch callback note one, which needs no
+    /// borrow, whatever message call they run in.
+    static PENDING_SIGNALS: Cell<PendingSignals> = const { Cell::new(PendingSignals::NONE) };
+}
+
+/// The input signals that wait for the drain (roadmap item 2.3): one flag
+/// per [`InputSignal`], so that a signal noted twice before a drain is
+/// logged and acted on once, and the error of a desktop switch whose
+/// destination could not be told.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PendingSignals {
+    /// Indexed by the position of the signal in [`InputSignal::ALL`].
+    seen: [bool; 4],
+    unknown: Option<HRESULT>,
+}
+
+impl PendingSignals {
+    const NONE: PendingSignals = PendingSignals {
+        seen: [false; 4],
+        unknown: None,
+    };
+
+    /// The signals noted, in [`InputSignal::ALL`] order.
+    pub(crate) fn signals(self) -> impl Iterator<Item = InputSignal> {
+        InputSignal::ALL
+            .into_iter()
+            .zip(self.seen)
+            .filter_map(|(signal, seen)| seen.then_some(signal))
+    }
+
+    /// The error of a desktop switch whose destination could not be told.
+    pub(crate) fn unknown(self) -> Option<HRESULT> {
+        self.unknown
+    }
+}
+
+/// Notes `signal` for the next drain of this thread's main loop and wakes
+/// the loop. Main thread only: called from the control window's procedure
+/// and the desktop-switch callback, which may run inside any message call,
+/// so it only sets a flag and posts a wake, never resets anything here.
+pub(crate) fn note_input_signal(signal: InputSignal) {
+    // `ALL` lists every signal, so the position is always found; nothing
+    // here may panic inside a window procedure.
+    let Some(index) = InputSignal::ALL.iter().position(|&known| known == signal) else {
+        return;
+    };
+    let _ = PENDING_SIGNALS.try_with(|pending| {
+        let mut noted = pending.get();
+        noted.seen[index] = true;
+        pending.set(noted);
+    });
+    wake_this_thread();
+}
+
+/// Notes a desktop switch whose destination Windows would not tell
+/// (`error`), for the next drain, which logs it and resets nothing.
+pub(crate) fn note_unknown_desktop_switch(error: HRESULT) {
+    let _ = PENDING_SIGNALS.try_with(|pending| {
+        let mut noted = pending.get();
+        noted.unknown = Some(error);
+        pending.set(noted);
+    });
+    wake_this_thread();
+}
+
+/// The signals noted since the last call, if any, which it clears.
+pub(crate) fn take_pending_signals() -> Option<PendingSignals> {
+    PENDING_SIGNALS
+        .try_with(|pending| pending.replace(PendingSignals::NONE))
+        .ok()
+        .filter(|noted| *noted != PendingSignals::NONE)
+}
+
+/// Posts `MAIN_WAKE` to the calling thread, so that a wait that a noted
+/// signal came in returns to the drain. A post that fails loses no signal:
+/// the drain also runs when `pump` empties the queue.
+fn wake_this_thread() {
+    // SAFETY: GetCurrentThreadId takes no arguments; PostThreadMessageW
+    // takes the thread id and the message by value, reads no memory of ours
+    // and returns without waiting; MAIN_WAKE carries no pointer.
+    let _ = unsafe { PostThreadMessageW(GetCurrentThreadId(), MAIN_WAKE, WPARAM(0), LPARAM(0)) };
 }
 
 #[cfg(test)]
@@ -177,6 +261,13 @@ impl MainState {
         self.foreground.window_changed(window);
         let env = HookEnv::new(&self.foreground);
         self.engine.on_foreground_changed(&env);
+    }
+
+    /// Keyboard input came back to this desktop: the window that has the
+    /// foreground now is read again, since the foreground hook may have
+    /// reported nothing meanwhile. Nothing is reset (ruling R2).
+    pub(crate) fn input_returned(&mut self) {
+        self.foreground.resync();
     }
 }
 
@@ -485,6 +576,9 @@ impl MainThread {
                 "this thread is the daemon's main thread already",
             ));
         }
+        // A signal noted on this thread before it was a main thread is no
+        // signal for this loop.
+        let _ = take_pending_signals();
         let mut msg = MSG::default();
         // SAFETY: `msg` is a local that outlives the call, which only writes
         // it; the call creates this thread's message queue, as
@@ -576,6 +670,10 @@ impl MainThread {
                 serve(hook, request);
                 busy = true;
             }
+            if let Some(signals) = take_pending_signals() {
+                answer_input_signals(hook, signals);
+                busy = true;
+            }
             while let Some(decision) = with_main(take_due_timer).flatten() {
                 carry_out(hook, decision);
                 busy = true;
@@ -596,6 +694,39 @@ impl Drop for MainThread {
                 slot.take();
             }
         });
+        let _ = take_pending_signals();
+    }
+}
+
+/// Step 1 of the loop, for the input signals noted since the last drain
+/// (roadmap item 2.3, ruling R2). While remapping is off they are dropped:
+/// the reset of `swch on` reads the keys and the foreground anyway.
+/// Otherwise each is logged once, in [`InputSignal::ALL`] order; a signal
+/// that keyboard input left this desktop resets the transient state once,
+/// however many such signals there are; a signal that input came back
+/// reads the foreground window again and resets nothing, however late it
+/// comes. The logging and the reset run outside the main state's borrow
+/// and outside every callback, between two events.
+fn answer_input_signals(hook: &KeyboardHook, signals: PendingSignals) {
+    if !hook.is_enabled() {
+        return;
+    }
+    for signal in signals.signals() {
+        log::info!("{signal}");
+    }
+    if let Some(error) = signals.unknown() {
+        log::warn!(
+            "keyboard input switched desktops, but the daemon could not tell where it went ({}); nothing was reset",
+            Error::from(error)
+        );
+    }
+    if let Some(reason) = signals.signals().find_map(InputSignal::reset)
+        && with_main(|main| main.reset_transient_state(hook, reason)).is_some()
+    {
+        log::info!("state reset: {reason}");
+    }
+    if signals.signals().any(InputSignal::input_returned) {
+        let _ = with_main(MainState::input_returned);
     }
 }
 

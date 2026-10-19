@@ -441,6 +441,8 @@ mod tests {
             ("src/platform/foreground.rs", Some("fn app(")),
             ("src/platform/foreground.rs", Some("fn read_title(")),
             ("src/platform/foreground.rs", Some("fn window_title(")),
+            // What the desktop-switch callback asks (roadmap item 2.3).
+            ("src/platform/desktop.rs", None),
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),
