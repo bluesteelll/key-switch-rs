@@ -42,11 +42,11 @@ Rust 2024 keyboard remapper. One package builds the library `key_switch_rs`, the
 
 - The daemon's main thread installs a `WH_KEYBOARD_LL` hook and an `EVENT_SYSTEM_FOREGROUND` WinEvent
   hook and pumps `GetMessageW`; both callbacks run there. Helper threads: `ipc-server` and a worker per
-  connection, notify, `config-watcher`, a `hold-timer` thread per armed Hold (until 2.2), the `action-executor` (`Launch`, `OpenUrl`, `Sequence`; `FastAction`s stay inline),
+  connection, notify, `config-watcher`, the `action-executor` (`Launch`, `OpenUrl`, `Sequence`; `FastAction`s stay inline),
   and `log-writer` (`src/logging`), the only owner of the console and of `daemon.log`.
 - All hot state is one `KeyboardHook` in a `LazyLock` static, reached as `&'static KeyboardHook`:
-  `ArcSwap<Vec<Binding>>`, the hook handles, and `Mutex<Engine>` (held and blocked keys, pending gestures)
-  until roadmap item 2.2. The PID-mixed sentinel is `injected_sentinel()` in `core/constants.rs`.
+  `ArcSwap<Vec<Binding>>`, the hook handles and the executor handle. The engine and the gesture timers live
+  in the main thread's thread-local `MainState` (`hook::main_thread`, `with_main`, re-entry refused). The PID-mixed sentinel is `injected_sentinel()` in `core/constants.rs`.
 - `config.ron` is hot-reloaded through notify + ArcSwap. It has Tap/Hold/DoubleTap triggers,
   Combo/Sequence/Chord kinds, `when:` conditions on the foreground app and title, and macro Sequences
   through `SendInput`.
@@ -152,9 +152,9 @@ KS-codes and root causes are in `book/src/audit.md` and `book/src/architecture.m
 ## 8. Shared state and atomics (R3, R4)
 
 - No `static mut` and no `&'static mut`. Shared state is `&'static KeyboardHook` with interior
-  mutability, which keeps callback re-entry sound. The one lock is `Mutex<Engine>`, until roadmap 2.2:
-  taken only through `with_engine`, only while the engine decides, never across an action or a message
-  pump; a nested call on the same thread is refused and the event passes.
+  mutability, which keeps callback re-entry sound. No lock on the callback path: the engine is the main
+  thread's `MainState`, reached only through `with_main` (`try_borrow_mut`; a re-entrant call is refused and
+  the event passes). No action, `SendInput` or message pump runs under that borrow.
 - Orderings: `Release` stores, `Acquire` loads, `AcqRel` RMW; `Relaxed` needs a comment and `SeqCst`
   a reason. A new `Mutex` on the key-down path needs a bound on how long it is held.
 - `unsafe` blocks carry `// SAFETY:` comments whose invariants the calling code actually upholds
