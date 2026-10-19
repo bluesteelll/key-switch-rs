@@ -61,9 +61,10 @@ fn fatal(error: &dyn std::error::Error) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `_instance` is a binding, not `_`, so the guard lives until `run`
-/// returns: after `App::run` has removed the hooks, and before a fatal
-/// error waits for Enter, so that a corrected restart is not refused.
+/// Takes the guard by value, so it lives until `run` returns, as every
+/// parameter does whatever its pattern: after `App::run` has removed the
+/// hooks, and before a fatal error waits for Enter, so that a corrected
+/// restart is not refused.
 fn run(_instance: InstanceGuard) -> Result<(), Box<dyn std::error::Error>> {
     attach_log_file();
 

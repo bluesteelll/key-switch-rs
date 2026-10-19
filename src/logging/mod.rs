@@ -9,9 +9,10 @@
 //! 1 MiB the file rotates into `daemon.1.log` and `daemon.2.log`.
 //!
 //! A thread that logs only builds its line and queues it without waiting
-//! (see `writer`), so logging is safe on the hook thread, where action
-//! failures are still reported until roadmap item 2.1. The hook callback
-//! itself never logs: its per-event conditions go to [`counters`].
+//! (see `writer`). The hook path never logs: the hook callback and the
+//! fast actions it runs count their per-event conditions in [`counters`].
+//! The failures of `Launch`, `OpenUrl` and macro steps are logged on the
+//! `action-executor` thread (roadmap item 2.1).
 //!
 //! A program that never calls [`init`] loses every record, because `log`
 //! drops them until a logger is installed: a tool that loads a config to
@@ -106,10 +107,12 @@ fn write_to_stderr(_line: &LogLine) {}
 /// later call, or a call after another logger was installed, does nothing.
 /// If the thread cannot be started, records go to stderr directly.
 pub fn init() {
-    let spawned = writer::spawn(Box::new(io::stderr()), &counters::COUNTERS, REPORT_PERIOD);
-    if log::set_logger(&LOGGER).is_err() {
+    let Some(spawned) = start_logging(
+        || log::set_logger(&LOGGER).is_ok(),
+        || writer::spawn(Box::new(io::stderr()), &counters::COUNTERS, REPORT_PERIOD),
+    ) else {
         return;
-    }
+    };
     log::set_max_level(MAX_LEVEL);
     match spawned {
         Ok(tx) => {
@@ -121,10 +124,26 @@ pub fn init() {
     }
 }
 
+/// The order of [`init`]: installs the logger with `install`, and only if
+/// that worked starts the writer with `start_writer` and returns what it
+/// returned. `None` means the writer was never started: a second `init`,
+/// or one after another logger was installed, starts no thread that would
+/// report the counters once its queue is dropped.
+fn start_logging<W>(
+    install: impl FnOnce() -> bool,
+    start_writer: impl FnOnce() -> io::Result<W>,
+) -> Option<io::Result<W>> {
+    if !install() {
+        return None;
+    }
+    Some(start_writer())
+}
+
 /// From now on, the writer also appends every line to `daemon.log` in
 /// `dir`, which it creates on demand, and returns the file's path. A file
 /// that cannot be written is reported once on the console, and every later
-/// line tries again. Fails only if there is no writer to hand the file to.
+/// line tries again. Fails if there is no writer to hand the file to, or
+/// if the writer's queue stays full for 1 s.
 pub fn attach_file(dir: &Path) -> io::Result<PathBuf> {
     let files = LogFiles::new(dir.to_path_buf());
     let path = files.path();
@@ -204,6 +223,27 @@ mod tests {
     }
 
     #[test]
+    fn a_second_init_starts_no_writer() {
+        // The 1.7 review (m1): a second `init` finds the logger installed,
+        // and a writer it started first would only run until its queue is
+        // dropped. No test calls `init` itself.
+        let started = std::cell::Cell::new(false);
+        assert!(
+            start_logging(
+                || false,
+                || {
+                    started.set(true);
+                    Ok(())
+                }
+            )
+            .is_none()
+        );
+        assert!(!started.get(), "a second init must not start a writer");
+
+        assert!(matches!(start_logging(|| true, || Ok(7)), Some(Ok(7))));
+    }
+
+    #[test]
     fn flush_without_a_writer_returns_true_at_once() {
         let begun = std::time::Instant::now();
         assert!(flush());
@@ -228,13 +268,25 @@ mod tests {
         }
     }
 
-    /// The numbers (from 1) of the lines of `fn print_welcome` in `text`,
-    /// from its `fn` line until its braces balance.
-    fn print_welcome_lines(text: &str) -> std::ops::RangeInclusive<usize> {
+    /// The index of the line that opens the tests module of a source file
+    /// (`#[cfg(test)]` followed by `mod tests {`), or the line count.
+    fn tests_start(lines: &[&str]) -> usize {
+        lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len())
+    }
+
+    /// The numbers (from 1) of the lines of the first function whose line
+    /// contains `signature` before the tests module of `text`, from that
+    /// line until its braces balance. Panics if there is none, so that a
+    /// renamed function fails a scan loudly instead of passing it.
+    fn fn_lines(text: &str, signature: &str) -> std::ops::RangeInclusive<usize> {
+        let lines: Vec<&str> = text.lines().collect();
         let mut first = None;
         let mut depth = 0_i64;
-        for (index, line) in text.lines().enumerate() {
-            if first.is_none() && line.contains("fn print_welcome(") {
+        for (index, line) in lines[..tests_start(&lines)].iter().enumerate() {
+            if first.is_none() && line.contains(signature) {
                 first = Some(index + 1);
             }
             let Some(start) = first else {
@@ -245,7 +297,7 @@ mod tests {
                 return start..=index + 1;
             }
         }
-        panic!("src/core/app.rs has no complete fn print_welcome");
+        panic!("no complete function `{signature}` before the tests module");
     }
 
     /// Whether `line` names the `log` crate's path, as a macro call or an
@@ -284,7 +336,8 @@ mod tests {
                 .expect("a file under the manifest folder")
                 .to_string_lossy()
                 .replace('\\', "/");
-            let banner = (relative == "src/core/app.rs").then(|| print_welcome_lines(&text));
+            let banner =
+                (relative == "src/core/app.rs").then(|| fn_lines(&text, "fn print_welcome("));
             for (index, line) in text.lines().enumerate() {
                 let number = index + 1;
                 let allowed = banner.as_ref().is_some_and(|lines| lines.contains(&number))
@@ -326,6 +379,85 @@ mod tests {
             }
         }
         assert!(report.is_empty(), "{report}");
+    }
+
+    /// Roadmap item 2.1 ("the hook path never calls `log::`"): the
+    /// functions that run on the hook thread (or a Hold's `hold-timer`
+    /// thread, which carries out the same way) outside
+    /// `keyboard_hook_callback.rs` name no `log::`. That file, with
+    /// `carry_out` and `dispatch`, is scanned whole by
+    /// `only_the_startup_banner_prints_outside_src_bin`. `None` scans the
+    /// whole non-test part of the file.
+    #[test]
+    fn the_functions_on_the_hook_path_log_nothing() {
+        let hook_path: &[(&str, Option<&str>)] = &[
+            // Picks where every action fired on the hook thread runs.
+            ("src/core/windows_actions.rs", Some("fn as_fast(")),
+            // `FastAction::run`: runs the fast actions where they fire.
+            ("src/core/windows_actions.rs", Some("fn run(")),
+            // What `run` calls for `PressKey` and `Media`, and for
+            // `PostMessage`.
+            ("src/core/windows_actions.rs", Some("fn press_vk(")),
+            (
+                "src/core/windows_actions.rs",
+                Some("fn post_message_to_foreground("),
+            ),
+            // What `run` reaches for `SwitchLanguage`,
+            // `SwitchLanguageBackward` and `ToggleCapsLock`.
+            ("src/system/system_function.rs", Some("fn execute(")),
+            (
+                "src/system/system_function.rs",
+                Some("fn switch_language_forward("),
+            ),
+            (
+                "src/system/system_function.rs",
+                Some("fn switch_language_backward("),
+            ),
+            (
+                "src/system/system_function.rs",
+                Some("fn toggle_caps_lock("),
+            ),
+            ("src/system/system_function.rs", Some("fn press_key(")),
+            // Every slow fire: the target, the queue and the wake.
+            ("src/core/executor/mod.rs", Some("fn for_action(")),
+            ("src/core/executor/mod.rs", Some("fn foreground(")),
+            ("src/core/executor/mod.rs", Some("fn submit(")),
+            ("src/core/executor/mod.rs", Some("fn wake(")),
+            // The cancel that `set_enabled` and `update_bindings` make.
+            ("src/core/executor/mod.rs", Some("fn cancel_pending(")),
+            // The hook's entry to the executor, and its cancel.
+            ("src/hook/keyboard_hook.rs", Some("fn submit(")),
+            ("src/hook/keyboard_hook.rs", Some("fn cancel_actions(")),
+            // `bump` and `record_callback` run on the hook thread for every
+            // event that needs them.
+            ("src/logging/counters.rs", None),
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut sites = Vec::new();
+        for (file, signature) in hook_path {
+            let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
+            let lines: Vec<&str> = text.lines().collect();
+            let scanned = match signature {
+                Some(signature) => fn_lines(&text, signature),
+                None => 1..=tests_start(&lines),
+            };
+            for number in scanned {
+                let line = lines[number - 1];
+                if names_the_log_crate(line) {
+                    sites.push(format!(
+                        "{file}:{number}: {} in {}",
+                        line.trim(),
+                        signature.unwrap_or("the non-test part")
+                    ));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "{} log calls on the hook path:\n  {}",
+            sites.len(),
+            sites.join("\n  ")
+        );
     }
 
     #[test]

@@ -21,8 +21,12 @@
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
 //!    one `SendInput`, tagged with the sentinel; roadmap item 1.2, KS-12),
-//!    then the timers it asks for, then its actions in order, as before the
-//!    engine existed;
+//!    then the timers it asks for, then its actions in order. A fast action
+//!    ([`FastAction`](crate::core::windows_actions::FastAction): `PressKey`, `Media`, `ToggleCapsLock`,
+//!    `SwitchLanguage*`, `PostMessage`) runs here, before the hook returns,
+//!    so that its output stays in order with the keys typed after it;
+//!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
+//!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
 //! 7. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
@@ -37,11 +41,12 @@
 //! its own short-lived `hold-timer` thread, which sleeps until the request is
 //! due by `Instant::now()`, asks
 //! [`Engine::on_timer`](crate::engine::Engine::on_timer) under the lock and
-//! runs the Hold action itself, off the hook thread. The engine fires a Hold
-//! only from `on_timer`, so a Hold action never runs on the hook thread.
-//! Tap, DoubleTap, Chord and Sequence need no thread: the next event checks
-//! their deadlines. Roadmap item 2.2 moves the Hold timers onto the main
-//! thread and removes the lock.
+//! carries out the decision itself, off the hook thread, with the same
+//! split: a fast Hold action runs on that thread, and the others go to the
+//! action executor. The engine fires a Hold only from `on_timer`, so a Hold
+//! action never runs on the hook thread. Tap, DoubleTap, Chord and Sequence
+//! need no thread: the next event checks their deadlines. Roadmap item 2.2
+//! moves the Hold timers onto the main thread and removes the lock.
 //!
 //! `swch on` and `swch off` take the lock too, on the IPC connection worker
 //! that handles them (`KeyboardHook::set_enabled`): the switch flips and the
@@ -92,6 +97,8 @@ use windows::Win32::{
 };
 
 use crate::core::constants;
+use crate::core::executor::TargetWindow;
+use crate::core::windows_actions::BindAction;
 use crate::data::condition::ForegroundContext;
 use crate::engine::{Decision, Env, KeyEvent, TimerRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
@@ -198,9 +205,9 @@ fn decide_event(
 
 /// Carries out a decision on the calling thread, outside the engine lock:
 /// first the menu mask key if it asks for one, then the timers it asks for,
-/// then its actions in order. The mask belongs to the event being decided,
-/// so it goes ahead of every key an action sends.
-fn carry_out(decision: Decision) {
+/// then its actions in order (see [`dispatch`]). The mask belongs to the
+/// event being decided, so it goes ahead of every key an action sends.
+fn carry_out(hook: &KeyboardHook, decision: Decision) {
     // Destructured without `..`: a new field of `Decision` does not compile
     // until it is carried out here. `suppress` is the callback's to act on.
     let Decision {
@@ -215,8 +222,22 @@ fn carry_out(decision: Decision) {
     for request in timers {
         start_hold_timer(request);
     }
-    for action in &fire {
-        action.execute();
+    for action in fire {
+        dispatch(hook, action);
+    }
+}
+
+/// Runs a fast action here, or queues a slow one for the action executor
+/// with the window a macro acts on. Neither waits: a queue that is full or
+/// an executor that has stopped is counted by `submit`, and `Closed` means
+/// no executor is attached, at startup or exit.
+fn dispatch(hook: &KeyboardHook, action: BindAction) {
+    match action.as_fast() {
+        Some(fast) => fast.run(),
+        None => {
+            let target = TargetWindow::for_action(&action);
+            let _ = hook.submit(action, target);
+        }
     }
 }
 
@@ -278,8 +299,8 @@ thread_local! {
     static MASKS_SENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Starts the timer for a Hold on its own `hold-timer` thread, which runs
-/// the Hold action if the engine still wants it.
+/// Starts the timer for a Hold on its own `hold-timer` thread, which
+/// carries out the Hold if the engine still wants it.
 ///
 /// If the thread cannot be started, the failure is counted in
 /// `logging::counters` (`hold_timer_not_started`), which the log writer
@@ -294,7 +315,7 @@ fn start_hold_timer(request: TimerRequest) {
             sleep_until(request.due);
             if let Some(decision) = get_hook().with_engine(|engine| engine.on_timer(request.token))
             {
-                carry_out(decision);
+                carry_out(get_hook(), decision);
             }
         });
     if spawned.is_err() {
@@ -336,16 +357,25 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
+    // Our own work only: from here until the decision is carried out, not
+    // the passes above, which do nothing, nor CallNextHookEx (roadmap item
+    // 2.1). Two clock reads and one RMW per event.
+    let started = Instant::now();
     // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
     // this call; two fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-    if let Some(decision) = decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
-        let suppress = decision.suppress;
-        carry_out(decision);
-        if suppress {
-            return LRESULT(1);
+    let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+        Some(decision) => {
+            let suppress = decision.suppress;
+            carry_out(hook, decision);
+            suppress
         }
+        None => false,
+    };
+    counters::record_callback(started.elapsed());
+    if suppress {
+        return LRESULT(1);
     }
 
     // SAFETY: passes the event on with the exact arguments the system gave
@@ -387,20 +417,25 @@ pub(crate) unsafe extern "system" fn foreground_changed(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::sync::{Mutex, PoisonError, mpsc};
+    use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::time::Duration;
 
     use super::*;
     use crate::core::constants::injected_sentinel;
+    use crate::core::executor::testing::{FakeRunner, Record, leaked_counters, next_record};
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
+    use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
 
     // No test installs a hook. The `decide_event` tests use a local
     // `KeyboardHook`, so no action runs and no timer starts (`carry_out` is
-    // never called); the extern-callback tests drive the process-wide hook,
-    // one at a time (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
+    // not called); the `carry_out` tests run only `DoNothing` here and send
+    // every other action to an executor whose runner only records; the
+    // extern-callback tests drive the process-wide hook, one at a time
+    // (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
     // reads `GetAsyncKeyState`, the live state of the machine's keyboard, so
     // every F13 binding sets `allow_extra_modifiers`: under exact matching a
     // modifier the user happens to hold while the tests run would otherwise
@@ -653,6 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_callback_records_how_long_it_ran() {
+        // Roadmap item 2.1: the gauge lives in the process-wide counters,
+        // which no test takes (no test starts the daemon's writer), so an
+        // event of another test can only raise it. The callback reads the
+        // process-wide hook, hence `GLOBAL_HOOK`; the binding is
+        // `DoNothing`, so nothing is sent.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert!(counters::COUNTERS.longest_callback() > Duration::ZERO);
+    }
+
+    #[test]
     fn menu_mask_inputs_are_vk_e8_down_then_up_tagged_with_the_sentinel() {
         let inputs = menu_mask_inputs();
         for (input, flags) in inputs.iter().zip([KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP]) {
@@ -675,14 +730,189 @@ mod tests {
     #[test]
     fn carry_out_sends_the_menu_mask_only_when_the_decision_asks() {
         // Under test `send_menu_mask` only counts, on this thread.
+        let hook = KeyboardHook::new();
         let before = MASKS_SENT.with(Cell::get);
-        carry_out(Decision::default());
+        carry_out(&hook, Decision::default());
         assert_eq!(MASKS_SENT.with(Cell::get), before, "no mask asked for");
-        carry_out(Decision {
-            mask: true,
-            ..Decision::default()
-        });
+        carry_out(
+            &hook,
+            Decision {
+                mask: true,
+                ..Decision::default()
+            },
+        );
         assert_eq!(MASKS_SENT.with(Cell::get), before + 1, "one mask asked for");
+    }
+
+    /// A local hook with an executor whose runner only records, attached.
+    fn hook_with_executor(runner: FakeRunner, capacity: usize) -> (KeyboardHook, Executor) {
+        let hook = KeyboardHook::new();
+        let executor =
+            Executor::start(runner, capacity, leaked_counters()).expect("the executor starts");
+        hook.attach_executor(Some(executor.handle()));
+        (hook, executor)
+    }
+
+    #[test]
+    fn carry_out_queues_the_slow_actions_in_order_and_runs_none_here() {
+        // Only `DoNothing` runs here: a test must not run a real action.
+        let (tx, records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(FakeRunner::new(tx), QUEUE_CAPACITY);
+
+        carry_out(
+            &hook,
+            Decision {
+                fire: vec![
+                    BindAction::DoNothing,
+                    BindAction::Launch {
+                        exe: "no-such.exe".to_owned(),
+                        args: Vec::new(),
+                    },
+                    BindAction::OpenUrl("https://example.com".to_owned()),
+                    BindAction::Sequence(Arc::new(vec![SequenceStep::PressKey(VK_F13)])),
+                ],
+                ..Decision::default()
+            },
+        );
+
+        let ran: Vec<Record> = (0..3).map(|_| next_record(&records)).collect();
+        let texts: Vec<&str> = ran.iter().map(Record::text).collect();
+        assert_eq!(
+            texts,
+            ["launch no-such.exe", "open https://example.com", "key F13"]
+        );
+        for record in &ran {
+            assert_eq!(record.thread, executor.thread().id());
+            assert_ne!(record.thread, thread::current().id());
+        }
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "DoNothing never reaches it");
+    }
+
+    /// How long each of 20 `carry_out` calls with one `OpenUrl` took, on
+    /// a fresh executor whose runner blocks 500 ms per call.
+    fn twenty_carry_out_times() -> Vec<Duration> {
+        let (tx, _records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(
+            FakeRunner::new(tx).with_block(Duration::from_millis(500)),
+            64,
+        );
+        let times = (0..20)
+            .map(|_| {
+                let decision = Decision {
+                    fire: vec![BindAction::OpenUrl("https://example.com".to_owned())],
+                    ..Decision::default()
+                };
+                let begun = Instant::now();
+                carry_out(&hook, decision);
+                begun.elapsed()
+            })
+            .collect();
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        times
+    }
+
+    #[test]
+    fn carry_out_returns_in_under_5_ms_while_slow_actions_block() {
+        // Roadmap item 2.1: the runner stands in for OpenUrl against a cold
+        // browser. Every one of the 20 under 5 ms, one whole-batch retry.
+        let limit = Duration::from_millis(5);
+        let first = twenty_carry_out_times();
+        if first.iter().all(|took| *took < limit) {
+            return;
+        }
+        let second = twenty_carry_out_times();
+        assert!(
+            second.iter().all(|took| *took < limit),
+            "a carry_out took 5 ms or more twice: {first:?}, then {second:?}"
+        );
+    }
+
+    /// Detaches the executor from the process-wide hook when dropped, also
+    /// on unwind, and only then stops it.
+    struct DetachAtEnd(Option<Executor>);
+
+    impl Drop for DetachAtEnd {
+        fn drop(&mut self) {
+            get_hook().attach_executor(None);
+            if let Some(executor) = self.0.take() {
+                let _ = executor.stop();
+            }
+        }
+    }
+
+    #[test]
+    fn a_hold_runs_its_slow_action_on_the_executor() {
+        // Roadmap item 2.1: a Hold fires on its `hold-timer` thread, which
+        // carries out the decision through the process-wide hook, so the
+        // test holds `GLOBAL_HOOK`. Nothing is installed or injected: no
+        // hook exists, the mask key is only counted under test, and the
+        // OpenUrl goes to the recording runner. The engine fires a Hold
+        // from its timer without asking whether the key is still down.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, records) = mpsc::channel();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        get_hook().attach_executor(Some(executor.handle()));
+        let executor = DetachAtEnd(Some(executor));
+        get_hook().update_bindings(vec![
+            Binding::new(
+                KeyCombination::new(VK_F13),
+                BindAction::OpenUrl("https://example.com".to_owned()),
+            )
+            .with_trigger(Trigger::Hold(1))
+            .with_allow_extra_modifiers(true),
+        ]);
+        let f13 = u32::from(VK_F13.0);
+
+        call_keyboard_callback(f13, WM_KEYDOWN);
+        let record = next_record(&records);
+        call_keyboard_callback(f13, WM_KEYUP);
+
+        assert_eq!(record.text(), "open https://example.com");
+        assert_eq!(record.name.as_deref(), Some("action-executor"));
+        let thread = executor.0.as_ref().map(|executor| executor.thread().id());
+        assert_eq!(Some(record.thread), thread);
+    }
+
+    /// The acceptance line of roadmap item 2.1: `rg "\.execute\(\)"
+    /// src/hook` finds nothing, so no action runs through the old entry
+    /// that ran every action on the hook thread. Every line of every file
+    /// under `src/hook` counts, tests included; the call is assembled, so
+    /// this test does not match itself.
+    #[test]
+    fn the_hook_path_names_no_execute_call() {
+        let call = concat!(".exe", "cute()");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("src/hook"))
+            .expect("list src/hook")
+            .map(|entry| entry.expect("a folder entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .collect();
+        files.sort();
+        assert!(files.len() >= 4, "the scan found the sources: {files:?}");
+
+        let mut sites = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read a source file");
+            let relative = file
+                .strip_prefix(root)
+                .expect("a file under the manifest folder")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (index, line) in text.lines().enumerate() {
+                if line.contains(call) {
+                    sites.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "execute calls under src/hook:\n{}",
+            sites.join("\n")
+        );
     }
 
     #[test]

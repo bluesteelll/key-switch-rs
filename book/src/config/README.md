@@ -52,7 +52,7 @@ ACTION := SwitchLanguage | SwitchLanguageBackward | ToggleCapsLock | DoNothing
         | Launch(exe: "name or path", args: ["arg", …] = [])
         | OpenUrl("URL, file, folder or program")
         | Media(PlayPause | Stop | Next | Previous | VolumeUp | VolumeDown | VolumeMute)
-        | Sequence([STEP, …])                     // macro on a separate thread (§14)
+        | Sequence([STEP, …])                     // macro on the action executor (§14)
 
 STEP   := Window(Minimize | Maximize | Restore | Close) | Delay(ms)
         | Text("any text") | Key("key") | Combo("combo")

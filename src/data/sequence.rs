@@ -1,18 +1,16 @@
 //! Sequence steps: the macro-like body of a `BindAction::Sequence`.
 //!
-//! A sequence runs in its own spawned thread because a low-level keyboard
-//! hook callback must return *fast* — blocking it for any meaningful sleep
-//! would freeze input system-wide. The hook only enqueues the work and lets
-//! the worker thread do the typing/delays/window ops.
+//! A sequence runs on the action executor (`core::executor`, roadmap item
+//! 2.1), because a low-level keyboard hook callback must return *fast* —
+//! blocking it for any meaningful time would freeze input system-wide. The
+//! hook only queues the macro; the executor walks its steps, keeps each
+//! `Delay` as a deadline on its own timer, and runs every other step
+//! through `run_step`.
 //!
 //! The target window (`GetForegroundWindow()` at the moment the combo
 //! matched) is captured once and reused for every window-related step, so
 //! "restore this window … type … minimize this window" operates on the same
 //! HWND throughout — not on whatever happened to be focused later.
-
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use windows::Win32::{
     Foundation::*,
@@ -39,12 +37,16 @@ pub enum SequenceStep {
     /// during the press, everything else is the chord's payload key(s).
     PressCombo(Vec<VIRTUAL_KEY>),
 
-    /// Sleep for `ms` milliseconds before the next step. Lives in the worker
-    /// thread, never in the hook callback.
+    /// Wait `ms` milliseconds before the next step. The action executor
+    /// keeps it as a deadline on its own timer, so other actions and macros
+    /// go on meanwhile, and `swch off`, a reload or exit cut it short.
     Delay(u64),
 
-    /// Apply a `ShowWindow`/`PostMessage` operation to the captured target
-    /// window.
+    /// Minimise, maximise or restore the captured target window with
+    /// `ShowWindowAsync`, or close it with a posted `WM_CLOSE`. Neither
+    /// waits for the window: it changes when its own thread handles the
+    /// request, so a step that depends on the change needs a `Delay`
+    /// before it.
     Window(WindowOp),
 
     /// Spawn a process. Same as the top-level `Launch` action.
@@ -99,34 +101,14 @@ impl std::fmt::Display for SequenceStep {
     }
 }
 
-/// Spawns a worker thread that executes the given steps in order against
-/// the foreground window captured *now*. Returns immediately — the caller
-/// (a hook callback) must not block.
-///
-/// `steps` is shared with the worker via `Arc` (no deep clone). `HWND` is
-/// `*mut c_void` and therefore not `Send`, so we ferry it across the thread
-/// boundary as an `isize` and rebuild it on arrival — equivalent to passing
-/// a window handle through any other integer-bearing channel (PostMessage's
-/// thread-message queue, registry, etc.).
-pub fn spawn_sequence(steps: Arc<Vec<SequenceStep>>) {
-    // SAFETY: GetForegroundWindow has no preconditions; an invalid/null HWND
-    // is handled by per-step checks in `apply_window_op`.
-    let target_raw: isize = unsafe { GetForegroundWindow().0 as isize };
-
-    thread::spawn(move || {
-        let target = HWND(target_raw as *mut std::ffi::c_void);
-        for step in steps.iter() {
-            execute_step(step, target);
-        }
-    });
-}
-
-fn execute_step(step: &SequenceStep, target: HWND) {
+/// Runs one step against `target`, on the calling thread.
+pub(crate) fn run_step(step: &SequenceStep, target: HWND) {
     match step {
         SequenceStep::TypeText(s) => type_text(s),
         SequenceStep::PressKey(vk) => press_key(*vk),
         SequenceStep::PressCombo(keys) => press_combo(keys),
-        SequenceStep::Delay(ms) => thread::sleep(Duration::from_millis(*ms)),
+        // The executor keeps a Delay itself and never hands one here.
+        SequenceStep::Delay(_) => {}
         SequenceStep::Window(op) => apply_window_op(*op, target),
         SequenceStep::Launch { exe, args } => launch_process(exe, args),
         SequenceStep::OpenUrl(url) => shell_open(url),
@@ -267,26 +249,32 @@ fn apply_window_op(op: WindowOp, target: HWND) {
         return;
     }
 
-    // SAFETY: target is a non-invalid HWND obtained from GetForegroundWindow
-    // at sequence start; ShowWindow / PostMessageW both tolerate a stale
-    // HWND by returning an error / FALSE without UB.
-    unsafe {
-        match op {
-            WindowOp::Minimize => {
-                let _ = ShowWindow(target, SW_MINIMIZE);
+    // Nothing here waits for the target window, which may be Not
+    // Responding: ShowWindowAsync "posts a show-window event to
+    // the message queue of the given window", and WM_CLOSE is posted.
+    let show = match op {
+        WindowOp::Minimize => SW_MINIMIZE,
+        WindowOp::Maximize => SW_MAXIMIZE,
+        WindowOp::Restore => SW_RESTORE,
+        WindowOp::Close => {
+            // SAFETY: target is a non-invalid HWND obtained from
+            // GetForegroundWindow when the macro fired; PostMessageW takes
+            // it and the message by value, reads no memory of ours, and
+            // fails without UB on a stale HWND.
+            let posted = unsafe { PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+            if let Err(e) = posted {
+                log::warn!("window close PostMessage failed: {e:?}");
             }
-            WindowOp::Maximize => {
-                let _ = ShowWindow(target, SW_MAXIMIZE);
-            }
-            WindowOp::Restore => {
-                let _ = ShowWindow(target, SW_RESTORE);
-            }
-            WindowOp::Close => {
-                if let Err(e) = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)) {
-                    log::warn!("window close PostMessage failed: {e:?}");
-                }
-            }
+            return;
         }
+    };
+    // SAFETY: target is a non-invalid HWND obtained from GetForegroundWindow
+    // when the macro fired; ShowWindowAsync takes it by value, reads no
+    // memory of ours, only posts to the window's thread and returns FALSE
+    // without UB on a stale HWND.
+    let started = unsafe { ShowWindowAsync(target, show) };
+    if !started.as_bool() {
+        log::warn!("window step failed: ShowWindowAsync did not start {op:?}");
     }
 }
 
@@ -338,5 +326,34 @@ mod tests {
     fn display_delay_includes_ms() {
         let s = SequenceStep::Delay(250);
         assert_eq!(format!("{}", s), "delay 250ms");
+    }
+
+    /// Roadmap item 2.1: `ShowWindow` waits until the target window's thread has
+    /// handled the change, so on a window that is Not Responding it would
+    /// hold up the one executor thread. The name is assembled, so the scan
+    /// does not match itself.
+    #[test]
+    fn a_window_step_never_waits_for_its_window() {
+        let blocking = concat!("ShowWindow", "(");
+        let file = "src/data/sequence.rs";
+        let text =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                .expect("read the sequence module");
+        let lines: Vec<&str> = text.lines().collect();
+        let tests_at = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .expect("the sequence module has a tests module");
+        let sites: Vec<String> = lines[..tests_at]
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(blocking))
+            .map(|(index, line)| format!("{file}:{}: {}", index + 1, line.trim()))
+            .collect();
+        assert!(
+            sites.is_empty(),
+            "synchronous ShowWindow calls:\n{}",
+            sites.join("\n")
+        );
     }
 }

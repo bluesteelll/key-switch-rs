@@ -283,13 +283,14 @@ fn parse_ron_str(
         return Err(ConfigError::Bindings(errors));
     }
 
+    let mut warnings = Vec::new();
     if user_bindings.is_empty() {
-        log::warn!("config contains no bindings");
+        warnings.push("config contains no bindings".to_owned());
     }
 
     // Every entry converted (an error returned above), so `raw.bindings[k]`
     // and `user_bindings[k]` are the same entry of the file.
-    let mut warnings = duplicate_warnings(&raw.bindings, &user_bindings);
+    warnings.extend(duplicate_warnings(&raw.bindings, &user_bindings));
     let bindings = expand_with_auto_blockers(user_bindings, system_combination, &mut warnings);
     Ok(ParsedConfig { bindings, warnings })
 }
@@ -325,7 +326,8 @@ fn duplicate_warnings(raw: &[RawBinding], bindings: &[Binding]) -> Vec<String> {
 /// One blocker per distinct hotkey and mode, in the order the file first
 /// asks for them, after all of the file's bindings. `MaskOnly` needs a
 /// hotkey made only of modifiers: on another hotkey, such as `` ` ``, it
-/// gives a blocker that swallows, as `true` does, and a warning. No blocker
+/// gives a blocker that swallows, as `true` does, and a warning, unless no
+/// blocker is added for that hotkey (below): then it warns nothing. No blocker
 /// for a hotkey whose exact keys a `keys` binding of the file uses, the
 /// flagged one included, whatever its trigger or `when:`: that binding takes
 /// the hotkey over, and its own `block_default` and `when:` decide whether
@@ -341,8 +343,9 @@ fn expand_with_auto_blockers(
     warnings: &mut Vec<String>,
 ) -> Vec<Binding> {
     // What the file asks for, in file order, with the asking binding's
-    // condition.
-    let mut requests: Vec<(KeyCombination, BlockerMode, &Condition)> = Vec::new();
+    // condition and, for a MaskOnly that falls back to swallowing, the
+    // asking binding's index.
+    let mut requests: Vec<(KeyCombination, BlockerMode, &Condition, Option<usize>)> = Vec::new();
     for (index, binding) in user_bindings.iter().enumerate() {
         let Some(requested) = binding.block_original_combo else {
             continue;
@@ -350,20 +353,19 @@ fn expand_with_auto_blockers(
         let Some(hotkey) = system_combination(&binding.action) else {
             continue;
         };
-        let mode = if requested == BlockerMode::MaskOnly && !hotkey.is_modifier_only() {
-            warnings.push(format!(
-                "binding #{index}: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the {hotkey} hotkey is blocked as with true"
-            ));
-            BlockerMode::Swallow
-        } else {
-            requested
-        };
-        requests.push((hotkey, mode, &binding.condition));
+        let (mode, fallback_of) =
+            if requested == BlockerMode::MaskOnly && !hotkey.is_modifier_only() {
+                (BlockerMode::Swallow, Some(index))
+            } else {
+                (requested, None)
+            };
+        requests.push((hotkey, mode, &binding.condition, fallback_of));
     }
 
     let mut blockers = Vec::new();
     let mut hotkeys_seen: Vec<&KeyCombination> = Vec::new();
-    for (hotkey, _, _) in &requests {
+    let mut hotkeys_blocked: Vec<&KeyCombination> = Vec::new();
+    for (hotkey, _, _, _) in &requests {
         if hotkeys_seen.contains(&hotkey) {
             continue;
         }
@@ -377,8 +379,9 @@ fn expand_with_auto_blockers(
             log::info!("no auto-blocker for {hotkey}: binding #{index} uses the same keys");
             continue;
         }
+        hotkeys_blocked.push(hotkey);
         let mut modes: Vec<BlockerMode> = Vec::new();
-        for (other, mode, _) in &requests {
+        for (other, mode, _, _) in &requests {
             if other == hotkey && !modes.contains(mode) {
                 modes.push(*mode);
             }
@@ -386,12 +389,24 @@ fn expand_with_auto_blockers(
         for mode in modes {
             let owners = requests
                 .iter()
-                .filter(|(other, other_mode, _)| other == hotkey && *other_mode == mode)
-                .map(|&(_, _, condition)| condition);
+                .filter(|(other, other_mode, _, _)| other == hotkey && *other_mode == mode)
+                .map(|&(_, _, condition, _)| condition);
             blockers.push(
                 Binding::new_auto_blocker(hotkey.clone(), mode)
                     .with_condition(any_of_conditions(owners)),
             );
+        }
+    }
+
+    // Only where the blocker is added, so a hotkey that a binding takes
+    // over (KS-18) warns about nothing; in file order.
+    for (hotkey, _, _, fallback_of) in &requests {
+        if let Some(index) = fallback_of
+            && hotkeys_blocked.contains(&hotkey)
+        {
+            warnings.push(format!(
+                "binding #{index}: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the {hotkey} hotkey is blocked as with true"
+            ));
         }
     }
 
@@ -763,6 +778,7 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
+    use crate::logging::testing::capture;
     use crate::system::registry::hotkey_from_values;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
@@ -1238,6 +1254,20 @@ mod tests {
         assert!(lines[0].ends_with("-> (blocked)"), "{}", lines[0]);
     }
 
+    #[test]
+    fn mask_only_on_a_hotkey_a_binding_takes_over_warns_nothing() {
+        // KS-18: the "`" binding takes the hotkey over, so no blocker is
+        // added, and a warning about how that blocker would block is noise.
+        let text = r#"( bindings: [
+            (keys: "CapsLock", action: SwitchLanguage, block_original_combo: MaskOnly),
+            (keys: "`", action: DoNothing),
+        ] )"#;
+        let parsed = parse_ron_str(text, &language_hotkey(&[VK_OEM_3]))
+            .unwrap_or_else(|e| panic!("config does not load: {e}"));
+        assert_eq!(parsed.warnings, Vec::<String>::new());
+        assert_eq!(blockers(&parsed.bindings), 0);
+    }
+
     // ---- The blocker's when: (roadmap item 1.2, KS-35) ----
 
     /// The mode and condition of every auto-blocker of `text`, loaded with
@@ -1575,6 +1605,26 @@ mod tests {
         let ron_text = r#"( bindings: [] )"#;
         let bindings = from_ron_str(ron_text).unwrap();
         assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn an_empty_config_warning_is_returned_not_logged() {
+        // The 1.6 review (m3): `parse_ron_str` is the half that does not
+        // log, so that a test can read every warning.
+        let no_hotkeys = |_: &BindAction| None;
+        let (parsed, lines) = capture(|| parse_ron_str("( bindings: [] )", &no_hotkeys));
+        let parsed = parsed.unwrap_or_else(|e| panic!("an empty config loads: {e}"));
+        assert_eq!(parsed.warnings, ["config contains no bindings"]);
+        assert_eq!(lines, Vec::<String>::new(), "parse_ron_str logs nothing");
+
+        let (loaded, lines) =
+            capture(|| from_ron_str_with_hotkeys("( bindings: [] )", &no_hotkeys));
+        assert!(loaded.expect("an empty config loads").is_empty());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with(" [WARN] config contains no bindings\n"),
+            "{lines:?}"
+        );
     }
 
     #[test]

@@ -96,8 +96,8 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
         // lost. Do not put a second DoubleTap on the same key.
         ( keys: "F14", action: Media(VolumeMute), trigger: DoubleTap(250) ),
 
-        // Hold F21 for 400 ms: Task Manager. Hold runs the action on the
-        // timer thread, so Launch does not block the hook here.
+        // Hold F21 for 400 ms: Task Manager. Launch runs on the action
+        // executor, so it does not block the hook, with any trigger.
         // Known issue: the launched program gets administrator rights, like the daemon.
         ( keys: "F21", action: Launch(exe: "taskmgr.exe"), trigger: Hold(400) ),
 
@@ -185,8 +185,8 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
         // Ctrl+Alt+N: a note. The first Delay leaves time to release Ctrl+Alt:
         // synthesized input combines with physically held
-        // modifiers. Tap(400): the macro starts on a short press only (every
-        // firing starts a separate macro thread, which cannot be cancelled).
+        // modifiers. Tap(400): the macro starts on a short press only (swch
+        // off, a reload or exit stops a macro that is still running).
         (
             keys: "Ctrl+Alt+N",
             trigger: Tap(400),
@@ -204,7 +204,7 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
         ),
 
         // F20: workspace. Launch and OpenUrl inside Sequence run on the
-        // macro thread and do not block the hook. A backslash is doubled in an
+        // action executor, as the actions do. A backslash is doubled in an
         // ordinary string and written once in a raw string r"...".
         (
             keys: "F20",
@@ -218,9 +218,9 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
             ]),
         ),
 
-        // Hold F23 for 300 ms: display settings. As with F21, Hold runs the
-        // action on the timer thread, so OpenUrl works here without Sequence.
-        // With Immediate or Tap it would have to be wrapped: Sequence([OpenUrl(...)]).
+        // Hold F23 for 300 ms: display settings. As with F21, OpenUrl runs
+        // on the action executor, with this trigger or any other; it needs
+        // no Sequence around it.
         ( keys: "F23", action: OpenUrl("ms-settings:display"), trigger: Hold(300) ),
     ],
 )
@@ -234,10 +234,9 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 > - a `Tap`, `Hold` or `DoubleTap` on Win or Alt alone lets the tap reach Windows, which opens the Start menu or the menu bar: the part of [KS-12](../audit.md#ks-12) that the menu mask key of `feat/mask-key` does not cover (a Win or Alt combination whose key is swallowed no longer opens either);
 > - the `CapsLock` auto-blocker (`block_original_combo: true`) swallows the second modifier of Alt, Shift, X (or Shift, Alt, X), so the application gets Alt+X (or Shift+X): the rest of [KS-05](../audit.md#ks-05), which the experimental `MaskOnly` of `feat/mask-key` addresses;
 > - programs started by `Launch` run with the daemon's administrator rights (`F21`, and `wt.exe` in the `F20` macro): [KS-09](../audit.md#ks-09);
-> - most actions run on the hook thread, which is why `Launch` and `OpenUrl` are placed under `Hold` or inside `Sequence` (`F21`, `F20`, `F23`): [KS-08](../audit.md#ks-08);
 > - synthesized input combines with physically held modifiers (the first `Delay` of `Ctrl+Alt+N`): [KS-19](../audit.md#ks-19).
 >
-> The audit version of this example also worked around sided names, `AppEquals`, unequal Tap and Hold terms, stuck keys, ASCII-only `TitleEquals`, relative config paths and the BOM ([KS-07](../audit.md#ks-07), [KS-03](../audit.md#ks-03), [KS-25](../audit.md#ks-25), [KS-06](../audit.md#ks-06), [KS-28](../audit.md#ks-28), [KS-21](../audit.md#ks-21), [KS-24](../audit.md#ks-24)). Phase 0 fixed those. Its `Tap` on the `F22` bindings and on the `Ctrl+Alt+N` macro also guarded against auto-repeat, which fired every `Immediate` action again ([KS-10](../audit.md#ks-10)); since `feat/repeat-flag` those actions fire once per press without it, and the `Tap` stays to make them short-press only.
+> The audit version of this example also worked around sided names, `AppEquals`, unequal Tap and Hold terms, stuck keys, ASCII-only `TitleEquals`, relative config paths and the BOM ([KS-07](../audit.md#ks-07), [KS-03](../audit.md#ks-03), [KS-25](../audit.md#ks-25), [KS-06](../audit.md#ks-06), [KS-28](../audit.md#ks-28), [KS-21](../audit.md#ks-21), [KS-24](../audit.md#ks-24)). Phase 0 fixed those. Its `Tap` on the `F22` bindings and on the `Ctrl+Alt+N` macro also guarded against auto-repeat, which fired every `Immediate` action again ([KS-10](../audit.md#ks-10)); since `feat/repeat-flag` those actions fire once per press without it, and the `Tap` stays to make them short-press only. `Launch` and `OpenUrl` were placed under `Hold` or inside `Sequence` (`F21`, `F20`, `F23`) to keep them off the hook thread ([KS-08](../audit.md#ks-08)); since `feat/action-executor` they run on the action executor with any trigger, and the `Hold` stays to show that trigger.
 
 Checking order after sorting ([§16](matching.md#s16)): first the three-key bindings (`Ctrl+Alt+=`, `Ctrl+Alt+-`, `Ctrl+Alt+]`, `Ctrl+Alt+N`), then the two-key ones in load order (`Ctrl+CapsLock`, `Shift+CapsLock`, `Shift+F22`, `Ctrl+F22`, the sequence `F17 → F18`, the chord `F15+F16`, and last the `Alt+Shift` auto-blocker), then the single-key ones. What follows from this:
 

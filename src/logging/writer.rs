@@ -345,13 +345,28 @@ mod tests {
 
         assert_eq!(
             console.text(),
-            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0\n"
+            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=0\n"
         );
         assert!(flush_on(&tx, WAIT), "the flush is acknowledged");
         assert_eq!(
             console.text().lines().count(),
             1,
             "counts that are all 0 again are not reported"
+        );
+    }
+
+    #[test]
+    fn a_flush_reports_a_slow_callback() {
+        let console = Console::default();
+        let counters = leaked_counters();
+        let tx = start(&console, counters, NEVER);
+        counters.record_callback(Duration::from_millis(7));
+
+        assert!(flush_on(&tx, WAIT), "the flush is acknowledged");
+
+        assert_eq!(
+            console.text(),
+            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=7000\n"
         );
     }
 
@@ -446,7 +461,11 @@ mod tests {
         assert!(send_line(&tx, info("kept"), &counters).is_ok());
         assert!(send_line(&tx, info("dropped"), &counters).is_ok());
 
-        assert_eq!(counters.take(), [0, 0, 0, 1], "one line dropped");
+        assert_eq!(
+            counters.take().counts,
+            [0, 0, 0, 1, 0, 0, 0],
+            "one line dropped"
+        );
         let Ok(WriterMsg::Line(line)) = rx.try_recv() else {
             panic!("the first line waits in the queue");
         };
@@ -464,7 +483,11 @@ mod tests {
             panic!("a line for a writer that is gone must come back");
         };
         assert_eq!(line.console_text(), "[INFO] back\n");
-        assert_eq!(counters.take(), [0; 4], "nothing was dropped");
+        assert_eq!(
+            counters.take().counts,
+            [0; Counter::ALL.len()],
+            "nothing was dropped"
+        );
         assert!(flush_on(&tx, WAIT), "no writer, nothing to wait for");
     }
 }

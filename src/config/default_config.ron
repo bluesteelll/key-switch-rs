@@ -101,7 +101,9 @@
 // Media(<key>)            — synthesize media/volume key. <key> is one of:
 //                            PlayPause, Stop, Next, Previous,
 //                            VolumeUp, VolumeDown, VolumeMute
-// Sequence([...])         — chained macro steps (see below)
+// Sequence([...])         — chained macro steps (see below). Runs on the
+//                            action executor, not in the hook; swch off,
+//                            a reload or exit stops it
 // DoNothing               — accept and drop the combo
 //
 // ---- trigger (when the action fires) ----
@@ -143,8 +145,12 @@
 //                            Operates on the window that was foreground
 //                            when the binding fired (captured once at the
 //                            start of the sequence — subsequent focus
-//                            changes don't redirect it).
-// Delay(100)              — sleep N ms (worker thread, not the hook)
+//                            changes don't redirect it). Does not wait for
+//                            the window: put a Delay after it when the
+//                            next step needs the change.
+// Delay(100)              — wait N ms on the action executor's timer;
+//                            other macros and actions go on meanwhile,
+//                            and swch off, a reload or exit cut it short
 // Text("Hello 🚀")        — type Unicode (layout-independent, supports
 //                            emoji via UTF-16 surrogate pairs)
 // Key("Enter")            — synthesize one key press

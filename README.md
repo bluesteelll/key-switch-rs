@@ -35,7 +35,11 @@ key-switch-rs/
     ├── core/
     │   ├── app.rs              - main application with binding management
     │   ├── constants.rs        - shared constants and per-process injected-event sentinel
-    │   └── windows_actions.rs  - BindAction enum for binding actions
+    │   ├── executor/           - the action-executor thread: Launch, OpenUrl and Sequence off the hook
+    │   │   ├── mod.rs          - queue, STA COM, message loop, Delay timer, epochs, Runner
+    │   │   ├── runs.rs         - running macros: steps up to each Delay, deadlines, cancellation
+    │   │   └── testing.rs      - test-only recording runner
+    │   └── windows_actions.rs  - BindAction enum, FastAction (what runs on the hook thread)
     ├── data/
     │   ├── binding.rs          - Binding struct (key combo -> action)
     │   ├── condition.rs        - when: conditions and the foreground app and title
@@ -60,6 +64,8 @@ key-switch-rs/
     │   ├── keyboard_hook_callback.rs - adapter: Win32 event -> engine -> Decision; foreground-change hook
     │   ├── config_watcher.rs   - notify-driven hot-reload (debounce + atomic swap)
     │   └── ipc_server.rs       - named-pipe listener (explicit SDDL); on/off/exit/status commands
+    ├── platform/
+    │   └── timers.rs           - high-resolution waitable timer: the executor's Delay wake-up
     ├── system/
     │   ├── registry.rs         - Windows registry hotkey reader
     │   ├── single_instance.rs  - one daemon per session: the Local\key-switch-rs mutex
@@ -86,7 +92,7 @@ key-switch-rs/
 - `ToggleCapsLock` - toggle CapsLock state
 - `PressKey(VIRTUAL_KEY)` - emulate key press
 - `PostMessage { ... }` - send message to active window
-- `Sequence(Arc<Vec<SequenceStep>>)` - macro steps, run on a worker thread
+- `Sequence(Arc<Vec<SequenceStep>>)` - macro steps, run on the action executor
 - `Launch { exe, args }` - start a process
 - `OpenUrl(String)` - open a URL, file or program with its default handler
 - `Media(MediaKey)` - emulate a media or volume key press
@@ -113,16 +119,19 @@ Windows API wrapper:
 - Installs the low-level keyboard hook (`WH_KEYBOARD_LL`) and the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) once, on the main thread, and removes them at shutdown
 - Bindings list in `ArcSwap<Vec<Binding>>` — lock-free reads on the hot path, atomic swap for hot-reload
 - Owns the decision core (`engine::Engine`: held and blocked keys, pending gestures) behind one `Mutex`, reached through `with_engine` and held only while the engine decides; a nested call on the same thread is refused instead of deadlocking. Roadmap item 2.2 removes the lock
-- `swch on` / `swch off` only flip an enabled flag (`set_enabled`); each switch resets the decision core: pending gestures are dropped and the keys held are re-read from Windows
+- `swch on` / `swch off` only flip an enabled flag (`set_enabled`); each switch resets the decision core: pending gestures are dropped and the keys held are re-read from Windows, and stops every running macro and queued `Launch`/`OpenUrl` on the action executor
+- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl` and `Sequence` (`submit`); a reload stops every running macro too
 
 #### `keyboard_hook_callback.rs`
 
-- The adapter between Win32 and the decision core in `src/engine`: translates each `WH_KEYBOARD_LL` event into an `engine::KeyEvent`, asks `Engine::on_key` for a `Decision` and carries it out (sends the menu mask key if asked, starts Hold timers, runs actions, then swallows or passes the event). It decides nothing itself
+- The adapter between Win32 and the decision core in `src/engine`: translates each `WH_KEYBOARD_LL` event into an `engine::KeyEvent`, asks `Engine::on_key` for a `Decision` and carries it out (sends the menu mask key if asked, starts Hold timers, runs the fast actions and queues the slow ones, then swallows or passes the event). It decides nothing itself
+- Runs only the fast actions itself, before it returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage`, so their output stays in order with the keys typed after them. `Launch`, `OpenUrl` and `Sequence` go to the action executor without waiting (KS-08)
 - Sends the menu mask key, virtual-key code 0xE8 down and up with the sentinel, before it returns when the decision asks for it: the event is swallowed while Windows has Win or Alt down, so the Win or Alt release opens neither Start nor the menu bar (KS-12)
 - While remapping is off (`swch off`), passes every event straight to `CallNextHookEx` without reading it
 - Answers the engine's `Env` with live Win32 calls: `GetAsyncKeyState` for the modifier re-sync on every event and on foreground change, to repair state lost while a higher-integrity window (Task Manager, UAC consent, lock screen, etc.) had focus, and the foreground window for `when:` conditions, looked up only when a condition asks
 - Skip injected events generated by this process (PID-mixed sentinel in `dwExtraInfo`) before the engine sees them
-- Runs each Hold timer on its own `hold-timer` thread; the Hold action runs there, never on the hook thread
+- Runs each Hold timer on its own `hold-timer` thread; a fast Hold action runs there, never on the hook thread, and a slow one goes to the action executor
+- Records how long each keyboard callback ran; the longest run since the last report ends the log's counters line, which it triggers on its own from 5 ms
 
 #### `app.rs`
 
@@ -131,8 +140,19 @@ Main application:
 - Manage bindings via builder pattern
 - Install keyboard + foreground-change hooks
 - Creates the IPC pipe before it installs the hooks; a pipe it cannot create stops the daemon (KS-20)
+- Starts the action executor before it installs the hooks, and stops it after it removed them, waiting at most 2 s for a step that still runs
 - Ctrl+C handler for correct shutdown
 - Windows message loop
+
+#### `executor/`
+
+The `action-executor` thread (roadmap item 2.1, KS-08):
+
+- Runs `Launch`, `OpenUrl` and `Sequence`, which the hook (or a Hold's timer thread) queues without waiting; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
+- Initialises COM as a single-threaded apartment, as `ShellExecuteW` asks, and pumps its own messages, waiting for them and for its `Delay` timer at once
+- Runs macros side by side on its one thread: a macro goes up to its next `Delay`, which waits on one high-resolution timer, within about 1 ms as `thread::sleep` did, and holds up no other action or macro. A step that blocks inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it runs
+- `swch off`, `swch on` (a real change), a reload and exit stop every running macro within 100 ms, also inside a `Delay`, and drop the actions still queued; a step already running finishes first
+- An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl` and `Sequence` count in `executor_unavailable` until the daemon restarts
 
 ## Configuration
 
@@ -413,8 +433,9 @@ to keep the left Shift for the gesture alone.
 - For `Tap`: the entry stores a deadline `<ms>` after the key-down; the
   key-up fires the action only before the deadline. No thread is involved.
 - For `Hold`: arming starts a timer thread that fires the action after
-  `<ms>`, on that thread. A key-up before `<ms>` cancels it; a key-up at or
-  after `<ms>` leaves it to the timer, so a key held for the whole term
+  `<ms>`: a fast action runs on that thread, and `Launch`, `OpenUrl` and
+  `Sequence` go to the action executor. A key-up before `<ms>` cancels it;
+  a key-up at or after `<ms>` leaves it to the timer, so a key held for the whole term
   fires its Hold even if the timer thread wakes late. Each timer carries the
   generation of the press that started it, so a timer from an earlier press
   never acts on a newer one.
@@ -487,9 +508,13 @@ to keep the left Shift for the gesture alone.
 
 ### `Sequence(...)` — chained steps (macros)
 
-A `Sequence` action runs a list of steps in a dedicated worker thread. The
-keyboard hook callback only kicks it off, so even long sequences with
-multi-second delays never block input system-wide.
+A `Sequence` action runs a list of steps on the action executor thread. The
+keyboard hook callback only queues it, so even long sequences with
+multi-second delays never block input system-wide. `swch off`, a reload
+(a saved `config.ron` that loads) and `swch exit` stop a running macro
+within 100 ms, also inside a `Delay`; a step already running (a `Launch`,
+an `OpenUrl`) finishes first. A save that does not load keeps the running
+macros, as it keeps the bindings.
 
 ```ron
 (
@@ -511,11 +536,11 @@ Eight step variants:
 
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `Delay(<ms>)`         | Sleep `<ms>` milliseconds in the worker thread. Does not block the hook.                                     |
+| `Delay(<ms>)`         | Wait `<ms>` milliseconds on the action executor's high-resolution timer, which ends the wait within about 1 ms of its time and never before. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
 | `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work. |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |
-| `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`.     |
+| `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`. It does not wait for the window (`ShowWindowAsync`, a posted `WM_CLOSE`): put a `Delay` after it when the next step depends on the change. |
 | `Launch(exe: "<path>", args: [...])` | Spawn a process (same as the top-level action).                                               |
 | `OpenUrl("<url>")`    | OS default handler (same as the top-level action).                                                           |
 | `Media(<key>)`        | Synthesize a media key (same as the top-level action).                                                       |
@@ -525,10 +550,13 @@ moment the combo matched — *captured once* and reused for every step. So
 "restore … type … minimize" operates on the same HWND throughout, even if
 focus drifts midway.
 
-**Parallel sequences:** each combo press spawns its own worker. Two fast
-presses run two threads in parallel; they will interleave their `SendInput`
-calls into the same OS input queue. For deterministic behaviour, put a
-trailing `Delay` long enough to cover the previous run.
+**Parallel sequences:** macros run side by side on the one executor
+thread, without a thread each. Two fast presses run two macros that
+interleave at their `Delay` steps, oldest first; the steps between two
+`Delay`s run without a break. For deterministic behaviour, put a trailing
+`Delay` long enough to cover the previous run. A step that blocks inside
+Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up
+the other macros and actions while it runs.
 
 **Errors** in step shape (unknown variant name, wrong arity) are caught at
 parse time. Per-step value errors (unknown `Key`/`Combo` names) are reported
@@ -701,7 +729,7 @@ Release builds ship two binaries:
 | ------------- | ----------------------------------------------------------- |
 | `swch open`   | Launch the daemon (a UAC prompt on every launch of a release build). Does nothing if a daemon already answers, refuses this console, is busy, or does not answer within 5 s. |
 | `swch on`     | Turn remapping back on (idempotent). |
-| `swch off`    | Turn remapping off (idempotent): the hook stays installed and passes every key through; pending Tap/Hold/DoubleTap, chords and sequences are dropped, a running macro finishes. Useful for games or temporarily passing the OS's defaults through. |
+| `swch off`    | Turn remapping off (idempotent): the hook stays installed and passes every key through; pending Tap/Hold/DoubleTap, chords and sequences are dropped, and a running macro stops within 100 ms (a step already running finishes first). Useful for games or temporarily passing the OS's defaults through. |
 | `swch status` | Print "running" or "disabled" (remapping on or off) and the live binding count. |
 | `swch exit`   | Cleanly shut down the daemon (`PostThreadMessageW(WM_QUIT)`). |
 | `swch help`   | Print usage.                                                |
@@ -767,10 +795,13 @@ list of bindings) goes to stdout, and it is never written to the file,
 because a binding can hold the text of a macro. The log never records the
 keys you press or the text you type; lines about the config quote the
 config, key names included. What the keyboard hook must not log at every
-key press, a `SendInput` that Windows cut short or a Hold whose timer
-could not start, it counts; while a count is not 0, one
+key press, a `SendInput` that Windows cut short, a `PostMessage` or
+language switch that Windows refused, a Hold whose timer could not start,
+or a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
+queue dropped or that found the executor stopped, it counts. It also records how long its longest callback ran. While a count
+is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
-gives all of them.
+gives all of them, ending with `longest_callback_us=<microseconds>`.
 
 At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
 becomes `daemon.2.log`, and the oldest file is deleted: three files, about
@@ -808,7 +839,7 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_UI_Input_KeyboardAndMouse`
   - `Win32_UI_Accessibility` (for `SetWinEventHook` foreground-change tracking)
   - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
-  - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns)
+  - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns; `CoInitializeEx` for the action executor's single-threaded apartment)
   - `Win32_System_Console`
   - `Win32_System_Registry`
   - `Win32_System_Threading`
@@ -833,7 +864,7 @@ elevated without a prompt; `swch` then talks to it normally.
 - **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions, for every trigger; a `Tap`, `Hold` or `DoubleTap` on modifiers alone lets them through by default
 - **Auto-repeat policy**: holding the key of a `PressKey` or volume binding sends one press per auto-repeat, at the keyboard's repeat rate; every other action fires once per press unless the binding sets `repeat: true`
-- **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically while in-flight sequences keep working on their own snapshot
+- **Thread-safe**: `ArcSwap<Vec<Binding>>` for the binding list, atomics for the hook handles, and one `Mutex` around the decision core that is held only while it decides, never while an action runs; binding list can be hot-swapped atomically; a reload stops the macros still running, which belong to the old list
 - **Hot-reload**: edit `config.ron` in any editor, save, and bindings reload automatically (~250ms debounce). A save that does not load (a syntax error, an unknown field, a bad value) or a deleted file keeps the previous config live.
 - **One winner per key press**: among the `keys` bindings that match one press, one wins (more keys, then a `when:` condition, then file order), and only the winner, or its Tap/Hold/DoubleTap group, runs and decides whether the key is swallowed (KS-13)
 - **Auto-blocking**: automatically blocks original system combinations when needed

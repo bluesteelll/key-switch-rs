@@ -10,7 +10,7 @@ use windows::{
 
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
-use crate::data::sequence::{SequenceStep, spawn_sequence};
+use crate::data::sequence::SequenceStep;
 use crate::logging::counters::{self, Counter};
 use crate::system::system_function::SystemFunction;
 
@@ -25,9 +25,9 @@ pub enum BindAction {
         wparam: usize,
         lparam: isize,
     },
-    /// Macro-like body: list of steps executed in a spawned worker thread.
-    /// The hook callback must return fast, so it only kicks off the thread —
-    /// it never blocks waiting for delays or `SendInput` to drain.
+    /// Macro-like body: a list of steps run on the action executor
+    /// (`core::executor`, roadmap item 2.1). The hook only queues it and
+    /// never waits for its delays or its `SendInput`s.
     ///
     /// `Arc` makes cloning the binding (and therefore freezing the binding
     /// list at install) cheap regardless of sequence length.
@@ -115,30 +115,70 @@ impl PartialEq for BindAction {
 
 impl Eq for BindAction {}
 
-impl BindAction {
-    pub fn execute(&self) {
+/// An action that runs on the thread that fires it (the hook thread, or a
+/// Hold's `hold-timer` thread) before the hook returns, so that its output
+/// stays in order with the keys typed after it (roadmap item 2.1). Each
+/// one only posts a message or sends one key press. Every other action
+/// goes to the action executor; [`BindAction::as_fast`] decides which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastAction {
+    SwitchLanguage,
+    SwitchLanguageBackward,
+    ToggleCapsLock,
+    PressKey(VIRTUAL_KEY),
+    PostMessage {
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    },
+    Media(MediaKey),
+    DoNothing,
+}
+
+impl FastAction {
+    /// Runs the action on the calling thread. It can run on the hook
+    /// thread at every auto-repeat, so a failure is only counted
+    /// (`logging::counters`), never logged.
+    pub fn run(self) {
         match self {
-            BindAction::SwitchLanguage
-            | BindAction::SwitchLanguageBackward
-            | BindAction::ToggleCapsLock => {
-                if let Some(sys_func) = self.to_system_function() {
-                    sys_func.execute();
-                }
-            }
-            BindAction::PressKey(vk) => press_vk(*vk),
+            FastAction::SwitchLanguage => SystemFunction::SwitchLanguage.execute(),
+            FastAction::SwitchLanguageBackward => SystemFunction::SwitchLanguageBackward.execute(),
+            FastAction::ToggleCapsLock => SystemFunction::ToggleCapsLock.execute(),
+            FastAction::PressKey(vk) => press_vk(vk),
+            FastAction::PostMessage {
+                msg,
+                wparam,
+                lparam,
+            } => post_message_to_foreground(msg, wparam, lparam),
+            FastAction::Media(key) => press_vk(key.as_vk()),
+            FastAction::DoNothing => {}
+        }
+    }
+}
+
+impl BindAction {
+    /// The action as a [`FastAction`], to run where it fires, or `None`
+    /// for `Launch`, `OpenUrl` and `Sequence`, which go to the action
+    /// executor. Every arm is spelled out, so a new action does not compile
+    /// until its place is decided.
+    pub fn as_fast(&self) -> Option<FastAction> {
+        match self {
+            BindAction::SwitchLanguage => Some(FastAction::SwitchLanguage),
+            BindAction::SwitchLanguageBackward => Some(FastAction::SwitchLanguageBackward),
+            BindAction::ToggleCapsLock => Some(FastAction::ToggleCapsLock),
+            BindAction::PressKey(vk) => Some(FastAction::PressKey(*vk)),
             BindAction::PostMessage {
                 msg,
                 wparam,
                 lparam,
-            } => post_message_to_foreground(*msg, *wparam, *lparam),
-            BindAction::Sequence(steps) => {
-                // Cheap Arc clone — the worker thread holds its own handle.
-                spawn_sequence(Arc::clone(steps));
-            }
-            BindAction::Launch { exe, args } => launch_process(exe, args),
-            BindAction::OpenUrl(url) => shell_open(url),
-            BindAction::Media(key) => press_vk(key.as_vk()),
-            BindAction::DoNothing => {}
+            } => Some(FastAction::PostMessage {
+                msg: *msg,
+                wparam: *wparam,
+                lparam: *lparam,
+            }),
+            BindAction::Media(key) => Some(FastAction::Media(*key)),
+            BindAction::DoNothing => Some(FastAction::DoNothing),
+            BindAction::Sequence(_) | BindAction::Launch { .. } | BindAction::OpenUrl(_) => None,
         }
     }
 
@@ -225,6 +265,9 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     }
 }
 
+/// Posts `msg` to the foreground window, for `PostMessage`. It runs on the
+/// hook thread, so a failed post is only counted (`post_message_failed`),
+/// never logged.
 fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
     // SAFETY: GetForegroundWindow / PostMessageW have no preconditions on
     // their inputs beyond what we already validate (HWND non-invalid).
@@ -234,9 +277,8 @@ fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
             return;
         }
 
-        if let Err(e) = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam)) {
-            log::error!("Post message error {msg:#X}: {e:?}");
-        }
+        let posted = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam));
+        counters::bump_if_err(Counter::PostMessageFailed, &posted);
     }
 }
 
@@ -347,6 +389,61 @@ mod tests {
         ];
         for (action, expected) in actions {
             assert_eq!(action.repeats_by_default(), expected, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn only_launch_open_url_and_sequence_leave_the_firing_thread() {
+        // Roadmap item 2.1: the fast actions stay where they fire, so their
+        // output keeps its order with the keys typed after them; the
+        // others go to the action executor. Nothing here runs an action.
+        let mut actions = vec![
+            (BindAction::SwitchLanguage, Some(FastAction::SwitchLanguage)),
+            (
+                BindAction::SwitchLanguageBackward,
+                Some(FastAction::SwitchLanguageBackward),
+            ),
+            (BindAction::ToggleCapsLock, Some(FastAction::ToggleCapsLock)),
+            (
+                BindAction::PressKey(VK_BACK),
+                Some(FastAction::PressKey(VK_BACK)),
+            ),
+            (
+                BindAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 7,
+                    lparam: -3,
+                },
+                Some(FastAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 7,
+                    lparam: -3,
+                }),
+            ),
+            (BindAction::DoNothing, Some(FastAction::DoNothing)),
+            (BindAction::Sequence(Arc::new(Vec::new())), None),
+            (
+                BindAction::Launch {
+                    exe: "wt.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                None,
+            ),
+            (BindAction::OpenUrl("https://example.com".to_owned()), None),
+        ];
+        for key in [
+            MediaKey::PlayPause,
+            MediaKey::Stop,
+            MediaKey::Next,
+            MediaKey::Previous,
+            MediaKey::VolumeUp,
+            MediaKey::VolumeDown,
+            MediaKey::VolumeMute,
+        ] {
+            actions.push((BindAction::Media(key), Some(FastAction::Media(key))));
+        }
+        for (action, expected) in actions {
+            assert_eq!(action.as_fast(), expected, "{action:?}");
         }
     }
 }

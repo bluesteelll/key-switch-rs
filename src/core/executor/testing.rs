@@ -1,0 +1,176 @@
+//! Test-only: a [`Runner`] that records what the executor asks it to run,
+//! and never runs a real action.
+//!
+//! Each call is recorded first, with the thread it ran on, and then the
+//! runner does what the test asked for: block, wait on a gate, panic, post
+//! `WM_QUIT` to its own thread, or remove the executor's own wake-ups from
+//! its queue. Its only Win32 calls are that `PostQuitMessage` and that
+//! `PeekMessageW`, on the executor thread of the test that asks for them.
+
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant};
+
+use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, PostQuitMessage};
+
+use super::{Runner, TargetWindow, WAKE};
+use crate::core::windows_actions::BindAction;
+use crate::data::sequence::SequenceStep;
+use crate::logging::counters::Counters;
+
+/// How long a gated call waits for its release at most, so that a test that
+/// fails before it opens the gate does not hang the suite.
+const GATE_LIMIT: Duration = Duration::from_secs(10);
+
+/// How long a test waits for something the executor should do at once.
+pub(crate) const WAIT: Duration = Duration::from_secs(2);
+
+/// What the runner was asked to run, as the startup list prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ran {
+    /// `Runner::action`, with the action's `Display` text.
+    Action(String),
+    /// `Runner::step`, with the step's `Display` text and its target.
+    Step(String, TargetWindow),
+}
+
+/// One call of the runner.
+#[derive(Debug)]
+pub(crate) struct Record {
+    pub(crate) thread: ThreadId,
+    pub(crate) name: Option<String>,
+    pub(crate) at: Instant,
+    pub(crate) ran: Ran,
+}
+
+impl Record {
+    /// The `Display` text of what ran.
+    pub(crate) fn text(&self) -> &str {
+        match &self.ran {
+            Ran::Action(text) | Ran::Step(text, _) => text,
+        }
+    }
+}
+
+/// Records every call on `records`; see the module docs.
+pub(crate) struct FakeRunner {
+    records: Sender<Record>,
+    block: Duration,
+    gate: Option<(Sender<()>, Receiver<()>)>,
+    eat_wakes: bool,
+    panic_on: Option<String>,
+    quit_on: Option<String>,
+}
+
+impl FakeRunner {
+    pub(crate) fn new(records: Sender<Record>) -> Self {
+        Self {
+            records,
+            block: Duration::ZERO,
+            gate: None,
+            eat_wakes: false,
+            panic_on: None,
+            quit_on: None,
+        }
+    }
+
+    /// Every call blocks for `block` after it is recorded, standing in for
+    /// an `OpenUrl` against a cold browser.
+    pub(crate) fn with_block(mut self, block: Duration) -> Self {
+        self.block = block;
+        self
+    }
+
+    /// Every call sends on `started` after it is recorded, and then waits
+    /// until `release` receives or its sender is dropped.
+    pub(crate) fn with_gate(mut self, started: Sender<()>, release: Receiver<()>) -> Self {
+        self.gate = Some((started, release));
+        self
+    }
+
+    /// Every call removes the executor's `WAKE` messages from its own
+    /// thread's queue before it returns (after the gate, if any), as a
+    /// modal loop inside a step (a `ShellExecuteW` dialog) would.
+    pub(crate) fn with_eat_wakes(mut self) -> Self {
+        self.eat_wakes = true;
+        self
+    }
+
+    /// A call whose text is `text` panics before it is recorded.
+    pub(crate) fn with_panic_on(mut self, text: &str) -> Self {
+        self.panic_on = Some(text.to_owned());
+        self
+    }
+
+    /// A call whose text is `text` posts `WM_QUIT` to its own thread after
+    /// it is recorded, as foreign code on the executor thread could.
+    pub(crate) fn with_quit_on(mut self, text: &str) -> Self {
+        self.quit_on = Some(text.to_owned());
+        self
+    }
+
+    fn call(&mut self, ran: Ran) {
+        let record = Record {
+            thread: thread::current().id(),
+            name: thread::current().name().map(str::to_owned),
+            at: Instant::now(),
+            ran,
+        };
+        if self.panic_on.as_deref() == Some(record.text()) {
+            panic!("the fake runner panics on {}", record.text());
+        }
+        let quit = self.quit_on.as_deref() == Some(record.text());
+        let _ = self.records.send(record);
+        if quit {
+            // SAFETY: PostQuitMessage takes the exit code by value, reads
+            // no memory of ours and posts WM_QUIT only to the calling
+            // thread's own queue: the executor thread of this test.
+            unsafe { PostQuitMessage(0) };
+        }
+        if !self.block.is_zero() {
+            thread::sleep(self.block);
+        }
+        if let Some((started, release)) = &self.gate {
+            let _ = started.send(());
+            let _ = release.recv_timeout(GATE_LIMIT);
+        }
+        if self.eat_wakes {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a local that outlives every call, which only
+            // writes it; the filter removes only WAKE messages, and only
+            // from the calling thread's own queue.
+            while unsafe { PeekMessageW(&mut msg, None, WAKE, WAKE, PM_REMOVE) }.as_bool() {}
+        }
+    }
+}
+
+impl Runner for FakeRunner {
+    fn action(&mut self, action: &BindAction) {
+        self.call(Ran::Action(action.to_string()));
+    }
+
+    fn step(&mut self, step: &SequenceStep, target: TargetWindow) {
+        self.call(Ran::Step(step.to_string(), target));
+    }
+}
+
+/// Counters of one test's own, so that no test takes the daemon's.
+pub(crate) fn leaked_counters() -> &'static Counters {
+    Box::leak(Box::new(Counters::new()))
+}
+
+/// The next call of the runner, waited for up to [`WAIT`].
+pub(crate) fn next_record(records: &Receiver<Record>) -> Record {
+    records
+        .recv_timeout(WAIT)
+        .expect("the runner is called within 2 s")
+}
+
+/// Waits up to [`WAIT`] for `condition`, and fails naming `what`.
+pub(crate) fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    let begun = Instant::now();
+    while !condition() {
+        assert!(begun.elapsed() < WAIT, "{what}: not within 2 s");
+        thread::sleep(Duration::from_millis(1));
+    }
+}

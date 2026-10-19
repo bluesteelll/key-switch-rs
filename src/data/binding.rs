@@ -244,10 +244,6 @@ impl Binding {
         self.repeat = repeat;
         self
     }
-
-    pub fn execute(&self) {
-        self.action.execute();
-    }
 }
 
 impl std::fmt::Display for Binding {

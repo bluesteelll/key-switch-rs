@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arc_swap::{ArcSwap, Guard};
+use arc_swap::{ArcSwap, ArcSwapOption, Guard};
 use windows::{
     Win32::UI::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
@@ -11,6 +11,8 @@ use windows::{
     core::*,
 };
 
+use crate::core::executor::{ExecutorHandle, Submitted, TargetWindow};
+use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
 use crate::engine::{self, Engine};
 use crate::hook::keyboard_hook_callback::{self, HookEnv};
@@ -41,9 +43,9 @@ pub struct KeyboardHook {
     /// Bindings list. Hot path reads via `ArcSwap::load()` which is
     /// effectively lock-free (no atomic CAS on the read side). Hot-reload
     /// updates the list with `update_bindings`, which atomically swaps the
-    /// inner `Arc`. Any sequence currently executing keeps its own `Arc`
-    /// reference until it finishes, so a swap mid-sequence never breaks an
-    /// in-flight macro.
+    /// inner `Arc`. A macro queued or running on the action executor keeps
+    /// its own `Arc` of its steps, so a swap never breaks it; the reload
+    /// stops it through the executor's epoch instead (roadmap item 2.1).
     bindings: ArcSwap<Vec<Binding>>,
     hook_handle: AtomicPtr<std::ffi::c_void>,
     foreground_hook: AtomicPtr<std::ffi::c_void>,
@@ -64,6 +66,11 @@ pub struct KeyboardHook {
     /// [`set_enabled`](Self::set_enabled). Only
     /// [`with_engine`](Self::with_engine) touches it.
     engine: Mutex<Engine>,
+    /// The action executor that `Launch`, `OpenUrl` and `Sequence` go to
+    /// (roadmap item 2.1). Stored only by the main thread, around the hooks'
+    /// lifetime ([`attach_executor`](Self::attach_executor)); read with one
+    /// lock-free load per slow action, like `bindings`.
+    executor: ArcSwapOption<ExecutorHandle>,
 }
 
 impl KeyboardHook {
@@ -76,6 +83,7 @@ impl KeyboardHook {
             foreground_hook: AtomicPtr::new(std::ptr::null_mut()),
             enabled: AtomicBool::new(true),
             engine: Mutex::new(Engine::new()),
+            executor: ArcSwapOption::empty(),
         }
     }
 
@@ -107,11 +115,41 @@ impl KeyboardHook {
     /// (this is the hot-reload entry point). The new list is sorted by
     /// key-count descending; among equal key counts, file order breaks a tie
     /// between two `keys` bindings of equal precedence (roadmap item 1.6).
+    ///
+    /// A reload also stops every macro running and every slow action still
+    /// queued (roadmap item 2.1): they belong to the old list.
     pub fn update_bindings(&self, mut bindings: Vec<Binding>) {
         // A stable sort, so bindings with the same key count keep their
         // config order.
         engine::sort_by_specificity(&mut bindings);
         self.bindings.store(Arc::new(bindings));
+        self.cancel_actions();
+    }
+
+    /// Attaches the action executor, or detaches it with `None`. Main
+    /// thread: the executor is attached after it starts and before the
+    /// hooks are installed, and detached after they are removed and before
+    /// it stops.
+    pub(crate) fn attach_executor(&self, executor: Option<Arc<ExecutorHandle>>) {
+        self.executor.store(executor);
+    }
+
+    /// Hands a slow action to the action executor, on the thread that fired
+    /// it, without waiting (see [`ExecutorHandle::submit`]). `Closed` when
+    /// no executor is attached: at startup before it is, and at exit.
+    pub(crate) fn submit(&self, action: BindAction, target: TargetWindow) -> Submitted {
+        match &*self.executor.load() {
+            Some(executor) => executor.submit(action, target),
+            None => Submitted::Closed,
+        }
+    }
+
+    /// Stops every macro running and every slow action still queued on the
+    /// attached executor, if any; a step already running finishes first.
+    fn cancel_actions(&self) {
+        if let Some(executor) = &*self.executor.load() {
+            executor.cancel_pending();
+        }
     }
 
     /// Snapshot of the current binding list. The returned `Guard` derefs to
@@ -139,19 +177,28 @@ impl KeyboardHook {
     /// is no change resets nothing: it would wipe the records of keys held
     /// and swallowed right now.
     ///
+    /// A real change also stops every macro running and every slow action
+    /// still queued (roadmap item 2.1), after the lock is released: the
+    /// executor's epoch is not engine data. A repeated `on` or `off` stops
+    /// nothing.
+    ///
     /// Runs on the calling thread, an IPC connection worker in the daemon.
     /// Under the lock the reset only reads the OS key state, which may be
     /// read from any thread. Roadmap item 2.2 removes the engine lock; the
     /// flip and the reset must then move to the thread that owns the engine.
     pub fn set_enabled(&self, enabled: bool) -> Option<bool> {
         let env = HookEnv::new();
-        self.with_engine(|engine| {
+        let changed = self.with_engine(|engine| {
             if self.enabled.swap(enabled, Ordering::AcqRel) == enabled {
                 return false;
             }
             engine.reset(&env);
             true
-        })
+        });
+        if changed == Some(true) {
+            self.cancel_actions();
+        }
+        changed
     }
 
     /// Installs the keyboard hook and the foreground hook.
@@ -264,13 +311,19 @@ impl Drop for KeyboardHook {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::core::executor::testing::{
+        FakeRunner, Record, leaked_counters, next_record, wait_until,
+    };
+    use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped, Submitted, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::binding::Binding;
     use crate::data::key_combination::KeyCombination;
     use crate::data::key_spec::KeySpec;
+    use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::{Decision, KeyEvent, TimerToken};
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -472,6 +525,98 @@ mod tests {
             timer(second),
             Decision::default(),
             "a Hold armed before remapping went off must not fire"
+        );
+    }
+
+    /// A local hook with an attached executor whose runner only records,
+    /// the executor, and the runner's records.
+    fn hook_with_executor() -> (KeyboardHook, Executor, mpsc::Receiver<Record>) {
+        let (tx, records) = mpsc::channel();
+        let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        let hook = KeyboardHook::new();
+        hook.attach_executor(Some(executor.handle()));
+        (hook, executor, records)
+    }
+
+    fn macro_of(steps: Vec<SequenceStep>) -> BindAction {
+        BindAction::Sequence(std::sync::Arc::new(steps))
+    }
+
+    /// Submits `[F13, Delay(10000), F14]` through `hook`, waits until F13
+    /// ran and the macro waits in its Delay, runs `cancel`, and checks that
+    /// the macro is gone within 100 ms and F14 never runs.
+    fn a_running_macro_stops_within_100_ms(cancel: impl FnOnce(&KeyboardHook)) {
+        let (hook, executor, records) = hook_with_executor();
+        let handle = executor.handle();
+        assert_eq!(
+            hook.submit(
+                macro_of(vec![
+                    SequenceStep::PressKey(VK_F13),
+                    SequenceStep::Delay(10_000),
+                    SequenceStep::PressKey(VK_F14),
+                ]),
+                TargetWindow::NONE,
+            ),
+            Submitted::Queued
+        );
+        assert_eq!(next_record(&records).text(), "key F13");
+        wait_until("the macro waits in its Delay", || handle.active_runs() == 1);
+
+        let t0 = Instant::now();
+        cancel(&hook);
+        wait_until("the macro is gone", || handle.active_runs() == 0);
+        let stopped = t0.elapsed();
+        assert!(
+            stopped < Duration::from_millis(100),
+            "the macro stopped {stopped:?} later"
+        );
+
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "F14 never runs");
+    }
+
+    #[test]
+    fn swch_off_stops_a_running_macro_within_100_ms() {
+        a_running_macro_stops_within_100_ms(|hook| {
+            assert_eq!(hook.set_enabled(false), Some(true));
+        });
+    }
+
+    #[test]
+    fn a_reload_stops_a_running_macro_within_100_ms() {
+        a_running_macro_stops_within_100_ms(|hook| hook.update_bindings(vec![]));
+    }
+
+    #[test]
+    fn a_repeated_swch_on_keeps_the_running_macro() {
+        let (hook, executor, records) = hook_with_executor();
+        hook.submit(
+            macro_of(vec![
+                SequenceStep::PressKey(VK_F13),
+                SequenceStep::Delay(300),
+                SequenceStep::PressKey(VK_F14),
+            ]),
+            TargetWindow::NONE,
+        );
+        assert_eq!(next_record(&records).text(), "key F13");
+
+        assert_eq!(hook.set_enabled(true), Some(false), "already on");
+
+        assert_eq!(next_record(&records).text(), "key F14");
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_slow_action_without_an_executor_is_closed() {
+        assert_eq!(
+            KeyboardHook::new().submit(
+                BindAction::OpenUrl("https://example.com".to_owned()),
+                TargetWindow::NONE
+            ),
+            Submitted::Closed
         );
     }
 

@@ -74,7 +74,9 @@ minor version; such entries sit under **Changed** and start with
   their meaning, and the template keeps `true`. The startup list shows such
   a blocker as `-> (masked, experimental)`. On a hotkey that is not made only
   of modifiers (the `` ` `` hotkey) `MaskOnly` blocks as `true` does and
-  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``.
+  warns: ``[WARN] binding #0: block_original_combo: MaskOnly needs a Windows hotkey made only of modifiers; the ` hotkey is blocked as with true``,
+  unless a `keys` binding of the file takes the hotkey over (KS-18): then
+  there is no blocker and no warning.
   A misspelled value is a load error that lists the valid ones,
   ``Unexpected variant named `Maskonly` in enum `RawBlockOriginalCombo`, expected one of `true`, `false`, or `MaskOnly` instead``;
   `Some(true)`, an error before too, now gets that message for `` `Some` ``.
@@ -113,9 +115,19 @@ minor version; such entries sit under **Changed** and start with
   `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
   (a Hold whose timer thread could not be started, so that it never fired)
   and `log_lines_dropped` (log lines lost to a full queue). While one of
-  them is not 0, the log writer reports all four every 60 s and at exit, in
-  one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0`.
+  them is not 0, the log writer reports all of them every 60 s and at exit,
+  in one line on the console and in `daemon.log`:
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 longest_callback_us=12`.
+- Counters of the action executor (roadmap item 2.1), in the same line:
+  `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
+  because 32 were already waiting for the executor; `executor_unavailable`,
+  one fired after the action executor had stopped on its own (it logs one
+  `[ERROR]` line, and `Launch`, `OpenUrl` and `Sequence` then do nothing
+  until the daemon restarts); `post_message_failed`, a `SwitchLanguage`,
+  `SwitchLanguageBackward` or `PostMessage` whose `PostMessageW` failed.
+  The line ends with `longest_callback_us`, the
+  longest keyboard-hook callback since the last report, in microseconds,
+  and a callback of 5 ms or more triggers the line on its own.
 
 ### Changed
 
@@ -269,9 +281,15 @@ minor version; such entries sit under **Changed** and start with
     such as `( keys: "Alt+Shift", action: SwitchLanguageBackward, trigger: Tap(200) )`,
     lets Windows switch the layout as well, also when that binding sets
     `block_original_combo: true` itself.
-  - A `Tap` on `Alt` or `Win` alone lets Windows see the tap, which
-    activates the menu bar or opens Start. The menu mask key (KS-12, under
-    **Fixed**) does not cover it: nothing is swallowed there.
+  - A `Tap`, `Hold` or `DoubleTap` on `Alt` or `Win` alone lets Windows
+    see the tap, which activates the menu bar or opens Start. The menu mask
+    key (KS-12, under **Fixed**) does not cover it: nothing is swallowed
+    there.
+  - A `Hold` or `DoubleTap` made only of modifiers now sends its output
+    while that modifier is down in Windows. For example,
+    `( keys: "LCtrl", action: PressKey("Escape"), trigger: Hold(300) )`
+    sends Ctrl+Esc, which opens Start, where it used to send Escape. Write
+    `block_default: true` for the old output (KS-19, roadmap item 3.1).
   - `block_default: Some(true)` and `block_default: None` (the default)
     load, as for `keys`.
 - **Breaking:** one binding wins each key press (roadmap item 1.6, KS-13).
@@ -339,6 +357,22 @@ minor version; such entries sit under **Changed** and start with
   `cargo test --locked -- --ignored --nocapture hold_the_daemon_pipe_name_for_a_manual_start`
   holds the pipe, the release daemon stops with that line and CapsLock
   stays CapsLock.
+- `Window(Minimize)`, `Window(Maximize)` and `Window(Restore)` macro steps
+  use `ShowWindowAsync` (roadmap item 2.1), so a window that is Not
+  Responding no longer holds up the macro or the other actions. The step
+  no longer waits for the window to finish the change: put a `Delay` after
+  it when the next step depends on it, for example after `Window(Restore)`
+  before typing into the window (the README and template examples already
+  do). A step that Windows does not accept logs
+  `[WARN] window step failed: ShowWindowAsync did not start Minimize` (or
+  `Maximize`, `Restore`). Manual check: with a `Window(Minimize)` macro
+  fired at a Not Responding window, an `OpenUrl` hotkey pressed right after
+  it opens its page at once.
+- `[ERROR] Post message error …`, `[ERROR] Language switch error: …` and
+  `[ERROR] Language switch backward error: …` are no longer logged
+  (roadmap item 2.1): those actions run on the hook thread, which never
+  logs, so a failed post is counted in `post_message_failed` and the error
+  text is no longer shown.
 
 ### Fixed
 
@@ -354,8 +388,8 @@ minor version; such entries sit under **Changed** and start with
   state, so a `Hold` armed just before `swch off` no longer fires (KS-31,
   an unverified report), and a key still held at `swch on` counts as
   already pressed. A key swallowed by a binding and released while
-  remapping is off reaches Windows as a lone key-up. A running macro keeps
-  running after `swch off` (roadmap item 2.1).
+  remapping is off reaches Windows as a lone key-up. `swch off` also stops
+  a running macro (roadmap item 2.1).
 - KS-02: the daemon's pipe has an explicit security descriptor: full
   control for SYSTEM and Administrators, read and write for interactive
   users, and a medium integrity label. `swch` in a normal console now
@@ -444,6 +478,37 @@ minor version; such entries sit under **Changed** and start with
   `Ctrl` and `Alt` complete a `chord`. The `keys: "LShift"` +
   `DoubleTap(250)` example works, and the left Shift keeps typing capitals
   (roadmap item 1.3).
+- KS-08 (roadmap item 2.1): `Launch`, `OpenUrl` and `Sequence` no longer
+  run inside the keyboard hook. The hook queues them for the
+  `action-executor` thread, which has its own message loop and initialises
+  COM as a single-threaded apartment, as `ShellExecuteW` asks, and returns
+  at once, so a cold browser, an antivirus scan or an unreachable path no
+  longer freezes typing or lets Windows remove the hook. `PressKey`,
+  `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`
+  and `PostMessage` still run before the hook returns, so their output
+  stays in order with the keys typed after them; a `Hold` runs them on its
+  timer thread as before and queues the others. Up to 32 actions wait; a
+  further one is dropped and counted in `executor_jobs_dropped`. Macros
+  still run side by side: a `Delay` waits on a high-resolution timer of
+  the executor, which ends it within about 1 ms of its time and never
+  before, as the `thread::sleep` it replaces did, and holds up no other
+  action or macro, while a step that blocks inside Windows (a `Launch`, an
+  `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it
+  runs. Manual checks: with
+  `( keys: "F13", action: OpenUrl("https://example.com") )` and every
+  browser closed, 20 presses of F13 within a few seconds never pause
+  typing; with a `Sequence([Text("1"), Delay(2000), Text("2")])` on F16
+  and that `OpenUrl` on F13, F16 then F13 opens the browser at once and
+  types `2` two seconds after F16.
+- No cancellation for macros (roadmap item 2.1): `swch off`, a reload
+  (a saved `config.ron` that loads) and `swch exit` stop every running
+  macro within 100 ms, also inside a `Delay` of any length, and drop the
+  actions still queued; a step already running (a `Launch`, an `OpenUrl`)
+  finishes first. A save that does not load keeps the running macros, as
+  it keeps the bindings. A repeated `swch on` stops nothing. A macro no
+  longer starts a thread of its own. Manual check: with
+  `( keys: "F13", action: Sequence([Text("a"), Delay(10000), Text("b")]) )`,
+  F13 then `swch off` within 3 s types only `a`.
 - KS-10: holding a key no longer re-runs a one-shot action at the
   auto-repeat rate. With the default config, holding CapsLock switches the
   layout once and holding Shift+CapsLock toggles CapsLock once. A held
@@ -451,9 +516,10 @@ minor version; such entries sit under **Changed** and start with
   macro runs once. The repeats are still swallowed when the key-down was.
   A press that the daemon reads as an auto-repeat, because the key's
   previous release went to the lock screen or another desktop (KS-29), now
-  fires nothing for such a binding; the next press works. For a key whose key-down the daemon swallowed, which is the usual
-  trigger key, no roadmap item repairs that record yet: the key resync of
-  roadmap item 2.3 leaves such keys alone.
+  fires nothing for such a binding; the next press works. For a key whose
+  key-down the daemon swallowed, which is the usual trigger key, no roadmap
+  item repairs that record yet: the key resync of roadmap item 2.3 leaves
+  such keys alone.
 - KS-11: a timer left over from an earlier press no longer acts on a newer
   press of the same key. Two quick taps fire twice, a Hold no longer fires
   early on the next press, and a quick series of DoubleTaps no longer loses
@@ -585,7 +651,9 @@ minor version; such entries sit under **Changed** and start with
   for `["F14+F15", "F14+F16"]`, which was left held in Windows.
 - KS-33 (partly; an unverified report): Tap and DoubleTap no longer start a
   thread per press, and a Hold timer thread that cannot be started is
-  logged instead of aborting the daemon; that Hold then does not fire.
+  logged instead of aborting the daemon; that Hold then does not fire. A
+  `Sequence` macro no longer starts a thread, so it cannot abort the daemon
+  when one cannot be started (roadmap item 2.1).
 - KS-38: `cargo test --release` and `cargo bench` no longer build a libtest
   harness from `src/main.rs` (`test = false` and `bench = false` on the
   daemon binary). That harness inherited the daemon's `requireAdministrator`
