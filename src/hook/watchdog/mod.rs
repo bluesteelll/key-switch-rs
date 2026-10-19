@@ -49,7 +49,10 @@
 //!
 //! [`raw_key_event`] and [`count_raw_keys`] read an event's make code and
 //! virtual key only to tell whether the hook would see it, and return a
-//! count: the watchdog keeps counts and instants, and logs no key.
+//! count: the watchdog keeps counts and instants, and logs no key. The
+//! buffered read's buffer is cleared as soon as its batch is counted, and
+//! the standard read's record is a local of its call, so no key code
+//! outlives the count of its batch.
 
 mod decision;
 
@@ -858,13 +861,21 @@ struct RawBuffer([u8; RAW_BUFFER_BYTES]);
 impl RawBuffer {
     /// What a buffered read into this buffer that returned `written` read:
     /// nothing at 0, a failed read at `(UINT)-1`, else the key events among
-    /// the `written` records it holds.
+    /// the `written` records it holds. Clears the buffer after any read that
+    /// may have written to it.
     fn take(&mut self, written: u32) -> Read {
-        match written {
+        let read = match written {
             0 => Read::Empty,
             u32::MAX => Read::Failed,
             count => Read::Records(count_raw_keys(&self.0, count)),
+        };
+        // The buffer lives as long as the thread, and a later, smaller batch
+        // overwrites only its own records: without this, a larger batch's
+        // key codes would stay here (ruling L2, R-m2).
+        if written != 0 {
+            self.0.fill(0);
         }
+        read
     }
 }
 
