@@ -35,19 +35,15 @@
 //! events wait in the queue, and each tick, four times a second while keys
 //! are typed, reads them all in one drain (`GetRawInputBuffer`, 76 keyboard
 //! records per call on x64). The first key event after the thread went
-//! idle ends its wait, once per burst of keys, on another core, and that
-//! wake only sets the tick timer: no pump and no read, so the event waits
-//! in the queue for the first tick, a quarter of a second later (roadmap
-//! item 2.5, cut D12). A keyboard callback that runs at the same time pays
-//! what bench row R16 shows against R12, a gated row since item 2.5. A key
-//! press or a shortcut costs no more wakes than it did when the wake read
-//! at once, since the drain that reads its last raw event is a tick either
-//! way; a burst of a single raw key event, such as a key-up whose key-down
-//! came 2 s or more earlier, costs one more tick. Whether a key's raw input
-//! reaches this thread before its hook call, so that the key's own callback
-//! meets the wake, or after it, so that only a key event in the
-//! microseconds that follow can, is not documented (item 2.4's cut Q6;
-//! roadmap check 44 settles it). Idle, the thread waits with no wake-up.
+//! idle ends its wait, once per burst of keys, and that wake and its pass
+//! run on another core. A keyboard callback that runs at the same time is
+//! about 50 us slower at the median on the developer's machine (bench row
+//! R16 against R12, a declared row, measured and not gated: ruling L2).
+//! That is the worst order. Whether a key's raw input reaches this thread
+//! before its hook call, so that the key's own callback meets the wake, or
+//! after it, so that only a key event in the microseconds that follow can,
+//! is not documented (cut Q6; manual check M6 settles it). Idle, the thread
+//! waits with no wake-up.
 //!
 //! # Raw input in this process
 //!
@@ -75,7 +71,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
+    Foundation::{HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
     System::Threading::{GetCurrentThreadId, INFINITE},
     UI::{
         Input::{
@@ -238,17 +234,6 @@ impl<T: TickTimer> Ticker<T> {
             Some(_) => None,
             None => self.watchdog.next_tick(),
         }
-    }
-
-    /// The pass of a wake that only starts the ticks (roadmap item 2.5, cut
-    /// D12): the first raw key event after idle ended the wait, and it waits
-    /// in the queue for the first tick's drain. A counted wake whose one
-    /// Win32 call is the timer's set, so that a keyboard callback running
-    /// at the same moment on another core meets no user32 work here.
-    fn woke_idle<R>(&mut self, now: Instant, context: &Context<'_, R>) {
-        self.stats.wakes += 1;
-        self.watchdog.raw_pending(now);
-        self.arm(now, context);
     }
 
     /// One pass after any wake and its drain, `drained`: counts the raw key
@@ -722,11 +707,9 @@ fn run_watchdog<R: RequestReinstall>(
 /// then one pass, which sets the timer again (ruling I1). While the
 /// watchdog ticks the wait leaves raw input out, so the key events wait in
 /// the queue for the tick's drain and wake nothing; idle, the first of a
-/// burst ends the wait (ruling L1), and that wake only starts the ticks: no
-/// pump and no drain, so the event waits for the first tick (roadmap item
-/// 2.5, cut D12). It never waits while a drain left raw input in the queue
-/// (ruling V3-I1). Ends at `WM_QUIT`, after a last drain into the counts, or
-/// when the wait fails.
+/// burst ends the wait (ruling L1). It never waits while a drain left raw
+/// input in the queue (ruling V3-I1). Ends at `WM_QUIT`, after a last drain
+/// into the counts, or when the wait fails.
 fn run_loop<R: RequestReinstall>(
     ticker: &mut Ticker<WaitableTimer>,
     window: HWND,
@@ -763,18 +746,6 @@ fn run_loop<R: RequestReinstall>(
                 windows::core::Error::from_thread()
             );
             return;
-        } else if defers_first_read(
-            woke,
-            mask,
-            source.batched_wake(),
-            context.health.hook_installed(),
-        ) {
-            // The next wait ticks and leaves the batched input out, so it
-            // does not return for the same input: the first tick or input
-            // of another kind ends it, and that pass pumps.
-            ticker.woke_idle(Instant::now(), context);
-            drained = Drained::default();
-            continue;
         }
         // Any other return, a message, a timeout or a return with nothing
         // to do ("MsgWaitForMultipleObjectsEx can return even though no
@@ -795,27 +766,6 @@ fn run_loop<R: RequestReinstall>(
         }
         ticker.pass(Instant::now(), drained, context);
     }
-}
-
-/// What the wait returns when input of its mask ended it: `WAIT_OBJECT_0 +
-/// nCount`, with the tick timer the one handle ("New input of the type
-/// specified in the dwWakeMask parameter is available in the thread's input
-/// queue", MsgWaitForMultipleObjectsEx).
-const WOKE_BY_INPUT: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
-
-/// Whether the pass after a wait that returned `woke`, with the wake mask
-/// `mask`, only starts the ticks (roadmap item 2.5, cut D12): input ended a
-/// wait that included the batched input `batched`, so the watchdog was idle
-/// and the first raw key event of a burst may have woken it, while the
-/// keyboard hook is installed, so that the event counts (ruling I3). Input
-/// of another kind costs one tick at most.
-fn defers_first_read(
-    woke: WAIT_EVENT,
-    mask: QUEUE_STATUS_FLAGS,
-    batched: QUEUE_STATUS_FLAGS,
-    hook_installed: bool,
-) -> bool {
-    woke == WOKE_BY_INPUT && mask.contains(batched) && hook_installed
 }
 
 /// The wait's wake mask: every kind of input, less the batched input
@@ -1496,36 +1446,16 @@ mod tests {
             self.start + Duration::from_millis(ms)
         }
 
-        /// A raw key event at `ms`: queued, and a wake if the wait includes
-        /// raw input and no drain is due anyway. The wake only starts the
-        /// ticks while the hook is installed (cut D12), and is a pass with a
-        /// drain otherwise.
+        /// A raw key event at `ms`: queued, and a pass if the wait includes
+        /// raw input and no drain is due anyway.
         fn raw(&mut self, ms: u64) {
             self.queued += 1;
             self.raws += 1;
-            let batched = Source::Keyboard.batched_wake();
-            let mask = wake_mask(batched, self.ticker.is_ticking());
+            let mask = wake_mask(Source::Keyboard.batched_wake(), self.ticker.is_ticking());
             if !self.left && mask.contains(QS_RAWINPUT) {
                 self.raw_wakes += 1;
-                if defers_first_read(WOKE_BY_INPUT, mask, batched, self.health.hook_installed()) {
-                    self.wake(ms);
-                } else {
-                    self.pass(ms);
-                }
+                self.pass(ms);
             }
-        }
-
-        /// A wake at `ms` that only starts the ticks (cut D12): a counted
-        /// pass with no drain, and what it did to the timer.
-        fn wake(&mut self, ms: u64) {
-            let context = Context {
-                health: self.health,
-                counters: self.counters,
-                requests: &self.recorder,
-                input_here: self.input_here,
-            };
-            self.ticker.woke_idle(self.at(ms), &context);
-            self.after_pass(ms);
         }
 
         /// The main thread answers the newest request with `outcome`.
@@ -1565,12 +1495,6 @@ mod tests {
                 ..Drained::default()
             };
             self.ticker.pass(self.at(ms), drained, &context);
-            self.after_pass(ms);
-        }
-
-        /// Counts the pass at `ms`, and records what it did to the timer
-        /// and the requester.
-        fn after_pass(&mut self, ms: u64) {
             self.passes += 1;
             self.pass_times.push(ms);
             for call in self.ticker.timer.calls.borrow_mut().drain(..) {
@@ -1748,10 +1672,8 @@ mod tests {
             }
         });
         assert_eq!(drive.raw_wakes, 2);
-        // The first tick, at 250 ms, reads the event (cut D12), so ticking
-        // ends 2 s later.
         assert!(
-            !drive.pass_times.iter().any(|ms| (2500..5000).contains(ms)),
+            !drive.pass_times.iter().any(|ms| (2250..5000).contains(ms)),
             "ticking stopped before 5000 ms: {:?}",
             drive.pass_times
         );
@@ -1785,52 +1707,10 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_wake_with_no_hook_installed_still_reads_at_once() {
-        // Cut D12 keeps ruling I3: with no keyboard hook installed raw input
-        // does not count, so its wake starts no ticks. It reads the event at
-        // once, and the watchdog stays idle.
-        let mut drive = Drive::new(Recorder::new());
-        drive.health.set_hook_installed(false);
-        drive.run(0, 600, |ms| ms == 0);
-        assert_eq!(drive.reads, [(0, 1)]);
-        assert_eq!(drive.timer_calls, [] as [(u64, TimerCall); 0]);
-        assert!(!drive.ticker.is_ticking());
-    }
-
-    #[test]
-    fn a_deferred_wake_is_followed_by_a_wait_that_leaves_only_the_batched_input_out() {
-        // Cut D12, no spin: after a wake that only started the ticks, the
-        // next wait leaves out the batched input, which is still queued, and
-        // names every other kind, with no timeout while the timer is set. It
-        // returns at the first tick or for input of another kind, and that
-        // pass pumps instead of deferring again.
-        let mut drive = Drive::new(Recorder::new());
-        drive.raw(0);
-        assert_eq!(drive.timer_calls, [(0, TimerCall::Set(TICK))]);
-        assert_eq!(drive.reads, [] as [(u64, u64); 0], "nothing read yet");
-        let batched = Source::Keyboard.batched_wake();
-        let (mask, timeout) = next_wait(
-            batched,
-            drive.ticker.is_ticking(),
-            drive.ticker.wake_by(),
-            Drained::default(),
-            drive.at(0),
-        );
-        assert_eq!(mask, QS_ALLINPUT & !QS_RAWINPUT);
-        assert_eq!(timeout, INFINITE, "the timer brings the tick");
-        assert!(
-            !defers_first_read(WOKE_BY_INPUT, mask, batched, true),
-            "no second deferral in a row"
-        );
-    }
-
-    #[test]
     fn a_batch_read_at_a_tick_counts_all_its_events() {
-        // The first tick reads the events of 0 to 240 ms, the one of 0 ms
-        // whose wake read nothing included (cut D12).
         let mut drive = Drive::new(Recorder::new());
         drive.run(0, 5000, |ms| ms.is_multiple_of(30));
-        assert!(drive.reads.contains(&(250, 9)), "{:?}", drive.reads);
+        assert!(drive.reads.contains(&(250, 8)), "{:?}", drive.reads);
         assert_eq!(drive.requests, [1000]);
         let request = drive.sent_requests[0];
         assert_eq!(request.seen, 0);
@@ -2011,12 +1891,11 @@ mod tests {
     #[test]
     fn a_flood_whose_callbacks_were_counted_at_one_tick_draws_no_request() {
         // Ruling V3-I1, the critic's row: the callbacks counted at the tick
-        // of 250 ms explain the raw events read until 750 ms, the first
-        // one's included, which its wake left for that tick (cut D12).
+        // of 250 ms explain the raw events read until 749 ms.
         let drive = a_flood(10_000);
         assert_eq!(
             drive.reads.last().map(|&(ms, _)| ms),
-            Some(750),
+            Some(749),
             "read over two ticks"
         );
         assert_eq!(drive.requests, [] as [u64; 0]);
