@@ -9,12 +9,19 @@
 //! held if either Shift slot or the generic one is set, `LShift` only if
 //! the left one is. For an auto-blocker it also visits every code held.
 //!
-//! No key event reads the OS key state for the modifiers (roadmap item
-//! 2.5): each one the engine decides sets or clears its own flag
-//! ([`KeyState::press`], [`KeyState::release`]), and so does each injected
-//! modifier event of the daemon ([`KeyState::track_injected`]). The main
-//! thread reads the sided modifiers from the OS between key events, when
-//! something could have hidden one ([`KeyState::resync_modifiers`]).
+//! The modifier flags follow the key events (roadmap item 2.5): each one
+//! the engine decides sets or clears its own flag ([`KeyState::press`],
+//! [`KeyState::release`]), and so does each injected modifier event of the
+//! daemon ([`KeyState::track_injected`]). Two reads of the OS key state
+//! repair what the hook did not see. A decided key event first asks
+//! Windows about each modifier held for it and drops those Windows has up,
+//! which repairs a modifier released where the hook could not see it or
+//! swallowed by a hook after the daemon's
+//! ([`KeyState::clear_released_modifiers`]). The main thread reads the
+//! sided modifiers between key events when something could have hidden
+//! one, which also takes a modifier pressed where the hook could not see
+//! it ([`KeyState::resync_modifiers`]). Neither touches a modifier whose
+//! key-down was swallowed (KS-14), and neither ever sets a generic slot.
 //!
 //! A reset rebuilds the table: from the OS key state when remapping is
 //! switched off or on ([`KeyState::resync_from_os`]), and with every key
@@ -31,11 +38,6 @@ use super::matching::HeldKeys;
 use super::modifiers::ModifierSet;
 use super::{KeyDirection, KeyEvent};
 use crate::data::key_spec::KeySpec;
-
-/// The Alt and Win codes, the generic `VK_MENU` slot of an injector's Alt
-/// included. A lone Win or Alt press that Windows sees opens the Start menu
-/// or activates the menu bar on its release (KS-12).
-const MENU_KEYS: [VIRTUAL_KEY; 5] = [VK_LMENU, VK_RMENU, VK_MENU, VK_LWIN, VK_RWIN];
 
 /// Mouse buttons. They have virtual-key codes, and the OS key state reports
 /// them, but the keyboard hook never sees them, so
@@ -93,17 +95,50 @@ impl KeyState {
 
     /// Reads the modifiers of `which` from the OS key state, on the main
     /// thread between key events (roadmap item 2.5): a sided code takes the
-    /// OS state. A modifier whose key-down was suppressed is left alone:
-    /// Windows never saw it go down, so its key state says up while the key
-    /// is held, and overwriting the flag would also turn the key's next
-    /// auto-repeat into a fresh press (KS-14). No record changes.
+    /// OS state; a generic code is asked only while its slot is set, and
+    /// cleared when it reads up, which it does only when neither key of its
+    /// pair is down (cut D3). A modifier whose key-down was suppressed is
+    /// left alone: Windows never saw it go down, so its key state says up
+    /// while the key is held, and overwriting the flag would also turn the
+    /// key's next auto-repeat into a fresh press (KS-14). No record changes.
     pub(super) fn resync_modifiers(&mut self, env: &dyn Env, which: ModifierSet) {
         for modifier in which.codes() {
             let index = usize::from(modifier.0);
-            if !ModifierSet::SIDED.contains(modifier) || self.key_down_swallowed(index) {
+            if self.key_down_swallowed(index) {
                 continue;
             }
-            self.active[index] = env.os_key_down(modifier);
+            if ModifierSet::SIDED.contains(modifier) {
+                self.active[index] = env.os_key_down(modifier);
+            } else if self.active[index] && !env.os_key_down(modifier) {
+                self.active[index] = false;
+            }
+        }
+    }
+
+    /// The check of a decided key event of `own` (roadmap item 2.5, ruling
+    /// W2a, cut D16): every code of `among` that the engine holds, but
+    /// `own` and a modifier whose key-down was swallowed (KS-14), is asked
+    /// of Windows, and dropped if Windows has it up. It never sets a flag
+    /// and changes no record. A generic code reads its generic state, up
+    /// only when neither key of its pair is down. Windows has applied every
+    /// earlier event when the hook is called for the next one, which the
+    /// per-event resync before this check relied on as well; the event's own
+    /// key lags until the hook returns, so it is never asked.
+    pub(super) fn clear_released_modifiers(
+        &mut self,
+        env: &dyn Env,
+        own: VIRTUAL_KEY,
+        among: ModifierSet,
+    ) {
+        for modifier in among.codes() {
+            let index = usize::from(modifier.0);
+            if self.active[index]
+                && modifier != own
+                && !self.key_down_swallowed(index)
+                && !env.os_key_down(modifier)
+            {
+                self.active[index] = false;
+            }
         }
     }
 
@@ -267,7 +302,7 @@ impl KeyState {
     /// event's own record update, an Alt or Win key-down being swallowed
     /// right now does not count.
     pub(super) fn alt_or_win_down_in_windows(&self) -> bool {
-        MENU_KEYS.iter().any(|key| {
+        ModifierSet::MENU.codes().any(|key| {
             let index = usize::from(key.0);
             self.active[index] && !self.key_down_swallowed(index)
         })
@@ -815,6 +850,86 @@ mod tests {
             !fresh.is_active(VK_SHIFT),
             "the read never sets a generic slot"
         );
+    }
+
+    /// An [`Env`] in which Windows has exactly the listed codes down, which
+    /// records every code it is asked about.
+    struct AskedDown {
+        down: &'static [VIRTUAL_KEY],
+        asked: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl AskedDown {
+        fn new(down: &'static [VIRTUAL_KEY]) -> Self {
+            Self {
+                down,
+                asked: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn take(&self) -> Vec<VIRTUAL_KEY> {
+            std::mem::take(&mut *self.asked.borrow_mut())
+        }
+    }
+
+    impl Env for AskedDown {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.asked.borrow_mut().push(vk);
+            self.down.contains(&vk)
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_check_reads_only_held_modifiers_skips_its_own_key_and_a_swallowed_one_and_never_sets_a_flag()
+     {
+        // Roadmap item 2.5, cut D16: a key event of RAlt with LCtrl held
+        // (its key-down passed) and LShift held (its key-down swallowed).
+        // Windows has only LWin down, which the engine does not hold.
+        let mut state = KeyState::new();
+        state.press(VK_LCONTROL);
+        state.mark_passed(VK_LCONTROL.0);
+        state.press(VK_LSHIFT);
+        state.mark_blocked(VK_LSHIFT.0);
+        state.press(VK_RMENU);
+        let env = AskedDown::new(&[VK_LWIN]);
+
+        state.clear_released_modifiers(&env, VK_RMENU, ModifierSet::ALL);
+
+        assert_eq!(
+            env.take(),
+            [VK_LCONTROL],
+            "only the held, unswallowed LCtrl"
+        );
+        assert!(!state.is_active(VK_LCONTROL), "Windows has it up: dropped");
+        assert!(state.is_active(VK_LSHIFT), "swallowed: kept (KS-14)");
+        assert!(state.is_active(VK_RMENU), "the event's own key: kept");
+        assert!(!state.is_active(VK_LWIN), "never set from the OS");
+        assert!(state.is_passed(VK_LCONTROL.0), "no record changes");
+    }
+
+    #[test]
+    fn the_check_asks_a_generic_slot_its_generic_code_and_clears_it_only_when_it_reads_up() {
+        // Cut D3, D16: the generic Shift reads down while either Shift is.
+        let mut state = KeyState::new();
+        state.press(VK_SHIFT);
+        let right_down = AskedDown::new(&[VK_RSHIFT, VK_SHIFT]);
+        state.clear_released_modifiers(&right_down, VK_A, ModifierSet::ALL);
+        assert_eq!(right_down.take(), [VK_SHIFT]);
+        assert!(state.is_active(VK_SHIFT), "a Shift is down in Windows");
+
+        let nothing_down = AskedDown::new(&[]);
+        state.clear_released_modifiers(&nothing_down, VK_A, ModifierSet::ALL);
+        assert_eq!(nothing_down.take(), [VK_SHIFT]);
+        assert!(!state.is_active(VK_SHIFT), "neither Shift is down");
     }
 
     #[test]

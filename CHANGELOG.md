@@ -639,7 +639,24 @@ minor version; such entries sit under **Changed** and start with
   Shift, Ctrl, Alt and Win from the key events it sees, the daemon's own
   injected ones included. The generic codes `VK_SHIFT`, `VK_CONTROL` and
   `VK_MENU` count as held only between the key-down and the key-up a
-  program sends under them.
+  program sends under them. A key event asks Windows only about the
+  modifiers held for the daemon, one read each, and stops counting those
+  Windows has up: ordinary typing reads none, Ctrl+J one. A generic code
+  also stops counting once Windows has neither key of its pair down. The
+  main thread reads the eight sided modifiers between key events when
+  something could have hidden one: at startup, after a foreground change,
+  `swch on` and a hook reinstall, when keyboard input comes back from a
+  lock or the secure desktop, and after a callback that found the daemon
+  busy. A modifier pressed where the daemon cannot see it, with none of
+  these after it, counts as up until then or until its next auto-repeat
+  (known issue 88). A modifier released where the daemon cannot see it,
+  or swallowed by another program's hook after the daemon's, stops
+  counting at the next key-down. Tests:
+  `engine::scenarios::a_modifier_that_a_later_hook_swallows_does_not_count_for_matching`,
+  `a_shift_that_a_later_hook_swallows_does_not_make_alt_the_language_hotkey`,
+  `another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note`,
+  `engine::tests::a_key_event_asks_windows_once_for_each_modifier_held_for_it_and_never_for_its_own_key_or_a_swallowed_one`,
+  `engine::properties::no_key_sticks_and_no_key_up_reaches_windows_alone_when_hidden_modifier_events_go_unnoticed`.
 
 ### Fixed
 

@@ -57,8 +57,11 @@
 //!   hook does not see left unnoticed (`down_unnoticed`, `up_unnoticed`):
 //!   nothing the daemon notices comes after them, so the main thread's
 //!   read of the modifiers is not due (roadmap item 2.5, known issue 88).
-//!   No key is left down in Windows and no key-up reaches Windows alone,
-//!   whatever flags the engine holds (cut D11).
+//!   One press in ten also goes through a hook after the daemon's that
+//!   swallows the events of that press the daemon passes
+//!   (`down_swallowed_later` and its repeats and key-up), so Windows never
+//!   applies them. No key is left down in Windows and no key-up reaches
+//!   Windows alone, whatever flags the engine holds (cut D11).
 //!
 //! In the modes before Unnoticed every key event the hook does not see is
 //! noticed (`down_unseen`, `up_unseen`), so the main thread reads the
@@ -270,9 +273,34 @@ fn pick(rng: &mut SplitMix64, held: &[bool; KEYS.len()], want_held: bool) -> Opt
     (!candidates.is_empty()).then(|| candidates[rng.below(candidates.len())])
 }
 
-fn press(scenario: Scenario, held: &mut [bool; KEYS.len()], index: usize) -> Scenario {
+/// A key-down of the up key `index`. In Unnoticed mode one in ten goes
+/// through a hook after the daemon's that swallows the press's events the
+/// daemon passes (`later`, roadmap item 2.5); the other modes draw nothing
+/// for it, so their seeds keep their scripts.
+fn press(
+    scenario: Scenario,
+    rng: &mut SplitMix64,
+    held: &mut [bool; KEYS.len()],
+    later: &mut [bool; KEYS.len()],
+    index: usize,
+    mode: Mode,
+) -> Scenario {
     held[index] = true;
-    scenario.down(KEYS[index])
+    if mode.unnoticed() && rng.below(10) == 0 {
+        later[index] = true;
+        scenario.down_swallowed_later(KEYS[index])
+    } else {
+        scenario.down(KEYS[index])
+    }
+}
+
+/// An auto-repeat of the held key `index`.
+fn repeat(scenario: Scenario, later: &[bool; KEYS.len()], index: usize) -> Scenario {
+    if later[index] {
+        scenario.repeat_swallowed_later(KEYS[index])
+    } else {
+        scenario.repeat(KEYS[index])
+    }
 }
 
 /// Appends one generated step to the script.
@@ -280,6 +308,7 @@ fn step(
     scenario: Scenario,
     rng: &mut SplitMix64,
     held: &mut [bool; KEYS.len()],
+    later: &mut [bool; KEYS.len()],
     mode: Mode,
 ) -> Scenario {
     let delay = |rng: &mut SplitMix64| DELAYS_MS[rng.below(DELAYS_MS.len())];
@@ -293,35 +322,38 @@ fn step(
                     scenario.down_unseen(KEYS[index])
                 }
             }
-            Some(index) => press(scenario, held, index),
+            Some(index) => press(scenario, rng, held, later, index, mode),
             None => {
                 let index = pick(rng, held, true).expect("invariant: some key is held");
-                scenario.repeat(KEYS[index])
+                repeat(scenario, later, index)
             }
         },
         35..60 => match pick(rng, held, true) {
-            Some(index) => scenario.repeat(KEYS[index]),
+            Some(index) => repeat(scenario, later, index),
             None => {
                 let index = pick(rng, held, false).expect("invariant: some key is up");
-                press(scenario, held, index)
+                press(scenario, rng, held, later, index, mode)
             }
         },
         60..85 => match pick(rng, held, true) {
             Some(index) => {
                 held[index] = false;
+                let swallowed_later = std::mem::replace(&mut later[index], false);
                 if mode.loses_key_ups() && rng.below(10) == 0 {
                     if mode.unnoticed() {
                         scenario.up_unnoticed(KEYS[index])
                     } else {
                         scenario.up_unseen(KEYS[index])
                     }
+                } else if swallowed_later {
+                    scenario.up_swallowed_later(KEYS[index])
                 } else {
                     scenario.up(KEYS[index])
                 }
             }
             None => {
                 let index = pick(rng, held, false).expect("invariant: some key is up");
-                press(scenario, held, index)
+                press(scenario, rng, held, later, index, mode)
             }
         },
         85..95 => scenario.advance_ms(delay(rng)),
@@ -374,12 +406,17 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
     }
 
     let mut held = [false; KEYS.len()];
+    let mut later = [false; KEYS.len()];
     for _ in 0..STEPS {
-        scenario = step(scenario, &mut rng, &mut held, mode);
+        scenario = step(scenario, &mut rng, &mut held, &mut later, mode);
     }
     for (index, key) in KEYS.iter().enumerate() {
         if held[index] {
-            scenario = scenario.up(key);
+            scenario = if later[index] {
+                scenario.up_swallowed_later(key)
+            } else {
+                scenario.up(key)
+            };
         }
     }
     scenario.advance_ms(2000).expect_nothing_stuck();

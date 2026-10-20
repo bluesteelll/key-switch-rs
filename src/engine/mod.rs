@@ -126,13 +126,19 @@
 //!
 //! 1. The modifier flags are the engine's own: each key event it decides
 //!    sets or clears its key's flag, and so does each injected modifier
-//!    event of the daemon. They are read from [`Env::os_key_down`] only
-//!    between key events, by the main thread's drain, when something could
-//!    have hidden a key event (roadmap item 2.5), skipping every modifier
-//!    whose key-down was suppressed: Windows never saw that key go down, so
-//!    it stays held for matching and its auto-repeats stay auto-repeats
-//!    (KS-14). A generic code (`VK_SHIFT`) is held only between the
-//!    key-down and the key-up a program sends under it.
+//!    event of the daemon. Before anything reads them, the key-down asks
+//!    [`Env::os_key_down`] about each modifier held for the engine and
+//!    drops those Windows has up (the check, roadmap item 2.5): one read
+//!    per modifier held, none in ordinary typing. The main thread's drain
+//!    reads the sided modifiers between key events when something could
+//!    have hidden a key event, which also takes a modifier pressed where
+//!    the hook could not see it. Both skip the key being delivered, whose
+//!    state lags until the hook returns, and every modifier whose key-down
+//!    was suppressed: Windows never saw that key go down, so it stays held
+//!    for matching and its auto-repeats stay auto-repeats (KS-14). A
+//!    generic code (`VK_SHIFT`) is held only between the key-down and the
+//!    key-up a program sends under it, or until a read finds neither key
+//!    of its pair down.
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
 //! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
 //!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
@@ -230,7 +236,9 @@
 //! the menu mask key (`Decision::mask`, roadmap item 1.2, KS-12) if the
 //! event is suppressed while an Alt or Win key is held whose key-down
 //! Windows saw: one on record as passed, or one the main thread's read
-//! found held with no record. Windows then has a lone Alt or Win press so far, whose release
+//! found held with no record. At a swallowed key-up the held Alt and Win
+//! keys are checked against Windows first, as at a key-down (roadmap item
+//! 2.5). Windows then has a lone Alt or Win press so far, whose release
 //! would activate the menu bar or open the Start menu; the mask key comes
 //! between. An Alt or Win whose key-down was swallowed, this event's
 //! included, does not count. A `MaskOnly` auto-blocker also asks for the
@@ -546,7 +554,17 @@ impl Engine {
         self.resync.event(event.vk, true);
 
         let mut decision = match event.direction {
-            KeyDirection::Down => self.on_key_down(event.vk, bindings, env),
+            KeyDirection::Down => {
+                // The check (roadmap item 2.5, cut D16), before every reader
+                // of a modifier flag at a key-down: drop each modifier held
+                // for the engine that Windows has up, so that a key-up the
+                // hook did not see, or a key-down that a hook after this one
+                // swallowed, counts no more. One read per modifier held;
+                // ordinary typing reads none.
+                self.keys
+                    .clear_released_modifiers(env, event.vk, ModifierSet::ALL);
+                self.on_key_down(event.vk, bindings, env)
+            }
             KeyDirection::Up => self.on_key_up(event.vk, env),
         };
         decision.mask |= mask_owed;
@@ -979,6 +997,13 @@ impl Engine {
         // side, because Windows applies it to a side the event does not
         // name.
         decision.suppress = swallow && !env.os_key_down(vk);
+        if decision.suppress {
+            // The mask is the one reader of a flag at a key-up, and only at
+            // one that is swallowed, of the Alt and Win codes: the check
+            // runs there only (cut D16).
+            self.keys
+                .clear_released_modifiers(env, vk, ModifierSet::MENU);
+        }
         self.mask_if_swallowed_under_alt_or_win(&mut decision);
         decision
     }
@@ -1438,6 +1463,29 @@ mod tests {
         fn foreground_title(&self) -> Option<&str> {
             None
         }
+    }
+
+    #[test]
+    fn a_key_decided_inside_a_passed_modifiers_hook_call_finds_it_up_when_a_later_hook_swallowed_it()
+     {
+        // Ruling V3-I1: PowerToys Keyboard Manager, whose hook runs after
+        // the daemon's, remaps the left Win to F13. It swallows the LWin
+        // key-down the daemon passed and injects F13 from inside its own
+        // hook call, so the daemon decides F13 while LWin's call is still on
+        // its stack. Windows never applies that LWin, and the check reads it
+        // up, so the exact F13 binding fires, as before roadmap item 2.5.
+        let bindings = loaded(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#);
+        let env = OsEnv::new(&[]);
+        let mut engine = Engine::new();
+        let win = engine.on_key(KeyEvent::down(VK_LWIN), &bindings, &env);
+        assert!(!win.suppress, "the daemon passes LWin");
+        let f13 = engine.on_key(KeyEvent::down(VK_F13), &bindings, &env);
+        assert_eq!(
+            f13.fire,
+            [BindAction::DoNothing],
+            "the exact F13 binding fires"
+        );
+        assert!(!engine.holds(VK_LWIN), "LWin no longer counts");
     }
 
     #[test]

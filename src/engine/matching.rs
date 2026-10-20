@@ -19,7 +19,11 @@
 //! just pressed is one of the hotkey's, all of them are held, and every
 //! other key held is one Windows does not have down, because a binding
 //! swallowed its key-down or the hook missed its key-up. Only for those
-//! other keys does [`blocker_matches`] ask about Windows' key state.
+//! other keys does [`blocker_matches`] ask about Windows' key state. By
+//! then the key-down's check has dropped every modifier held for the
+//! engine that Windows has up (roadmap item 2.5), so a modifier that the
+//! hook saw released, or that a later hook swallowed, no longer counts
+//! here or for any binding.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 

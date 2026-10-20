@@ -41,10 +41,14 @@ pub trait Env {
     /// except at a key-up it would swallow, where the state before the
     /// event is exactly the question: down means Windows holds a key-down
     /// of it that the engine did not swallow, so the key-up passes (roadmap
-    /// item 2.3). No key event asks about the modifiers: the main thread's
-    /// read between key events asks about the sided ones, leaving out every
-    /// modifier whose key-down it swallowed and every one an event touched
-    /// since the last read (roadmap item 2.5). An auto-blocker asks,
+    /// item 2.3). A key-down asks about each modifier held for the engine
+    /// whose key-down it did not swallow, and a key-up it swallows about
+    /// each such Alt and Win, to drop those Windows has up (roadmap item
+    /// 2.5); the state of a key whose earlier event Windows has applied is
+    /// the question there. The main thread's read between key events asks
+    /// about the sided modifiers, leaving out every modifier whose key-down
+    /// it swallowed and every one an event touched since the last read, and
+    /// about a generic code only while the engine holds it. An auto-blocker asks,
     /// without overwriting anything, about the held keys outside its
     /// hotkey, to learn whether Windows would see more than the hotkey. The
     /// reset of `swch off` and `swch on`, which has no event, asks about

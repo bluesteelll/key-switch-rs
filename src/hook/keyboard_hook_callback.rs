@@ -100,6 +100,17 @@
 //! `SendInput` waits; one that does finds the state free and does what any
 //! foreground change does.
 //!
+//! Another program's hook later in the chain can inject input from inside
+//! its own call, while this thread waits in `CallNextHookEx`, as a remapper
+//! such as PowerToys Keyboard Manager does, and this hook is then called for
+//! that input before Windows applies the outer event. The key-down check of
+//! such a nested event finds the outer modifier as Windows has it then:
+//! up, since Windows applies an event only after its hook calls return. A
+//! remapper that swallows the outer key-down never lets Windows apply it,
+//! so dropping it is right; if every later hook passes it instead, the
+//! nested key misses a binding that names that modifier, as before roadmap
+//! item 2.5 (known issue 88; no program is known to do that).
+//!
 //! Nothing under the borrow waits for messages or injects input, and
 //! `with_main` refuses a nested call on the same thread, so an event that
 //! did arrive under the borrow would pass instead of panicking or hanging.
