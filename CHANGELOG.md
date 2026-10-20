@@ -654,10 +654,11 @@ minor version; such entries sit under **Changed** and start with
   something could have hidden one: at startup, after a foreground change,
   `swch on` and a hook reinstall, when keyboard input comes back from a
   lock or the secure desktop, and after a callback that found the daemon
-  busy or ended late, or a stretch of 17 ms or more away from its
-  messages. A modifier pressed where the daemon cannot see it, with none of
-  these after it, counts as up until then or until its next auto-repeat
-  (known issue 88). A modifier released where the daemon cannot see it,
+  busy or ended late, a stretch of 17 ms or more away from its messages,
+  or a gap the hook watchdog saw. A modifier pressed where the daemon
+  cannot see it, with none of these after it, counts as up until then or
+  until its next auto-repeat (known issue 88). A modifier released where
+  the daemon cannot see it,
   or swallowed by another program's hook after the daemon's, stops
   counting at the next key-down. Tests:
   `engine::scenarios::a_modifier_that_a_later_hook_swallows_does_not_count_for_matching`,

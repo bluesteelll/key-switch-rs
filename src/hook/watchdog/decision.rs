@@ -113,6 +113,11 @@ pub(crate) struct Watchdog {
     outstanding: bool,
     /// Reinstalls and failed attempts since the last callback seen.
     attempts: u32,
+    /// The raw key events of the last tick's interval that neither the
+    /// callbacks counted before it nor those of the interval explain
+    /// (roadmap item 2.5): Windows may have applied them without the
+    /// daemon, so its main thread reads the modifiers again.
+    unseen_at_last_tick: u64,
 }
 
 impl Watchdog {
@@ -129,6 +134,7 @@ impl Watchdog {
             next_tick: None,
             outstanding: false,
             attempts: 0,
+            unseen_at_last_tick: 0,
         }
     }
 
@@ -160,6 +166,13 @@ impl Watchdog {
         self.next_tick
     }
 
+    /// The raw key events of the last tick's interval that no callback
+    /// explains, the credit of earlier callbacks included (roadmap item
+    /// 2.5).
+    pub(crate) fn unseen_at_last_tick(&self) -> u64 {
+        self.unseen_at_last_tick
+    }
+
     /// The silence a request needs now (rule 5).
     fn window(&self) -> Duration {
         SILENCE * (1 << self.attempts.min(MAX_BACKOFF_SHIFT))
@@ -173,6 +186,7 @@ impl Watchdog {
         let arrived = self.raw_events.saturating_sub(self.raw_at_last_tick);
         self.last_callbacks = callbacks;
         self.raw_at_last_tick = self.raw_events;
+        self.unseen_at_last_tick = arrived.saturating_sub(self.credit.saturating_add(answered));
 
         // The callbacks counted before explain this interval's raw events
         // first; the rest of their credit waits only for raw input still
@@ -286,6 +300,8 @@ mod tests {
         start: Instant,
         /// The heartbeat: every callback the script made.
         callbacks: u64,
+        /// The unexplained raw key events of each tick, in tick order.
+        unseen: Vec<u64>,
         /// When each request was made, in ms, and the request.
         requests: Vec<(u64, ReinstallRequest)>,
         /// When each tick ran, in ms.
@@ -303,6 +319,7 @@ mod tests {
                 watchdog: Watchdog::new(start, 0),
                 start,
                 callbacks: 0,
+                unseen: Vec::new(),
                 requests: Vec::new(),
                 ticks: Vec::new(),
                 idle: Vec::new(),
@@ -359,6 +376,7 @@ mod tests {
                         Verdict::Idle => self.idle.push(ms),
                         Verdict::TickAt(at) => assert_eq!(at, now + TICK),
                     }
+                    self.unseen.push(self.watchdog.unseen_at_last_tick());
                     assert_eq!(
                         self.watchdog.next_tick(),
                         match self.idle.last() {
@@ -392,6 +410,36 @@ mod tests {
         assert_eq!(request.seen, 0, "the heartbeat the decision read");
         assert!(request.silent_for >= SILENCE, "{request:?}");
         assert_eq!(request.attempt, 1);
+    }
+
+    #[test]
+    fn a_tick_reports_raw_key_events_no_callback_explains() {
+        // Roadmap item 2.5, E6: typing with a silent callback leaves raw key
+        // events that no callback explains at the ticks; a callback that
+        // keeps up, each one before its raw event (the order cut D12 finds
+        // probable), leaves none at any tick. A raw event read at a tick
+        // before its own callback runs counts once, which costs the main
+        // thread one more read of the modifiers and nothing else.
+        let mut silent = Feeder::new();
+        silent.run(0, 3000, typing);
+        assert!(
+            silent.unseen.iter().any(|&unseen| unseen > 0),
+            "{:?}",
+            silent.unseen
+        );
+
+        let mut keeps_up = Feeder::new();
+        keeps_up.run(0, 3000, |ms, f| match ms % 30 {
+            0 => f.callback(),
+            1 => f.raw(ms),
+            _ => {}
+        });
+        assert!(!keeps_up.unseen.is_empty(), "it ticked");
+        assert!(
+            keeps_up.unseen.iter().all(|&unseen| unseen == 0),
+            "{:?}",
+            keeps_up.unseen
+        );
     }
 
     #[test]

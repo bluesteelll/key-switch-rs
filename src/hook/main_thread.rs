@@ -375,15 +375,16 @@ impl MainState {
 
     /// The drain's read of the modifiers from the OS key state (roadmap
     /// item 2.5), if something could have hidden a key event since the last
-    /// one: the engine decides from its hiding count and this thread's
-    /// notes. Nothing while remapping is off: the reset of `swch on` reads
-    /// every key. Only `GetAsyncKeyState` runs under the borrow. Returns
-    /// whether the OS was asked.
+    /// one: the engine decides from its hiding count, this thread's notes
+    /// and the hook watchdog's (`HealthState::unseen_input`). Nothing while
+    /// remapping is off: the reset of `swch on` reads every key. Only
+    /// `GetAsyncKeyState` runs under the borrow. Returns whether the OS was
+    /// asked.
     pub(crate) fn resync_if_due(&mut self, hook: &KeyboardHook) -> bool {
         if !hook.is_enabled() {
             return false;
         }
-        let notes = hidden_input_notes();
+        let notes = hidden_input_notes().wrapping_add(hook.health().unseen_input());
         self.engine
             .resync_if_due(&HookEnv::new(&self.foreground), notes)
     }
@@ -665,6 +666,13 @@ impl MainThreadHandle {
         // its parameters. A thread id that is no longer valid only makes the
         // call fail, and that error is returned.
         unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
+    }
+
+    /// Wakes the main thread for a note of hidden input that the hook
+    /// watchdog made (roadmap item 2.5): its drain then reads the
+    /// modifiers. A lost wake loses no note: the next drain sums it.
+    pub(crate) fn wake_for_hidden_input(&self) {
+        self.wake();
     }
 
     /// Posted after the request it announces, so that a drain that missed
@@ -1963,6 +1971,19 @@ mod tests {
         note_hidden_input();
         assert!(read_due(&hook), "a note makes a read due");
         assert!(!read_due(&hook), "one read per note");
+    }
+
+    #[test]
+    fn the_drain_counts_the_watchdogs_notes() {
+        // Roadmap item 2.5, E6: a note of the hook watchdog, an atomic in
+        // the hook's health, makes the main thread's read due too.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook));
+        hook.health().note_unseen_input();
+        assert!(read_due(&hook), "the watchdog's note makes a read due");
+        assert!(!read_due(&hook), "once");
     }
 
     #[test]

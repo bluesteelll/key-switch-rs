@@ -15,8 +15,12 @@
 //! ([`decision`]), and when keys arrive and the callback stays silent for
 //! more than a second it asks the main thread, through its request queue,
 //! to reinstall the keyboard hook: only the thread that installed a hook may
-//! install it again (KS-01). It never injects input, which would reset the
-//! idle timer and keep the screen on.
+//! install it again (KS-01). A tick that reads raw key events no callback
+//! explains also notes them (`HealthState::note_unseen_input`) and wakes the
+//! main thread, whose drain then reads the modifiers again, since Windows
+//! may have applied those keys without the daemon (roadmap item 2.5). It
+//! never injects input, which would reset the idle timer and keep the
+//! screen on.
 //! Raw input counts only while the keyboard hook is installed (ruling I3),
 //! so the thread can start before `install` and stop after `uninstall`.
 //!
@@ -95,6 +99,11 @@ pub(crate) trait RequestReinstall: Send + 'static {
         &self,
         request: ReinstallRequest,
     ) -> Result<Receiver<ReinstallOutcome>, MainThreadError>;
+
+    /// A tick read raw key events that no callback explains, which it noted
+    /// in `HealthState`: wakes the main thread, so that its drain reads the
+    /// modifiers (roadmap item 2.5). Waits for nothing.
+    fn hidden_input(&self) {}
 }
 
 impl RequestReinstall for MainThreadHandle {
@@ -103,6 +112,10 @@ impl RequestReinstall for MainThreadHandle {
         request: ReinstallRequest,
     ) -> Result<Receiver<ReinstallOutcome>, MainThreadError> {
         self.request_reinstall(request)
+    }
+
+    fn hidden_input(&self) {
+        self.wake_for_hidden_input();
     }
 }
 
@@ -263,6 +276,12 @@ impl<T: TickTimer> Ticker<T> {
                 self.watchdog.tick(now, callbacks, drained.pending)
             {
                 self.ask(now, request, context);
+            }
+            // Raw key events that no callback explains may have changed what
+            // Windows has down without the daemon (E6, roadmap item 2.5).
+            if self.watchdog.unseen_at_last_tick() > 0 {
+                context.health.note_unseen_input();
+                context.requests.hidden_input();
             }
         }
         self.arm(now, context);
@@ -1252,6 +1271,9 @@ mod tests {
         answer: Option<ReinstallOutcome>,
         /// How many of the next requests the queue refuses as full.
         refusals: AtomicU32,
+        /// How many times the watchdog woke the main thread for hidden
+        /// input (roadmap item 2.5).
+        hidden: AtomicU32,
     }
 
     impl Recorder {
@@ -1268,6 +1290,7 @@ mod tests {
                 waiting: Mutex::new(Vec::new()),
                 answer,
                 refusals: AtomicU32::new(0),
+                hidden: AtomicU32::new(0),
             };
             (recorder, requests)
         }
@@ -1297,6 +1320,10 @@ mod tests {
                 .push(reply);
             let _ = self.sent.send((Instant::now(), request));
             Ok(answer)
+        }
+
+        fn hidden_input(&self) {
+            self.hidden.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -1601,6 +1628,36 @@ mod tests {
         assert!(drive.passes <= 22, "{} passes", drive.passes);
         assert_eq!(drive.ticker.stats().raw_keys, 101);
         assert_eq!(drive.requests, [] as [u64; 0]);
+    }
+
+    #[test]
+    fn a_tick_with_unexplained_raw_input_notes_and_wakes_the_main_thread() {
+        // Roadmap item 2.5, E6: typing with a silent callback; every tick
+        // that reads unexplained raw key events notes them and wakes the
+        // main thread once. A callback that keeps up draws neither.
+        let mut silent = Drive::new(Recorder::new());
+        silent.run(0, 3000, |ms| ms.is_multiple_of(30));
+        let noted = silent.health.unseen_input();
+        assert!(noted >= 1, "noted {noted}");
+        assert_eq!(
+            u64::from(silent.recorder.hidden.load(Ordering::Acquire)),
+            noted,
+            "one wake per note"
+        );
+
+        // Each callback before its raw event, the order cut D12 finds
+        // probable.
+        let mut keeps_up = Drive::new(Recorder::new());
+        keeps_up.run_script(0, 3000, |ms, d| {
+            if ms.is_multiple_of(30) {
+                d.health.callback_seen();
+            }
+            if ms % 30 == 1 {
+                d.raw(ms);
+            }
+        });
+        assert_eq!(keeps_up.health.unseen_input(), 0);
+        assert_eq!(keeps_up.recorder.hidden.load(Ordering::Acquire), 0);
     }
 
     #[test]
