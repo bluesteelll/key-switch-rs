@@ -31,6 +31,10 @@ orchestrator stays on the session model. Rationale:
 Every role carries the same **Safety** rules (some roles add role-specific lines). No role runs the daemon, installs
 hooks, injects input or writes the registry, and only a merge step pushes.
 
+Every role also has the `LSP` tool (rust-analyzer) for callers, implementations, definitions and types, and a
+"Code navigation" note on its limits. The rules are in
+[docs/WORKFLOW.md#code-navigation](../../docs/WORKFLOW.md#code-navigation).
+
 ## The lane
 
 ```
