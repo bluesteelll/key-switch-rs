@@ -27,7 +27,7 @@ pub(super) const MODIFIERS: [VIRTUAL_KEY; 11] = [
     VK_RWIN,
 ];
 
-/// A set of [`MODIFIERS`] codes, one bit each, in that order (roadmap item
+/// A set of `MODIFIERS` codes, one bit each, in that order (roadmap item
 /// 2.5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModifierSet(u16);
@@ -124,7 +124,7 @@ impl ModifierSet {
         self.0 == 0
     }
 
-    /// The codes of the set, in [`MODIFIERS`] order.
+    /// The codes of the set, in `MODIFIERS` order.
     pub fn codes(self) -> impl Iterator<Item = VIRTUAL_KEY> {
         MODIFIERS
             .into_iter()
