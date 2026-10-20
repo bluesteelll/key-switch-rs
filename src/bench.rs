@@ -81,12 +81,14 @@
 //!   no copy of real raw input.
 //! - R16: the key-down callback of the first key of a burst, which wakes
 //!   the idle watchdog: a raw key event right before the call, so that the
-//!   thread's one wake and first pass run next to it, on another core. A
+//!   thread's one wake, which only sets its tick timer (roadmap item 2.5),
+//!   runs next to it, on another core. It times the event right after the
+//!   burst's first raw event: the key's own callback if raw input comes
+//!   before the hook call, the next event of the same report if after. A
 //!   watchdog per sample, started and stopped outside the timing; it takes
-//!   about a quarter of a second per sample. A declared row, measured and
-//!   reported, not gated (ruling L2): it times the worst order of cut Q6,
-//!   a key's raw input before its hook call, and the wake happens once per
-//!   burst of keys.
+//!   about a quarter of a second per sample. Gated since item 2.5, with a
+//!   provisional bound: a p50 within R12's p50 plus 20 us and within half
+//!   the parent's R16 p50; its p99 is reported.
 //! - R17t: one `GetTickCount`, the mean of 1000 calls per sample (roadmap
 //!   item 2.5).
 //! - R17a: one `GetAsyncKeyState(VK_F13)`, which only reads, the mean of
@@ -697,10 +699,11 @@ fn r14c_paced_control(events: usize, pace: Duration) -> Vec<Duration> {
 /// R16: the key-down callback of the first key of a burst. Each sample
 /// starts a watchdog, lets its thread reach its idle wait, posts one raw
 /// key event and at once makes the timed call, so that the watchdog's one
-/// wake and first pass run next to it, the pessimistic order of cut Q6.
-/// The hook counts as installed for the watchdog, as in the daemon, so the
-/// first pass counts the event and sets the tick timer. Each key-up is
-/// called, not timed; the thread's start and stop are outside the timing.
+/// wake runs next to it, the pessimistic order of item 2.4's cut Q6. The
+/// hook counts as installed for the watchdog, as in the daemon, so the
+/// wake only sets the tick timer and the first tick counts the event
+/// (roadmap item 2.5, cut D12). Each key-up is called, not timed; the
+/// thread's start and stop are outside the timing.
 fn r16_first_key_of_a_burst(count: usize) -> Vec<Duration> {
     bind_f13_to_do_nothing();
     let health = get_hook().health();

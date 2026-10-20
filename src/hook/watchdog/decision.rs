@@ -11,7 +11,10 @@
 //! interval's raw events are those its drains read: the drain of the
 //! tick's own pass, right before the heartbeat is read, and those of any
 //! earlier wake in the interval (ruling L1). A raw event read at the tick
-//! `T` arrived at or before `T`, and is first checked at `T + TICK`.
+//! `T` arrived at or before `T`, and is first checked at `T + TICK`. The
+//! wake that the first raw event after idle brings reads nothing: it starts
+//! the ticks and the silence, and the event waits for the first tick's
+//! drain (roadmap item 2.5, cut D12).
 //!
 //! The counts are matched as totals, whichever of the two Windows delivered
 //! first: the callbacks counted that no raw event has matched yet are a
@@ -32,8 +35,9 @@
 //!    for `S = SILENCE * 2^min(n, MAX_BACKOFF_SHIFT)`, where `n` counts the
 //!    reinstalls and failed attempts since the last callback seen. The
 //!    silence is measured from the last tick that saw a callback, the last
-//!    answer or decline, or the first raw event after idle, whichever came
-//!    last: so keys arrived for all of `S` without a callback.
+//!    answer or decline, or the wake of the first raw event after idle,
+//!    whichever came last: so keys arrived for all of `S` without a
+//!    callback.
 //! 2. At most one request is outstanding. It waits in the main thread's
 //!    queue while that thread is busy, and no new evidence counts until the
 //!    main thread answers.
@@ -147,6 +151,15 @@ impl Watchdog {
         }
         self.raw_events = self.raw_events.saturating_add(count);
         self.last_raw_at = Some(now);
+        self.raw_pending(now);
+    }
+
+    /// Raw key events wait in the queue at `now`, unread: the first after
+    /// idle woke the watchdog, which reads them at its first tick (roadmap
+    /// item 2.5, cut D12). If idle, the ticking and the silence start here,
+    /// as a first batch starts them (rule 1); the drain that reads them sets
+    /// the time of the newest raw event.
+    pub(crate) fn raw_pending(&mut self, now: Instant) {
         if self.next_tick.is_none() {
             self.next_tick = Some(now + TICK);
             self.quiet_since = now;
@@ -440,6 +453,28 @@ mod tests {
             "{:?}",
             keeps_up.unseen
         );
+    }
+
+    #[test]
+    fn a_deferred_first_read_starts_the_silence_at_the_wake() {
+        // Roadmap item 2.5, cut D12: the first raw key event after idle
+        // wakes the watchdog at 5000 ms, and the keys, typed with a silent
+        // callback, are read only at the ticks. The ticks and the silence
+        // start at the wake, so the request comes a second after it, not a
+        // second after the watchdog was made.
+        let mut f = Feeder::new();
+        f.run(0, 7000, |ms, f| {
+            if ms == 5000 {
+                let now = f.at(ms);
+                f.watchdog.raw_pending(now);
+            }
+            if ms > 5000 && f.watchdog.next_tick() == Some(f.at(ms)) {
+                f.raws(ms, 8);
+            }
+        });
+        assert_eq!(f.ticks.first(), Some(&5250), "a tick after the wake");
+        assert_eq!(f.request_times(), [6000], "a second after the wake");
+        assert_eq!(f.requests[0].1.silent_for, SILENCE, "{:?}", f.requests);
     }
 
     #[test]

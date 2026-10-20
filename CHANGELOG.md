@@ -669,6 +669,20 @@ minor version; such entries sit under **Changed** and start with
 - A counters line whose only non-zero count is `hook_late` is written at
   `[INFO]`, not `[WARN]` (roadmap item 2.5). Test:
   `logging::counters::tests::hook_late_alone_is_reported_at_info_and_with_another_count_at_warn`.
+- The hook watchdog's first wake after idle makes no user32 call: it only
+  starts its ticks, and the key events wait for the first tick, a quarter
+  of a second later (roadmap item 2.5, follow-up FU-4). A keyboard callback
+  at that moment is no longer slowed by about 50 µs: bench row R16, gated
+  now, is 5.6 µs at the median on the developer's machine, against 66.8 µs
+  on the lane's parent in the same session. Most of that went with the
+  per-event modifier reads above: with them gone and the old wake, R16 was
+  4.4 µs. A key press or a shortcut costs the watchdog no more wakes than
+  before; a burst of a single raw key event, such as a key-up whose
+  key-down came 2 s or more earlier, costs one more. Tests:
+  `hook::watchdog::tests::the_first_raw_key_event_after_idle_is_read_at_the_first_tick`,
+  `an_idle_wake_with_no_hook_installed_still_reads_at_once`,
+  `a_deferred_wake_is_followed_by_a_wait_that_leaves_only_the_batched_input_out`,
+  `hook::watchdog::decision::tests::a_deferred_first_read_starts_the_silence_at_the_wake`.
 
 ### Fixed
 
