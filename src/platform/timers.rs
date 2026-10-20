@@ -1,8 +1,9 @@
 //! A waitable timer for a thread that waits for its own deadlines: the
-//! action executor's `Delay` steps today, the gesture timers of roadmap item
-//! 2.2 later. It is a kernel object, so a thread waits on it and on its
-//! messages at once (`MsgWaitForMultipleObjectsEx`), and no message loop
-//! that code on the thread runs can take its signal away.
+//! action executor's `Delay` steps (roadmap item 2.1), the main thread's
+//! gesture timers (item 2.2) and the hook watchdog's ticks (item 2.4). It is
+//! a kernel object, so a thread waits on it and on its messages at once
+//! (`MsgWaitForMultipleObjectsEx`), and no message loop that code on the
+//! thread runs can take its signal away.
 //!
 //! Where Windows offers one (Windows 10 version 1803 and later) it is a
 //! high-resolution timer, which signals within about a millisecond of its

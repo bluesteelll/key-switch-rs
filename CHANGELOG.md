@@ -113,7 +113,7 @@ minor version; such entries sit under **Changed** and start with
   1.7): `menu_mask_short` (`SendInput` inserted fewer than the two events of
   the menu mask key), `key_press_short` (fewer than the two events of a
   `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
-  (a Hold whose timer thread could not be started, so that it never fired)
+  (a Hold whose gesture timer could not be set, so that it never fired)
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
@@ -741,13 +741,15 @@ minor version; such entries sit under **Changed** and start with
   longer freezes typing or lets Windows remove the hook. `PressKey`,
   `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`
   and `PostMessage` still run before the hook returns, so their output
-  stays in order with the keys typed after them; a `Hold` runs them on its
-  timer thread as before and queues the others. Up to 32 actions wait; a
-  further one is dropped and counted in `executor_jobs_dropped`. Macros
-  still run side by side: a `Delay` waits on a high-resolution timer of
-  the executor, which ends it within about 1 ms of its time and never
-  before, as the `thread::sleep` it replaces did, and holds up no other
-  action or macro, while a step that blocks inside Windows (a `Launch`, an
+  stays in order with the keys typed after them; a `Hold`, and a `Tap` that
+  waits for its DoubleTap window, runs them on the main thread when its
+  gesture timer fires (roadmap item 2.2), and queues the others. Up to 32
+  actions wait; a further one is dropped and counted in
+  `executor_jobs_dropped`. Macros still run side by side: a `Delay` waits
+  on a high-resolution timer of the executor, which ends it within about
+  1 ms of its time and never before, as the `thread::sleep` it replaces
+  did, and holds up no other action or macro, while a step that blocks
+  inside Windows (a `Launch`, an
   `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it
   runs. Manual checks: with
   `( keys: "F13", action: OpenUrl("https://example.com") )` and every
