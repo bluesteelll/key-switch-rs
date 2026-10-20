@@ -1987,6 +1987,31 @@ mod tests {
     }
 
     #[test]
+    fn the_drain_reads_nothing_while_remapping_is_off() {
+        // Roadmap item 2.5: the engine sees no key event while remapping is
+        // off, and the reset of `swch on` reads every key, so a note made
+        // meanwhile asks Windows nothing; once on again, a note reads.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the first drain read the start");
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, false)),
+            Some(true),
+            "remapping is off"
+        );
+        note_hidden_input();
+        assert!(!read_due(&hook), "no read while remapping is off");
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, true)),
+            Some(true),
+            "remapping is on"
+        );
+        note_hidden_input();
+        assert!(read_due(&hook), "on again, a note reads");
+    }
+
+    #[test]
     fn a_refused_call_notes_hidden_input() {
         // E8: a callback that `with_main` refuses passes its event
         // undecided, so the engine may hold a stale modifier.
