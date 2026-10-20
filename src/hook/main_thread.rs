@@ -2093,6 +2093,42 @@ mod tests {
     }
 
     #[test]
+    fn a_long_stretch_sends_the_main_loop_back_to_the_drain_before_the_wait() {
+        // Roadmap item 2.5, E5: the note made by a long stretch is read by
+        // the drain, so the loop goes back to it (`continue`) with a fresh
+        // stretch, and never waits on a note nobody reads. The wait has no
+        // timeout.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text =
+            std::fs::read_to_string(root.join("src/hook/main_thread.rs")).expect("read the source");
+        let lines = non_test_lines(&text);
+        let start = lines
+            .iter()
+            .position(|line| line.contains("pub(crate) fn run("))
+            .expect("MainThread::run is there");
+        let at = |token: &str| {
+            lines[start..]
+                .iter()
+                .position(|line| line.contains(token))
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| panic!("{token} in MainThread::run"))
+        };
+        let check = at("note_if_awake_too_long(");
+        let wait = at("MsgWaitForMultipleObjectsEx(");
+        let between: Vec<&str> = lines[check..wait].iter().map(|line| line.trim()).collect();
+        assert_eq!(
+            between[..4],
+            [
+                "if note_if_awake_too_long(awake_since, now) {",
+                "awake_since = now;",
+                "continue;",
+                "}"
+            ],
+            "a note sends the loop back to the drain with a fresh stretch"
+        );
+    }
+
+    #[test]
     fn a_switch_request_to_an_ended_main_thread_fails_at_once() {
         let handle = thread::spawn(|| {
             MainThread::new()

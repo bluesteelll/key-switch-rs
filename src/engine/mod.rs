@@ -1653,6 +1653,31 @@ mod tests {
     }
 
     #[test]
+    fn the_daemons_own_injected_events_do_not_bring_keyboard_input_back_to_the_drain() {
+        // Roadmap item 2.5, cut D2: an injected event proves nothing about
+        // where keyboard input is, so after input left the drain reads
+        // nothing until a signal or a decided key event says it is back.
+        let env = counting_env();
+        let mut engine = drained_engine(&env);
+        engine.reset(&env, ResetReason::InputLeft);
+        engine.track_injected(KeyEvent::down(VK_LCONTROL));
+        engine.track_injected(KeyEvent::up(VK_LCONTROL));
+        let asked = asked_during(&env, || {
+            assert!(
+                !engine.resync_if_due(&env, 0),
+                "an injected event does not end the time away"
+            );
+        });
+        assert_eq!(asked, [], "so the drain asks Windows nothing");
+        let bindings = loaded(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#);
+        let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &env);
+        assert!(
+            engine.resync_if_due(&env, 0),
+            "a decided key event does, and the drain then reads"
+        );
+    }
+
+    #[test]
     fn a_drain_read_asks_the_eight_sided_modifiers_and_skips_a_swallowed_one() {
         // KS-14: Windows never saw the swallowed LShift go down, so its key
         // state says nothing about it.
