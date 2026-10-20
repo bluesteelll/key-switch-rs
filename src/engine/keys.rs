@@ -785,6 +785,39 @@ mod tests {
     }
 
     #[test]
+    fn the_drain_read_clears_a_generic_slot_only_when_its_code_reads_up_and_never_sets_one() {
+        // Roadmap item 2.5, critique v2 I1: the generic code reads up only
+        // when neither key of its pair is down ("without distinguishing
+        // between left and right", GetAsyncKeyState), so a clear-only read
+        // ends a generic phantom and brings back none.
+        let mut state = KeyState::new();
+        state.press(VK_SHIFT);
+        state.resync_modifiers(&Down(&[VK_RSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(
+            state.is_active(VK_SHIFT),
+            "Windows has the right Shift down: the generic slot stays"
+        );
+        state.resync_modifiers(&Down(&[VK_LSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(
+            state.is_active(VK_SHIFT),
+            "Windows has the left Shift down: the generic slot stays"
+        );
+        state.resync_modifiers(&Down(&[]), ModifierSet::ALL);
+        assert!(
+            !state.is_active(VK_SHIFT),
+            "Windows has neither Shift down: the drain read clears the generic slot (roadmap item 2.5)"
+        );
+
+        let mut fresh = KeyState::new();
+        fresh.resync_modifiers(&Down(&[VK_LSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(fresh.is_active(VK_LSHIFT));
+        assert!(
+            !fresh.is_active(VK_SHIFT),
+            "the read never sets a generic slot"
+        );
+    }
+
+    #[test]
     fn a_reset_never_takes_a_generic_modifier_from_the_os() {
         // Roadmap item 2.5, cut D3: Windows reports the generic Shift, Ctrl
         // and Alt down while either key of the pair is, so the reset of

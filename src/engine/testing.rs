@@ -72,6 +72,10 @@
 //! key. [`Scenario::daemon_injects_down`] and
 //! [`Scenario::daemon_injects_up`] model the daemon's own sentinel-tagged
 //! events, which the engine only follows (roadmap item 2.5).
+//! [`Scenario::down_swallowed_later`], [`Scenario::repeat_swallowed_later`]
+//! and [`Scenario::up_swallowed_later`] model a hook after the daemon's in
+//! the chain that swallows an event the daemon passed, so Windows never
+//! applies it.
 //!
 //! [`Scenario::hook_reinstalled`] models the reset after the hook watchdog
 //! had the keyboard hook reinstalled (roadmap item 2.4): the engine is reset
@@ -757,7 +761,7 @@ impl Scenario {
         if self.is_held(name) {
             self.fail(&format!("down_generic {name}: the key is already held"));
         }
-        self.key_event_of(name, code, KeyDirection::Down, "down")
+        self.key_event_of(name, code, KeyDirection::Down, "down", false)
     }
 
     /// Another program's key-up of the generic code of `name`, which the
@@ -768,7 +772,58 @@ impl Scenario {
         if !self.is_held(name) {
             self.fail(&format!("up_generic {name}: the key is not held"));
         }
-        self.key_event_of(name, code, KeyDirection::Up, "up")
+        self.key_event_of(name, code, KeyDirection::Up, "up", false)
+    }
+
+    /// Another program's key-up of the generic code of `name`, which the
+    /// hook did not see, with nothing the daemon notices after it: Windows
+    /// takes the left key up, the engine is not told; see
+    /// [`down_generic`](Self::down_generic).
+    #[track_caller]
+    pub(crate) fn up_generic_unnoticed(self, name: &str) -> Self {
+        let _ = generic_code(name);
+        self.release_unseen(name, false)
+    }
+
+    /// Presses `key`, which must be up, as [`down`](Self::down) does, with
+    /// a hook after the daemon's in the chain that swallows the key-down if
+    /// the daemon passes it (roadmap item 2.5): an AutoHotkey remap or a
+    /// Win-key blocker started before the daemon. Windows then never applies
+    /// it, and the modelled OS does not change.
+    #[track_caller]
+    pub(crate) fn down_swallowed_later(self, key: &str) -> Self {
+        if self.is_held(key) {
+            self.fail(&format!(
+                "down_swallowed_later {key}: the key is already held; use repeat_swallowed_later"
+            ));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Down, "down", true)
+    }
+
+    /// An auto-repeat of the held `key` that a later hook swallows if the
+    /// daemon passes it; see [`down_swallowed_later`](Self::down_swallowed_later).
+    #[track_caller]
+    pub(crate) fn repeat_swallowed_later(self, key: &str) -> Self {
+        if !self.is_held(key) {
+            self.fail(&format!(
+                "repeat_swallowed_later {key}: the key is not held"
+            ));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Down, "repeat", true)
+    }
+
+    /// Releases the held `key`, with a later hook that swallows the key-up
+    /// if the daemon passes it, so the lone key-up check does not apply;
+    /// see [`down_swallowed_later`](Self::down_swallowed_later).
+    #[track_caller]
+    pub(crate) fn up_swallowed_later(self, key: &str) -> Self {
+        if !self.is_held(key) {
+            self.fail(&format!("up_swallowed_later {key}: the key is not held"));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Up, "up", true)
     }
 
     /// The daemon's own injected key-down of `key`, tagged with the
@@ -808,12 +863,15 @@ impl Scenario {
     #[track_caller]
     fn key_event(self, key: &str, direction: KeyDirection, what: &str) -> Self {
         let code = physical_key(key);
-        self.key_event_of(key, code, direction, what)
+        self.key_event_of(key, code, direction, what, false)
     }
 
     /// One key event of `code`, which the engine decides while remapping is
     /// on; the modelled OS, `held` and the checks follow the physical key of
-    /// `key`, which is `code` but for a generic modifier code.
+    /// `key`, which is `code` but for a generic modifier code. With
+    /// `swallowed_later`, a hook after the daemon's swallows the event if the
+    /// daemon passes it: the modelled OS does not change, and no lone key-up
+    /// is possible.
     #[track_caller]
     fn key_event_of(
         mut self,
@@ -821,6 +879,7 @@ impl Scenario {
         code: VIRTUAL_KEY,
         direction: KeyDirection,
         what: &str,
+        swallowed_later: bool,
     ) -> Self {
         let vk = physical_key(key);
         let decision = if self.enabled {
@@ -840,14 +899,21 @@ impl Scenario {
         let suppressed = decision.suppress;
         let masked = decision.mask;
         let down = direction == KeyDirection::Down;
-        let lone = self.check_lone && self.enabled && !down && !suppressed && !self.env.os_down(vk);
-        // The OS only learns about events the hook passes on.
-        if !suppressed {
+        // A later hook in the chain swallows what the daemon passes.
+        let applied = !suppressed && !swallowed_later;
+        let lone = self.check_lone && self.enabled && !down && applied && !self.env.os_down(vk);
+        // The OS only learns about events the hooks pass on.
+        if applied {
             self.env.os_down[vk.0 as usize] = down;
         }
         self.held[vk.0 as usize] = down;
         let generic = if code == vk { "" } else { " (generic code)" };
-        let label = format!("{what} {key}{generic} at {}", self.clock());
+        let later = if swallowed_later && !suppressed {
+            ", swallowed by a later hook"
+        } else {
+            ""
+        };
+        let label = format!("{what} {key}{generic} at {}{later}", self.clock());
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
         // The main thread drains after the callback returned.

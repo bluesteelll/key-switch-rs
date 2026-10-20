@@ -2615,6 +2615,126 @@ fn the_daemons_own_injected_modifier_counts_for_matching_until_its_injected_key_
         .expect_passed();
 }
 
+#[test]
+fn a_modifier_that_a_later_hook_swallows_does_not_count_for_matching() {
+    // Critique v2 I2, ruling W2a: an AutoHotkey `LAlt::LCtrl` remap started
+    // before the daemon, so its hook runs after the daemon's. It swallows
+    // the left Alt, which the daemon passed, and injects LCtrl, which the
+    // daemon decides. Windows never has Alt down, so `Ctrl+J` (exact) fires
+    // at every J, also right after an Alt auto-repeat that came before
+    // AutoHotkey's LCtrl repeat.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_swallowed_later("LAlt")
+        .expect_passed()
+        .down("LCtrl")
+        .expect_passed()
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_suppressed()
+        .up("J")
+        .advance_ms(500)
+        .repeat_swallowed_later("LAlt")
+        .repeat("LCtrl")
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .advance_ms(33)
+        .repeat_swallowed_later("LAlt")
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .up_swallowed_later("LAlt")
+        .up("LCtrl")
+        .expect_passed();
+}
+
+#[test]
+fn a_shift_that_a_later_hook_swallows_does_not_make_alt_the_language_hotkey() {
+    // Critique v2 I2: a later hook swallows the left Shift the daemon
+    // passed, so Windows has only Alt down at Alt's key-down. The Alt+Shift
+    // blocker must not swallow that Alt, or Alt+Tab reaches Windows as Tab.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_swallowed_later("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .expect_down_in_windows("LAlt")
+        .up("Tab")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed()
+        .up_swallowed_later("LShift");
+}
+
+#[test]
+fn another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note() {
+    // Critique v2 I1: another program's generic VK_SHIFT went down and its
+    // key-up went past the daemon unnoticed until a note. The main thread's
+    // read clears the generic slot, because Windows has neither Shift down.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Shift")
+        .expect_passed()
+        .up_generic_unnoticed("Shift")
+        .hidden_input_noted()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn another_programs_generic_shift_released_unnoticed_stops_counting_at_the_next_key() {
+    // As above with no note: the check of the CapsLock key-down finds
+    // neither Shift down in Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Shift")
+        .expect_passed()
+        .up_generic_unnoticed("Shift")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_modifier_released_where_the_hook_cannot_see_it_stops_counting_at_the_next_key() {
+    // Ruling W2: a hidden modifier key-up followed by a binding press heals
+    // at the press itself, before matching.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down("LShift")
+        .expect_passed()
+        .up_unnoticed("LShift")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("CapsLock")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_swallowed_key_up_asks_no_mask_for_an_alt_that_windows_has_up() {
+    // A later hook swallowed the left Alt the daemon passed: Windows has no
+    // Alt down, so F13's swallowed key-up asks for no menu mask key.
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#)
+        .check_mask_rule()
+        .down("F13")
+        .expect_suppressed()
+        .down_swallowed_later("LAlt")
+        .expect_passed()
+        .up("F13")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up_swallowed_later("LAlt");
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the

@@ -1004,7 +1004,7 @@ mod tests {
     use crate::engine::{Scheduler, TimerQueue};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         VK_A, VK_CONTROL, VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
-        VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT,
+        VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT,
     };
 
     /// An [`Env`] stopped at one instant with nothing held and no
@@ -1406,6 +1406,127 @@ mod tests {
             modifiers, 0,
             "a key event with no modifier held asks Windows about no modifier (roadmap item 2.5)"
         );
+    }
+
+    /// An [`Env`] stopped at one instant in which Windows has the left Ctrl,
+    /// Shift and Alt down, with their generic codes, and every other key up;
+    /// it records every key it is asked about.
+    struct ThreeModifiersDown {
+        now: Instant,
+        asked: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl Env for ThreeModifiersDown {
+        fn now(&self) -> Instant {
+            self.now
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.asked.borrow_mut().push(vk);
+            [
+                VK_LCONTROL,
+                VK_CONTROL,
+                VK_LSHIFT,
+                VK_SHIFT,
+                VK_LMENU,
+                VK_MENU,
+            ]
+            .contains(&vk)
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_key_event_asks_windows_once_for_each_modifier_held_for_it_and_never_for_its_own_key_or_a_swallowed_one()
+     {
+        // Roadmap item 2.5, ruling W2a, cut D16: a key-down asks Windows
+        // about each modifier held for the engine, and only a key-up that
+        // the engine swallows asks, about each Alt and Win held. The event's
+        // own key and a modifier whose key-down was swallowed are never
+        // asked (KS-14). Windows has every modifier the script holds down,
+        // so nothing is dropped. Both bindings allow extra modifiers, so
+        // that LWin and F13 are swallowed with the others held.
+        let bindings = loaded(
+            r#"( bindings: [
+                (keys: "LWin", action: DoNothing, allow_extra_modifiers: true),
+                (keys: "F13", action: DoNothing, allow_extra_modifiers: true),
+            ] )"#,
+        );
+        let env = ThreeModifiersDown {
+            now: Instant::now(),
+            asked: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut engine = Engine::new();
+        let steps = [
+            ("A down with nothing held", KeyEvent::down(VK_A), 0, false),
+            ("A up with nothing held", KeyEvent::up(VK_A), 0, false),
+            ("LCtrl down", KeyEvent::down(VK_LCONTROL), 0, false),
+            ("LCtrl repeat", KeyEvent::down(VK_LCONTROL), 0, false),
+            ("A down with LCtrl held", KeyEvent::down(VK_A), 1, false),
+            ("A up with LCtrl held", KeyEvent::up(VK_A), 0, false),
+            (
+                "LShift down with LCtrl held",
+                KeyEvent::down(VK_LSHIFT),
+                1,
+                false,
+            ),
+            (
+                "A down with LCtrl and LShift held",
+                KeyEvent::down(VK_A),
+                2,
+                false,
+            ),
+            (
+                "A up with LCtrl and LShift held",
+                KeyEvent::up(VK_A),
+                0,
+                false,
+            ),
+            ("LWin down, swallowed", KeyEvent::down(VK_LWIN), 2, true),
+            (
+                "A down with the swallowed LWin held",
+                KeyEvent::down(VK_A),
+                2,
+                false,
+            ),
+            (
+                "A up with the swallowed LWin held",
+                KeyEvent::up(VK_A),
+                0,
+                false,
+            ),
+            ("LWin up, swallowed", KeyEvent::up(VK_LWIN), 0, true),
+            ("LAlt down", KeyEvent::down(VK_LMENU), 2, false),
+            ("A down with LAlt held", KeyEvent::down(VK_A), 3, false),
+            ("A up with LAlt held, passing", KeyEvent::up(VK_A), 0, false),
+            ("F13 down, swallowed", KeyEvent::down(VK_F13), 3, true),
+            (
+                "F13 up, swallowed, with LAlt held",
+                KeyEvent::up(VK_F13),
+                1,
+                true,
+            ),
+            ("LAlt up", KeyEvent::up(VK_LMENU), 0, false),
+            ("LShift up", KeyEvent::up(VK_LSHIFT), 0, false),
+            ("LCtrl up", KeyEvent::up(VK_LCONTROL), 0, false),
+        ];
+        for (step, event, expected, swallowed) in steps {
+            let before = env.asked.borrow().len();
+            let decision = engine.on_key(event, &bindings, &env);
+            assert_eq!(decision.suppress, swallowed, "{step}: suppressed");
+            let asked = env.asked.borrow()[before..]
+                .iter()
+                .filter(|&&vk| vk != event.vk && ModifierSet::ALL.contains(vk))
+                .count();
+            assert_eq!(
+                asked, expected,
+                "{step}: a key event asks Windows once about each modifier held for it, never about its own key or a swallowed one (roadmap item 2.5)"
+            );
+        }
     }
 
     #[test]
