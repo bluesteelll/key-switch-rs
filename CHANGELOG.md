@@ -660,7 +660,11 @@ minor version; such entries sit under **Changed** and start with
   until its next auto-repeat (known issue 88). A modifier released where
   the daemon cannot see it,
   or swallowed by another program's hook after the daemon's, stops
-  counting at the next key-down. Tests:
+  counting at the next key-down. With the reads gone, a keyboard callback
+  that meets the hook watchdog's wake from idle is no longer about 50 µs
+  slower: bench row R16, gated from now on (its median within R12's plus
+  20 µs), was 4.4 µs at the median on the developer's machine, against
+  66.8 µs on the lane's parent in the same session. Tests:
   `engine::scenarios::a_modifier_that_a_later_hook_swallows_does_not_count_for_matching`,
   `a_shift_that_a_later_hook_swallows_does_not_make_alt_the_language_hotkey`,
   `another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note`,

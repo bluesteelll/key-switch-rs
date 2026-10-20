@@ -83,10 +83,11 @@
 //!   the idle watchdog: a raw key event right before the call, so that the
 //!   thread's one wake and first pass run next to it, on another core. A
 //!   watchdog per sample, started and stopped outside the timing; it takes
-//!   about a quarter of a second per sample. A declared row, measured and
-//!   reported, not gated (ruling L2): it times the worst order of cut Q6,
-//!   a key's raw input before its hook call, and the wake happens once per
-//!   burst of keys.
+//!   about a quarter of a second per sample. It times the worst order of
+//!   cut Q6, a key's raw input before its hook call, and the wake happens
+//!   once per burst of keys. Gated since roadmap item 2.5 (ruling L3, which
+//!   supersedes the declared row of ruling L2): its p50 stays within R12's
+//!   p50 plus 20 us; its p99 is reported.
 //! - R17t: one `GetTickCount`, the mean of 1000 calls per sample (roadmap
 //!   item 2.5).
 //! - R17a: one `GetAsyncKeyState(VK_F13)`, which only reads, the mean of

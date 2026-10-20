@@ -37,8 +37,9 @@
 //! records per call on x64). The first key event after the thread went
 //! idle ends its wait, once per burst of keys, and that wake and its pass
 //! run on another core. A keyboard callback that runs at the same time is
-//! about 50 us slower at the median on the developer's machine (bench row
-//! R16 against R12, a declared row, measured and not gated: ruling L2).
+//! about 4 us slower at the median on the developer's machine (bench row
+//! R16 against R12, gated since roadmap item 2.5 by its ruling L3); it was
+//! about 50 us while every key event read the modifiers from Windows.
 //! That is the worst order. Whether a key's raw input reaches this thread
 //! before its hook call, so that the key's own callback meets the wake, or
 //! after it, so that only a key event in the microseconds that follow can,
