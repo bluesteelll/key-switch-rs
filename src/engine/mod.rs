@@ -233,6 +233,8 @@ mod env;
 mod gestures;
 mod keys;
 mod matching;
+mod modifiers;
+mod resync;
 mod schedule;
 mod sequences;
 mod winner;
@@ -257,12 +259,14 @@ use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::trigger::Trigger;
 
 pub use env::Env;
+pub use modifiers::ModifierSet;
 pub use schedule::{Scheduler, TimerQueue};
 
 use chords::{ChordOutcome, Chords};
 use env::EnvForeground;
 use gestures::Gestures;
 use keys::KeyState;
+use resync::Resync;
 use sequences::{SequenceOutcome, Sequences};
 
 /// Whether a key went down (including auto-repeats) or up.
@@ -489,6 +493,9 @@ pub struct Engine {
     /// event asks for the menu mask key too.
     mask_owed: bool,
     ids: Ids,
+    /// When the main thread reads the modifiers from Windows between key
+    /// events (roadmap item 2.5).
+    resync: Resync,
 }
 
 impl Default for Engine {
@@ -506,6 +513,7 @@ impl Engine {
             sequences: Sequences::new(),
             mask_owed: false,
             ids: Ids::default(),
+            resync: Resync::new(),
         }
     }
 
@@ -517,6 +525,11 @@ impl Engine {
         // the order of the mask sent with it, so its mask lands inside the
         // hotkey.
         let mask_owed = std::mem::take(&mut self.mask_owed);
+        // The main thread's next read leaves this event's modifier out: its
+        // flag comes from this event, which Windows applies after the hook
+        // returns. A decided event also proves that keyboard input is on
+        // this desktop (roadmap item 2.5).
+        self.resync.event(event.vk, true);
 
         // Repair phantom-held modifiers from any earlier focus transition
         // before matching. The key being delivered is skipped: its OS state
@@ -600,21 +613,48 @@ impl Engine {
         }
     }
 
-    /// The foreground window changed. Key-ups may have been lost while a
-    /// higher-integrity window had focus, so the modifiers are resynced
-    /// from the OS. Every record stays (roadmap item 2.3): a swallowed
-    /// key-down keeps its auto-repeats and its key-up swallowed, so Windows
-    /// gets no key-up whose press it never saw (the KS-06 status), and the
-    /// key-up still reaches Windows if Windows has the key down by then
-    /// (the witness at the key-up).
+    /// The foreground window changed. Key events may have gone past the
+    /// hook while a higher-integrity window had focus, so the hiding count
+    /// moves, and the main thread's next drain reads the modifiers from the
+    /// OS ([`resync_if_due`](Self::resync_if_due), roadmap item 2.5). Every
+    /// record stays (roadmap item 2.3): a swallowed key-down keeps its
+    /// auto-repeats and its key-up swallowed, so Windows gets no key-up
+    /// whose press it never saw (the KS-06 status), and the key-up still
+    /// reaches Windows if Windows has the key down by then (the witness at
+    /// the key-up).
     ///
-    /// The resync skips a modifier whose key-down was swallowed: Windows
+    /// The read skips a modifier whose key-down was swallowed: Windows
     /// never saw it go down, so its key state says nothing (KS-14). Such a
     /// key whose key-up was lost stays held for the engine until its next
     /// press, which reads as an auto-repeat and is swallowed, unless
     /// keyboard input left the desktop meanwhile, which releases every key.
-    pub fn on_foreground_changed(&mut self, env: &dyn Env) {
-        self.keys.sync_modifiers(env, None);
+    pub fn on_foreground_changed(&mut self) {
+        self.resync.bump();
+    }
+
+    /// The main thread's read of the modifiers between key events (roadmap
+    /// item 2.5), with `notes` the adapter's count of hidden input (a
+    /// refused or late callback, a long stretch away from the messages, a
+    /// gap the hook watchdog saw). It asks the OS only when something could
+    /// have hidden a key event since the last read, and leaves out the
+    /// modifiers an event touched since the last drain, whose flags come
+    /// from their own events. It skips a modifier whose key-down was
+    /// swallowed (KS-14) and changes no record. Returns whether it asked
+    /// the OS. Call it between key events, never inside a hook callback.
+    pub fn resync_if_due(&mut self, env: &dyn Env, notes: u64) -> bool {
+        let which = self.resync.plan(notes);
+        if which.is_empty() {
+            return false;
+        }
+        self.keys.resync_modifiers(env, which);
+        true
+    }
+
+    /// Keyboard input came back to this desktop: the main thread's next
+    /// drain reads the modifiers again (roadmap item 2.5). Nothing is reset
+    /// (ruling R2 of roadmap item 2.3).
+    pub fn input_returned(&mut self) {
+        self.resync.input_returned();
     }
 
     /// Starts over for `reason` (roadmap item 2.3; KS-31).
@@ -648,6 +688,12 @@ impl Engine {
     ///   would read keys that are about to lose their key-ups as held. The
     ///   next key-down of each key is a first press (owner decision on open
     ///   question 9). A second reset of one episode changes nothing more.
+    ///   The main thread reads the modifiers again once input is back: at
+    ///   a signal that it came back ([`input_returned`](Self::input_returned))
+    ///   or at the next decided key event (roadmap item 2.5).
+    ///
+    /// A reset that reads the OS covers the modifiers the main thread's
+    /// drain would read, so that drain reads nothing.
     ///
     /// Call it only when something really changes: a repeated `swch on`
     /// would drop the gestures pending right now.
@@ -658,12 +704,16 @@ impl Engine {
         self.mask_owed = false;
         match reason {
             ResetReason::RemappingSwitched | ResetReason::HookReinstalled => {
-                self.keys.resync_from_os(env)
+                self.keys.resync_from_os(env);
+                self.resync.read_everything();
             }
             // No key event is lost on a reload, and the OS state of a key
             // whose key-down has just passed may still lag behind it.
             ResetReason::Reloaded => {}
-            ResetReason::InputLeft => self.keys.release_all(),
+            ResetReason::InputLeft => {
+                self.keys.release_all();
+                self.resync.input_left();
+            }
         }
         self.ids.generation = self.ids.generation.wrapping_add(1);
     }
@@ -1275,6 +1325,137 @@ mod tests {
             "a swallowed key-up asks the OS about its key once"
         );
         assert_eq!(env.asked(VK_F14), 0, "a key-up that passes asks nothing");
+    }
+
+    /// The codes `env` was asked about while `f` ran, in order.
+    fn asked_during(env: &CountingEnv, f: impl FnOnce()) -> Vec<VIRTUAL_KEY> {
+        let before = env.asked.borrow().len();
+        f();
+        env.asked.borrow()[before..].to_vec()
+    }
+
+    fn counting_env() -> CountingEnv {
+        CountingEnv {
+            now: Instant::now(),
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The eight sided modifier codes, in the order a drain asks them.
+    fn sided() -> Vec<VIRTUAL_KEY> {
+        ModifierSet::SIDED.codes().collect()
+    }
+
+    /// An engine whose start has been read by a drain, so that nothing is
+    /// due.
+    fn drained_engine(env: &CountingEnv) -> Engine {
+        let mut engine = Engine::new();
+        assert!(engine.resync_if_due(env, 0), "the start reads (E0)");
+        assert!(!engine.resync_if_due(env, 0), "and nothing more is due");
+        engine
+    }
+
+    #[test]
+    fn every_source_of_the_hiding_count_makes_the_next_drain_read_the_modifiers() {
+        // Roadmap item 2.5, cut D4: each source moves the count, and the
+        // drain after it asks Windows about the eight sided modifiers once.
+        // Only the drain's asks are counted.
+        let bindings = loaded(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#);
+        for source in [
+            "a foreground change",
+            "input left, then a return signal",
+            "input left, then a decided key event",
+            "an adapter note",
+        ] {
+            let env = counting_env();
+            let mut engine = drained_engine(&env);
+            if source.starts_with("input left") {
+                engine.reset(&env, ResetReason::InputLeft);
+                assert!(
+                    !engine.resync_if_due(&env, 0),
+                    "{source}: no read while away"
+                );
+            }
+            let notes = match source {
+                "a foreground change" => {
+                    engine.on_foreground_changed();
+                    0
+                }
+                "input left, then a return signal" => {
+                    engine.input_returned();
+                    0
+                }
+                "input left, then a decided key event" => {
+                    let _ = engine.on_key(KeyEvent::down(VK_F13), &bindings, &env);
+                    0
+                }
+                _ => 1,
+            };
+            let asked = asked_during(&env, || {
+                assert!(engine.resync_if_due(&env, notes), "{source}: a read");
+            });
+            assert_eq!(asked, sided(), "{source}");
+            assert!(
+                !engine.resync_if_due(&env, notes),
+                "{source}: one read, not two"
+            );
+        }
+    }
+
+    #[test]
+    fn swch_on_and_a_reinstall_read_everything_themselves_so_the_next_drain_reads_nothing() {
+        // E2: the reset of `swch on` and of a hook reinstall reads every key
+        // from Windows, which covers a count that moved before it.
+        for reason in [ResetReason::RemappingSwitched, ResetReason::HookReinstalled] {
+            let env = counting_env();
+            let mut engine = drained_engine(&env);
+            engine.on_foreground_changed();
+            engine.reset(&env, reason);
+            let asked = asked_during(&env, || {
+                assert!(!engine.resync_if_due(&env, 0), "{reason}");
+            });
+            assert_eq!(asked, [], "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_reload_makes_no_read() {
+        // A reload hides no key event, and its reset reads no key state.
+        let env = counting_env();
+        let mut engine = drained_engine(&env);
+        let asked = asked_during(&env, || {
+            engine.reset(&env, ResetReason::Reloaded);
+            assert!(!engine.resync_if_due(&env, 0));
+        });
+        assert_eq!(asked, []);
+    }
+
+    #[test]
+    fn a_drain_read_asks_the_eight_sided_modifiers_and_skips_a_swallowed_one() {
+        // KS-14: Windows never saw the swallowed LShift go down, so its key
+        // state says nothing about it.
+        let bindings = loaded(r#"( bindings: [ (keys: "LShift", action: DoNothing) ] )"#);
+        let env = counting_env();
+        let mut engine = Engine::new();
+        let asked = asked_during(&env, || {
+            assert!(engine.resync_if_due(&env, 0));
+        });
+        assert_eq!(asked, sided(), "the start reads the eight sided codes");
+
+        let down = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(down.suppress, "the LShift key-down is swallowed");
+        assert!(
+            !engine.resync_if_due(&env, 0),
+            "nothing is due; the plan forgets that LShift was touched"
+        );
+        engine.on_foreground_changed();
+        let asked = asked_during(&env, || {
+            assert!(engine.resync_if_due(&env, 0));
+        });
+        let expected: Vec<VIRTUAL_KEY> =
+            sided().into_iter().filter(|&vk| vk != VK_LSHIFT).collect();
+        assert_eq!(asked, expected, "every sided code but the swallowed LShift");
+        assert!(engine.keys.is_active(VK_LSHIFT), "it stays held");
     }
 
     /// An [`Env`] stopped at one instant in which Windows has the right

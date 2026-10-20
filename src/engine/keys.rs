@@ -20,26 +20,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::env::Env;
 use super::matching::HeldKeys;
+use super::modifiers::{MODIFIERS, ModifierSet};
 use crate::data::key_spec::KeySpec;
-
-/// Modifier virtual keys kept in sync with the OS key state. These are the
-/// keys most prone to getting stuck after a focus transition into a
-/// higher-integrity window (Task Manager / UAC / lock screen) that swallowed
-/// the corresponding key-up event. A modifier whose key-down the engine
-/// swallowed is left out of the sync: Windows never saw it go down (KS-14).
-const MODIFIERS: [VIRTUAL_KEY; 11] = [
-    VK_SHIFT,
-    VK_LSHIFT,
-    VK_RSHIFT,
-    VK_CONTROL,
-    VK_LCONTROL,
-    VK_RCONTROL,
-    VK_MENU,
-    VK_LMENU,
-    VK_RMENU,
-    VK_LWIN,
-    VK_RWIN,
-];
 
 /// The Alt and Win codes, the generic `VK_MENU` slot the resync writes
 /// included. A lone Win or Alt press that Windows sees opens the Start menu
@@ -110,6 +92,22 @@ impl KeyState {
         for modifier in MODIFIERS {
             let index = modifier.0 as usize;
             if Some(modifier) == skip || self.key_down_swallowed(index) {
+                continue;
+            }
+            self.active[index] = env.os_key_down(modifier);
+        }
+    }
+
+    /// Reads the modifiers of `which` from the OS key state, on the main
+    /// thread between key events (roadmap item 2.5): a sided code takes the
+    /// OS state. A modifier whose key-down was suppressed is left alone:
+    /// Windows never saw it go down, so its key state says up while the key
+    /// is held, and overwriting the flag would also turn the key's next
+    /// auto-repeat into a fresh press (KS-14). No record changes.
+    pub(super) fn resync_modifiers(&mut self, env: &dyn Env, which: ModifierSet) {
+        for modifier in which.codes() {
+            let index = usize::from(modifier.0);
+            if !ModifierSet::SIDED.contains(modifier) || self.key_down_swallowed(index) {
                 continue;
             }
             self.active[index] = env.os_key_down(modifier);

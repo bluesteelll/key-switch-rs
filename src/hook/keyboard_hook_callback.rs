@@ -49,7 +49,9 @@
 //! foreground cache, which reads the new window's executable name there
 //! and not on the key path (`platform::foreground`, roadmap item 2.3), and
 //! to [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed),
-//! the same way, and does nothing while remapping is off.
+//! which makes the main thread's next drain read the modifiers, and posts
+//! the wake that brings that drain (roadmap item 2.5). It does nothing
+//! while remapping is off.
 //!
 //! # Threads
 //!
@@ -124,7 +126,7 @@ use crate::core::windows_actions::BindAction;
 use crate::engine::{Decision, Env, InputSignal, KeyEvent};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{
-    MainState, note_input_signal, note_unknown_desktop_switch, with_main,
+    MainState, note_input_signal, note_unknown_desktop_switch, wake_this_thread, with_main,
 };
 use crate::logging::counters::{self, Counter};
 use crate::platform::desktop;
@@ -402,12 +404,14 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
 /// main thread's foreground cache reads the new window's executable name,
-/// and the engine resyncs the modifiers, repairing what the keyboard hook
-/// may have missed while a higher-integrity window had focus. A modifier
-/// whose key-down the engine swallowed is not resynced (Windows never saw it
-/// go down, KS-14), so a lost key-up of such a modifier is not repaired
-/// here. While remapping is off it does nothing: the reset at `swch on`
-/// reads the foreground and every held key from the OS anyway.
+/// and the engine's hiding count moves: the keyboard hook may have missed
+/// key events while a higher-integrity window had focus, so the main
+/// thread's drain reads the modifiers from the OS, and the posted wake
+/// brings that drain right after the current message (roadmap item 2.5).
+/// A modifier whose key-down the engine swallowed is not read (Windows
+/// never saw it go down, KS-14), so a lost key-up of such a modifier is not
+/// repaired then. While remapping is off it does nothing: the reset at
+/// `swch on` reads the foreground and every held key from the OS anyway.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
@@ -421,8 +425,11 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     if !hook.is_enabled() {
         return;
     }
-    // `None` only on re-entry, which nothing triggers today (module docs).
+    // `None` only on re-entry, which nothing triggers today (module docs);
+    // the refusal is then noted as hidden input, which the drain reads too.
     let _ = with_main(|main| main.foreground_changed(hwnd));
+    // Outside the borrow: a post only.
+    wake_this_thread();
 }
 
 /// What a desktop switch tells the main loop (roadmap item 2.3).
@@ -488,7 +495,9 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::InputSignal;
-    use crate::hook::main_thread::{MainThread, REFUSED, take_pending_signals, with_main};
+    use crate::hook::main_thread::{
+        MAIN_WAKE, MainThread, REFUSED, take_pending_signals, with_main,
+    };
     use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
     // No test installs a hook. Every test that reaches the engine makes its
@@ -1124,6 +1133,49 @@ mod tests {
             refused, 1,
             "with remapping on the keyboard callback asks for the main state"
         );
+    }
+
+    /// Takes one `MAIN_WAKE` from this thread's own queue, if one is there.
+    fn take_main_wake() -> bool {
+        let mut msg = MSG::default();
+        // SAFETY: `msg` is a local that outlives the call, which only
+        // writes it and removes a MAIN_WAKE from this thread's own queue.
+        unsafe { PeekMessageW(&mut msg, None, MAIN_WAKE, MAIN_WAKE, PM_REMOVE) }.as_bool()
+    }
+
+    #[test]
+    fn a_foreground_change_queues_a_wake_for_the_drain() {
+        // Roadmap item 2.5, cut D1: a foreground change moves the hiding
+        // count, and the callback posts MAIN_WAKE outside the borrow, so the
+        // main thread's drain reads the modifiers right after the current
+        // message. The callback reads the process-wide hook's switch, hence
+        // `GLOBAL_HOOK`; the wake goes to this thread's own queue.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        while take_main_wake() {}
+        call_foreground_changed();
+        assert!(take_main_wake(), "a foreground change posts a wake");
+        assert!(!take_main_wake(), "one wake");
+    }
+
+    /// Calls the extern foreground callback as the WinEvent dispatcher
+    /// would, with no window.
+    fn call_foreground_changed() {
+        // SAFETY: `foreground_changed` hands the null window to the
+        // foreground cache, which asks nothing about an invalid handle; the
+        // other handle arguments are never read. No hook is installed.
+        unsafe {
+            foreground_changed(
+                HWINEVENTHOOK::default(),
+                EVENT_SYSTEM_FOREGROUND,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
     }
 
     #[test]

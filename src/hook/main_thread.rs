@@ -16,9 +16,11 @@
 //! state is borrowed is refused and its event passes, so a re-entered
 //! callback neither panics nor hangs the keyboard. Under the borrow only
 //! the engine decides, the gesture timer is set (`SetWaitableTimer`), the
-//! foreground cache reads a process name (in the foreground callback) and
-//! a title condition reads a title of another process's window; no action
-//! runs, nothing is injected or submitted and no message is pumped or sent.
+//! foreground cache reads a process name (in the foreground callback), a
+//! title condition reads a title of another process's window and the
+//! drain reads the modifiers' key state (`GetAsyncKeyState`, roadmap item
+//! 2.5); no action runs, nothing is injected or submitted and no message is
+//! pumped or sent.
 //!
 //! # The loop
 //!
@@ -30,7 +32,11 @@
 //!    watchdog asks for), then the input signals noted since the last
 //!    pass (keyboard input left this desktop or came back), then every
 //!    gesture timer whose due time has passed by the clock, each decided
-//!    under the borrow and carried out after it.
+//!    under the borrow and carried out after it. Last, the modifiers are
+//!    read from the OS key state if something could have hidden a key
+//!    event since the last read (`Engine::resync_if_due`, roadmap item
+//!    2.5): a foreground change, a reset, input coming back to this
+//!    desktop, or a note of hidden input. No key event pays for that read.
 //! 2. Plan: drop the timers no entry waits for, then set the wake for the
 //!    earliest one left unless it is set for it already, or cancel it.
 //! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
@@ -109,6 +115,28 @@ thread_local! {
     /// procedure and the desktop-switch callback note one, which needs no
     /// borrow, whatever message call they run in.
     static PENDING_SIGNALS: Cell<PendingSignals> = const { Cell::new(PendingSignals::NONE) };
+
+    /// How many times something on this thread noticed that a key event
+    /// may have gone past the hook (roadmap item 2.5): a callback that
+    /// `with_main` refused, a desktop switch to where Windows would not say.
+    /// The drain hands the count to the engine, whose next read of the
+    /// modifiers a change makes due. A `Cell` like `PENDING_SIGNALS`, which
+    /// needs no borrow.
+    static HIDDEN_INPUT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Notes on this thread that a key event may have gone past the hook, so
+/// that the main thread's next drain reads the modifiers from Windows
+/// (roadmap item 2.5). Main thread only; a TLS add and no post, and nothing
+/// here may panic: it runs in the hook callbacks.
+pub(crate) fn note_hidden_input() {
+    let _ = HIDDEN_INPUT.try_with(|notes| notes.set(notes.get().wrapping_add(1)));
+}
+
+/// How many times [`note_hidden_input`] ran on this thread; 0 on a thread
+/// whose TLS is gone.
+pub(crate) fn hidden_input_notes() -> u64 {
+    HIDDEN_INPUT.try_with(Cell::get).unwrap_or(0)
 }
 
 /// The input signals that wait for the drain (roadmap item 2.3): one flag
@@ -161,13 +189,16 @@ pub(crate) fn note_input_signal(signal: InputSignal) {
 }
 
 /// Notes a desktop switch whose destination Windows would not tell
-/// (`error`), for the next drain, which logs it and resets nothing.
+/// (`error`), for the next drain, which logs it and resets nothing. Input
+/// may have been on another desktop meanwhile, so the drain also reads the
+/// modifiers again (roadmap item 2.5).
 pub(crate) fn note_unknown_desktop_switch(error: HRESULT) {
     let _ = PENDING_SIGNALS.try_with(|pending| {
         let mut noted = pending.get();
         noted.unknown = Some(error);
         pending.set(noted);
     });
+    note_hidden_input();
     wake_this_thread();
 }
 
@@ -182,7 +213,7 @@ pub(crate) fn take_pending_signals() -> Option<PendingSignals> {
 /// Posts `MAIN_WAKE` to the calling thread, so that a wait that a noted
 /// signal came in returns to the drain. A post that fails loses no signal:
 /// the drain also runs when `pump` empties the queue.
-fn wake_this_thread() {
+pub(crate) fn wake_this_thread() {
     // SAFETY: GetCurrentThreadId takes no arguments; PostThreadMessageW
     // takes the thread id and the message by value, reads no memory of ours
     // and returns without waiting; MAIN_WAKE carries no pointer.
@@ -210,14 +241,16 @@ pub(crate) struct MainState {
 /// `None`, without running `f`, if this thread has no main state, or if the
 /// state is borrowed already: a callback re-entered under the borrow then
 /// passes its event, and nothing panics or waits. Such a refusal is counted
-/// in `main_state_refused` (roadmap item 2.4); a thread without a main
-/// state is no refusal. `f` must only decide, reset or set the gesture
-/// timer (see the module docs).
+/// in `main_state_refused` (roadmap item 2.4) and noted as hidden input,
+/// since the engine did not see that event (roadmap item 2.5); a thread
+/// without a main state is no refusal. `f` must only decide, reset, set the
+/// gesture timer or read the key state (see the module docs).
 pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
     MAIN.try_with(|main| {
         let Ok(mut state) = main.try_borrow_mut() else {
             // Counted, never logged: this runs in the hook callback.
             counters::bump(Counter::MainStateRefused);
+            note_hidden_input();
             #[cfg(test)]
             REFUSED.with(|refused| refused.set(refused.get() + 1));
             return None;
@@ -278,18 +311,35 @@ impl MainState {
 
     /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
     /// reads its executable once, here and not in the keyboard callback,
-    /// and the engine resyncs the modifiers.
+    /// and the engine's hiding count moves, so the drain reads the
+    /// modifiers (roadmap item 2.5).
     pub(crate) fn foreground_changed(&mut self, window: HWND) {
         self.foreground.window_changed(window);
-        let env = HookEnv::new(&self.foreground);
-        self.engine.on_foreground_changed(&env);
+        self.engine.on_foreground_changed();
     }
 
     /// Keyboard input came back to this desktop: the window that has the
     /// foreground now is read again, since the foreground hook may have
-    /// reported nothing meanwhile. Nothing is reset (ruling R2).
+    /// reported nothing meanwhile, and the next drain reads the modifiers
+    /// (roadmap item 2.5). Nothing is reset (ruling R2).
     pub(crate) fn input_returned(&mut self) {
         self.foreground.resync();
+        self.engine.input_returned();
+    }
+
+    /// The drain's read of the modifiers from the OS key state (roadmap
+    /// item 2.5), if something could have hidden a key event since the last
+    /// one: the engine decides from its hiding count and this thread's
+    /// notes. Nothing while remapping is off: the reset of `swch on` reads
+    /// every key. Only `GetAsyncKeyState` runs under the borrow. Returns
+    /// whether the OS was asked.
+    pub(crate) fn resync_if_due(&mut self, hook: &KeyboardHook) -> bool {
+        if !hook.is_enabled() {
+            return false;
+        }
+        let notes = hidden_input_notes();
+        self.engine
+            .resync_if_due(&HookEnv::new(&self.foreground), notes)
     }
 
     /// The keyboard hook was reinstalled (roadmap item 2.4): the engine is
@@ -721,7 +771,8 @@ impl MainThread {
 
     /// Step 1 of the loop: serves the requests, answers the noted input
     /// signals and carries out the due timers until a whole pass finds none
-    /// of them.
+    /// of them, then reads the modifiers from the OS if something could
+    /// have hidden a key event since the last read (roadmap item 2.5).
     fn drain(&self, hook: &KeyboardHook) {
         loop {
             let mut busy = false;
@@ -738,9 +789,10 @@ impl MainThread {
                 busy = true;
             }
             if !busy {
-                return;
+                break;
             }
         }
+        let _ = with_main(|main| main.resync_if_due(hook));
     }
 }
 
@@ -1831,6 +1883,70 @@ mod tests {
                 "the drain of {signal} reads the foreground window again"
             );
         }
+    }
+
+    /// Whether this thread's main state has a read of the modifiers due,
+    /// which this call takes. The read itself asks the live key state of
+    /// this machine, read only; the tests look only at whether it is due.
+    fn read_due(hook: &KeyboardHook) -> bool {
+        with_main(|main| main.resync_if_due(hook)).expect("the main state is free")
+    }
+
+    #[test]
+    fn the_drain_reads_the_modifiers_after_a_note_and_not_again() {
+        // Roadmap item 2.5, cut D4: the drain ends with the read of the
+        // modifiers, due at the start and after a note of hidden input.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the first drain read the start");
+        note_hidden_input();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the drain read after the note");
+        note_hidden_input();
+        assert!(read_due(&hook), "a note makes a read due");
+        assert!(!read_due(&hook), "one read per note");
+    }
+
+    #[test]
+    fn a_refused_call_notes_hidden_input() {
+        // E8: a callback that `with_main` refuses passes its event
+        // undecided, so the engine may hold a stale modifier.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        assert_eq!(with_main(|_| with_main(|_| ())), Some(None));
+        assert_eq!(hidden_input_notes(), before + 1);
+    }
+
+    #[test]
+    fn a_desktop_switch_to_an_unknown_destination_notes_hidden_input() {
+        // E3u: input may have been on another desktop meanwhile.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        note_unknown_desktop_switch(E_ACCESSDENIED);
+        assert_eq!(hidden_input_notes(), before + 1);
+        assert!(
+            take_pending_signals().is_some(),
+            "and is noted for the drain"
+        );
+    }
+
+    #[test]
+    fn a_return_signal_makes_the_next_drain_read_the_modifiers() {
+        // E3, D6: nothing is read while input is on another desktop, not
+        // even after a note; once it is back, a note reads again.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        note_input_signal(InputSignal::SessionLocked);
+        main.drain(&hook);
+        note_hidden_input();
+        assert!(!read_due(&hook), "no read while input is away");
+        note_input_signal(InputSignal::SessionUnlocked);
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the drain of the return signal read");
+        note_hidden_input();
+        assert!(read_due(&hook), "input is back: a note reads again");
     }
 
     #[test]

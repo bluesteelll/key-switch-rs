@@ -258,6 +258,8 @@ minor version; such entries sit under **Changed** and start with
 - Bench rows R12m and R12m2, a key-down with one and with two modifiers
   held, R17t, one `GetTickCount`, and R17a, one `GetAsyncKeyState`
   (roadmap item 2.5).
+- Bench row R18: the main thread's read of the modifiers between key
+  events (roadmap item 2.5).
 
 ### Changed
 

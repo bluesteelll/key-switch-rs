@@ -91,6 +91,11 @@
 //!   item 2.5).
 //! - R17a: one `GetAsyncKeyState(VK_F13)`, which only reads, the mean of
 //!   1000 calls per sample (roadmap item 2.5).
+//! - R18: the main thread's read of the modifiers between key events
+//!   (`MainState::resync_if_due`, roadmap item 2.5) on the bench thread as
+//!   the main thread, each after an untimed note of hidden input that makes
+//!   it due: the eight sided modifiers from the live key state, which only
+//!   reads.
 //!
 //! Every event the callback rows hand the callback carries the tick count
 //! as its time stamp, as Windows' events do, and an injected one the
@@ -138,7 +143,7 @@ use crate::hook::control_window::{CONTROL_CLASS, ControlWindow};
 use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
-use crate::hook::main_thread::{MainThread, MainThreadError};
+use crate::hook::main_thread::{MainThread, MainThreadError, note_hidden_input, with_main};
 use crate::hook::watchdog::{HookWatchdog, RequestReinstall, SYNTHETIC_RAW};
 
 /// One row of the table: its label, what it measures and its samples.
@@ -528,6 +533,24 @@ fn r17a_async_key_state(count: usize) -> Vec<Duration> {
         // memory of ours and may be called from any thread.
         std::hint::black_box(unsafe { GetAsyncKeyState(i32::from(VK_F13.0)) });
     })
+}
+
+/// R18: the main thread's read of the modifiers between key events
+/// (roadmap item 2.5), as its drain makes it on the bench thread as the main
+/// thread: an untimed note of hidden input, then the timed read. It asks
+/// the live key state of this machine, which only reads.
+fn r18_main_thread_read(count: usize) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let hook = get_hook();
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        note_hidden_input();
+        let begun = Instant::now();
+        let read = with_main(|main| main.resync_if_due(hook));
+        samples.push(begun.elapsed());
+        assert_eq!(read, Some(true), "a note makes the read due");
+    }
+    samples
 }
 
 /// A requester for the watchdog rows that keeps every request unanswered;
@@ -1244,6 +1267,11 @@ fn latency_bench() {
             id: "R17a",
             what: "GetAsyncKeyState(VK_F13), per call (mean of 1000 per sample)",
             samples: r17a_async_key_state(2_000),
+        },
+        Row {
+            id: "R18",
+            what: "the main thread's read of the modifiers between key events (MainState::resync_if_due)",
+            samples: r18_main_thread_read(2_000),
         },
     ]);
     get_hook().update_bindings(Vec::new());

@@ -15,8 +15,9 @@
 //!
 //! [`FakeEnv`] models the OS key state the way Windows keeps it: a key-down
 //! or key-up changes it only if the engine let the event through, or if the
-//! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`]),
-//! and a generic modifier code reads as down while either side is. Timers
+//! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`],
+//! [`Scenario::down_unnoticed`], [`Scenario::up_unnoticed`]), and a generic
+//! modifier code reads as down while either side is. Timers
 //! that the engine requests go into a [`TimerQueue`] through
 //! [`Engine::start_timers`], as on the daemon's main thread, and fire during
 //! [`Scenario::advance_ms`], in due order; [`Scenario::advance_ms_stalled`]
@@ -69,6 +70,23 @@
 //! had the keyboard hook reinstalled (roadmap item 2.4): the engine is reset
 //! with [`ResetReason::HookReinstalled`], which reads the held keys from the
 //! OS as `swch on` does.
+//!
+//! The daemon's main thread reads the modifiers from the OS key state
+//! between key events, in its drain, when something could have hidden a key
+//! event since its last read (`Engine::resync_if_due`, roadmap item 2.5).
+//! The scenario drains wherever that thread would: once at the start,
+//! before any key event (the read of the daemon's start), and after a key
+//! event while remapping is on, a foreground change, an input signal,
+//! `swch on`, a hook reinstall, a reload, an [`Scenario::advance_ms`] that
+//! fired a timer, a note of hidden input ([`Scenario::hidden_input_noted`])
+//! and a noticed unseen event. An event the hook did not see is noticed
+//! ([`Scenario::up_unseen`], [`Scenario::down_unseen`]: a source such as a
+//! foreground change or a refused callback noted it, so the next read is
+//! due) or unnoticed ([`Scenario::up_unnoticed`],
+//! [`Scenario::down_unnoticed`]: nothing the daemon notices came after it,
+//! so no read is due). The scenario does not drain after an unnoticed
+//! event, [`Scenario::advance_ms_stalled`], [`Scenario::lose_timers`] or
+//! [`Scenario::remapping_off`].
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -191,6 +209,9 @@ pub(crate) struct Scenario {
     check_lone: bool,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
+    /// The main thread's notes of hidden input so far, which its drain
+    /// hands to the engine; see [`hidden_input_noted`](Self::hidden_input_noted).
+    notes: u64,
 }
 
 impl Scenario {
@@ -219,11 +240,13 @@ impl Scenario {
         Self::with_bindings(bindings)
     }
 
-    /// Starts from a ready-made binding list, sorted like a hot reload does.
+    /// Starts from a ready-made binding list, sorted like a hot reload does,
+    /// and drains once, as the daemon's main thread does before its first
+    /// key event.
     pub(crate) fn with_bindings(mut bindings: Vec<Binding>) -> Self {
         sort_by_specificity(&mut bindings);
         let env = FakeEnv::new();
-        Self {
+        let mut scenario = Self {
             engine: Engine::new(),
             bindings,
             start: env.now,
@@ -239,7 +262,10 @@ impl Scenario {
             check_mask: false,
             check_lone: false,
             enabled: true,
-        }
+            notes: 0,
+        };
+        scenario.drain();
+        scenario
     }
 
     /// Sets a line printed with any failure, after the failure message.
@@ -304,6 +330,7 @@ impl Scenario {
         self.bindings = bindings;
         self.engine.reset(&self.env, ResetReason::Reloaded);
         self.drop_stale_timers();
+        self.drain();
         let label = format!("reload at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -345,16 +372,34 @@ impl Scenario {
 
     /// Releases `key` without the hook seeing it, as when the key-up goes to
     /// the secure desktop: the OS key state changes, the engine is not told.
+    /// An event the hook did not see, which a source noticed (roadmap item
+    /// 2.5): the main thread reads the modifiers at its next drain.
     #[track_caller]
-    pub(crate) fn up_unseen(mut self, key: &str) -> Self {
+    pub(crate) fn up_unseen(self, key: &str) -> Self {
+        self.release_unseen(key, true)
+    }
+
+    /// Releases `key` as [`up_unseen`](Self::up_unseen) does, with nothing
+    /// the daemon notices after it (roadmap item 2.5): no read is due.
+    #[track_caller]
+    pub(crate) fn up_unnoticed(self, key: &str) -> Self {
+        self.release_unseen(key, false)
+    }
+
+    #[track_caller]
+    fn release_unseen(mut self, key: &str, noticed: bool) -> Self {
+        let step = if noticed { "up_unseen" } else { "up_unnoticed" };
         if !self.is_held(key) {
-            self.fail(&format!("up_unseen {key}: the key is not held"));
+            self.fail(&format!("{step} {key}: the key is not held"));
         }
         let vk = physical_key(key);
         self.held[vk.0 as usize] = false;
         self.env.os_down[vk.0 as usize] = false;
         self.press_suppressed[vk.0 as usize] = None;
-        let label = format!("up {key} unseen by the hook at {}", self.clock());
+        let label = format!("up {key} {} at {}", unseen_how(noticed), self.clock());
+        if noticed {
+            self.note_hidden_input();
+        }
         self.push_step(label, None, None, Vec::new());
         self
     }
@@ -362,11 +407,31 @@ impl Scenario {
     /// Presses `key` without the hook seeing it, as when it went down while
     /// remapping was off or before the daemon started: the OS key state
     /// changes, the engine is not told. Windows saw this key-down, so the
-    /// symmetry check counts the press as passed.
+    /// symmetry check counts the press as passed. An event the hook did not
+    /// see, which a source noticed (roadmap item 2.5): the main thread reads
+    /// the modifiers at its next drain.
     #[track_caller]
-    pub(crate) fn down_unseen(mut self, key: &str) -> Self {
+    pub(crate) fn down_unseen(self, key: &str) -> Self {
+        self.press_unseen(key, true)
+    }
+
+    /// Presses `key` as [`down_unseen`](Self::down_unseen) does, with
+    /// nothing the daemon notices after it (roadmap item 2.5): no read is
+    /// due.
+    #[track_caller]
+    pub(crate) fn down_unnoticed(self, key: &str) -> Self {
+        self.press_unseen(key, false)
+    }
+
+    #[track_caller]
+    fn press_unseen(mut self, key: &str, noticed: bool) -> Self {
+        let step = if noticed {
+            "down_unseen"
+        } else {
+            "down_unnoticed"
+        };
         if self.is_held(key) {
-            self.fail(&format!("down_unseen {key}: the key is already held"));
+            self.fail(&format!("{step} {key}: the key is already held"));
         }
         let vk = physical_key(key);
         self.held[vk.0 as usize] = true;
@@ -374,9 +439,40 @@ impl Scenario {
         if self.check_symmetry {
             self.press_suppressed[vk.0 as usize] = Some(false);
         }
-        let label = format!("down {key} unseen by the hook at {}", self.clock());
+        let label = format!("down {key} {} at {}", unseen_how(noticed), self.clock());
+        if noticed {
+            self.note_hidden_input();
+        }
         self.push_step(label, None, None, Vec::new());
         self
+    }
+
+    /// A source the daemon has besides the engine noticed that a key event
+    /// may have gone past the hook (roadmap item 2.5): a callback that found
+    /// the main state busy or ended late, a stretch away from the messages,
+    /// a gap the hook watchdog saw, a desktop switch to where Windows would
+    /// not say. The main thread reads the modifiers at its drain.
+    #[track_caller]
+    pub(crate) fn hidden_input_noted(mut self) -> Self {
+        self.note_hidden_input();
+        let label = format!("hidden input noted at {}", self.clock());
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    /// One more note of hidden input, and the drain that follows it.
+    fn note_hidden_input(&mut self) {
+        self.notes += 1;
+        self.drain();
+    }
+
+    /// The main thread's drain: its read of the modifiers, if one is due.
+    /// None while remapping is off, as `MainState::resync_if_due` reads
+    /// none then.
+    fn drain(&mut self) {
+        if self.enabled {
+            let _ = self.engine.resync_if_due(&self.env, self.notes);
+        }
     }
 
     /// Reports a foreground window change to the engine.
@@ -388,7 +484,8 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.on_foreground_changed(&self.env);
+        self.engine.on_foreground_changed();
+        self.drain();
         let label = format!("foreground change at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -425,9 +522,10 @@ impl Scenario {
     }
 
     /// One input signal, which resets the engine as the main thread's
-    /// drain does: [`InputSignal::reset`] decides. Like a foreground change,
-    /// a script error while remapping is off: the daemon drops the signals
-    /// then.
+    /// drain does: [`InputSignal::reset`] decides, and a signal that input
+    /// came back makes the drain read the modifiers (roadmap item 2.5).
+    /// Like a foreground change, a script error while remapping is off: the
+    /// daemon drops the signals then.
     #[track_caller]
     fn input_signal(mut self, signal: InputSignal) -> Self {
         if !self.enabled {
@@ -440,6 +538,10 @@ impl Scenario {
             self.engine.reset(&self.env, reason);
             self.drop_stale_timers();
         }
+        if signal.input_returned() {
+            self.engine.input_returned();
+        }
+        self.drain();
         let label = format!("{signal} at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -482,6 +584,7 @@ impl Scenario {
         self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = true;
+        self.drain();
         let label = format!("remapping on at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -498,6 +601,7 @@ impl Scenario {
     pub(crate) fn hook_reinstalled(mut self) -> Self {
         self.engine.reset(&self.env, ResetReason::HookReinstalled);
         self.drop_stale_timers();
+        self.drain();
         let label = format!("keyboard hook reinstalled at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -509,7 +613,9 @@ impl Scenario {
     pub(crate) fn advance_ms(mut self, ms: u64) -> Self {
         let target = self.env.now + Duration::from_millis(ms);
         let mut fired = Vec::new();
+        let mut woke = false;
         while let Some(timer) = self.timers.take_due(target) {
+            woke = true;
             self.env.now = self.env.now.max(timer.due);
             let decision = self.engine.on_timer(timer.token);
             assert!(!decision.suppress, "a timer has no event to suppress");
@@ -518,6 +624,10 @@ impl Scenario {
             fired.extend(decision.fire);
         }
         self.env.now = target;
+        // The main thread drains after a timer that woke it.
+        if woke {
+            self.drain();
+        }
         let label = format!("advance {ms} ms to {}", self.clock());
         self.push_step(label, None, None, fired);
         self
@@ -650,6 +760,8 @@ impl Scenario {
         let label = format!("{what} {key} at {}", self.clock());
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
+        // The main thread drains after the callback returned.
+        self.drain();
         self.push_step(label, Some(suppressed), Some(masked), fire);
         if lone {
             let label = &self.last_step().label;
@@ -855,4 +967,13 @@ impl Scenario {
 
 fn outcome(suppressed: bool) -> &'static str {
     if suppressed { "suppressed" } else { "passed" }
+}
+
+/// How an event the hook did not see is labelled in the transcript.
+fn unseen_how(noticed: bool) -> &'static str {
+    if noticed {
+        "unseen by the hook"
+    } else {
+        "unseen by the hook and unnoticed"
+    }
 }
