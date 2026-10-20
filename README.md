@@ -871,10 +871,14 @@ language switch that Windows refused, a Hold whose timer could not be set,
 a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
 queue dropped or that found the executor stopped, or a key event that found
 the daemon's decision state in use and passed undecided
-(`main_state_refused`), it counts. It also records how long its longest callback ran. While a count
+(`main_state_refused`), it counts, and so does a callback that ended 17 ms
+or more after its key event or a main thread 17 ms or more away from its
+messages (`hook_late`, after which the main thread reads the modifiers
+again; roadmap item 2.5). It also records how long its longest callback ran. While a count
 is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
-gives all of them, ending with `longest_callback_us=<microseconds>`.
+gives all of them, ending with `longest_callback_us=<microseconds>`; the
+line is `[INFO]` when `hook_late` is its only count that is not 0.
 
 At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
 becomes `daemon.2.log`, and the oldest file is deleted: three files, about

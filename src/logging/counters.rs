@@ -7,14 +7,16 @@
 //! reports the counts every minute and at every flush (roadmap item 1.7).
 //! The callback also records how long it ran; the longest run since the
 //! last report is reported with the counts, and on its own once it reaches
-//! [`SLOW_CALLBACK`] (roadmap item 2.1).
+//! [`SLOW_CALLBACK`] (roadmap item 2.1). The report is a warning while a
+//! counter that warns, or that slow callback, is in it, and information
+//! when only `hook_late` is (roadmap item 2.5).
 
 use std::fmt::{self, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How many counters there are.
-const SLOTS: usize = 11;
+const SLOTS: usize = 12;
 
 /// A condition that is counted instead of logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,12 @@ pub enum Counter {
     /// daemon's desktop when it decided to ask for a reinstall, so it did
     /// not ask (roadmap item 2.4).
     WatchdogDesktopCheckFailed,
+    /// A keyboard callback ended 17 ms or more after its key event, or the
+    /// main thread spent 17 ms or more away from its messages: Windows may
+    /// have applied a key event without the daemon, so the main thread
+    /// reads the modifiers again (roadmap item 2.5). A count costs that
+    /// read and decides nothing, so it alone makes no warning.
+    HookLate,
 }
 
 impl Counter {
@@ -75,7 +83,28 @@ impl Counter {
         Counter::RawInputUnread,
         Counter::WatchdogTimerNotSet,
         Counter::WatchdogDesktopCheckFailed,
+        Counter::HookLate,
     ];
+
+    /// Whether a count of this counter makes the report a warning. Every
+    /// counter does but `hook_late`, whose count only makes the main thread
+    /// read the modifiers again (roadmap item 2.5).
+    pub fn warns(self) -> bool {
+        match self {
+            Counter::MenuMaskShort
+            | Counter::KeyPressShort
+            | Counter::HoldTimerNotStarted
+            | Counter::LogLinesDropped
+            | Counter::ExecutorJobsDropped
+            | Counter::ExecutorUnavailable
+            | Counter::PostMessageFailed
+            | Counter::MainStateRefused
+            | Counter::RawInputUnread
+            | Counter::WatchdogTimerNotSet
+            | Counter::WatchdogDesktopCheckFailed => true,
+            Counter::HookLate => false,
+        }
+    }
 }
 
 impl fmt::Display for Counter {
@@ -92,6 +121,7 @@ impl fmt::Display for Counter {
             Counter::RawInputUnread => "raw_input_unread",
             Counter::WatchdogTimerNotSet => "watchdog_timer_not_set",
             Counter::WatchdogDesktopCheckFailed => "watchdog_desktop_check_failed",
+            Counter::HookLate => "hook_late",
         })
     }
 }
@@ -140,6 +170,7 @@ impl Counters {
             Counter::RawInputUnread => &self.counts[8],
             Counter::WatchdogTimerNotSet => &self.counts[9],
             Counter::WatchdogDesktopCheckFailed => &self.counts[10],
+            Counter::HookLate => &self.counts[11],
         }
     }
 
@@ -200,15 +231,34 @@ impl Default for Counters {
     }
 }
 
+/// One counters report: its line, and whether it is a warning or only
+/// information (roadmap item 2.5). The log writer picks the level from it;
+/// this file names no logging, since it runs on the hook path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// Whether a counter that [warns](Counter::warns) is not 0, or a
+    /// callback reached [`SLOW_CALLBACK`].
+    pub warns: bool,
+    /// The line: every counter once, then the longest callback.
+    pub text: String,
+}
+
 /// The report of `snapshot` (as [`Counters::take`] returns it), which names
 /// every counter once and then the longest callback in microseconds, or
 /// `None` while every count is 0 and no callback reached
-/// [`SLOW_CALLBACK`].
-pub fn summary(snapshot: &Snapshot) -> Option<String> {
-    if snapshot.counts.iter().all(|&count| count == 0) && snapshot.longest_callback < SLOW_CALLBACK
-    {
+/// [`SLOW_CALLBACK`]. It is a warning while a counter that
+/// [warns](Counter::warns) is not 0 or a callback reached
+/// [`SLOW_CALLBACK`], and information otherwise (roadmap item 2.5).
+pub fn summary(snapshot: &Snapshot) -> Option<Report> {
+    let slow = snapshot.longest_callback >= SLOW_CALLBACK;
+    if snapshot.counts.iter().all(|&count| count == 0) && !slow {
         return None;
     }
+    let warns = slow
+        || Counter::ALL
+            .iter()
+            .zip(snapshot.counts)
+            .any(|(counter, count)| count > 0 && counter.warns());
     let mut text = String::from("counters since the last report:");
     for (counter, count) in Counter::ALL.iter().zip(snapshot.counts) {
         let _ = write!(text, " {counter}={count}");
@@ -218,7 +268,7 @@ pub fn summary(snapshot: &Snapshot) -> Option<String> {
         " longest_callback_us={}",
         snapshot.longest_callback.as_micros()
     );
-    Some(text)
+    Some(Report { warns, text })
 }
 
 /// The daemon's counters, reported by the log writer.
@@ -257,18 +307,64 @@ mod tests {
         assert_eq!(summary(&Counters::new().take()), None);
     }
 
+    /// The text of `snapshot`'s report, if any.
+    fn text(snapshot: Snapshot) -> Option<String> {
+        summary(&snapshot).map(|report| report.text)
+    }
+
     #[test]
     fn the_summary_names_every_counter_once_one_is_non_zero() {
         assert_eq!(
-            summary(&Snapshot {
-                counts: [3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0],
+            text(Snapshot {
+                counts: [3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0],
                 longest_callback: Duration::from_micros(42),
             })
             .as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=42"
+                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=42"
             )
         );
+    }
+
+    #[test]
+    fn hook_late_alone_is_reported_at_info_and_with_another_count_at_warn() {
+        // Roadmap item 2.5, ruling W4: a late callback only makes the main
+        // thread read the modifiers again, so normal typing that trips it
+        // writes no warning; another count, or a slow callback, still does.
+        let mut counts = [0; SLOTS];
+        counts[11] = 2;
+        let late = summary(&Snapshot {
+            counts,
+            longest_callback: Duration::from_micros(30),
+        });
+        assert_eq!(
+            late,
+            Some(Report {
+                warns: false,
+                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=2 longest_callback_us=30".to_owned()
+            })
+        );
+
+        counts[7] = 1;
+        let level = summary(&Snapshot {
+            counts,
+            longest_callback: Duration::from_micros(30),
+        })
+        .map(|report| report.warns);
+        assert_eq!(level, Some(true), "a warning with main_state_refused");
+
+        let mut counts = [0; SLOTS];
+        counts[11] = 1;
+        let level = summary(&Snapshot {
+            counts,
+            longest_callback: SLOW_CALLBACK,
+        })
+        .map(|report| report.warns);
+        assert_eq!(level, Some(true), "a warning with a slow callback");
+
+        for counter in Counter::ALL {
+            assert_eq!(counter.warns(), counter != Counter::HookLate, "{counter}");
+        }
     }
 
     #[test]
@@ -278,7 +374,7 @@ mod tests {
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::LogLinesDropped);
 
-        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             counters.take().counts,
             [0; SLOTS],
@@ -318,10 +414,11 @@ mod tests {
             longest_callback: SLOW_CALLBACK,
         };
         assert_eq!(
-            summary(&slow).as_deref(),
-            Some(
-                "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=5000"
-            )
+            summary(&slow),
+            Some(Report {
+                warns: true,
+                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=5000".to_owned()
+            })
         );
     }
 
@@ -370,7 +467,8 @@ mod tests {
                 "main_state_refused",
                 "raw_input_unread",
                 "watchdog_timer_not_set",
-                "watchdog_desktop_check_failed"
+                "watchdog_desktop_check_failed",
+                "hook_late"
             ]
         );
     }

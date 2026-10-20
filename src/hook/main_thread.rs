@@ -79,7 +79,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use windows::Win32::{
     Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
-    System::Threading::{GetCurrentThreadId, INFINITE},
+    System::{
+        SystemInformation::GetTickCount,
+        Threading::{GetCurrentThreadId, INFINITE},
+    },
     UI::WindowsAndMessaging::*,
 };
 use windows::core::{Error, HRESULT};
@@ -91,7 +94,7 @@ use crate::engine::{
 use crate::hook::config_watcher::ApplyReload;
 use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
 use crate::hook::keyboard_hook::{KeyboardHook, Reinstalled};
-use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
+use crate::hook::keyboard_hook_callback::{HookEnv, carry_out, event_age_ms};
 use crate::logging::counters::{self, Counter};
 use crate::platform::foreground::ForegroundCache;
 use crate::platform::timers::WaitableTimer;
@@ -137,6 +140,49 @@ pub(crate) fn note_hidden_input() {
 /// whose TLS is gone.
 pub(crate) fn hidden_input_notes() -> u64 {
     HIDDEN_INPUT.try_with(Cell::get).unwrap_or(0)
+}
+
+/// A keyboard callback that ends this long after its key event, or a main
+/// thread this long away from its messages, may have let Windows time out
+/// a hook call and apply a key event without the daemon (roadmap item
+/// 2.5). Two ticks of the system clock, which `GetTickCount` counts "in
+/// the range of 10 milliseconds to 16 milliseconds" (Microsoft Learn), so a
+/// prompt event never counts; a stall of about 34 ms or more always does.
+pub(crate) const HOOK_LATE_MS: u32 = 17;
+
+/// [`HOOK_LATE_MS`] for a run time measured with `Instant`.
+pub(crate) const HOOK_LATE: Duration = Duration::from_millis(HOOK_LATE_MS as u64);
+
+/// The milliseconds since the system started (`GetTickCount`), the clock
+/// that `KBDLLHOOKSTRUCT.time` stamps a key event on, as Microsoft
+/// documents it for `GetMessageTime` (roadmap item 2.5; that both read the
+/// same counter is not stated, and manual check M8 settles it). A
+/// user-mode read; it wraps after 49.7 days.
+pub(crate) fn tick_count() -> u32 {
+    // SAFETY: GetTickCount takes no arguments, reads no memory of ours and
+    // cannot fail.
+    unsafe { GetTickCount() }
+}
+
+/// A callback or a stretch of the main loop ran late (E4, E5): notes hidden
+/// input for the next drain and counts `hook_late`. No `log::`, no post:
+/// it runs in the keyboard callback.
+pub(crate) fn note_late() {
+    note_hidden_input();
+    counters::bump(Counter::HookLate);
+}
+
+/// Whether the main thread, awake from tick `since_ms` to tick `now_ms`
+/// without waiting for messages, stayed away from them for
+/// [`HOOK_LATE_MS`] or more (E5, roadmap item 2.5): Windows may have timed
+/// out a hook call meanwhile. If so it notes that for the next drain and
+/// counts `hook_late`.
+fn note_if_awake_too_long(since_ms: u32, now_ms: u32) -> bool {
+    let late = event_age_ms(now_ms, since_ms) >= HOOK_LATE_MS;
+    if late {
+        note_late();
+    }
+    late
 }
 
 /// The input signals that wait for the drain (roadmap item 2.3): one flag
@@ -731,6 +777,7 @@ impl MainThread {
             ));
         };
         let mut msg = MSG::default();
+        let mut awake_since = tick_count();
         loop {
             self.drain(hook);
             match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
@@ -739,6 +786,15 @@ impl MainThread {
                     "could not set the gesture timer ({error}); {dropped} pending Holds dropped"
                 ),
                 Some(Wake::Wait) | None => {}
+            }
+            // E5 (roadmap item 2.5): a stretch away from the messages that
+            // long may have let Windows time out a hook call. Back to the
+            // drain, which reads the modifiers before anything else is
+            // dispatched; the stretch starts again, so this cannot spin.
+            let now = tick_count();
+            if note_if_awake_too_long(awake_since, now) {
+                awake_since = now;
+                continue;
             }
             // SAFETY: the slice holds the gesture timer's handle, which the
             // WaitableTimer in this thread's main state keeps open: only
@@ -753,6 +809,7 @@ impl MainThread {
                     MWMO_INPUTAVAILABLE,
                 )
             };
+            awake_since = tick_count();
             if woke == WAIT_OBJECT_0 {
                 with_main(|main| main.timers.fired());
                 continue;
@@ -1947,6 +2004,71 @@ mod tests {
         assert!(!read_due(&hook), "the drain of the return signal read");
         note_hidden_input();
         assert!(read_due(&hook), "input is back: a note reads again");
+    }
+
+    #[test]
+    fn an_awake_stretch_of_17_ms_notes_hidden_input() {
+        // Roadmap item 2.5, E5, in ticks of GetTickCount.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        assert!(note_if_awake_too_long(1000, 1020), "20 ms away");
+        assert_eq!(hidden_input_notes(), before + 1);
+        assert!(!note_if_awake_too_long(1000, 1005), "5 ms away");
+        assert!(!note_if_awake_too_long(1000, 1016), "16 ms away");
+        assert!(note_if_awake_too_long(1000, 1017), "17 ms away");
+        assert!(
+            note_if_awake_too_long(u32::MAX - 5, 14),
+            "20 ms across the wrap of the tick count"
+        );
+        assert!(
+            !note_if_awake_too_long(1020, 1000),
+            "a start after now counts as no stretch"
+        );
+        assert_eq!(hidden_input_notes(), before + 3);
+    }
+
+    /// The non-test lines of `text`: those before its `#[cfg(test)]` and
+    /// `mod tests {` pair.
+    fn non_test_lines(text: &str) -> Vec<&str> {
+        let lines: Vec<&str> = text.lines().collect();
+        let end = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len());
+        lines[..end].to_vec()
+    }
+
+    #[test]
+    fn the_main_loop_checks_its_awake_stretch_before_every_wait() {
+        // Roadmap item 2.5, E5: the check runs right before the wait, so
+        // nothing is dispatched between a long stretch and the drain's read,
+        // and the stretch starts again as soon as the wait returns.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text =
+            std::fs::read_to_string(root.join("src/hook/main_thread.rs")).expect("read the source");
+        let lines = non_test_lines(&text);
+        let start = lines
+            .iter()
+            .position(|line| line.contains("pub(crate) fn run("))
+            .expect("MainThread::run is there");
+        let at = |token: &str| {
+            lines[start..]
+                .iter()
+                .position(|line| line.contains(token))
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| panic!("{token} in MainThread::run"))
+        };
+        let check = at("note_if_awake_too_long(");
+        let wait = at("MsgWaitForMultipleObjectsEx(");
+        assert!(check < wait, "the check comes before the wait");
+        let wait_end = (wait..lines.len())
+            .find(|&index| lines[index].trim() == "};")
+            .expect("the wait's statement ends");
+        assert_eq!(
+            lines[wait_end + 1].trim(),
+            "awake_since = tick_count();",
+            "the stretch starts again right after the wait"
+        );
     }
 
     #[test]

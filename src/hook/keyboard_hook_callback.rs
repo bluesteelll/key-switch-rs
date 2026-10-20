@@ -37,7 +37,12 @@
 //!    so that its output stays in order with the keys typed after it;
 //!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
 //!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
-//! 8. returns `LRESULT(1)` if the decision suppresses the event, and
+//! 8. notes a late event for the main thread (roadmap item 2.5): one that
+//!    reaches its exit 17 ms or more after its time stamp, or that ran that
+//!    long, may have let Windows time out the calls of the key events
+//!    behind it, so the main thread reads the modifiers again; it counts
+//!    `hook_late`, and never logs here;
+//! 9. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
 //! In debug builds only, `KS_DEBUG_HOOK_HOLD` set to a key name at startup
@@ -127,7 +132,7 @@
 
 use std::cell::OnceCell;
 use std::sync::LazyLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::{
     Foundation::*,
@@ -141,7 +146,8 @@ use crate::core::windows_actions::BindAction;
 use crate::engine::{Decision, Env, InputSignal, KeyEvent, ModifierSet};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{
-    MainState, note_input_signal, note_unknown_desktop_switch, wake_this_thread, with_main,
+    HOOK_LATE, HOOK_LATE_MS, MainState, note_input_signal, note_late, note_unknown_desktop_switch,
+    tick_count, wake_this_thread, with_main,
 };
 use crate::logging::counters::{self, Counter};
 use crate::platform::desktop;
@@ -410,12 +416,15 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 
     // Our own work only: from here until the decision is carried out, not
     // the passes above, which do nothing, nor CallNextHookEx (roadmap item
-    // 2.1). Two clock reads and one RMW per event.
+    // 2.1). Two clock reads and one RMW per event, and one tick count read
+    // for a physical event (roadmap item 2.5).
     let started = Instant::now();
     // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
-    // this call; two fields are copied out of it here.
+    // this call; four fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    let stamp = event.time;
+    let injected = event.flags.contains(LLKHF_INJECTED);
     #[cfg(debug_assertions)]
     crate::hook::debug_hold::hold_if_asked(wparam, event.vkCode);
     let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
@@ -426,7 +435,18 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
         }
         None => false,
     };
-    counters::record_callback(started.elapsed());
+    let ran = started.elapsed();
+    counters::record_callback(ran);
+    // An injected event's stamp is its injector's own unless it passed 0
+    // (KEYBDINPUT), so only its run time counts.
+    let age = if injected {
+        0
+    } else {
+        event_age_ms(tick_count(), stamp)
+    };
+    if late_callback(age, ran) {
+        note_late();
+    }
     if suppress {
         return LRESULT(1);
     }
@@ -434,6 +454,22 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     // SAFETY: passes the event on with the exact arguments the system gave
     // this hook procedure.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// How long ago a key event stamped `stamp_ms` happened, at tick `now_ms`
+/// (both `GetTickCount` milliseconds, roadmap item 2.5): their difference,
+/// which wraps as `GetMessageTime` prescribes, or 0 for a stamp ahead of
+/// the clock, a difference of 2^31 ms or more.
+pub(crate) fn event_age_ms(now_ms: u32, stamp_ms: u32) -> u32 {
+    let age = now_ms.wrapping_sub(stamp_ms);
+    if age >= 1 << 31 { 0 } else { age }
+}
+
+/// Whether a callback of an event `age_ms` old at its exit, which ran for
+/// `ran`, was late enough that Windows may have timed out the hook calls of
+/// the key events behind it (roadmap item 2.5).
+fn late_callback(age_ms: u32, ran: Duration) -> bool {
+    ran >= HOOK_LATE || age_ms >= HOOK_LATE_MS
 }
 
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
@@ -530,7 +566,7 @@ mod tests {
     use crate::data::trigger::Trigger;
     use crate::engine::InputSignal;
     use crate::hook::main_thread::{
-        MAIN_WAKE, MainThread, REFUSED, take_pending_signals, with_main,
+        MAIN_WAKE, MainThread, REFUSED, hidden_input_notes, take_pending_signals, with_main,
     };
     use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
@@ -578,12 +614,22 @@ mod tests {
     }
 
     /// Calls the extern keyboard callback with one event of `vk`, as the
-    /// hook dispatcher would, and returns what it returns.
+    /// hook dispatcher would, stamped with the tick count as Windows stamps
+    /// it, and returns what it returns.
     fn call_keyboard_callback(vk: u32, msg: u32) -> LRESULT {
-        let info = KBDLLHOOKSTRUCT {
-            vkCode: vk,
-            ..Default::default()
-        };
+        call_callback_with(
+            KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                time: tick_count(),
+                ..Default::default()
+            },
+            msg,
+        )
+    }
+
+    /// Calls the extern keyboard callback with `info`, as the hook
+    /// dispatcher would, and returns what it returns.
+    fn call_callback_with(info: KBDLLHOOKSTRUCT, msg: u32) -> LRESULT {
         // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
         // KBDLLHOOKSTRUCT on this stack frame that outlives the call: all
         // the callback dereferences. No hook is installed and this thread is
@@ -914,6 +960,8 @@ mod tests {
         call_keyboard_callback(f13, WM_KEYUP);
         let injected = KBDLLHOOKSTRUCT {
             vkCode: f13,
+            flags: LLKHF_INJECTED,
+            time: tick_count(),
             dwExtraInfo: injected_sentinel(),
             ..Default::default()
         };
@@ -933,6 +981,87 @@ mod tests {
         call_keyboard_callback(f13, WM_KEYUP);
 
         assert_eq!(get_hook().health().callbacks() - before, 5);
+    }
+
+    #[test]
+    fn lateness_counts_age_and_run_with_a_17_ms_boundary() {
+        // Roadmap item 2.5, E4: two ticks of the system clock.
+        let fast = Duration::from_millis(1);
+        assert!(!late_callback(16, fast), "16 ms old");
+        assert!(late_callback(17, fast), "17 ms old");
+        assert!(!late_callback(0, Duration::from_micros(16_999)));
+        assert!(late_callback(0, Duration::from_millis(17)), "ran 17 ms");
+        assert_eq!(event_age_ms(1000, 990), 10);
+        assert_eq!(event_age_ms(4, u32::MAX - 5), 10, "across the wrap");
+        assert_eq!(event_age_ms(1000, 1005), 0, "a stamp 5 ms ahead");
+        assert_eq!(event_age_ms(1000, 1000), 0);
+    }
+
+    /// Calls the extern keyboard callback with the unbound A's key-down,
+    /// stamped `age_ms` before now, and `flags`, and returns how many notes
+    /// of hidden input it left on this thread.
+    fn notes_of_a_callback(age_ms: u32, flags: KBDLLHOOKSTRUCT_FLAGS) -> u64 {
+        let before = hidden_input_notes();
+        let info = KBDLLHOOKSTRUCT {
+            vkCode: u32::from(VK_A.0),
+            flags,
+            time: tick_count().wrapping_sub(age_ms),
+            ..Default::default()
+        };
+        call_callback_with(info, WM_KEYDOWN);
+        call_keyboard_callback(u32::from(VK_A.0), WM_KEYUP);
+        hidden_input_notes() - before
+    }
+
+    /// The bindings of the lateness tests, on the process-wide hook: F13
+    /// bound to `DoNothing`, so that A is an ordinary key.
+    fn bind_f13_on_the_process_wide_hook() {
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+    }
+
+    #[test]
+    fn a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late() {
+        // E4: the event waited a second for its call, so Windows may have
+        // timed out the calls behind it. The callback reads the process-wide
+        // hook, hence `GLOBAL_HOOK`; the A key passes, nothing is sent.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let late_before = counters::COUNTERS.get(Counter::HookLate);
+        assert!(notes_of_a_callback(1000, KBDLLHOOKSTRUCT_FLAGS(0)) >= 1);
+        assert!(counters::COUNTERS.get(Counter::HookLate) > late_before);
+    }
+
+    #[test]
+    fn a_callback_for_a_fresh_event_notes_nothing() {
+        // E4: a prompt event of a callback that ran in microseconds. On a
+        // loaded machine one run may take 17 ms, so the check is retried
+        // once.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let fresh = || notes_of_a_callback(0, KBDLLHOOKSTRUCT_FLAGS(0));
+        let first = fresh();
+        if first != 0 {
+            assert_eq!(fresh(), 0, "a fresh event noted hidden input twice");
+        }
+    }
+
+    #[test]
+    fn an_injected_events_own_stamp_is_not_its_age() {
+        // E4: an injector's nonzero `KEYBDINPUT.time` is its own, so an
+        // `LLKHF_INJECTED` event a second "old" by its stamp is not late.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let injected = || notes_of_a_callback(1000, LLKHF_INJECTED);
+        let first = injected();
+        if first != 0 {
+            assert_eq!(injected(), 0, "an injected stamp noted hidden input twice");
+        }
     }
 
     #[test]

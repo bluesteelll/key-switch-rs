@@ -117,7 +117,7 @@ minor version; such entries sit under **Changed** and start with
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=12`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
@@ -260,6 +260,13 @@ minor version; such entries sit under **Changed** and start with
   (roadmap item 2.5).
 - Bench row R18: the main thread's read of the modifiers between key
   events (roadmap item 2.5).
+- Counter `hook_late` (roadmap item 2.5): a keyboard callback that ended
+  17 ms or more after its key event, or a main thread 17 ms or more away
+  from its messages; the main thread then reads the modifiers again. The
+  stamp of an injected event does not count. Tests:
+  `hook::keyboard_hook_callback::tests::a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late`,
+  `an_injected_events_own_stamp_is_not_its_age`,
+  `hook::main_thread::tests::an_awake_stretch_of_17_ms_notes_hidden_input`.
 
 ### Changed
 
@@ -647,7 +654,8 @@ minor version; such entries sit under **Changed** and start with
   something could have hidden one: at startup, after a foreground change,
   `swch on` and a hook reinstall, when keyboard input comes back from a
   lock or the secure desktop, and after a callback that found the daemon
-  busy. A modifier pressed where the daemon cannot see it, with none of
+  busy or ended late, or a stretch of 17 ms or more away from its
+  messages. A modifier pressed where the daemon cannot see it, with none of
   these after it, counts as up until then or until its next auto-repeat
   (known issue 88). A modifier released where the daemon cannot see it,
   or swallowed by another program's hook after the daemon's, stops
@@ -657,6 +665,9 @@ minor version; such entries sit under **Changed** and start with
   `another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note`,
   `engine::tests::a_key_event_asks_windows_once_for_each_modifier_held_for_it_and_never_for_its_own_key_or_a_swallowed_one`,
   `engine::properties::no_key_sticks_and_no_key_up_reaches_windows_alone_when_hidden_modifier_events_go_unnoticed`.
+- A counters line whose only non-zero count is `hook_late` is written at
+  `[INFO]`, not `[WARN]` (roadmap item 2.5). Test:
+  `logging::counters::tests::hook_late_alone_is_reported_at_info_and_with_another_count_at_warn`.
 
 ### Fixed
 
