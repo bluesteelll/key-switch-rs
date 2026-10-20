@@ -1685,6 +1685,28 @@ mod tests {
     }
 
     #[test]
+    fn the_first_raw_key_event_after_idle_is_read_at_the_first_tick() {
+        // Roadmap item 2.5, cut D12 (ruling W3): the wake that the first raw
+        // key event after idle brings only starts the ticks, with no user32
+        // read, so that a keyboard callback running at that moment is not
+        // slowed by it; the event waits in the queue for the first tick.
+        let mut drive = Drive::new(Recorder::new());
+        drive.run_script(0, 600, |ms, d| {
+            if ms == 0 {
+                d.raw(ms);
+                d.health.callback_seen();
+            }
+        });
+        assert_eq!(drive.raw_wakes, 1, "the raw key event woke the watchdog");
+        assert_eq!(
+            drive.reads.first(),
+            Some(&(250, 1)),
+            "read at the first tick: {:?}",
+            drive.reads
+        );
+    }
+
+    #[test]
     fn a_batch_read_at_a_tick_counts_all_its_events() {
         let mut drive = Drive::new(Recorder::new());
         drive.run(0, 5000, |ms| ms.is_multiple_of(30));
