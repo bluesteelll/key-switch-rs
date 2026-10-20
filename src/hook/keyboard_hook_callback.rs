@@ -11,8 +11,10 @@
 //!    off (`swch off`, `KeyboardHook::is_enabled`); the hooks stay
 //!    installed;
 //! 4. passes the daemon's own injected events (the sentinel in
-//!    `dwExtraInfo`, see `crate::core::constants`) before any state is
-//!    touched, so a synthesized key never feeds back into the engine;
+//!    `dwExtraInfo`, see `crate::core::constants`) undecided, so a
+//!    synthesized key never feeds back into the engine; a modifier among
+//!    them only updates the engine's flag for it, since Windows applies it
+//!    (`Engine::track_injected`, roadmap item 2.5), and nothing fires;
 //! 5. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
@@ -22,7 +24,9 @@
 //!    (the foreground window's executable name from the main thread's
 //!    foreground cache, with no call; its title and the OS key state with
 //!    live Win32 calls), and hands the timers the decision asks for to the
-//!    main thread's gesture timers, under the same borrow;
+//!    main thread's gesture timers, under the same borrow. The engine reads
+//!    no modifier state here: the main thread reads it between key events
+//!    (roadmap item 2.5);
 //! 7. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
@@ -33,7 +37,12 @@
 //!    so that its output stays in order with the keys typed after it;
 //!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
 //!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
-//! 8. returns `LRESULT(1)` if the decision suppresses the event, and
+//! 8. notes a late event for the main thread (roadmap item 2.5): one that
+//!    reaches its exit 17 ms or more after its time stamp, or that ran that
+//!    long, may have let Windows time out the calls of the key events
+//!    behind it, so the main thread reads the modifiers again; it counts
+//!    `hook_late`, and never logs here;
+//! 9. returns `LRESULT(1)` if the decision suppresses the event, and
 //!    `CallNextHookEx` otherwise.
 //!
 //! In debug builds only, `KS_DEBUG_HOOK_HOLD` set to a key name at startup
@@ -49,7 +58,9 @@
 //! foreground cache, which reads the new window's executable name there
 //! and not on the key path (`platform::foreground`, roadmap item 2.3), and
 //! to [`Engine::on_foreground_changed`](crate::engine::Engine::on_foreground_changed),
-//! the same way, and does nothing while remapping is off.
+//! which makes the main thread's next drain read the modifiers, and posts
+//! the wake that brings that drain (roadmap item 2.5). It does nothing
+//! while remapping is off.
 //!
 //! # Threads
 //!
@@ -94,6 +105,17 @@
 //! `SendInput` waits; one that does finds the state free and does what any
 //! foreground change does.
 //!
+//! Another program's hook later in the chain can inject input from inside
+//! its own call, while this thread waits in `CallNextHookEx`, as a remapper
+//! such as PowerToys Keyboard Manager does, and this hook is then called for
+//! that input before Windows applies the outer event. The key-down check of
+//! such a nested event finds the outer modifier as Windows has it then:
+//! up, since Windows applies an event only after its hook calls return. A
+//! remapper that swallows the outer key-down never lets Windows apply it,
+//! so dropping it is right; if every later hook passes it instead, the
+//! nested key misses a binding that names that modifier, as before roadmap
+//! item 2.5 (known issue 88; no program is known to do that).
+//!
 //! Nothing under the borrow waits for messages or injects input, and
 //! `with_main` refuses a nested call on the same thread, so an event that
 //! did arrive under the borrow would pass instead of panicking or hanging.
@@ -110,7 +132,7 @@
 
 use std::cell::OnceCell;
 use std::sync::LazyLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::{
     Foundation::*,
@@ -121,10 +143,11 @@ use windows::core::HRESULT;
 use crate::core::constants;
 use crate::core::executor::TargetWindow;
 use crate::core::windows_actions::BindAction;
-use crate::engine::{Decision, Env, InputSignal, KeyEvent};
+use crate::engine::{Decision, Env, InputSignal, KeyEvent, ModifierSet};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{
-    MainState, note_input_signal, note_unknown_desktop_switch, with_main,
+    HOOK_LATE, HOOK_LATE_MS, MainState, note_input_signal, note_late, note_unknown_desktop_switch,
+    tick_count, wake_this_thread, with_main,
 };
 use crate::logging::counters::{self, Counter};
 use crate::platform::desktop;
@@ -208,11 +231,12 @@ fn key_event(wparam: WPARAM, vk_code: u32) -> Option<KeyEvent> {
 
 /// Asks the engine about one hook event, on this thread's main state, and
 /// starts the timers the decision asks for. `None` means "pass it, the
-/// engine has not seen it": an event the daemon injected itself (checked
-/// before any state is touched), a message other than the four key
-/// messages, an event while remapping is off, or an event refused because
-/// the main state is borrowed or this thread has none (see Re-entry in the
-/// module docs).
+/// engine has not decided it": an event the daemon injected itself
+/// (checked first; a modifier among them only updates the engine's flag,
+/// see [`track_injected`]), a message other than the four key messages, an
+/// event while remapping is off, or an event refused because the main
+/// state is borrowed or this thread has none (see Re-entry in the module
+/// docs).
 pub(super) fn decide_event(
     hook: &KeyboardHook,
     wparam: WPARAM,
@@ -220,6 +244,7 @@ pub(super) fn decide_event(
     extra_info: usize,
 ) -> Option<Decision> {
     if constants::is_injected_event(extra_info) {
+        track_injected(hook, wparam, vk_code);
         return None;
     }
     let event = key_event(wparam, vk_code)?;
@@ -251,6 +276,23 @@ pub(super) fn decide_event(
         counters::bump(Counter::HoldTimerNotStarted);
     }
     Some(decision)
+}
+
+/// One of the daemon's own injected events (the sentinel): Windows applies
+/// it, so the engine follows a modifier's state from it, which it reads
+/// from no key state (roadmap item 2.5, cut D2). It is never decided:
+/// nothing fires and it always passes, so no feedback loop is possible. Any
+/// other key, such as the menu mask key, asks for no state. While remapping
+/// is off nothing is followed: the reset of `swch on` reads every key.
+fn track_injected(hook: &KeyboardHook, wparam: WPARAM, vk_code: u32) {
+    let Some(event) = key_event(wparam, vk_code) else {
+        return;
+    };
+    if !ModifierSet::ALL.contains(event.vk) || !hook.is_enabled() {
+        return;
+    }
+    // `None` on re-entry, which `with_main` counts and notes as hidden input.
+    let _ = with_main(|main| main.engine.track_injected(event));
 }
 
 /// Carries out a decision on the calling thread, outside the main state's
@@ -374,12 +416,15 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
 
     // Our own work only: from here until the decision is carried out, not
     // the passes above, which do nothing, nor CallNextHookEx (roadmap item
-    // 2.1). Two clock reads and one RMW per event.
+    // 2.1). Two clock reads and one RMW per event, and one tick count read
+    // for a physical event (roadmap item 2.5).
     let started = Instant::now();
     // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
     // KBDLLHOOKSTRUCT supplied by the hook dispatcher for the duration of
-    // this call; two fields are copied out of it here.
+    // this call; four fields are copied out of it here.
     let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    let stamp = event.time;
+    let injected = event.flags.contains(LLKHF_INJECTED);
     #[cfg(debug_assertions)]
     crate::hook::debug_hold::hold_if_asked(wparam, event.vkCode);
     let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
@@ -390,7 +435,18 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
         }
         None => false,
     };
-    counters::record_callback(started.elapsed());
+    let ran = started.elapsed();
+    counters::record_callback(ran);
+    // An injected event's stamp is its injector's own unless it passed 0
+    // (KEYBDINPUT), so only its run time counts.
+    let age = if injected {
+        0
+    } else {
+        event_age_ms(tick_count(), stamp)
+    };
+    if late_callback(age, ran) {
+        note_late();
+    }
     if suppress {
         return LRESULT(1);
     }
@@ -400,14 +456,32 @@ pub(crate) unsafe extern "system" fn keyboard_hook_callback(
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
+/// How long ago a key event stamped `stamp_ms` happened, at tick `now_ms`
+/// (both `GetTickCount` milliseconds, roadmap item 2.5): their difference,
+/// which wraps as `GetMessageTime` prescribes, or 0 for a stamp ahead of
+/// the clock, a difference of 2^31 ms or more.
+pub(crate) fn event_age_ms(now_ms: u32, stamp_ms: u32) -> u32 {
+    let age = now_ms.wrapping_sub(stamp_ms);
+    if age >= 1 << 31 { 0 } else { age }
+}
+
+/// Whether a callback of an event `age_ms` old at its exit, which ran for
+/// `ran`, was late enough that Windows may have timed out the hook calls of
+/// the key events behind it (roadmap item 2.5).
+fn late_callback(age_ms: u32, ran: Duration) -> bool {
+    ran >= HOOK_LATE || age_ms >= HOOK_LATE_MS
+}
+
 /// Foreground-window-change callback installed via `SetWinEventHook`. The
 /// main thread's foreground cache reads the new window's executable name,
-/// and the engine resyncs the modifiers, repairing what the keyboard hook
-/// may have missed while a higher-integrity window had focus. A modifier
-/// whose key-down the engine swallowed is not resynced (Windows never saw it
-/// go down, KS-14), so a lost key-up of such a modifier is not repaired
-/// here. While remapping is off it does nothing: the reset at `swch on`
-/// reads the foreground and every held key from the OS anyway.
+/// and the engine's hiding count moves: the keyboard hook may have missed
+/// key events while a higher-integrity window had focus, so the main
+/// thread's drain reads the modifiers from the OS, and the posted wake
+/// brings that drain right after the current message (roadmap item 2.5).
+/// A modifier whose key-down the engine swallowed is not read (Windows
+/// never saw it go down, KS-14), so a lost key-up of such a modifier is not
+/// repaired then. While remapping is off it does nothing: the reset at
+/// `swch on` reads the foreground and every held key from the OS anyway.
 pub(crate) unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,
@@ -421,8 +495,11 @@ pub(crate) unsafe extern "system" fn foreground_changed(
     if !hook.is_enabled() {
         return;
     }
-    // `None` only on re-entry, which nothing triggers today (module docs).
+    // `None` only on re-entry, which nothing triggers today (module docs);
+    // the refusal is then noted as hidden input, which the drain reads too.
     let _ = with_main(|main| main.foreground_changed(hwnd));
+    // Outside the borrow: a post only.
+    wake_this_thread();
 }
 
 /// What a desktop switch tells the main loop (roadmap item 2.3).
@@ -488,7 +565,9 @@ mod tests {
     use crate::data::sequence::SequenceStep;
     use crate::data::trigger::Trigger;
     use crate::engine::InputSignal;
-    use crate::hook::main_thread::{MainThread, REFUSED, take_pending_signals, with_main};
+    use crate::hook::main_thread::{
+        MAIN_WAKE, MainThread, REFUSED, hidden_input_notes, take_pending_signals, with_main,
+    };
     use crate::platform::foreground::{ForegroundCache, WindowQuery};
 
     // No test installs a hook. Every test that reaches the engine makes its
@@ -500,10 +579,11 @@ mod tests {
     // runner only records, and a fast action is only recorded under test
     // anyway; the extern-callback tests drive the process-wide hook, one at a
     // time (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
-    // reads `GetAsyncKeyState`, the live state of the machine's keyboard, so
-    // every F13 binding sets `allow_extra_modifiers`: under exact matching a
-    // modifier the user happens to hold while the tests run would otherwise
-    // stop it matching.
+    // reads `GetAsyncKeyState`, the live state of the machine's keyboard,
+    // which the main thread's read of the modifiers takes between events
+    // (roadmap item 2.5), so every F13 binding sets `allow_extra_modifiers`:
+    // under exact matching a modifier the user happens to hold while the
+    // tests run would otherwise stop it matching.
 
     /// Turns the process-wide hook's remapping back on when dropped, also on
     /// unwind, so a failed test leaves the next one remapping on.
@@ -534,12 +614,22 @@ mod tests {
     }
 
     /// Calls the extern keyboard callback with one event of `vk`, as the
-    /// hook dispatcher would, and returns what it returns.
+    /// hook dispatcher would, stamped with the tick count as Windows stamps
+    /// it, and returns what it returns.
     fn call_keyboard_callback(vk: u32, msg: u32) -> LRESULT {
-        let info = KBDLLHOOKSTRUCT {
-            vkCode: vk,
-            ..Default::default()
-        };
+        call_callback_with(
+            KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                time: tick_count(),
+                ..Default::default()
+            },
+            msg,
+        )
+    }
+
+    /// Calls the extern keyboard callback with `info`, as the hook
+    /// dispatcher would, and returns what it returns.
+    fn call_callback_with(info: KBDLLHOOKSTRUCT, msg: u32) -> LRESULT {
         // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
         // KBDLLHOOKSTRUCT on this stack frame that outlives the call: all
         // the callback dereferences. No hook is installed and this thread is
@@ -870,6 +960,8 @@ mod tests {
         call_keyboard_callback(f13, WM_KEYUP);
         let injected = KBDLLHOOKSTRUCT {
             vkCode: f13,
+            flags: LLKHF_INJECTED,
+            time: tick_count(),
             dwExtraInfo: injected_sentinel(),
             ..Default::default()
         };
@@ -889,6 +981,87 @@ mod tests {
         call_keyboard_callback(f13, WM_KEYUP);
 
         assert_eq!(get_hook().health().callbacks() - before, 5);
+    }
+
+    #[test]
+    fn lateness_counts_age_and_run_with_a_17_ms_boundary() {
+        // Roadmap item 2.5, E4: two ticks of the system clock.
+        let fast = Duration::from_millis(1);
+        assert!(!late_callback(16, fast), "16 ms old");
+        assert!(late_callback(17, fast), "17 ms old");
+        assert!(!late_callback(0, Duration::from_micros(16_999)));
+        assert!(late_callback(0, Duration::from_millis(17)), "ran 17 ms");
+        assert_eq!(event_age_ms(1000, 990), 10);
+        assert_eq!(event_age_ms(4, u32::MAX - 5), 10, "across the wrap");
+        assert_eq!(event_age_ms(1000, 1005), 0, "a stamp 5 ms ahead");
+        assert_eq!(event_age_ms(1000, 1000), 0);
+    }
+
+    /// Calls the extern keyboard callback with the unbound A's key-down,
+    /// stamped `age_ms` before now, and `flags`, and returns how many notes
+    /// of hidden input it left on this thread.
+    fn notes_of_a_callback(age_ms: u32, flags: KBDLLHOOKSTRUCT_FLAGS) -> u64 {
+        let before = hidden_input_notes();
+        let info = KBDLLHOOKSTRUCT {
+            vkCode: u32::from(VK_A.0),
+            flags,
+            time: tick_count().wrapping_sub(age_ms),
+            ..Default::default()
+        };
+        call_callback_with(info, WM_KEYDOWN);
+        call_keyboard_callback(u32::from(VK_A.0), WM_KEYUP);
+        hidden_input_notes() - before
+    }
+
+    /// The bindings of the lateness tests, on the process-wide hook: F13
+    /// bound to `DoNothing`, so that A is an ordinary key.
+    fn bind_f13_on_the_process_wide_hook() {
+        get_hook().update_bindings(vec![
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        ]);
+    }
+
+    #[test]
+    fn a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late() {
+        // E4: the event waited a second for its call, so Windows may have
+        // timed out the calls behind it. The callback reads the process-wide
+        // hook, hence `GLOBAL_HOOK`; the A key passes, nothing is sent.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let late_before = counters::COUNTERS.get(Counter::HookLate);
+        assert!(notes_of_a_callback(1000, KBDLLHOOKSTRUCT_FLAGS(0)) >= 1);
+        assert!(counters::COUNTERS.get(Counter::HookLate) > late_before);
+    }
+
+    #[test]
+    fn a_callback_for_a_fresh_event_notes_nothing() {
+        // E4: a prompt event of a callback that ran in microseconds. On a
+        // loaded machine one run may take 17 ms, so the check is retried
+        // once.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let fresh = || notes_of_a_callback(0, KBDLLHOOKSTRUCT_FLAGS(0));
+        let first = fresh();
+        if first != 0 {
+            assert_eq!(fresh(), 0, "a fresh event noted hidden input twice");
+        }
+    }
+
+    #[test]
+    fn an_injected_events_own_stamp_is_not_its_age() {
+        // E4: an injector's nonzero `KEYBDINPUT.time` is its own, so an
+        // `LLKHF_INJECTED` event a second "old" by its stamp is not late.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        bind_f13_on_the_process_wide_hook();
+        let injected = || notes_of_a_callback(1000, LLKHF_INJECTED);
+        let first = injected();
+        if first != 0 {
+            assert_eq!(injected(), 0, "an injected stamp noted hidden input twice");
+        }
     }
 
     #[test]
@@ -1124,6 +1297,85 @@ mod tests {
             refused, 1,
             "with remapping on the keyboard callback asks for the main state"
         );
+    }
+
+    /// Whether this thread's engine holds `vk`.
+    fn holds(vk: VIRTUAL_KEY) -> bool {
+        with_main(|main| main.engine.holds(vk)).expect("the main state is free")
+    }
+
+    #[test]
+    fn the_daemons_own_injected_modifiers_pass_and_are_tracked() {
+        // Roadmap item 2.5, cut D2: the daemon's own sentinel-tagged events
+        // pass undecided, and the engine follows a modifier among them,
+        // since Windows applies it. Nothing reads the live key state here.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        );
+        let sentinel = injected_sentinel();
+        let lctrl = u32::from(VK_LCONTROL.0);
+
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), lctrl, sentinel),
+            None,
+            "the daemon's own key-down passes undecided"
+        );
+        assert!(holds(VK_LCONTROL), "and the engine holds the modifier");
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYUP), lctrl, sentinel),
+            None
+        );
+        assert!(!holds(VK_LCONTROL), "its injected key-up releases it");
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), u32::from(VK_A.0), sentinel),
+            None
+        );
+        assert!(!holds(VK_A), "a key that is not a modifier is not followed");
+    }
+
+    /// Takes one `MAIN_WAKE` from this thread's own queue, if one is there.
+    fn take_main_wake() -> bool {
+        let mut msg = MSG::default();
+        // SAFETY: `msg` is a local that outlives the call, which only
+        // writes it and removes a MAIN_WAKE from this thread's own queue.
+        unsafe { PeekMessageW(&mut msg, None, MAIN_WAKE, MAIN_WAKE, PM_REMOVE) }.as_bool()
+    }
+
+    #[test]
+    fn a_foreground_change_queues_a_wake_for_the_drain() {
+        // Roadmap item 2.5, cut D1: a foreground change moves the hiding
+        // count, and the callback posts MAIN_WAKE outside the borrow, so the
+        // main thread's drain reads the modifiers right after the current
+        // message. The callback reads the process-wide hook's switch, hence
+        // `GLOBAL_HOOK`; the wake goes to this thread's own queue.
+        let _global = GLOBAL_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _main = MainThread::new().expect("the main thread is set up");
+        let _on_at_end = RemappingOnAtEnd;
+        while take_main_wake() {}
+        call_foreground_changed();
+        assert!(take_main_wake(), "a foreground change posts a wake");
+        assert!(!take_main_wake(), "one wake");
+    }
+
+    /// Calls the extern foreground callback as the WinEvent dispatcher
+    /// would, with no window.
+    fn call_foreground_changed() {
+        // SAFETY: `foreground_changed` hands the null window to the
+        // foreground cache, which asks nothing about an invalid handle; the
+        // other handle arguments are never read. No hook is installed.
+        unsafe {
+            foreground_changed(
+                HWINEVENTHOOK::default(),
+                EVENT_SYSTEM_FOREGROUND,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+            );
+        }
     }
 
     #[test]

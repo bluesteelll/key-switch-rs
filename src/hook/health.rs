@@ -36,6 +36,12 @@ pub(crate) struct HealthState {
     /// Whether the watchdog's timer could not be set (ruling I1): written
     /// by the watchdog.
     timer_failing: AtomicBool,
+    /// How many ticks of the watchdog read raw key events that no callback
+    /// explains (roadmap item 2.5): Windows may have applied them without
+    /// the daemon, so the main thread reads the modifiers again. Written by
+    /// the watchdog, read by the main thread's drain; it publishes no other
+    /// data.
+    unseen_input: AtomicU64,
 }
 
 impl HealthState {
@@ -48,6 +54,7 @@ impl HealthState {
             last_reinstall_ms: AtomicU64::new(0),
             last_attempt_failed: AtomicBool::new(false),
             timer_failing: AtomicBool::new(false),
+            unseen_input: AtomicU64::new(0),
         }
     }
 
@@ -118,6 +125,20 @@ impl HealthState {
         if self.timer_failing.load(Ordering::Acquire) != failing {
             self.timer_failing.store(failing, Ordering::Release);
         }
+    }
+
+    /// A tick of the watchdog read raw key events that no callback explains
+    /// (roadmap item 2.5). The watchdog thread.
+    pub(crate) fn note_unseen_input(&self) {
+        // AcqRel, the house default for an RMW; the count publishes no
+        // other data.
+        self.unseen_input.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many ticks of the watchdog read raw key events that no callback
+    /// explains. The main thread's drain.
+    pub(crate) fn unseen_input(&self) -> u64 {
+        self.unseen_input.load(Ordering::Acquire)
     }
 
     /// The health as `swch status` reports it, from any thread.
@@ -232,6 +253,16 @@ mod tests {
             health.callback_seen();
         }
         assert_eq!(health.callbacks(), 3);
+    }
+
+    #[test]
+    fn unseen_input_counts_each_note() {
+        // Roadmap item 2.5, E6.
+        let health = HealthState::new();
+        assert_eq!(health.unseen_input(), 0);
+        health.note_unseen_input();
+        health.note_unseen_input();
+        assert_eq!(health.unseen_input(), 2);
     }
 
     #[test]

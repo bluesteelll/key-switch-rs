@@ -52,6 +52,13 @@
 //!   `DoNothing`; each key-down is called, not timed.
 //! - R12: the key-down and key-up callbacks of the unbound A: an ordinary
 //!   key.
+//! - R12m: the key-down callback of the unbound A while the daemon's own
+//!   injected LCtrl is down: before each sample an untimed callback of the
+//!   LCtrl key-down with the sentinel, after it the A key-up and the LCtrl
+//!   key-up, untimed (roadmap item 2.5). Where the engine follows the
+//!   daemon's injected modifiers, the key-down asks Windows about LCtrl
+//!   once; the bench machine's keyboard has it up.
+//! - R12m2: R12m with LCtrl and LShift injected.
 //! - R13: R7 with the daemon's control window, and so the thread's default
 //!   IME window, created on the loop thread before it runs (roadmap item
 //!   2.3). It may write a session-notification warning to the log, which
@@ -76,10 +83,24 @@
 //!   the idle watchdog: a raw key event right before the call, so that the
 //!   thread's one wake and first pass run next to it, on another core. A
 //!   watchdog per sample, started and stopped outside the timing; it takes
-//!   about a quarter of a second per sample. A declared row, measured and
-//!   reported, not gated (ruling L2): it times the worst order of cut Q6,
-//!   a key's raw input before its hook call, and the wake happens once per
-//!   burst of keys.
+//!   about a quarter of a second per sample. It times the worst order of
+//!   cut Q6, a key's raw input before its hook call, and the wake happens
+//!   once per burst of keys. Gated since roadmap item 2.5 (ruling L3, which
+//!   supersedes the declared row of ruling L2): its p50 stays within R12's
+//!   p50 plus 20 us; its p99 is reported.
+//! - R17t: one `GetTickCount`, the mean of 1000 calls per sample (roadmap
+//!   item 2.5).
+//! - R17a: one `GetAsyncKeyState(VK_F13)`, which only reads, the mean of
+//!   1000 calls per sample (roadmap item 2.5).
+//! - R18: the main thread's read of the modifiers between key events
+//!   (`MainState::resync_if_due`, roadmap item 2.5) on the bench thread as
+//!   the main thread, each after an untimed note of hidden input that makes
+//!   it due: the eight sided modifiers from the live key state, which only
+//!   reads.
+//!
+//! Every event the callback rows hand the callback carries the tick count
+//! as its time stamp, as Windows' events do, and an injected one the
+//! `LLKHF_INJECTED` flag as well.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -92,6 +113,7 @@ use windows::Win32::{
     Foundation::*,
     System::{
         LibraryLoader::GetModuleHandleW,
+        SystemInformation::GetTickCount,
         Threading::{
             GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY,
             THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL,
@@ -107,6 +129,7 @@ use windows::Win32::{
 use windows::core::w;
 
 use crate::config::from_ron_str;
+use crate::core::constants::injected_sentinel;
 use crate::core::executor::testing::{FakeRunner, leaked_counters};
 use crate::core::executor::{Executor, QUEUE_CAPACITY};
 use crate::core::windows_actions::BindAction;
@@ -121,7 +144,7 @@ use crate::hook::control_window::{CONTROL_CLASS, ControlWindow};
 use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
-use crate::hook::main_thread::{MainThread, MainThreadError};
+use crate::hook::main_thread::{MainThread, MainThreadError, note_hidden_input, with_main};
 use crate::hook::watchdog::{HookWatchdog, RequestReinstall, SYNTHETIC_RAW};
 
 /// One row of the table: its label, what it measures and its samples.
@@ -322,11 +345,34 @@ fn r3_timers(count: usize) -> Vec<Duration> {
     samples
 }
 
-/// Calls the extern keyboard callback with one event of `vk`, as the hook
-/// dispatcher would.
+/// Calls the extern keyboard callback with one physical event of `vk`, as
+/// the hook dispatcher would.
 fn call_keyboard_callback(vk: VIRTUAL_KEY, msg: u32) -> LRESULT {
+    call_callback_with(vk, msg, KBDLLHOOKSTRUCT_FLAGS(0), 0)
+}
+
+/// Calls the extern keyboard callback with one event of `vk` that the
+/// daemon injected itself: the sentinel in `dwExtraInfo` and the
+/// `LLKHF_INJECTED` flag, as Windows hands the hook a `SendInput` event.
+fn call_injected_callback(vk: VIRTUAL_KEY, msg: u32) -> LRESULT {
+    call_callback_with(vk, msg, LLKHF_INJECTED, injected_sentinel())
+}
+
+/// Calls the extern keyboard callback with one event of `vk`, stamped with
+/// the tick count as Windows stamps its events.
+fn call_callback_with(
+    vk: VIRTUAL_KEY,
+    msg: u32,
+    flags: KBDLLHOOKSTRUCT_FLAGS,
+    extra_info: usize,
+) -> LRESULT {
     let info = KBDLLHOOKSTRUCT {
         vkCode: u32::from(vk.0),
+        flags,
+        // SAFETY: GetTickCount takes no arguments, reads no memory of ours
+        // and cannot fail.
+        time: unsafe { GetTickCount() },
+        dwExtraInfo: extra_info,
         ..Default::default()
     };
     // SAFETY: code 0 is HC_ACTION, and lparam points to `info`, a
@@ -431,6 +477,79 @@ fn r12_ordinary_key(events: usize) -> Vec<Duration> {
         let begun = Instant::now();
         std::hint::black_box(call_keyboard_callback(VK_A, *msg));
         samples.push(begun.elapsed());
+    }
+    samples
+}
+
+/// R12m and R12m2: the key-down callback of the unbound A, with F13 bound to
+/// `DoNothing`, while the daemon's own injected `held` modifiers are down.
+/// Before each sample the injected key-downs, after it the A key-up and the
+/// injected key-ups, in reverse, all untimed.
+fn r12m_key_down_with_injected_modifiers(held: &[VIRTUAL_KEY], count: usize) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        for &modifier in held {
+            call_injected_callback(modifier, WM_KEYDOWN);
+        }
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_A, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_A, WM_KEYUP);
+        for &modifier in held.iter().rev() {
+            call_injected_callback(modifier, WM_KEYUP);
+        }
+    }
+    samples
+}
+
+/// R17t and R17a: `count` samples, each the mean of `calls` calls of
+/// `read`, timed together, so that the clock's own cost is spread over
+/// them.
+fn per_call(count: usize, calls: u32, read: impl Fn()) -> Vec<Duration> {
+    (0..count)
+        .map(|_| {
+            let begun = Instant::now();
+            for _ in 0..calls {
+                read();
+            }
+            begun.elapsed() / calls
+        })
+        .collect()
+}
+
+/// R17t: one `GetTickCount`.
+fn r17t_tick_count(count: usize) -> Vec<Duration> {
+    per_call(count, 1000, || {
+        // SAFETY: GetTickCount takes no arguments, reads no memory of ours
+        // and cannot fail.
+        std::hint::black_box(unsafe { GetTickCount() });
+    })
+}
+
+/// R17a: one `GetAsyncKeyState` of F13, which only reads the key state.
+fn r17a_async_key_state(count: usize) -> Vec<Duration> {
+    per_call(count, 1000, || {
+        // SAFETY: GetAsyncKeyState takes the key code by value, writes no
+        // memory of ours and may be called from any thread.
+        std::hint::black_box(unsafe { GetAsyncKeyState(i32::from(VK_F13.0)) });
+    })
+}
+
+/// R18: the main thread's read of the modifiers between key events
+/// (roadmap item 2.5), as its drain makes it on the bench thread as the main
+/// thread: an untimed note of hidden input, then the timed read. It asks
+/// the live key state of this machine, which only reads.
+fn r18_main_thread_read(count: usize) -> Vec<Duration> {
+    bind_f13_to_do_nothing();
+    let hook = get_hook();
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        note_hidden_input();
+        let begun = Instant::now();
+        let read = with_main(|main| main.resync_if_due(hook));
+        samples.push(begun.elapsed());
+        assert_eq!(read, Some(true), "a note makes the read due");
     }
     samples
 }
@@ -1106,6 +1225,16 @@ fn latency_bench() {
             samples: r12_ordinary_key(2_000),
         },
         Row {
+            id: "R12m",
+            what: "keyboard_hook_callback, unbound A key-down, the daemon's injected LCtrl down",
+            samples: r12m_key_down_with_injected_modifiers(&[VK_LCONTROL], 2_000),
+        },
+        Row {
+            id: "R12m2",
+            what: "keyboard_hook_callback, unbound A key-down, the daemon's injected LCtrl and LShift down",
+            samples: r12m_key_down_with_injected_modifiers(&[VK_LCONTROL, VK_LSHIFT], 2_000),
+        },
+        Row {
             id: "R13",
             what: "SendMessageTimeoutW(WM_NULL) round trip to the loop with the control window",
             samples: r13_round_trip_with_the_control_window(1_000),
@@ -1129,6 +1258,21 @@ fn latency_bench() {
             id: "R16",
             what: "keyboard_hook_callback, A key-down that wakes the idle hook watchdog",
             samples: r16_first_key_of_a_burst(1_000),
+        },
+        Row {
+            id: "R17t",
+            what: "GetTickCount, per call (mean of 1000 per sample)",
+            samples: r17t_tick_count(2_000),
+        },
+        Row {
+            id: "R17a",
+            what: "GetAsyncKeyState(VK_F13), per call (mean of 1000 per sample)",
+            samples: r17a_async_key_state(2_000),
+        },
+        Row {
+            id: "R18",
+            what: "the main thread's read of the modifiers between key events (MainState::resync_if_due)",
+            samples: r18_main_thread_read(2_000),
         },
     ]);
     get_hook().update_bindings(Vec::new());

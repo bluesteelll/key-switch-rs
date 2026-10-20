@@ -113,11 +113,11 @@ minor version; such entries sit under **Changed** and start with
   1.7): `menu_mask_short` (`SendInput` inserted fewer than the two events of
   the menu mask key), `key_press_short` (fewer than the two events of a
   `PressKey`, `Media` or `ToggleCapsLock` press), `hold_timer_not_started`
-  (a Hold whose timer thread could not be started, so that it never fired)
+  (a Hold whose gesture timer could not be set, so that it never fired)
   and `log_lines_dropped` (log lines lost to a full queue). While one of
   them is not 0, the log writer reports all of them every 60 s and at exit,
   in one line on the console and in `daemon.log`:
-  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 longest_callback_us=12`.
+  `[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=12`.
 - Counters of the action executor (roadmap item 2.1), in the same line:
   `executor_jobs_dropped`, a `Launch`, `OpenUrl` or `Sequence` dropped
   because 32 were already waiting for the executor; `executor_unavailable`,
@@ -255,6 +255,18 @@ minor version; such entries sit under **Changed** and start with
   key event (R15), the design the watchdog's own thread replaces; and the
   key-down callback of the first key of a burst, which wakes the idle
   watchdog once (R16).
+- Bench rows R12m and R12m2, a key-down with one and with two modifiers
+  held, R17t, one `GetTickCount`, and R17a, one `GetAsyncKeyState`
+  (roadmap item 2.5).
+- Bench row R18: the main thread's read of the modifiers between key
+  events (roadmap item 2.5).
+- Counter `hook_late` (roadmap item 2.5): a keyboard callback that ended
+  17 ms or more after its key event, or a main thread 17 ms or more away
+  from its messages; the main thread then reads the modifiers again. The
+  stamp of an injected event does not count. Tests:
+  `hook::keyboard_hook_callback::tests::a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late`,
+  `an_injected_events_own_stamp_is_not_its_age`,
+  `hook::main_thread::tests::an_awake_stretch_of_17_ms_notes_hidden_input`.
 
 ### Changed
 
@@ -628,6 +640,40 @@ minor version; such entries sit under **Changed** and start with
 - Rust's own panic message (`thread 'main' panicked at ...` on stderr, from
   the panicking thread, with no bound) is replaced by the panic hook's log
   line, on the console and in `daemon.log` (roadmap item 2.4).
+- The keyboard hook no longer asks Windows for the state of eleven
+  modifier codes at every key event, about 4 µs of the 4.7 µs of an
+  ordinary key event (bench row R12; roadmap item 2.5). The engine follows
+  Shift, Ctrl, Alt and Win from the key events it sees, the daemon's own
+  injected ones included. The generic codes `VK_SHIFT`, `VK_CONTROL` and
+  `VK_MENU` count as held only between the key-down and the key-up a
+  program sends under them. A key event asks Windows only about the
+  modifiers held for the daemon, one read of about 0.6 µs each (bench rows
+  R12m and R12m2 against R12), and stops counting those Windows has up:
+  ordinary typing reads none, Ctrl+J one. A generic code
+  also stops counting once Windows has neither key of its pair down. The
+  main thread reads the eight sided modifiers between key events when
+  something could have hidden one: at startup, after a foreground change,
+  `swch on` and a hook reinstall, when keyboard input comes back from a
+  lock or the secure desktop, and after a callback that found the daemon
+  busy or ended late, a stretch of 17 ms or more away from its messages,
+  or a gap the hook watchdog saw. A modifier pressed where the daemon
+  cannot see it, with none of these after it, counts as up until then or
+  until its next auto-repeat (known issue 88). A modifier released where
+  the daemon cannot see it,
+  or swallowed by another program's hook after the daemon's, stops
+  counting at the next key-down. With the reads gone, a keyboard callback
+  that meets the hook watchdog's wake from idle is no longer about 50 µs
+  slower: bench row R16, gated from now on (its median within R12's plus
+  20 µs), was 4.4 µs at the median on the developer's machine, against
+  66.8 µs on the lane's parent in the same session. Tests:
+  `engine::scenarios::a_modifier_that_a_later_hook_swallows_does_not_count_for_matching`,
+  `a_shift_that_a_later_hook_swallows_does_not_make_alt_the_language_hotkey`,
+  `another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note`,
+  `engine::tests::a_key_event_asks_windows_once_for_each_modifier_held_for_it_and_never_for_its_own_key_or_a_swallowed_one`,
+  `engine::properties::no_key_sticks_and_no_key_up_reaches_windows_alone_when_hidden_modifier_events_go_unnoticed`.
+- A counters line whose only non-zero count is `hook_late` is written at
+  `[INFO]`, not `[WARN]` (roadmap item 2.5). Test:
+  `logging::counters::tests::hook_late_alone_is_reported_at_info_and_with_another_count_at_warn`.
 
 ### Fixed
 
@@ -741,13 +787,15 @@ minor version; such entries sit under **Changed** and start with
   longer freezes typing or lets Windows remove the hook. `PressKey`,
   `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`
   and `PostMessage` still run before the hook returns, so their output
-  stays in order with the keys typed after them; a `Hold` runs them on its
-  timer thread as before and queues the others. Up to 32 actions wait; a
-  further one is dropped and counted in `executor_jobs_dropped`. Macros
-  still run side by side: a `Delay` waits on a high-resolution timer of
-  the executor, which ends it within about 1 ms of its time and never
-  before, as the `thread::sleep` it replaces did, and holds up no other
-  action or macro, while a step that blocks inside Windows (a `Launch`, an
+  stays in order with the keys typed after them; a `Hold`, and a `Tap` that
+  waits for its DoubleTap window, runs them on the main thread when its
+  gesture timer fires (roadmap item 2.2), and queues the others. Up to 32
+  actions wait; a further one is dropped and counted in
+  `executor_jobs_dropped`. Macros still run side by side: a `Delay` waits
+  on a high-resolution timer of the executor, which ends it within about
+  1 ms of its time and never before, as the `thread::sleep` it replaces
+  did, and holds up no other action or macro, while a step that blocks
+  inside Windows (a `Launch`, an
   `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it
   runs. Manual checks: with
   `( keys: "F13", action: OpenUrl("https://example.com") )` and every
@@ -1012,6 +1060,13 @@ minor version; such entries sit under **Changed** and start with
   of leaving every binding dead until the daemon restarts (roadmap item
   2.4; the action half was fixed by roadmap item 2.1). The keys typed
   before the reinstall reach Windows unremapped.
+- An auto-repeat of a modifier whose key-down the daemon never saw (one
+  Windows had down when the daemon read it), which a binding swallows, now
+  keeps the modifier's release from Windows unless Windows has it down, as
+  for any swallowed press. Before, the release always passed, and Windows
+  could get a key-up without its key-down (roadmap item 2.5). Tests:
+  `engine::scenarios::a_swallowed_repeat_of_a_modifier_with_no_record_keeps_its_release_from_windows`,
+  `engine::tests::a_repeat_with_no_record_that_passes_after_a_swallowed_one_is_recorded_as_passed`.
 
 ## [0.1.0] - 2026-05-20
 

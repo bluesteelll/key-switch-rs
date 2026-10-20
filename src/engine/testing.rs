@@ -15,8 +15,9 @@
 //!
 //! [`FakeEnv`] models the OS key state the way Windows keeps it: a key-down
 //! or key-up changes it only if the engine let the event through, or if the
-//! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`]),
-//! and a generic modifier code reads as down while either side is. Timers
+//! hook never saw it ([`Scenario::down_unseen`], [`Scenario::up_unseen`],
+//! [`Scenario::down_unnoticed`], [`Scenario::up_unnoticed`]), and a generic
+//! modifier code reads as down while either side is. Timers
 //! that the engine requests go into a [`TimerQueue`] through
 //! [`Engine::start_timers`], as on the daemon's main thread, and fire during
 //! [`Scenario::advance_ms`], in due order; [`Scenario::advance_ms_stalled`]
@@ -65,10 +66,38 @@
 //! input came back reset nothing. Like a foreground change, each is a
 //! script error while remapping is off.
 //!
+//! [`Scenario::down_generic`] and [`Scenario::up_generic`] model another
+//! program's injected generic modifier codes (`VK_SHIFT`), which the engine
+//! decides and Windows applies to a side; the modelled OS takes the left
+//! key. [`Scenario::daemon_injects_down`] and
+//! [`Scenario::daemon_injects_up`] model the daemon's own sentinel-tagged
+//! events, which the engine only follows (roadmap item 2.5).
+//! [`Scenario::down_swallowed_later`], [`Scenario::repeat_swallowed_later`]
+//! and [`Scenario::up_swallowed_later`] model a hook after the daemon's in
+//! the chain that swallows an event the daemon passed, so Windows never
+//! applies it.
+//!
 //! [`Scenario::hook_reinstalled`] models the reset after the hook watchdog
 //! had the keyboard hook reinstalled (roadmap item 2.4): the engine is reset
 //! with [`ResetReason::HookReinstalled`], which reads the held keys from the
 //! OS as `swch on` does.
+//!
+//! The daemon's main thread reads the modifiers from the OS key state
+//! between key events, in its drain, when something could have hidden a key
+//! event since its last read (`Engine::resync_if_due`, roadmap item 2.5).
+//! The scenario drains wherever that thread would: once at the start,
+//! before any key event (the read of the daemon's start), and after a key
+//! event while remapping is on, a foreground change, an input signal,
+//! `swch on`, a hook reinstall, a reload, an [`Scenario::advance_ms`] that
+//! fired a timer, a note of hidden input ([`Scenario::hidden_input_noted`])
+//! and a noticed unseen event. An event the hook did not see is noticed
+//! ([`Scenario::up_unseen`], [`Scenario::down_unseen`]: a source such as a
+//! foreground change or a refused callback noted it, so the next read is
+//! due) or unnoticed ([`Scenario::up_unnoticed`],
+//! [`Scenario::down_unnoticed`]: nothing the daemon notices came after it,
+//! so no read is due). The scenario does not drain after an unnoticed
+//! event, [`Scenario::advance_ms_stalled`], [`Scenario::lose_timers`] or
+//! [`Scenario::remapping_off`].
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -191,6 +220,9 @@ pub(crate) struct Scenario {
     check_lone: bool,
     /// Whether remapping is on; see [`remapping_off`](Self::remapping_off).
     enabled: bool,
+    /// The main thread's notes of hidden input so far, which its drain
+    /// hands to the engine; see [`hidden_input_noted`](Self::hidden_input_noted).
+    notes: u64,
 }
 
 impl Scenario {
@@ -219,11 +251,13 @@ impl Scenario {
         Self::with_bindings(bindings)
     }
 
-    /// Starts from a ready-made binding list, sorted like a hot reload does.
+    /// Starts from a ready-made binding list, sorted like a hot reload does,
+    /// and drains once, as the daemon's main thread does before its first
+    /// key event.
     pub(crate) fn with_bindings(mut bindings: Vec<Binding>) -> Self {
         sort_by_specificity(&mut bindings);
         let env = FakeEnv::new();
-        Self {
+        let mut scenario = Self {
             engine: Engine::new(),
             bindings,
             start: env.now,
@@ -239,7 +273,10 @@ impl Scenario {
             check_mask: false,
             check_lone: false,
             enabled: true,
-        }
+            notes: 0,
+        };
+        scenario.drain();
+        scenario
     }
 
     /// Sets a line printed with any failure, after the failure message.
@@ -304,6 +341,7 @@ impl Scenario {
         self.bindings = bindings;
         self.engine.reset(&self.env, ResetReason::Reloaded);
         self.drop_stale_timers();
+        self.drain();
         let label = format!("reload at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -345,16 +383,34 @@ impl Scenario {
 
     /// Releases `key` without the hook seeing it, as when the key-up goes to
     /// the secure desktop: the OS key state changes, the engine is not told.
+    /// An event the hook did not see, which a source noticed (roadmap item
+    /// 2.5): the main thread reads the modifiers at its next drain.
     #[track_caller]
-    pub(crate) fn up_unseen(mut self, key: &str) -> Self {
+    pub(crate) fn up_unseen(self, key: &str) -> Self {
+        self.release_unseen(key, true)
+    }
+
+    /// Releases `key` as [`up_unseen`](Self::up_unseen) does, with nothing
+    /// the daemon notices after it (roadmap item 2.5): no read is due.
+    #[track_caller]
+    pub(crate) fn up_unnoticed(self, key: &str) -> Self {
+        self.release_unseen(key, false)
+    }
+
+    #[track_caller]
+    fn release_unseen(mut self, key: &str, noticed: bool) -> Self {
+        let step = if noticed { "up_unseen" } else { "up_unnoticed" };
         if !self.is_held(key) {
-            self.fail(&format!("up_unseen {key}: the key is not held"));
+            self.fail(&format!("{step} {key}: the key is not held"));
         }
         let vk = physical_key(key);
         self.held[vk.0 as usize] = false;
         self.env.os_down[vk.0 as usize] = false;
         self.press_suppressed[vk.0 as usize] = None;
-        let label = format!("up {key} unseen by the hook at {}", self.clock());
+        let label = format!("up {key} {} at {}", unseen_how(noticed), self.clock());
+        if noticed {
+            self.note_hidden_input();
+        }
         self.push_step(label, None, None, Vec::new());
         self
     }
@@ -362,11 +418,31 @@ impl Scenario {
     /// Presses `key` without the hook seeing it, as when it went down while
     /// remapping was off or before the daemon started: the OS key state
     /// changes, the engine is not told. Windows saw this key-down, so the
-    /// symmetry check counts the press as passed.
+    /// symmetry check counts the press as passed. An event the hook did not
+    /// see, which a source noticed (roadmap item 2.5): the main thread reads
+    /// the modifiers at its next drain.
     #[track_caller]
-    pub(crate) fn down_unseen(mut self, key: &str) -> Self {
+    pub(crate) fn down_unseen(self, key: &str) -> Self {
+        self.press_unseen(key, true)
+    }
+
+    /// Presses `key` as [`down_unseen`](Self::down_unseen) does, with
+    /// nothing the daemon notices after it (roadmap item 2.5): no read is
+    /// due.
+    #[track_caller]
+    pub(crate) fn down_unnoticed(self, key: &str) -> Self {
+        self.press_unseen(key, false)
+    }
+
+    #[track_caller]
+    fn press_unseen(mut self, key: &str, noticed: bool) -> Self {
+        let step = if noticed {
+            "down_unseen"
+        } else {
+            "down_unnoticed"
+        };
         if self.is_held(key) {
-            self.fail(&format!("down_unseen {key}: the key is already held"));
+            self.fail(&format!("{step} {key}: the key is already held"));
         }
         let vk = physical_key(key);
         self.held[vk.0 as usize] = true;
@@ -374,9 +450,40 @@ impl Scenario {
         if self.check_symmetry {
             self.press_suppressed[vk.0 as usize] = Some(false);
         }
-        let label = format!("down {key} unseen by the hook at {}", self.clock());
+        let label = format!("down {key} {} at {}", unseen_how(noticed), self.clock());
+        if noticed {
+            self.note_hidden_input();
+        }
         self.push_step(label, None, None, Vec::new());
         self
+    }
+
+    /// A source the daemon has besides the engine noticed that a key event
+    /// may have gone past the hook (roadmap item 2.5): a callback that found
+    /// the main state busy or ended late, a stretch away from the messages,
+    /// a gap the hook watchdog saw, a desktop switch to where Windows would
+    /// not say. The main thread reads the modifiers at its drain.
+    #[track_caller]
+    pub(crate) fn hidden_input_noted(mut self) -> Self {
+        self.note_hidden_input();
+        let label = format!("hidden input noted at {}", self.clock());
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    /// One more note of hidden input, and the drain that follows it.
+    fn note_hidden_input(&mut self) {
+        self.notes += 1;
+        self.drain();
+    }
+
+    /// The main thread's drain: its read of the modifiers, if one is due.
+    /// None while remapping is off, as `MainState::resync_if_due` reads
+    /// none then.
+    fn drain(&mut self) {
+        if self.enabled {
+            let _ = self.engine.resync_if_due(&self.env, self.notes);
+        }
     }
 
     /// Reports a foreground window change to the engine.
@@ -388,7 +495,8 @@ impl Scenario {
                 self.clock()
             ));
         }
-        self.engine.on_foreground_changed(&self.env);
+        self.engine.on_foreground_changed();
+        self.drain();
         let label = format!("foreground change at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -425,9 +533,10 @@ impl Scenario {
     }
 
     /// One input signal, which resets the engine as the main thread's
-    /// drain does: [`InputSignal::reset`] decides. Like a foreground change,
-    /// a script error while remapping is off: the daemon drops the signals
-    /// then.
+    /// drain does: [`InputSignal::reset`] decides, and a signal that input
+    /// came back makes the drain read the modifiers (roadmap item 2.5).
+    /// Like a foreground change, a script error while remapping is off: the
+    /// daemon drops the signals then.
     #[track_caller]
     fn input_signal(mut self, signal: InputSignal) -> Self {
         if !self.enabled {
@@ -440,6 +549,10 @@ impl Scenario {
             self.engine.reset(&self.env, reason);
             self.drop_stale_timers();
         }
+        if signal.input_returned() {
+            self.engine.input_returned();
+        }
+        self.drain();
         let label = format!("{signal} at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -482,6 +595,7 @@ impl Scenario {
         self.engine.reset(&self.env, ResetReason::RemappingSwitched);
         self.drop_stale_timers();
         self.enabled = true;
+        self.drain();
         let label = format!("remapping on at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -498,6 +612,7 @@ impl Scenario {
     pub(crate) fn hook_reinstalled(mut self) -> Self {
         self.engine.reset(&self.env, ResetReason::HookReinstalled);
         self.drop_stale_timers();
+        self.drain();
         let label = format!("keyboard hook reinstalled at {}", self.clock());
         self.push_step(label, None, None, Vec::new());
         self
@@ -509,7 +624,9 @@ impl Scenario {
     pub(crate) fn advance_ms(mut self, ms: u64) -> Self {
         let target = self.env.now + Duration::from_millis(ms);
         let mut fired = Vec::new();
+        let mut woke = false;
         while let Some(timer) = self.timers.take_due(target) {
+            woke = true;
             self.env.now = self.env.now.max(timer.due);
             let decision = self.engine.on_timer(timer.token);
             assert!(!decision.suppress, "a timer has no event to suppress");
@@ -518,6 +635,10 @@ impl Scenario {
             fired.extend(decision.fire);
         }
         self.env.now = target;
+        // The main thread drains after a timer that woke it.
+        if woke {
+            self.drain();
+        }
         let label = format!("advance {ms} ms to {}", self.clock());
         self.push_step(label, None, None, fired);
         self
@@ -627,12 +748,149 @@ impl Scenario {
         self
     }
 
+    /// Another program's key-down of the generic modifier code that `name`
+    /// names (`"Shift"` `VK_SHIFT`, `"Ctrl"` `VK_CONTROL`, `"Alt"`
+    /// `VK_MENU`), which the engine decides (roadmap item 2.5). Windows
+    /// applies a passed one to a side the event does not name; the modelled
+    /// OS applies it to the left key, since which side does not matter to a
+    /// scenario, and `held` and the lone key-up check follow the left key,
+    /// which must be up.
     #[track_caller]
-    fn key_event(mut self, key: &str, direction: KeyDirection, what: &str) -> Self {
+    pub(crate) fn down_generic(self, name: &str) -> Self {
+        let code = generic_code(name);
+        if self.is_held(name) {
+            self.fail(&format!("down_generic {name}: the key is already held"));
+        }
+        self.key_event_of(name, code, KeyDirection::Down, "down", false)
+    }
+
+    /// Another program's key-up of the generic code of `name`, which the
+    /// engine decides; see [`down_generic`](Self::down_generic).
+    #[track_caller]
+    pub(crate) fn up_generic(self, name: &str) -> Self {
+        let code = generic_code(name);
+        if !self.is_held(name) {
+            self.fail(&format!("up_generic {name}: the key is not held"));
+        }
+        self.key_event_of(name, code, KeyDirection::Up, "up", false)
+    }
+
+    /// Another program's key-up of the generic code of `name`, which the
+    /// hook did not see, with nothing the daemon notices after it: Windows
+    /// takes the left key up, the engine is not told; see
+    /// [`down_generic`](Self::down_generic).
+    #[track_caller]
+    pub(crate) fn up_generic_unnoticed(self, name: &str) -> Self {
+        let _ = generic_code(name);
+        self.release_unseen(name, false)
+    }
+
+    /// Presses `key`, which must be up, as [`down`](Self::down) does, with
+    /// a hook after the daemon's in the chain that swallows the key-down if
+    /// the daemon passes it (roadmap item 2.5): an AutoHotkey remap or a
+    /// Win-key blocker started before the daemon. Windows then never applies
+    /// it, and the modelled OS does not change.
+    #[track_caller]
+    pub(crate) fn down_swallowed_later(self, key: &str) -> Self {
+        if self.is_held(key) {
+            self.fail(&format!(
+                "down_swallowed_later {key}: the key is already held; use repeat_swallowed_later"
+            ));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Down, "down", true)
+    }
+
+    /// An auto-repeat of the held `key` that a later hook swallows if the
+    /// daemon passes it; see [`down_swallowed_later`](Self::down_swallowed_later).
+    #[track_caller]
+    pub(crate) fn repeat_swallowed_later(self, key: &str) -> Self {
+        if !self.is_held(key) {
+            self.fail(&format!(
+                "repeat_swallowed_later {key}: the key is not held"
+            ));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Down, "repeat", true)
+    }
+
+    /// Releases the held `key`, with a later hook that swallows the key-up
+    /// if the daemon passes it, so the lone key-up check does not apply;
+    /// see [`down_swallowed_later`](Self::down_swallowed_later).
+    #[track_caller]
+    pub(crate) fn up_swallowed_later(self, key: &str) -> Self {
+        if !self.is_held(key) {
+            self.fail(&format!("up_swallowed_later {key}: the key is not held"));
+        }
+        let code = physical_key(key);
+        self.key_event_of(key, code, KeyDirection::Up, "up", true)
+    }
+
+    /// The daemon's own injected key-down of `key`, tagged with the
+    /// sentinel: the adapter passes it undecided, the engine follows a
+    /// modifier ([`Engine::track_injected`], roadmap item 2.5), and Windows
+    /// applies it. `held` follows it, so that the stuck check counts the key
+    /// as held; no lone key-up or symmetry check applies. The main thread
+    /// drains after it.
+    #[track_caller]
+    pub(crate) fn daemon_injects_down(self, key: &str) -> Self {
+        self.daemon_injects(key, KeyDirection::Down)
+    }
+
+    /// The daemon's own injected key-up of `key`; see
+    /// [`daemon_injects_down`](Self::daemon_injects_down).
+    #[track_caller]
+    pub(crate) fn daemon_injects_up(self, key: &str) -> Self {
+        self.daemon_injects(key, KeyDirection::Up)
+    }
+
+    #[track_caller]
+    fn daemon_injects(mut self, key: &str, direction: KeyDirection) -> Self {
+        let vk = physical_key(key);
+        let down = direction == KeyDirection::Down;
+        if self.enabled {
+            self.engine.track_injected(KeyEvent { vk, direction });
+        }
+        self.env.os_down[vk.0 as usize] = down;
+        self.held[vk.0 as usize] = down;
+        let what = if down { "down" } else { "up" };
+        let label = format!("the daemon injects {what} {key} at {}", self.clock());
+        self.drain();
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    #[track_caller]
+    fn key_event(self, key: &str, direction: KeyDirection, what: &str) -> Self {
+        let code = physical_key(key);
+        self.key_event_of(key, code, direction, what, false)
+    }
+
+    /// One key event of `code`, which the engine decides while remapping is
+    /// on; the modelled OS, `held` and the checks follow the physical key of
+    /// `key`, which is `code` but for a generic modifier code. With
+    /// `swallowed_later`, a hook after the daemon's swallows the event if the
+    /// daemon passes it: the modelled OS does not change, and no lone key-up
+    /// is possible.
+    #[track_caller]
+    fn key_event_of(
+        mut self,
+        key: &str,
+        code: VIRTUAL_KEY,
+        direction: KeyDirection,
+        what: &str,
+        swallowed_later: bool,
+    ) -> Self {
         let vk = physical_key(key);
         let decision = if self.enabled {
-            self.engine
-                .on_key(KeyEvent { vk, direction }, &self.bindings, &self.env)
+            self.engine.on_key(
+                KeyEvent {
+                    vk: code,
+                    direction,
+                },
+                &self.bindings,
+                &self.env,
+            )
         } else {
             // While remapping is off the adapter passes every event without
             // asking the engine.
@@ -641,15 +899,25 @@ impl Scenario {
         let suppressed = decision.suppress;
         let masked = decision.mask;
         let down = direction == KeyDirection::Down;
-        let lone = self.check_lone && self.enabled && !down && !suppressed && !self.env.os_down(vk);
-        // The OS only learns about events the hook passes on.
-        if !suppressed {
+        // A later hook in the chain swallows what the daemon passes.
+        let applied = !suppressed && !swallowed_later;
+        let lone = self.check_lone && self.enabled && !down && applied && !self.env.os_down(vk);
+        // The OS only learns about events the hooks pass on.
+        if applied {
             self.env.os_down[vk.0 as usize] = down;
         }
         self.held[vk.0 as usize] = down;
-        let label = format!("{what} {key} at {}", self.clock());
+        let generic = if code == vk { "" } else { " (generic code)" };
+        let later = if swallowed_later && !suppressed {
+            ", swallowed by a later hook"
+        } else {
+            ""
+        };
+        let label = format!("{what} {key}{generic} at {}{later}", self.clock());
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
+        // The main thread drains after the callback returned.
+        self.drain();
         self.push_step(label, Some(suppressed), Some(masked), fire);
         if lone {
             let label = &self.last_step().label;
@@ -855,4 +1123,22 @@ impl Scenario {
 
 fn outcome(suppressed: bool) -> &'static str {
     if suppressed { "suppressed" } else { "passed" }
+}
+
+/// The generic modifier code that `name` names: `VK_SHIFT`, `VK_CONTROL`
+/// or `VK_MENU`.
+fn generic_code(name: &str) -> VIRTUAL_KEY {
+    match parse_vk(name) {
+        Some(code @ (VK_SHIFT | VK_CONTROL | VK_MENU)) => code,
+        _ => panic!("scenario: {name:?} names no generic modifier code"),
+    }
+}
+
+/// How an event the hook did not see is labelled in the transcript.
+fn unseen_how(noticed: bool) -> &'static str {
+    if noticed {
+        "unseen by the hook"
+    } else {
+        "unseen by the hook and unnoticed"
+    }
 }

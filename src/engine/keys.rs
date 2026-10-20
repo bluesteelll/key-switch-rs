@@ -2,11 +2,26 @@
 //! key's latest key-down was swallowed or passed, which its auto-repeats and
 //! its key-up follow.
 //!
-//! Held keys are kept by the code the hook reported, which is sided for
-//! modifiers (`VK_LSHIFT`), and the resync also writes the generic modifier
-//! codes (`VK_SHIFT`). [`HeldKeys`] answers for a trigger key: `Shift` is
+//! Held keys are kept by the code of the event, which is sided for a real
+//! keyboard's modifiers (`VK_LSHIFT`); a generic code (`VK_SHIFT`) is held
+//! only between the key-down and the key-up a program sends under it
+//! (roadmap item 2.5). [`HeldKeys`] answers for a trigger key: `Shift` is
 //! held if either Shift slot or the generic one is set, `LShift` only if
 //! the left one is. For an auto-blocker it also visits every code held.
+//!
+//! The modifier flags follow the key events (roadmap item 2.5): each one
+//! the engine decides sets or clears its own flag ([`KeyState::press`],
+//! [`KeyState::release`]), and so does each injected modifier event of the
+//! daemon ([`KeyState::track_injected`]). Two reads of the OS key state
+//! repair what the hook did not see. A decided key event first asks
+//! Windows about each modifier held for it and drops those Windows has up,
+//! which repairs a modifier released where the hook could not see it or
+//! swallowed by a hook after the daemon's
+//! ([`KeyState::clear_released_modifiers`]). The main thread reads the
+//! sided modifiers between key events when something could have hidden
+//! one, which also takes a modifier pressed where the hook could not see
+//! it ([`KeyState::resync_modifiers`]). Neither touches a modifier whose
+//! key-down was swallowed (KS-14), and neither ever sets a generic slot.
 //!
 //! A reset rebuilds the table: from the OS key state when remapping is
 //! switched off or on ([`KeyState::resync_from_os`]), and with every key
@@ -20,31 +35,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use super::env::Env;
 use super::matching::HeldKeys;
+use super::modifiers::ModifierSet;
+use super::{KeyDirection, KeyEvent};
 use crate::data::key_spec::KeySpec;
-
-/// Modifier virtual keys kept in sync with the OS key state. These are the
-/// keys most prone to getting stuck after a focus transition into a
-/// higher-integrity window (Task Manager / UAC / lock screen) that swallowed
-/// the corresponding key-up event. A modifier whose key-down the engine
-/// swallowed is left out of the sync: Windows never saw it go down (KS-14).
-const MODIFIERS: [VIRTUAL_KEY; 11] = [
-    VK_SHIFT,
-    VK_LSHIFT,
-    VK_RSHIFT,
-    VK_CONTROL,
-    VK_LCONTROL,
-    VK_RCONTROL,
-    VK_MENU,
-    VK_LMENU,
-    VK_RMENU,
-    VK_LWIN,
-    VK_RWIN,
-];
-
-/// The Alt and Win codes, the generic `VK_MENU` slot the resync writes
-/// included. A lone Win or Alt press that Windows sees opens the Start menu
-/// or activates the menu bar on its release (KS-12).
-const MENU_KEYS: [VIRTUAL_KEY; 5] = [VK_LMENU, VK_RMENU, VK_MENU, VK_LWIN, VK_RWIN];
 
 /// Mouse buttons. They have virtual-key codes, and the OS key state reports
 /// them, but the keyboard hook never sees them, so
@@ -62,20 +55,28 @@ fn slot(vk: u16) -> Option<usize> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LastDown {
     /// Nothing on record: the key is up, or the engine never saw its
-    /// key-down (a modifier the resync found held).
+    /// key-down (a modifier the main thread's read found held).
     Unknown,
     /// The key-down reached the OS.
     Passed,
     /// The key-down was suppressed.
     Suppressed,
+    /// The engine never saw this press's key-down, and it suppressed one of
+    /// its auto-repeats (roadmap item 2.5). Its key-up is suppressed like a
+    /// `Suppressed` one's, unless Windows has the key down, and a reset
+    /// keeps it the same way. Otherwise it is `Unknown`: Windows may have
+    /// the key down, so the main thread's read takes it, it counts for the
+    /// menu mask, and its later repeats are decided by the bindings.
+    RepeatSuppressed,
 }
 
 /// Held and suppressed keys, one entry per virtual-key code.
 pub(super) struct KeyState {
     /// Keys the engine believes are held. Set by key-down, cleared by
-    /// key-up, and overwritten from the OS for the modifier codes whose
-    /// key-down the engine did not swallow. Its previous value is also the
-    /// auto-repeat detector.
+    /// key-up, and, for a sided modifier whose key-down the engine did not
+    /// swallow, also taken from the OS by the main thread's read between key
+    /// events (roadmap item 2.5). Its previous value is also the auto-repeat
+    /// detector.
     active: [bool; 256],
     /// What became of each key's latest key-down. A suppressed key-down
     /// makes its auto-repeats and its key-up suppressed too, so an
@@ -92,21 +93,69 @@ impl KeyState {
         }
     }
 
-    /// Reconciles the modifier flags with the OS key state. `skip` is the
-    /// key of the event being delivered: its OS state is not updated until
-    /// the hook returns, so it would read as stale. A modifier whose
-    /// key-down was suppressed is left alone as well: Windows never saw it
-    /// go down, so its key state says up while the key is held, and
-    /// overwriting the flag would also turn the key's next auto-repeat into
-    /// a fresh press (KS-14).
-    pub(super) fn sync_modifiers(&mut self, env: &dyn Env, skip: Option<VIRTUAL_KEY>) {
-        for modifier in MODIFIERS {
-            let index = modifier.0 as usize;
-            if Some(modifier) == skip || self.key_down_swallowed(index) {
+    /// Reads the modifiers of `which` from the OS key state, on the main
+    /// thread between key events (roadmap item 2.5): a sided code takes the
+    /// OS state; a generic code is asked only while its slot is set, and
+    /// cleared when it reads up, which it does only when neither key of its
+    /// pair is down (cut D3). A modifier whose key-down was suppressed is
+    /// left alone: Windows never saw it go down, so its key state says up
+    /// while the key is held, and overwriting the flag would also turn the
+    /// key's next auto-repeat into a fresh press (KS-14). No record changes.
+    pub(super) fn resync_modifiers(&mut self, env: &dyn Env, which: ModifierSet) {
+        for modifier in which.codes() {
+            let index = usize::from(modifier.0);
+            if self.key_down_swallowed(index) {
                 continue;
             }
-            self.active[index] = env.os_key_down(modifier);
+            if ModifierSet::SIDED.contains(modifier) {
+                self.active[index] = env.os_key_down(modifier);
+            } else if self.active[index] && !env.os_key_down(modifier) {
+                self.active[index] = false;
+            }
         }
+    }
+
+    /// The check of a decided key event of `own` (roadmap item 2.5, ruling
+    /// W2a, cut D16): every code of `among` that the engine holds, but
+    /// `own` and a modifier whose key-down was swallowed (KS-14), is asked
+    /// of Windows, and dropped if Windows has it up. It never sets a flag
+    /// and changes no record. A generic code reads its generic state, up
+    /// only when neither key of its pair is down. Windows has applied every
+    /// earlier event when the hook is called for the next one, which the
+    /// per-event resync before this check relied on as well; the event's own
+    /// key lags until the hook returns, so it is never asked.
+    pub(super) fn clear_released_modifiers(
+        &mut self,
+        env: &dyn Env,
+        own: VIRTUAL_KEY,
+        among: ModifierSet,
+    ) {
+        for modifier in among.codes() {
+            let index = usize::from(modifier.0);
+            if self.active[index]
+                && modifier != own
+                && !self.key_down_swallowed(index)
+                && !env.os_key_down(modifier)
+            {
+                self.active[index] = false;
+            }
+        }
+    }
+
+    /// Follows one of the daemon's own injected key events (roadmap item
+    /// 2.5): Windows applies it, so a modifier's flag takes its direction.
+    /// Any other key, and a modifier whose key-down was swallowed (KS-14:
+    /// the user holds it, and its auto-repeats must stay auto-repeats), is
+    /// left alone. No record changes.
+    pub(super) fn track_injected(&mut self, event: KeyEvent) {
+        if !ModifierSet::ALL.contains(event.vk) {
+            return;
+        }
+        let index = usize::from(event.vk.0);
+        if self.key_down_swallowed(index) {
+            return;
+        }
+        self.active[index] = event.direction == KeyDirection::Down;
     }
 
     /// Rebuilds the table from the OS key state, after remapping was
@@ -115,27 +164,38 @@ impl KeyState {
     /// and on record as passed: the engine saw no event while remapping was
     /// off or the hook was gone, Windows saw every key-down, so the key's
     /// auto-repeats and its key-up must reach Windows too. Every other key is up. Its record is
-    /// dropped, except a swallowed key-down's: Windows is no witness for a
-    /// key it never saw go down (KS-14), so its key-up, if one is still
-    /// due, stays swallowed, unless Windows has the key down by then (the
-    /// witness of `Engine::on_key_up`).
+    /// dropped, except a swallowed key-down's or a swallowed auto-repeat's
+    /// (roadmap item 2.5): Windows is no witness for a key it never saw go
+    /// down (KS-14), so its key-up, if one is still due, stays swallowed,
+    /// unless Windows has the key down by then (the witness of
+    /// `Engine::on_key_up`).
     ///
     /// Mouse buttons are left out: a seeded button would stay held for
-    /// good, and an auto-blocker would then never see its hotkey alone. A
-    /// key pressed just before the reset may not show in the OS state yet;
-    /// its first auto-repeat then reads as a fresh press.
+    /// good, and an auto-blocker would then never see its hotkey alone. So
+    /// are the generic Shift, Ctrl and Alt codes, which read down while
+    /// either key of the pair is (roadmap item 2.5): a generic slot taken
+    /// from the OS would stay held after that key's key-up, the event the
+    /// sided slot follows. A key pressed just before the reset may not show
+    /// in the OS state yet; its first auto-repeat then reads as a fresh
+    /// press.
     pub(super) fn resync_from_os(&mut self, env: &dyn Env) {
+        let generic = ModifierSet::ALL.without(ModifierSet::SIDED);
         // Every code is below 256, so its slot is its index. 1..=254 is the
         // documented virtual-key range: the OS is not asked about 0 or 255.
         for code in 0..=255u16 {
             let vk = VIRTUAL_KEY(code);
             let index = usize::from(code);
-            let held =
-                (1..=254).contains(&code) && !MOUSE_BUTTONS.contains(&vk) && env.os_key_down(vk);
+            let held = (1..=254).contains(&code)
+                && !MOUSE_BUTTONS.contains(&vk)
+                && !generic.contains(vk)
+                && env.os_key_down(vk);
             self.active[index] = held;
             if held {
                 self.last_down[index] = LastDown::Passed;
-            } else if self.last_down[index] != LastDown::Suppressed {
+            } else if !matches!(
+                self.last_down[index],
+                LastDown::Suppressed | LastDown::RepeatSuppressed
+            ) {
                 self.last_down[index] = LastDown::Unknown;
             }
         }
@@ -178,6 +238,15 @@ impl KeyState {
         }
     }
 
+    /// Records that an auto-repeat of `vk`, a key whose key-down the engine
+    /// never saw, was suppressed (roadmap item 2.5): its key-up is then
+    /// suppressed too, unless Windows has the key down.
+    pub(super) fn mark_repeat_suppressed(&mut self, vk: u16) {
+        if let Some(index) = slot(vk) {
+            self.last_down[index] = LastDown::RepeatSuppressed;
+        }
+    }
+
     /// Records that a completed chord or sequence swallows the key-up of
     /// `vk`, if the key is held and its key-down did not reach the OS. A key
     /// already released has no key-up left to swallow (KS-30), and one whose
@@ -209,13 +278,14 @@ impl KeyState {
         slot(vk).is_some_and(|index| self.last_down[index] == LastDown::Passed)
     }
 
-    /// Forgets the key-down of `vk` and reports whether it was suppressed.
+    /// Forgets the key-down of `vk` and reports whether it was suppressed,
+    /// or an auto-repeat of a press whose key-down the engine never saw was.
     pub(super) fn take_blocked(&mut self, vk: u16) -> bool {
         match slot(vk) {
-            Some(index) => {
-                std::mem::replace(&mut self.last_down[index], LastDown::Unknown)
-                    == LastDown::Suppressed
-            }
+            Some(index) => matches!(
+                std::mem::replace(&mut self.last_down[index], LastDown::Unknown),
+                LastDown::Suppressed | LastDown::RepeatSuppressed
+            ),
             None => false,
         }
     }
@@ -226,13 +296,13 @@ impl KeyState {
     }
 
     /// Whether Windows has an Alt or Win key down: one is held and its
-    /// key-down was not swallowed. The resync keeps every such key in step
-    /// with the OS key state, so this asks the OS nothing. A key held with
-    /// no record counts: the resync found it down in Windows. Read after the
+    /// key-down was not swallowed. This asks the OS nothing. A key held with
+    /// no record counts: the main thread's read found it down in Windows; so
+    /// does one whose swallowed auto-repeat is on record. Read after the
     /// event's own record update, an Alt or Win key-down being swallowed
     /// right now does not count.
     pub(super) fn alt_or_win_down_in_windows(&self) -> bool {
-        MENU_KEYS.iter().any(|key| {
+        ModifierSet::MENU.codes().any(|key| {
             let index = usize::from(key.0);
             self.active[index] && !self.key_down_swallowed(index)
         })
@@ -253,7 +323,8 @@ impl HeldKeys for KeyState {
 
     fn all_held(&self, mut accept: impl FnMut(VIRTUAL_KEY) -> bool) -> bool {
         // A slot's index is the 8-bit code of its key (`slot`), so every
-        // code built here is one the hook or the resync stored, below 256.
+        // code built here is one an event or a read of the OS stored, below
+        // 256.
         (0..256u16)
             .filter(|&code| self.active[usize::from(code)])
             .all(|code| accept(VIRTUAL_KEY(code)))
@@ -282,8 +353,8 @@ mod tests {
         state.release(VK_LSHIFT);
         assert!(!state.is_down(shift));
 
-        // The resync writes the generic code from the OS key state.
-        state.sync_modifiers(&ShiftDown, None);
+        // An injector's generic Shift counts for the family too.
+        state.press(VK_SHIFT);
         state.release(VK_LSHIFT);
         assert!(state.is_active(VK_SHIFT));
         assert!(state.is_down(shift));
@@ -312,8 +383,8 @@ mod tests {
 
         state.press(VK_LSHIFT);
         state.press(VK_A);
-        // The resync writes the generic code from the OS key state.
-        state.sync_modifiers(&ShiftDown, None);
+        // An injector's generic Shift is a code held too.
+        state.press(VK_SHIFT);
         assert!(state.all_held(|vk| [VK_LSHIFT, VK_SHIFT, VK_A].contains(&vk)));
         assert!(!state.all_held(|vk| vk != VK_A));
         assert!(
@@ -475,21 +546,26 @@ mod tests {
     }
 
     #[test]
-    fn sync_overwrites_modifiers_except_the_skipped_key() {
+    fn the_modifier_read_takes_the_sided_codes_it_is_given_from_the_os() {
+        // Roadmap item 2.5: the main thread's read between key events.
         let mut state = KeyState::new();
         state.press(VK_LCONTROL); // the OS says it is up
-        state.press(VK_RMENU); // the event being delivered
-        state.press(VK_A); // not a modifier: never synced
+        state.press(VK_RMENU); // touched by an event since the last read
+        state.press(VK_A); // not a modifier: never read
 
-        state.sync_modifiers(&ShiftDown, Some(VK_RMENU));
+        let fresh = ModifierSet::touched_by(VK_RMENU);
+        state.resync_modifiers(&ShiftDown, ModifierSet::ALL.without(fresh));
 
         assert!(state.is_active(VK_LSHIFT));
-        assert!(state.is_active(VK_SHIFT));
+        assert!(
+            !state.is_active(VK_SHIFT),
+            "a generic code is never taken from the OS"
+        );
         assert!(!state.is_active(VK_LCONTROL));
-        assert!(state.is_active(VK_RMENU));
+        assert!(state.is_active(VK_RMENU), "left out of this read");
         assert!(state.is_active(VK_A));
 
-        state.sync_modifiers(&ShiftDown, None);
+        state.resync_modifiers(&ShiftDown, ModifierSet::ALL);
         assert!(!state.is_active(VK_RMENU));
     }
 
@@ -518,11 +594,11 @@ mod tests {
         state.press(VK_LSHIFT);
         state.mark_blocked(VK_LSHIFT.0);
 
-        state.sync_modifiers(&NothingDown, Some(VK_A));
+        state.resync_modifiers(&NothingDown, ModifierSet::ALL);
 
         assert!(
             state.is_active(VK_LSHIFT),
-            "a modifier whose key-down was swallowed stays held through the resync"
+            "a modifier whose key-down was swallowed stays held through the read"
         );
         assert!(
             state.press(VK_LSHIFT),
@@ -565,7 +641,7 @@ mod tests {
         state.press(VK_LCONTROL);
         state.mark_passed(VK_LCONTROL.0);
 
-        state.sync_modifiers(&NothingDown, Some(VK_A));
+        state.resync_modifiers(&NothingDown, ModifierSet::ALL);
 
         assert!(!state.is_active(VK_LCONTROL));
     }
@@ -599,7 +675,7 @@ mod tests {
 
         state.resync_from_os(&KeysAndButtonsDown);
 
-        for key in [VK_A, VK_LSHIFT, VK_SHIFT] {
+        for key in [VK_A, VK_LSHIFT] {
             assert!(state.is_active(key), "{key:?} is held in Windows");
             assert!(
                 state.is_passed(key.0),
@@ -677,36 +753,229 @@ mod tests {
             "nor does a Win that a reset freed"
         );
 
-        // The resync skips the swallowed LWin and writes the rest.
-        state.sync_modifiers(&Down(&[VK_RWIN]), None);
+        // The main thread's read skips the swallowed LWin and takes the rest.
+        state.resync_modifiers(&Down(&[VK_RWIN]), ModifierSet::ALL);
         assert!(
             state.alt_or_win_down_in_windows(),
-            "a Win the resync found held with no record counts"
+            "a Win the read found held with no record counts"
         );
-        state.sync_modifiers(&Down(&[VK_MENU]), None);
-        assert!(
-            state.alt_or_win_down_in_windows(),
-            "the generic Alt slot the resync writes counts"
-        );
-        state.sync_modifiers(&Down(&[]), None);
+        state.resync_modifiers(&Down(&[]), ModifierSet::ALL);
         assert!(!state.alt_or_win_down_in_windows());
+        state.press(VK_MENU);
+        assert!(
+            state.alt_or_win_down_in_windows(),
+            "an injector's generic Alt counts"
+        );
+        state.release(VK_MENU);
+        assert!(!state.alt_or_win_down_in_windows());
+    }
+
+    #[test]
+    fn a_repeat_suppressed_record_is_consumed_like_a_swallowed_one_and_kept_by_a_reset() {
+        // Roadmap item 2.5, cut D10: a swallowed auto-repeat of a press
+        // whose key-down the engine never saw keeps its key-up from Windows,
+        // across `swch on` and a lock, until the key-up consumes the record.
+        let mut state = KeyState::new();
+        state.press(VK_LSHIFT);
+        state.mark_repeat_suppressed(VK_LSHIFT.0);
+        assert!(
+            !state.is_blocked(VK_LSHIFT.0),
+            "it is not a swallowed key-down"
+        );
+        assert!(!state.is_passed(VK_LSHIFT.0));
+
+        state.resync_from_os(&Down(&[]));
+        state.release_all();
+        assert!(!state.is_active(VK_LSHIFT));
+        assert!(
+            state.take_blocked(VK_LSHIFT.0),
+            "the record survives both resets and swallows the key-up"
+        );
+        assert!(!state.take_blocked(VK_LSHIFT.0), "and is consumed by it");
+
+        state.mark_repeat_suppressed(300);
+        assert!(!state.take_blocked(300));
+    }
+
+    #[test]
+    fn a_repeat_suppressed_key_is_not_skipped_by_the_modifier_resync_and_counts_for_the_mask() {
+        // Cut D10: Windows may have such a key down, since the engine never
+        // saw its key-down, so it is read like a key with no record (KS-14
+        // skips only a swallowed key-down) and counts for the menu mask.
+        let mut state = KeyState::new();
+        state.press(VK_LMENU);
+        state.mark_repeat_suppressed(VK_LMENU.0);
+        assert!(state.alt_or_win_down_in_windows(), "it counts for the mask");
+
+        state.resync_modifiers(&NothingDown, ModifierSet::ALL);
+        assert!(
+            !state.is_active(VK_LMENU),
+            "the read takes it: Windows has it up"
+        );
+        assert!(!state.alt_or_win_down_in_windows());
+        assert!(
+            state.take_blocked(VK_LMENU.0),
+            "the record stays for the key-up"
+        );
+    }
+
+    #[test]
+    fn the_drain_read_clears_a_generic_slot_only_when_its_code_reads_up_and_never_sets_one() {
+        // Roadmap item 2.5, critique v2 I1: the generic code reads up only
+        // when neither key of its pair is down ("without distinguishing
+        // between left and right", GetAsyncKeyState), so a clear-only read
+        // ends a generic phantom and brings back none.
+        let mut state = KeyState::new();
+        state.press(VK_SHIFT);
+        state.resync_modifiers(&Down(&[VK_RSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(
+            state.is_active(VK_SHIFT),
+            "Windows has the right Shift down: the generic slot stays"
+        );
+        state.resync_modifiers(&Down(&[VK_LSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(
+            state.is_active(VK_SHIFT),
+            "Windows has the left Shift down: the generic slot stays"
+        );
+        state.resync_modifiers(&Down(&[]), ModifierSet::ALL);
+        assert!(
+            !state.is_active(VK_SHIFT),
+            "Windows has neither Shift down: the drain read clears the generic slot (roadmap item 2.5)"
+        );
+
+        let mut fresh = KeyState::new();
+        fresh.resync_modifiers(&Down(&[VK_LSHIFT, VK_SHIFT]), ModifierSet::ALL);
+        assert!(fresh.is_active(VK_LSHIFT));
+        assert!(
+            !fresh.is_active(VK_SHIFT),
+            "the read never sets a generic slot"
+        );
+    }
+
+    /// An [`Env`] in which Windows has exactly the listed codes down, which
+    /// records every code it is asked about.
+    struct AskedDown {
+        down: &'static [VIRTUAL_KEY],
+        asked: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl AskedDown {
+        fn new(down: &'static [VIRTUAL_KEY]) -> Self {
+            Self {
+                down,
+                asked: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn take(&self) -> Vec<VIRTUAL_KEY> {
+            std::mem::take(&mut *self.asked.borrow_mut())
+        }
+    }
+
+    impl Env for AskedDown {
+        fn now(&self) -> Instant {
+            Instant::now()
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            self.asked.borrow_mut().push(vk);
+            self.down.contains(&vk)
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_check_reads_only_held_modifiers_skips_its_own_key_and_a_swallowed_one_and_never_sets_a_flag()
+     {
+        // Roadmap item 2.5, cut D16: a key event of RAlt with LCtrl held
+        // (its key-down passed) and LShift held (its key-down swallowed).
+        // Windows has only LWin down, which the engine does not hold.
+        let mut state = KeyState::new();
+        state.press(VK_LCONTROL);
+        state.mark_passed(VK_LCONTROL.0);
+        state.press(VK_LSHIFT);
+        state.mark_blocked(VK_LSHIFT.0);
+        state.press(VK_RMENU);
+        let env = AskedDown::new(&[VK_LWIN]);
+
+        state.clear_released_modifiers(&env, VK_RMENU, ModifierSet::ALL);
+
+        assert_eq!(
+            env.take(),
+            [VK_LCONTROL],
+            "only the held, unswallowed LCtrl"
+        );
+        assert!(!state.is_active(VK_LCONTROL), "Windows has it up: dropped");
+        assert!(state.is_active(VK_LSHIFT), "swallowed: kept (KS-14)");
+        assert!(state.is_active(VK_RMENU), "the event's own key: kept");
+        assert!(!state.is_active(VK_LWIN), "never set from the OS");
+        assert!(state.is_passed(VK_LCONTROL.0), "no record changes");
+    }
+
+    #[test]
+    fn the_check_asks_a_generic_slot_its_generic_code_and_clears_it_only_when_it_reads_up() {
+        // Cut D3, D16: the generic Shift reads down while either Shift is.
+        let mut state = KeyState::new();
+        state.press(VK_SHIFT);
+        let right_down = AskedDown::new(&[VK_RSHIFT, VK_SHIFT]);
+        state.clear_released_modifiers(&right_down, VK_A, ModifierSet::ALL);
+        assert_eq!(right_down.take(), [VK_SHIFT]);
+        assert!(state.is_active(VK_SHIFT), "a Shift is down in Windows");
+
+        let nothing_down = AskedDown::new(&[]);
+        state.clear_released_modifiers(&nothing_down, VK_A, ModifierSet::ALL);
+        assert_eq!(nothing_down.take(), [VK_SHIFT]);
+        assert!(!state.is_active(VK_SHIFT), "neither Shift is down");
+    }
+
+    #[test]
+    fn a_reset_never_takes_a_generic_modifier_from_the_os() {
+        // Roadmap item 2.5, cut D3: Windows reports the generic Shift, Ctrl
+        // and Alt down while either key of the pair is, so the reset of
+        // `swch on` takes the sided codes and leaves the generic ones up,
+        // even one an injector's key-down had set.
+        let mut state = KeyState::new();
+        state.press(VK_CONTROL);
+        state.mark_passed(VK_CONTROL.0);
+
+        state.resync_from_os(&Down(&[
+            VK_LSHIFT,
+            VK_SHIFT,
+            VK_RCONTROL,
+            VK_CONTROL,
+            VK_LMENU,
+            VK_MENU,
+        ]));
+
+        for generic in [VK_SHIFT, VK_CONTROL, VK_MENU] {
+            assert!(!state.is_active(generic), "{generic:?} is not held");
+            assert!(!state.is_passed(generic.0), "{generic:?} has no record");
+        }
+        for sided in [VK_LSHIFT, VK_RCONTROL, VK_LMENU] {
+            assert!(state.is_active(sided), "{sided:?} is held");
+            assert!(state.is_passed(sided.0), "{sided:?} is on record as passed");
+        }
     }
 
     #[test]
     fn a_swallowed_modifier_freed_by_a_reset_is_left_alone_by_the_modifier_resync() {
         // Input left this desktop while LShift, swallowed, was held. Its
-        // record stays, so the modifier resync never takes its OS state,
+        // record stays, so the main thread's read never takes its OS state,
         // which says nothing about a key-down Windows did not see (KS-14).
         let mut state = KeyState::new();
         state.press(VK_LSHIFT);
         state.mark_blocked(VK_LSHIFT.0);
         state.release_all();
 
-        state.sync_modifiers(&Down(&[VK_LSHIFT]), None);
+        state.resync_modifiers(&Down(&[VK_LSHIFT]), ModifierSet::ALL);
 
         assert!(
             !state.is_active(VK_LSHIFT),
-            "the resync skips a modifier whose key-down was swallowed"
+            "the read skips a modifier whose key-down was swallowed"
         );
         assert!(!state.is_passed(VK_LSHIFT.0));
         assert!(

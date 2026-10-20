@@ -16,9 +16,11 @@
 //! state is borrowed is refused and its event passes, so a re-entered
 //! callback neither panics nor hangs the keyboard. Under the borrow only
 //! the engine decides, the gesture timer is set (`SetWaitableTimer`), the
-//! foreground cache reads a process name (in the foreground callback) and
-//! a title condition reads a title of another process's window; no action
-//! runs, nothing is injected or submitted and no message is pumped or sent.
+//! foreground cache reads a process name (in the foreground callback), a
+//! title condition reads a title of another process's window and the
+//! drain reads the modifiers' key state (`GetAsyncKeyState`, roadmap item
+//! 2.5); no action runs, nothing is injected or submitted and no message is
+//! pumped or sent.
 //!
 //! # The loop
 //!
@@ -30,7 +32,11 @@
 //!    watchdog asks for), then the input signals noted since the last
 //!    pass (keyboard input left this desktop or came back), then every
 //!    gesture timer whose due time has passed by the clock, each decided
-//!    under the borrow and carried out after it.
+//!    under the borrow and carried out after it. Last, the modifiers are
+//!    read from the OS key state if something could have hidden a key
+//!    event since the last read (`Engine::resync_if_due`, roadmap item
+//!    2.5): a foreground change, a reset, input coming back to this
+//!    desktop, or a note of hidden input. No key event pays for that read.
 //! 2. Plan: drop the timers no entry waits for, then set the wake for the
 //!    earliest one left unless it is set for it already, or cancel it.
 //! 3. Wait: `MsgWaitForMultipleObjectsEx` on the gesture timer, for any
@@ -73,7 +79,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use windows::Win32::{
     Foundation::{E_UNEXPECTED, HWND, LPARAM, WAIT_FAILED, WAIT_OBJECT_0, WPARAM},
-    System::Threading::{GetCurrentThreadId, INFINITE},
+    System::{
+        SystemInformation::GetTickCount,
+        Threading::{GetCurrentThreadId, INFINITE},
+    },
     UI::WindowsAndMessaging::*,
 };
 use windows::core::{Error, HRESULT};
@@ -85,7 +94,7 @@ use crate::engine::{
 use crate::hook::config_watcher::ApplyReload;
 use crate::hook::health::{ReinstallOutcome, ReinstallRequest};
 use crate::hook::keyboard_hook::{KeyboardHook, Reinstalled};
-use crate::hook::keyboard_hook_callback::{HookEnv, carry_out};
+use crate::hook::keyboard_hook_callback::{HookEnv, carry_out, event_age_ms};
 use crate::logging::counters::{self, Counter};
 use crate::platform::foreground::ForegroundCache;
 use crate::platform::timers::WaitableTimer;
@@ -109,6 +118,71 @@ thread_local! {
     /// procedure and the desktop-switch callback note one, which needs no
     /// borrow, whatever message call they run in.
     static PENDING_SIGNALS: Cell<PendingSignals> = const { Cell::new(PendingSignals::NONE) };
+
+    /// How many times something on this thread noticed that a key event
+    /// may have gone past the hook (roadmap item 2.5): a callback that
+    /// `with_main` refused, a desktop switch to where Windows would not say.
+    /// The drain hands the count to the engine, whose next read of the
+    /// modifiers a change makes due. A `Cell` like `PENDING_SIGNALS`, which
+    /// needs no borrow.
+    static HIDDEN_INPUT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Notes on this thread that a key event may have gone past the hook, so
+/// that the main thread's next drain reads the modifiers from Windows
+/// (roadmap item 2.5). Main thread only; a TLS add and no post, and nothing
+/// here may panic: it runs in the hook callbacks.
+pub(crate) fn note_hidden_input() {
+    let _ = HIDDEN_INPUT.try_with(|notes| notes.set(notes.get().wrapping_add(1)));
+}
+
+/// How many times [`note_hidden_input`] ran on this thread; 0 on a thread
+/// whose TLS is gone.
+pub(crate) fn hidden_input_notes() -> u64 {
+    HIDDEN_INPUT.try_with(Cell::get).unwrap_or(0)
+}
+
+/// A keyboard callback that ends this long after its key event, or a main
+/// thread this long away from its messages, may have let Windows time out
+/// a hook call and apply a key event without the daemon (roadmap item
+/// 2.5). Two ticks of the system clock, which `GetTickCount` counts "in
+/// the range of 10 milliseconds to 16 milliseconds" (Microsoft Learn), so a
+/// prompt event never counts; a stall of about 34 ms or more always does.
+pub(crate) const HOOK_LATE_MS: u32 = 17;
+
+/// [`HOOK_LATE_MS`] for a run time measured with `Instant`.
+pub(crate) const HOOK_LATE: Duration = Duration::from_millis(HOOK_LATE_MS as u64);
+
+/// The milliseconds since the system started (`GetTickCount`), the clock
+/// that `KBDLLHOOKSTRUCT.time` stamps a key event on, as Microsoft
+/// documents it for `GetMessageTime` (roadmap item 2.5; that both read the
+/// same counter is not stated, and manual check M8 settles it). A
+/// user-mode read; it wraps after 49.7 days.
+pub(crate) fn tick_count() -> u32 {
+    // SAFETY: GetTickCount takes no arguments, reads no memory of ours and
+    // cannot fail.
+    unsafe { GetTickCount() }
+}
+
+/// A callback or a stretch of the main loop ran late (E4, E5): notes hidden
+/// input for the next drain and counts `hook_late`. No `log::`, no post:
+/// it runs in the keyboard callback.
+pub(crate) fn note_late() {
+    note_hidden_input();
+    counters::bump(Counter::HookLate);
+}
+
+/// Whether the main thread, awake from tick `since_ms` to tick `now_ms`
+/// without waiting for messages, stayed away from them for
+/// [`HOOK_LATE_MS`] or more (E5, roadmap item 2.5): Windows may have timed
+/// out a hook call meanwhile. If so it notes that for the next drain and
+/// counts `hook_late`.
+fn note_if_awake_too_long(since_ms: u32, now_ms: u32) -> bool {
+    let late = event_age_ms(now_ms, since_ms) >= HOOK_LATE_MS;
+    if late {
+        note_late();
+    }
+    late
 }
 
 /// The input signals that wait for the drain (roadmap item 2.3): one flag
@@ -161,13 +235,16 @@ pub(crate) fn note_input_signal(signal: InputSignal) {
 }
 
 /// Notes a desktop switch whose destination Windows would not tell
-/// (`error`), for the next drain, which logs it and resets nothing.
+/// (`error`), for the next drain, which logs it and resets nothing. Input
+/// may have been on another desktop meanwhile, so the drain also reads the
+/// modifiers again (roadmap item 2.5).
 pub(crate) fn note_unknown_desktop_switch(error: HRESULT) {
     let _ = PENDING_SIGNALS.try_with(|pending| {
         let mut noted = pending.get();
         noted.unknown = Some(error);
         pending.set(noted);
     });
+    note_hidden_input();
     wake_this_thread();
 }
 
@@ -182,7 +259,7 @@ pub(crate) fn take_pending_signals() -> Option<PendingSignals> {
 /// Posts `MAIN_WAKE` to the calling thread, so that a wait that a noted
 /// signal came in returns to the drain. A post that fails loses no signal:
 /// the drain also runs when `pump` empties the queue.
-fn wake_this_thread() {
+pub(crate) fn wake_this_thread() {
     // SAFETY: GetCurrentThreadId takes no arguments; PostThreadMessageW
     // takes the thread id and the message by value, reads no memory of ours
     // and returns without waiting; MAIN_WAKE carries no pointer.
@@ -210,14 +287,16 @@ pub(crate) struct MainState {
 /// `None`, without running `f`, if this thread has no main state, or if the
 /// state is borrowed already: a callback re-entered under the borrow then
 /// passes its event, and nothing panics or waits. Such a refusal is counted
-/// in `main_state_refused` (roadmap item 2.4); a thread without a main
-/// state is no refusal. `f` must only decide, reset or set the gesture
-/// timer (see the module docs).
+/// in `main_state_refused` (roadmap item 2.4) and noted as hidden input,
+/// since the engine did not see that event (roadmap item 2.5); a thread
+/// without a main state is no refusal. `f` must only decide, reset, set the
+/// gesture timer or read the key state (see the module docs).
 pub(crate) fn with_main<R>(f: impl FnOnce(&mut MainState) -> R) -> Option<R> {
     MAIN.try_with(|main| {
         let Ok(mut state) = main.try_borrow_mut() else {
             // Counted, never logged: this runs in the hook callback.
             counters::bump(Counter::MainStateRefused);
+            note_hidden_input();
             #[cfg(test)]
             REFUSED.with(|refused| refused.set(refused.get() + 1));
             return None;
@@ -278,18 +357,36 @@ impl MainState {
 
     /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
     /// reads its executable once, here and not in the keyboard callback,
-    /// and the engine resyncs the modifiers.
+    /// and the engine's hiding count moves, so the drain reads the
+    /// modifiers (roadmap item 2.5).
     pub(crate) fn foreground_changed(&mut self, window: HWND) {
         self.foreground.window_changed(window);
-        let env = HookEnv::new(&self.foreground);
-        self.engine.on_foreground_changed(&env);
+        self.engine.on_foreground_changed();
     }
 
     /// Keyboard input came back to this desktop: the window that has the
     /// foreground now is read again, since the foreground hook may have
-    /// reported nothing meanwhile. Nothing is reset (ruling R2).
+    /// reported nothing meanwhile, and the next drain reads the modifiers
+    /// (roadmap item 2.5). Nothing is reset (ruling R2).
     pub(crate) fn input_returned(&mut self) {
         self.foreground.resync();
+        self.engine.input_returned();
+    }
+
+    /// The drain's read of the modifiers from the OS key state (roadmap
+    /// item 2.5), if something could have hidden a key event since the last
+    /// one: the engine decides from its hiding count, this thread's notes
+    /// and the hook watchdog's (`HealthState::unseen_input`). Nothing while
+    /// remapping is off: the reset of `swch on` reads every key. Only
+    /// `GetAsyncKeyState` runs under the borrow. Returns whether the OS was
+    /// asked.
+    pub(crate) fn resync_if_due(&mut self, hook: &KeyboardHook) -> bool {
+        if !hook.is_enabled() {
+            return false;
+        }
+        let notes = hidden_input_notes().wrapping_add(hook.health().unseen_input());
+        self.engine
+            .resync_if_due(&HookEnv::new(&self.foreground), notes)
     }
 
     /// The keyboard hook was reinstalled (roadmap item 2.4): the engine is
@@ -571,6 +668,13 @@ impl MainThreadHandle {
         unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
     }
 
+    /// Wakes the main thread for a note of hidden input that the hook
+    /// watchdog made (roadmap item 2.5): its drain then reads the
+    /// modifiers. A lost wake loses no note: the next drain sums it.
+    pub(crate) fn wake_for_hidden_input(&self) {
+        self.wake();
+    }
+
     /// Posted after the request it announces, so that a drain that missed
     /// it is followed by this wake. A lost wake loses no request: it waits
     /// in the queue until the loop's next wake of any kind.
@@ -681,6 +785,7 @@ impl MainThread {
             ));
         };
         let mut msg = MSG::default();
+        let mut awake_since = tick_count();
         loop {
             self.drain(hook);
             match with_main(|main| main.timers.plan_wake(&mut main.engine, Instant::now())) {
@@ -689,6 +794,15 @@ impl MainThread {
                     "could not set the gesture timer ({error}); {dropped} pending Holds dropped"
                 ),
                 Some(Wake::Wait) | None => {}
+            }
+            // E5 (roadmap item 2.5): a stretch away from the messages that
+            // long may have let Windows time out a hook call. Back to the
+            // drain, which reads the modifiers before anything else is
+            // dispatched; the stretch starts again, so this cannot spin.
+            let now = tick_count();
+            if note_if_awake_too_long(awake_since, now) {
+                awake_since = now;
+                continue;
             }
             // SAFETY: the slice holds the gesture timer's handle, which the
             // WaitableTimer in this thread's main state keeps open: only
@@ -703,6 +817,7 @@ impl MainThread {
                     MWMO_INPUTAVAILABLE,
                 )
             };
+            awake_since = tick_count();
             if woke == WAIT_OBJECT_0 {
                 with_main(|main| main.timers.fired());
                 continue;
@@ -721,7 +836,8 @@ impl MainThread {
 
     /// Step 1 of the loop: serves the requests, answers the noted input
     /// signals and carries out the due timers until a whole pass finds none
-    /// of them.
+    /// of them, then reads the modifiers from the OS if something could
+    /// have hidden a key event since the last read (roadmap item 2.5).
     fn drain(&self, hook: &KeyboardHook) {
         loop {
             let mut busy = false;
@@ -738,9 +854,10 @@ impl MainThread {
                 busy = true;
             }
             if !busy {
-                return;
+                break;
             }
         }
+        let _ = with_main(|main| main.resync_if_due(hook));
     }
 }
 
@@ -1831,6 +1948,209 @@ mod tests {
                 "the drain of {signal} reads the foreground window again"
             );
         }
+    }
+
+    /// Whether this thread's main state has a read of the modifiers due,
+    /// which this call takes. The read itself asks the live key state of
+    /// this machine, read only; the tests look only at whether it is due.
+    fn read_due(hook: &KeyboardHook) -> bool {
+        with_main(|main| main.resync_if_due(hook)).expect("the main state is free")
+    }
+
+    #[test]
+    fn the_drain_reads_the_modifiers_after_a_note_and_not_again() {
+        // Roadmap item 2.5, cut D4: the drain ends with the read of the
+        // modifiers, due at the start and after a note of hidden input.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the first drain read the start");
+        note_hidden_input();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the drain read after the note");
+        note_hidden_input();
+        assert!(read_due(&hook), "a note makes a read due");
+        assert!(!read_due(&hook), "one read per note");
+    }
+
+    #[test]
+    fn the_drain_counts_the_watchdogs_notes() {
+        // Roadmap item 2.5, E6: a note of the hook watchdog, an atomic in
+        // the hook's health, makes the main thread's read due too.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook));
+        hook.health().note_unseen_input();
+        assert!(read_due(&hook), "the watchdog's note makes a read due");
+        assert!(!read_due(&hook), "once");
+    }
+
+    #[test]
+    fn the_drain_reads_nothing_while_remapping_is_off() {
+        // Roadmap item 2.5: the engine sees no key event while remapping is
+        // off, and the reset of `swch on` reads every key, so a note made
+        // meanwhile asks Windows nothing; once on again, a note reads.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the first drain read the start");
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, false)),
+            Some(true),
+            "remapping is off"
+        );
+        note_hidden_input();
+        assert!(!read_due(&hook), "no read while remapping is off");
+        assert_eq!(
+            with_main(|state| state.set_enabled(&hook, true)),
+            Some(true),
+            "remapping is on"
+        );
+        note_hidden_input();
+        assert!(read_due(&hook), "on again, a note reads");
+    }
+
+    #[test]
+    fn a_refused_call_notes_hidden_input() {
+        // E8: a callback that `with_main` refuses passes its event
+        // undecided, so the engine may hold a stale modifier.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        assert_eq!(with_main(|_| with_main(|_| ())), Some(None));
+        assert_eq!(hidden_input_notes(), before + 1);
+    }
+
+    #[test]
+    fn a_desktop_switch_to_an_unknown_destination_notes_hidden_input() {
+        // E3u: input may have been on another desktop meanwhile.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        note_unknown_desktop_switch(E_ACCESSDENIED);
+        assert_eq!(hidden_input_notes(), before + 1);
+        assert!(
+            take_pending_signals().is_some(),
+            "and is noted for the drain"
+        );
+    }
+
+    #[test]
+    fn a_return_signal_makes_the_next_drain_read_the_modifiers() {
+        // E3, D6: nothing is read while input is on another desktop, not
+        // even after a note; once it is back, a note reads again.
+        let main = MainThread::new().expect("the main thread is set up");
+        let hook = KeyboardHook::new();
+        main.drain(&hook);
+        note_input_signal(InputSignal::SessionLocked);
+        main.drain(&hook);
+        note_hidden_input();
+        assert!(!read_due(&hook), "no read while input is away");
+        note_input_signal(InputSignal::SessionUnlocked);
+        main.drain(&hook);
+        assert!(!read_due(&hook), "the drain of the return signal read");
+        note_hidden_input();
+        assert!(read_due(&hook), "input is back: a note reads again");
+    }
+
+    #[test]
+    fn an_awake_stretch_of_17_ms_notes_hidden_input() {
+        // Roadmap item 2.5, E5, in ticks of GetTickCount.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let before = hidden_input_notes();
+        assert!(note_if_awake_too_long(1000, 1020), "20 ms away");
+        assert_eq!(hidden_input_notes(), before + 1);
+        assert!(!note_if_awake_too_long(1000, 1005), "5 ms away");
+        assert!(!note_if_awake_too_long(1000, 1016), "16 ms away");
+        assert!(note_if_awake_too_long(1000, 1017), "17 ms away");
+        assert!(
+            note_if_awake_too_long(u32::MAX - 5, 14),
+            "20 ms across the wrap of the tick count"
+        );
+        assert!(
+            !note_if_awake_too_long(1020, 1000),
+            "a start after now counts as no stretch"
+        );
+        assert_eq!(hidden_input_notes(), before + 3);
+    }
+
+    /// The non-test lines of `text`: those before its `#[cfg(test)]` and
+    /// `mod tests {` pair.
+    fn non_test_lines(text: &str) -> Vec<&str> {
+        let lines: Vec<&str> = text.lines().collect();
+        let end = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len());
+        lines[..end].to_vec()
+    }
+
+    #[test]
+    fn the_main_loop_checks_its_awake_stretch_before_every_wait() {
+        // Roadmap item 2.5, E5: the check runs right before the wait, so
+        // nothing is dispatched between a long stretch and the drain's read,
+        // and the stretch starts again as soon as the wait returns.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text =
+            std::fs::read_to_string(root.join("src/hook/main_thread.rs")).expect("read the source");
+        let lines = non_test_lines(&text);
+        let start = lines
+            .iter()
+            .position(|line| line.contains("pub(crate) fn run("))
+            .expect("MainThread::run is there");
+        let at = |token: &str| {
+            lines[start..]
+                .iter()
+                .position(|line| line.contains(token))
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| panic!("{token} in MainThread::run"))
+        };
+        let check = at("note_if_awake_too_long(");
+        let wait = at("MsgWaitForMultipleObjectsEx(");
+        assert!(check < wait, "the check comes before the wait");
+        let wait_end = (wait..lines.len())
+            .find(|&index| lines[index].trim() == "};")
+            .expect("the wait's statement ends");
+        assert_eq!(
+            lines[wait_end + 1].trim(),
+            "awake_since = tick_count();",
+            "the stretch starts again right after the wait"
+        );
+    }
+
+    #[test]
+    fn a_long_stretch_sends_the_main_loop_back_to_the_drain_before_the_wait() {
+        // Roadmap item 2.5, E5: the note made by a long stretch is read by
+        // the drain, so the loop goes back to it (`continue`) with a fresh
+        // stretch, and never waits on a note nobody reads. The wait has no
+        // timeout.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text =
+            std::fs::read_to_string(root.join("src/hook/main_thread.rs")).expect("read the source");
+        let lines = non_test_lines(&text);
+        let start = lines
+            .iter()
+            .position(|line| line.contains("pub(crate) fn run("))
+            .expect("MainThread::run is there");
+        let at = |token: &str| {
+            lines[start..]
+                .iter()
+                .position(|line| line.contains(token))
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| panic!("{token} in MainThread::run"))
+        };
+        let check = at("note_if_awake_too_long(");
+        let wait = at("MsgWaitForMultipleObjectsEx(");
+        let between: Vec<&str> = lines[check..wait].iter().map(|line| line.trim()).collect();
+        assert_eq!(
+            between[..4],
+            [
+                "if note_if_awake_too_long(awake_since, now) {",
+                "awake_since = now;",
+                "continue;",
+                "}"
+            ],
+            "a note sends the loop back to the drain with a fresh stretch"
+        );
     }
 
     #[test]

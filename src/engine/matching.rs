@@ -2,8 +2,9 @@
 //!
 //! Trigger keys are [`KeySpec`]s fixed at load time: `Shift` accepts either
 //! Shift key, `LShift` only the left one. The engine knows the held keys by
-//! the codes the hook reported, which are sided for modifiers, plus the
-//! generic modifier codes its resync reads from the OS. [`HeldKeys`] answers
+//! the codes of their events, which are sided for a keyboard's modifiers,
+//! plus the generic modifier codes another program sends, held from that
+//! code's key-down to its key-up (roadmap item 2.5). [`HeldKeys`] answers
 //! for one `KeySpec` with a few table lookups: no list of held keys is built
 //! per event.
 //!
@@ -18,7 +19,11 @@
 //! just pressed is one of the hotkey's, all of them are held, and every
 //! other key held is one Windows does not have down, because a binding
 //! swallowed its key-down or the hook missed its key-up. Only for those
-//! other keys does [`blocker_matches`] ask about Windows' key state.
+//! other keys does [`blocker_matches`] ask about Windows' key state. By
+//! then the key-down's check has dropped every modifier held for the
+//! engine that Windows has up (roadmap item 2.5), so a modifier that the
+//! hook saw released, or that a later hook swallowed, no longer counts
+//! here or for any binding.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
@@ -31,8 +36,7 @@ pub(super) trait HeldKeys {
     fn is_down(&self, key: KeySpec) -> bool;
 
     /// Whether `accept` holds for the code of every key held, the generic
-    /// modifier codes the resync writes included; true when nothing is
-    /// held.
+    /// modifier codes included; true when nothing is held.
     fn all_held(&self, accept: impl FnMut(VIRTUAL_KEY) -> bool) -> bool;
 
     /// The modifier families held: a family counts if either of its keys is
@@ -87,9 +91,9 @@ pub(super) fn combo_matches<H: HeldKeys + ?Sized>(
 ///
 /// `windows_has_down` is asked only about held keys that no key of `combo`
 /// accepts, so never about `pressed`, whose state Windows updates only
-/// after the hook returns. A generic modifier code the resync writes counts
-/// as one of the hotkey's keys only through an `AnySide` key, so a hotkey
-/// names its modifiers `AnySide`, as the registry lookup does.
+/// after the hook returns. A generic modifier code that a program sent
+/// counts as one of the hotkey's keys only through an `AnySide` key, so a
+/// hotkey names its modifiers `AnySide`, as the registry lookup does.
 pub(super) fn blocker_matches<H: HeldKeys + ?Sized>(
     combo: &KeyCombination,
     pressed: VIRTUAL_KEY,
@@ -209,7 +213,8 @@ mod tests {
         let right_shift = held(&[VK_RSHIFT, VK_F13]);
         assert!(combo_matches(&shift_f13, VK_F13, &right_shift, false));
 
-        // The generic slot the resync writes counts for its family too.
+        // The generic slot of a program's injected code counts for its
+        // family too.
         let generic_shift = held(&[VK_SHIFT, VK_F13]);
         let f13 = KeyCombination::new(VK_F13);
         assert!(!combo_matches(&f13, VK_F13, &generic_shift, false));
@@ -299,7 +304,7 @@ mod tests {
     fn blocker_never_asks_windows_about_its_own_keys() {
         let alt_shift = KeyCombination::new(KeySpec::AnySide(Modifier::Alt))
             .with(KeySpec::AnySide(Modifier::Shift));
-        // `VK_MENU` is the generic slot the resync writes.
+        // `VK_MENU` is the generic slot of a program's injected Alt.
         let hotkey_held = held(&[VK_LMENU, VK_MENU, VK_LSHIFT]);
         assert!(blocker_matches(
             &alt_shift,

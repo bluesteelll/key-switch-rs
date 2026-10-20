@@ -188,8 +188,9 @@ fn press_key_fires_again_on_auto_repeat_and_the_repeats_stay_suppressed() {
 
 #[test]
 fn modifier_lost_by_the_os_is_resynced_before_matching() {
-    // Shift's key-up went to the secure desktop. The next event reads the
-    // OS state, so CapsLock alone matches instead of Shift+CapsLock.
+    // Shift's key-up went to the secure desktop. The main thread's read
+    // after the noticed event takes the OS state (roadmap item 2.5), so
+    // CapsLock alone matches instead of Shift+CapsLock.
     let config = r#"( bindings: [
         (keys: "CapsLock", action: SwitchLanguage),
         (keys: "Shift+CapsLock", action: ToggleCapsLock),
@@ -1011,7 +1012,8 @@ fn a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_k
 #[test]
 fn a_press_after_a_lost_key_up_replaces_the_stale_press_and_keeps_a_hold_due_by_the_clock() {
     // Orchestrator ruling M6: the left Shift passes, its key-up goes
-    // unseen, and A's key-up resyncs it as up, with no key-down in between.
+    // unseen, and the main thread's read after the noticed event takes it
+    // as up (roadmap item 2.5), with no key-down in between.
     // The next LShift press replaces the stale one. The stale press's Hold
     // was due by the clock before that, so it stays for its late timer
     // (ruling I1), and the new press arms a Hold of its own.
@@ -2405,6 +2407,334 @@ fn a_key_pressed_while_the_hook_was_gone_passes_its_key_up_after_the_reinstall()
         .expect_nothing_stuck();
 }
 
+// ---- The modifiers between key events (roadmap item 2.5) ----
+
+#[test]
+fn a_swallowed_repeat_of_a_modifier_with_no_record_keeps_its_release_from_windows() {
+    // Cut D10: LShift went down where the hook could not see it, and the
+    // engine took it as held from Windows, with no record of a key-down.
+    // Its key-up goes unseen and unnoticed, and the next press, which is
+    // LShift's own event, reads as an auto-repeat. The Alt+Shift blocker
+    // swallows that repeat; without a record of it, the release passed
+    // while Windows had LShift up: a key-up without its key-down.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down("LAlt")
+        .expect_passed()
+        .down_unseen("LShift")
+        .down("A")
+        .expect_passed()
+        .up("A")
+        .expect_passed()
+        .up_unnoticed("LShift")
+        .down("LShift")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_where_the_hook_cannot_see_it_counts_after_an_adapter_note() {
+    // Cut D8, E3u, E4, E5, E6, E8: a callback that found the daemon busy or
+    // ended late, a long stretch away from the messages, a gap the hook
+    // watchdog saw, or a desktop switch to where Windows would not say,
+    // each notes hidden input, and the main thread reads the modifiers at
+    // its drain: LShift, pressed where the hook could not see it, counts
+    // for CapsLock.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_unnoticed("LShift")
+        .hidden_input_noted()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_where_the_hook_cannot_see_it_counts_after_a_foreground_change() {
+    // Cut D4, E1: LShift went down in a window the hook does not see (a
+    // higher-integrity window in a daemon that is not elevated). The
+    // foreground change moves the hiding count, and the main thread's read
+    // after it finds LShift down, so CapsLock is Shift+CapsLock.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_unnoticed("LShift")
+        .foreground_changed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_on_the_lock_screen_counts_after_the_unlock_signal() {
+    // E3: nothing is read while input is on another desktop; the unlock
+    // signal brings it back and moves the count.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .session_locked()
+        .down_unnoticed("LShift")
+        .session_unlocked()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_on_the_lock_screen_counts_after_the_first_key_when_no_return_signal_comes() {
+    // E3, D6: no return signal comes (known issue 79). The first key event
+    // the engine decides proves that input is back, and the main thread's
+    // read after it finds LShift down.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .session_locked()
+        .down_unnoticed("LShift")
+        .down("F13")
+        .expect_passed()
+        .up("F13")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_while_remapping_is_off_counts_after_swch_on() {
+    // E2: the reset of `swch on` reads every key from Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .remapping_off()
+        .down("LShift")
+        .remapping_on()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_while_the_hook_was_gone_counts_after_the_reinstall() {
+    // E2: the reset after a hook reinstall reads every key from Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_unnoticed("LShift")
+        .hook_reinstalled()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_swallowed_modifier_stays_held_through_both_reads_and_its_next_press_stays_a_repeat() {
+    // KS-14: Windows never saw the swallowed LShift go down, so neither the
+    // main thread's read nor the check of a key event takes its key state.
+    // Its key-up is lost; the next press reads as an auto-repeat, which
+    // fires nothing and stays swallowed, with its release.
+    Scenario::from_ron(
+        r#"( bindings: [ ( keys: "LShift", action: DoNothing, block_default: true ) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_no_lone_key_up()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .down("A")
+    .expect_passed()
+    .up("A")
+    .expect_passed()
+    .up_unnoticed("LShift")
+    .hidden_input_noted()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed();
+}
+
+#[test]
+fn another_programs_generic_ctrl_counts_for_matching_between_its_key_down_and_key_up() {
+    // Cut D3: the generic VK_CONTROL that another program injects counts
+    // for the Ctrl family from its key-down to its key-up; the daemon never
+    // takes it from the Windows key state.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Ctrl")
+        .expect_passed()
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .expect_suppressed()
+        .up_generic("Ctrl")
+        .expect_passed()
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("J")
+        .expect_passed();
+}
+
+#[test]
+fn the_daemons_own_injected_modifier_counts_for_matching_until_its_injected_key_up() {
+    // Cut D2: the daemon's own sentinel-tagged LCtrl passes undecided, and
+    // the engine follows it, since Windows has it down.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .daemon_injects_down("LCtrl")
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .expect_suppressed()
+        .daemon_injects_up("LCtrl")
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("J")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_that_a_later_hook_swallows_does_not_count_for_matching() {
+    // Critique v2 I2, ruling W2a: an AutoHotkey `LAlt::LCtrl` remap started
+    // before the daemon, so its hook runs after the daemon's. It swallows
+    // the left Alt, which the daemon passed, and injects LCtrl, which the
+    // daemon decides. Windows never has Alt down, so `Ctrl+J` (exact) fires
+    // at every J, also right after an Alt auto-repeat that came before
+    // AutoHotkey's LCtrl repeat.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_swallowed_later("LAlt")
+        .expect_passed()
+        .down("LCtrl")
+        .expect_passed()
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .expect_suppressed()
+        .up("J")
+        .advance_ms(500)
+        .repeat_swallowed_later("LAlt")
+        .repeat("LCtrl")
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .advance_ms(33)
+        .repeat_swallowed_later("LAlt")
+        .down("J")
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .up_swallowed_later("LAlt")
+        .up("LCtrl")
+        .expect_passed();
+}
+
+#[test]
+fn a_shift_that_a_later_hook_swallows_does_not_make_alt_the_language_hotkey() {
+    // Critique v2 I2: a later hook swallows the left Shift the daemon
+    // passed, so Windows has only Alt down at Alt's key-down. The Alt+Shift
+    // blocker must not swallow that Alt, or Alt+Tab reaches Windows as Tab.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_swallowed_later("LShift")
+        .expect_passed()
+        .down("LAlt")
+        .expect_passed()
+        .down("Tab")
+        .expect_passed()
+        .expect_down_in_windows("LAlt")
+        .up("Tab")
+        .expect_passed()
+        .up("LAlt")
+        .expect_passed()
+        .up_swallowed_later("LShift");
+}
+
+#[test]
+fn another_programs_generic_shift_released_unnoticed_stops_counting_after_a_note() {
+    // Critique v2 I1: another program's generic VK_SHIFT went down and its
+    // key-up went past the daemon unnoticed until a note. The main thread's
+    // read clears the generic slot, because Windows has neither Shift down.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Shift")
+        .expect_passed()
+        .up_generic_unnoticed("Shift")
+        .hidden_input_noted()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn another_programs_generic_shift_released_unnoticed_stops_counting_at_the_next_key() {
+    // As above with no note: the check of the CapsLock key-down finds
+    // neither Shift down in Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Shift")
+        .expect_passed()
+        .up_generic_unnoticed("Shift")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_modifier_released_where_the_hook_cannot_see_it_stops_counting_at_the_next_key() {
+    // Ruling W2: a hidden modifier key-up followed by a binding press heals
+    // at the press itself, before matching.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down("LShift")
+        .expect_passed()
+        .up_unnoticed("LShift")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage])
+        .up("CapsLock")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn a_swallowed_key_up_asks_no_mask_for_an_alt_that_windows_has_up() {
+    // A later hook swallowed the left Alt the daemon passed: Windows has no
+    // Alt down, so F13's swallowed key-up asks for no menu mask key.
+    Scenario::from_ron(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#)
+        .check_mask_rule()
+        .down("F13")
+        .expect_suppressed()
+        .down_swallowed_later("LAlt")
+        .expect_passed()
+        .up("F13")
+        .expect_suppressed()
+        .expect_unmasked()
+        .up_swallowed_later("LAlt");
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the
@@ -3203,9 +3533,9 @@ fn chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed() {
 #[test]
 fn modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed() {
     // Ctrl, Alt, A and then Shift went down while remapping was off, so
-    // Windows has all four down and Shift, pressed last, auto-repeats. A's
-    // key-up makes the engine resync the modifiers, which finds Shift held
-    // with no record of its key-down. Shift's next repeat matches nothing
+    // Windows has all four down and Shift, pressed last, auto-repeats. The
+    // main thread's read after the noticed events finds Shift held with no
+    // record of its key-down (roadmap item 2.5). Shift's next repeat matches nothing
     // (Ctrl is held too) and reaches Windows; from then on the press is one
     // Windows saw, so once Ctrl is released, a repeat that the Alt+Shift
     // blocker now matches still passes.
@@ -5153,8 +5483,8 @@ fn a_passed_event_is_not_masked() {
 
 #[test]
 fn alt_held_before_the_hook_saw_it_masks_a_swallowed_key() {
-    // The resync finds Alt held with no record of its key-down: Windows
-    // has it down.
+    // The main thread's read after the noticed event finds Alt held with no
+    // record of its key-down (roadmap item 2.5): Windows has it down.
     Scenario::from_ron(r#"( bindings: [ (keys: "Alt+J", action: DoNothing) ] )"#)
         .down_unseen("LAlt")
         .down("J")
@@ -5544,10 +5874,10 @@ fn press_symmetry_check_reports_a_repeat_after_a_lock_that_differs_from_its_key_
 #[should_panic(expected = "press of LShift: key-down passed, repeat suppressed")]
 fn press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down() {
     // A and then LShift went down while the hook was not looking, so Windows
-    // has both down and LShift auto-repeats. A's key-up makes the engine
-    // resync the modifiers, which finds LShift held with no record of its
-    // key-down. A repeat without a record is swallowed when a binding asks
-    // for it.
+    // has both down and LShift auto-repeats. The main thread's read after
+    // the noticed events finds LShift held with no record of its key-down
+    // (roadmap item 2.5). A repeat without a record is swallowed when a
+    // binding asks for it.
     Scenario::from_ron(r#"( bindings: [ (keys: "LShift", action: SwitchLanguage) ] )"#)
         .check_press_symmetry()
         .down_unseen("A")
