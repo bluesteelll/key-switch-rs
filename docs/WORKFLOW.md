@@ -212,6 +212,38 @@ the driver, and every modelled stage merge cost more.
 - **Orchestrator:** workflows return verdicts and paths (about 2k tokens at most), not full agent texts. Read reports
   by section.
 
+## Code navigation
+
+Every role has the `LSP` tool, backed by rust-analyzer: the user-level `rust-analyzer-local` plugin, whose
+`linkedProjects` names `D:/key-switch-rs/key-switch-rs/Cargo.toml`. It answers what Grep can only approximate:
+same-named methods, trait impls, re-exports and `use` aliases. One query replaces a loop of searches and reads, so it
+also saves turns.
+
+- **`LSP` for symbols.**
+  - Every caller of a function whose contract changes: `findReferences`, `incomingCalls`.
+  - Every implementation of a trait (`Env`, `Scheduler`, the installer seam): `goToImplementation`.
+  - The call chain from the hook callback down to a function, for the hot-path budget: `outgoingCalls`.
+  - A type or a signature: `hover`. A definition, the `windows` crate included: `goToDefinition`.
+
+  A cut's touch set, a critique's "no other caller" and a review's call sites of a changed contract come from
+  `findReferences`.
+- **Grep for text:** comments, strings, docs, `cfg` attributes, macro bodies, the scan tests' tokens, and every file
+  outside `src/`.
+- **Positions are 1-based** and point at the name itself. `documentSymbol` gives the line where a symbol's doc comment
+  starts, so move to the `fn` or `struct` line before asking for references.
+- **It sees only the main checkout's files on disk.** It knows nothing of other commits or of the tester's scratch
+  worktrees; there, use `git show` and Grep. Before a reviewer or analyst relies on it, they check that the main
+  checkout's `HEAD` is the ref under review and that `git status --short` is clean for the files involved. After your
+  own edits, query again: an answer can lag the file until rust-analyzer re-reads it.
+- **It analyses with `cfg(test)` on** (rust-analyzer's `cfg.setTest`, on by default). Code under `#[cfg(not(test))]`,
+  such as the Win32 installers in `hook::installer`, is inactive to it, so references from there are missing. Grep
+  those.
+- **An empty answer is not evidence.** "No references found" also means "not indexed yet": the first query after a
+  start can take minutes while rust-analyzer loads the `windows` crate. Before a report says that a symbol is unused or
+  has no other caller, Grep confirms it, and the report names both tools.
+- rust-analyzer builds into its own target directory (`D:/wt/_targets/ra-msvc`) with `checkOnSave` off, so it never
+  locks a lane's `target/` and never runs the gate.
+
 ## Safety
 
 These rules are repeated in every role file (some roles add lines of their own), in the lane header of
