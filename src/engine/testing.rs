@@ -66,6 +66,13 @@
 //! input came back reset nothing. Like a foreground change, each is a
 //! script error while remapping is off.
 //!
+//! [`Scenario::down_generic`] and [`Scenario::up_generic`] model another
+//! program's injected generic modifier codes (`VK_SHIFT`), which the engine
+//! decides and Windows applies to a side; the modelled OS takes the left
+//! key. [`Scenario::daemon_injects_down`] and
+//! [`Scenario::daemon_injects_up`] model the daemon's own sentinel-tagged
+//! events, which the engine only follows (roadmap item 2.5).
+//!
 //! [`Scenario::hook_reinstalled`] models the reset after the hook watchdog
 //! had the keyboard hook reinstalled (roadmap item 2.4): the engine is reset
 //! with [`ResetReason::HookReinstalled`], which reads the held keys from the
@@ -737,12 +744,94 @@ impl Scenario {
         self
     }
 
+    /// Another program's key-down of the generic modifier code that `name`
+    /// names (`"Shift"` `VK_SHIFT`, `"Ctrl"` `VK_CONTROL`, `"Alt"`
+    /// `VK_MENU`), which the engine decides (roadmap item 2.5). Windows
+    /// applies a passed one to a side the event does not name; the modelled
+    /// OS applies it to the left key, since which side does not matter to a
+    /// scenario, and `held` and the lone key-up check follow the left key,
+    /// which must be up.
     #[track_caller]
-    fn key_event(mut self, key: &str, direction: KeyDirection, what: &str) -> Self {
+    pub(crate) fn down_generic(self, name: &str) -> Self {
+        let code = generic_code(name);
+        if self.is_held(name) {
+            self.fail(&format!("down_generic {name}: the key is already held"));
+        }
+        self.key_event_of(name, code, KeyDirection::Down, "down")
+    }
+
+    /// Another program's key-up of the generic code of `name`, which the
+    /// engine decides; see [`down_generic`](Self::down_generic).
+    #[track_caller]
+    pub(crate) fn up_generic(self, name: &str) -> Self {
+        let code = generic_code(name);
+        if !self.is_held(name) {
+            self.fail(&format!("up_generic {name}: the key is not held"));
+        }
+        self.key_event_of(name, code, KeyDirection::Up, "up")
+    }
+
+    /// The daemon's own injected key-down of `key`, tagged with the
+    /// sentinel: the adapter passes it undecided, the engine follows a
+    /// modifier ([`Engine::track_injected`], roadmap item 2.5), and Windows
+    /// applies it. `held` follows it, so that the stuck check counts the key
+    /// as held; no lone key-up or symmetry check applies. The main thread
+    /// drains after it.
+    #[track_caller]
+    pub(crate) fn daemon_injects_down(self, key: &str) -> Self {
+        self.daemon_injects(key, KeyDirection::Down)
+    }
+
+    /// The daemon's own injected key-up of `key`; see
+    /// [`daemon_injects_down`](Self::daemon_injects_down).
+    #[track_caller]
+    pub(crate) fn daemon_injects_up(self, key: &str) -> Self {
+        self.daemon_injects(key, KeyDirection::Up)
+    }
+
+    #[track_caller]
+    fn daemon_injects(mut self, key: &str, direction: KeyDirection) -> Self {
+        let vk = physical_key(key);
+        let down = direction == KeyDirection::Down;
+        if self.enabled {
+            self.engine.track_injected(KeyEvent { vk, direction });
+        }
+        self.env.os_down[vk.0 as usize] = down;
+        self.held[vk.0 as usize] = down;
+        let what = if down { "down" } else { "up" };
+        let label = format!("the daemon injects {what} {key} at {}", self.clock());
+        self.drain();
+        self.push_step(label, None, None, Vec::new());
+        self
+    }
+
+    #[track_caller]
+    fn key_event(self, key: &str, direction: KeyDirection, what: &str) -> Self {
+        let code = physical_key(key);
+        self.key_event_of(key, code, direction, what)
+    }
+
+    /// One key event of `code`, which the engine decides while remapping is
+    /// on; the modelled OS, `held` and the checks follow the physical key of
+    /// `key`, which is `code` but for a generic modifier code.
+    #[track_caller]
+    fn key_event_of(
+        mut self,
+        key: &str,
+        code: VIRTUAL_KEY,
+        direction: KeyDirection,
+        what: &str,
+    ) -> Self {
         let vk = physical_key(key);
         let decision = if self.enabled {
-            self.engine
-                .on_key(KeyEvent { vk, direction }, &self.bindings, &self.env)
+            self.engine.on_key(
+                KeyEvent {
+                    vk: code,
+                    direction,
+                },
+                &self.bindings,
+                &self.env,
+            )
         } else {
             // While remapping is off the adapter passes every event without
             // asking the engine.
@@ -757,7 +846,8 @@ impl Scenario {
             self.env.os_down[vk.0 as usize] = down;
         }
         self.held[vk.0 as usize] = down;
-        let label = format!("{what} {key} at {}", self.clock());
+        let generic = if code == vk { "" } else { " (generic code)" };
+        let label = format!("{what} {key}{generic} at {}", self.clock());
         let Decision { fire, timers, .. } = decision;
         self.engine.start_timers(timers, &mut self.timers);
         // The main thread drains after the callback returned.
@@ -967,6 +1057,15 @@ impl Scenario {
 
 fn outcome(suppressed: bool) -> &'static str {
     if suppressed { "suppressed" } else { "passed" }
+}
+
+/// The generic modifier code that `name` names: `VK_SHIFT`, `VK_CONTROL`
+/// or `VK_MENU`.
+fn generic_code(name: &str) -> VIRTUAL_KEY {
+    match parse_vk(name) {
+        Some(code @ (VK_SHIFT | VK_CONTROL | VK_MENU)) => code,
+        _ => panic!("scenario: {name:?} names no generic modifier code"),
+    }
 }
 
 /// How an event the hook did not see is labelled in the transcript.

@@ -11,8 +11,10 @@
 //!    off (`swch off`, `KeyboardHook::is_enabled`); the hooks stay
 //!    installed;
 //! 4. passes the daemon's own injected events (the sentinel in
-//!    `dwExtraInfo`, see `crate::core::constants`) before any state is
-//!    touched, so a synthesized key never feeds back into the engine;
+//!    `dwExtraInfo`, see `crate::core::constants`) undecided, so a
+//!    synthesized key never feeds back into the engine; a modifier among
+//!    them only updates the engine's flag for it, since Windows applies it
+//!    (`Engine::track_injected`, roadmap item 2.5), and nothing fires;
 //! 5. translates `WM_KEYDOWN`/`WM_SYSKEYDOWN` and `WM_KEYUP`/`WM_SYSKEYUP`
 //!    into an [`engine::KeyEvent`](crate::engine::KeyEvent); any other
 //!    message passes;
@@ -22,7 +24,9 @@
 //!    (the foreground window's executable name from the main thread's
 //!    foreground cache, with no call; its title and the OS key state with
 //!    live Win32 calls), and hands the timers the decision asks for to the
-//!    main thread's gesture timers, under the same borrow;
+//!    main thread's gesture timers, under the same borrow. The engine reads
+//!    no modifier state here: the main thread reads it between key events
+//!    (roadmap item 2.5);
 //! 7. carries out the [`Decision`] after the borrow and the snapshot are
 //!    released, on this thread: first the menu mask key if
 //!    `Decision::mask` asks for it (`constants::MENU_MASK_VK` down and up in
@@ -123,7 +127,7 @@ use windows::core::HRESULT;
 use crate::core::constants;
 use crate::core::executor::TargetWindow;
 use crate::core::windows_actions::BindAction;
-use crate::engine::{Decision, Env, InputSignal, KeyEvent};
+use crate::engine::{Decision, Env, InputSignal, KeyEvent, ModifierSet};
 use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::main_thread::{
     MainState, note_input_signal, note_unknown_desktop_switch, wake_this_thread, with_main,
@@ -210,11 +214,12 @@ fn key_event(wparam: WPARAM, vk_code: u32) -> Option<KeyEvent> {
 
 /// Asks the engine about one hook event, on this thread's main state, and
 /// starts the timers the decision asks for. `None` means "pass it, the
-/// engine has not seen it": an event the daemon injected itself (checked
-/// before any state is touched), a message other than the four key
-/// messages, an event while remapping is off, or an event refused because
-/// the main state is borrowed or this thread has none (see Re-entry in the
-/// module docs).
+/// engine has not decided it": an event the daemon injected itself
+/// (checked first; a modifier among them only updates the engine's flag,
+/// see [`track_injected`]), a message other than the four key messages, an
+/// event while remapping is off, or an event refused because the main
+/// state is borrowed or this thread has none (see Re-entry in the module
+/// docs).
 pub(super) fn decide_event(
     hook: &KeyboardHook,
     wparam: WPARAM,
@@ -222,6 +227,7 @@ pub(super) fn decide_event(
     extra_info: usize,
 ) -> Option<Decision> {
     if constants::is_injected_event(extra_info) {
+        track_injected(hook, wparam, vk_code);
         return None;
     }
     let event = key_event(wparam, vk_code)?;
@@ -253,6 +259,23 @@ pub(super) fn decide_event(
         counters::bump(Counter::HoldTimerNotStarted);
     }
     Some(decision)
+}
+
+/// One of the daemon's own injected events (the sentinel): Windows applies
+/// it, so the engine follows a modifier's state from it, which it reads
+/// from no key state (roadmap item 2.5, cut D2). It is never decided:
+/// nothing fires and it always passes, so no feedback loop is possible. Any
+/// other key, such as the menu mask key, asks for no state. While remapping
+/// is off nothing is followed: the reset of `swch on` reads every key.
+fn track_injected(hook: &KeyboardHook, wparam: WPARAM, vk_code: u32) {
+    let Some(event) = key_event(wparam, vk_code) else {
+        return;
+    };
+    if !ModifierSet::ALL.contains(event.vk) || !hook.is_enabled() {
+        return;
+    }
+    // `None` on re-entry, which `with_main` counts and notes as hidden input.
+    let _ = with_main(|main| main.engine.track_injected(event));
 }
 
 /// Carries out a decision on the calling thread, outside the main state's
@@ -509,10 +532,11 @@ mod tests {
     // runner only records, and a fast action is only recorded under test
     // anyway; the extern-callback tests drive the process-wide hook, one at a
     // time (`GLOBAL_HOOK`), and say why that is safe. `HookEnv` only
-    // reads `GetAsyncKeyState`, the live state of the machine's keyboard, so
-    // every F13 binding sets `allow_extra_modifiers`: under exact matching a
-    // modifier the user happens to hold while the tests run would otherwise
-    // stop it matching.
+    // reads `GetAsyncKeyState`, the live state of the machine's keyboard,
+    // which the main thread's read of the modifiers takes between events
+    // (roadmap item 2.5), so every F13 binding sets `allow_extra_modifiers`:
+    // under exact matching a modifier the user happens to hold while the
+    // tests run would otherwise stop it matching.
 
     /// Turns the process-wide hook's remapping back on when dropped, also on
     /// unwind, so a failed test leaves the next one remapping on.
@@ -1133,6 +1157,42 @@ mod tests {
             refused, 1,
             "with remapping on the keyboard callback asks for the main state"
         );
+    }
+
+    /// Whether this thread's engine holds `vk`.
+    fn holds(vk: VIRTUAL_KEY) -> bool {
+        with_main(|main| main.engine.holds(vk)).expect("the main state is free")
+    }
+
+    #[test]
+    fn the_daemons_own_injected_modifiers_pass_and_are_tracked() {
+        // Roadmap item 2.5, cut D2: the daemon's own sentinel-tagged events
+        // pass undecided, and the engine follows a modifier among them,
+        // since Windows applies it. Nothing reads the live key state here.
+        let _main = MainThread::new().expect("the main thread is set up");
+        let hook = hook_with(
+            Binding::new(KeyCombination::new(VK_F13), BindAction::DoNothing)
+                .with_allow_extra_modifiers(true),
+        );
+        let sentinel = injected_sentinel();
+        let lctrl = u32::from(VK_LCONTROL.0);
+
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), lctrl, sentinel),
+            None,
+            "the daemon's own key-down passes undecided"
+        );
+        assert!(holds(VK_LCONTROL), "and the engine holds the modifier");
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYUP), lctrl, sentinel),
+            None
+        );
+        assert!(!holds(VK_LCONTROL), "its injected key-up releases it");
+        assert_eq!(
+            decide_event(&hook, message(WM_KEYDOWN), u32::from(VK_A.0), sentinel),
+            None
+        );
+        assert!(!holds(VK_A), "a key that is not a modifier is not followed");
     }
 
     /// Takes one `MAIN_WAKE` from this thread's own queue, if one is there.

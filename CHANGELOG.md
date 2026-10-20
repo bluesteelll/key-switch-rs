@@ -633,6 +633,13 @@ minor version; such entries sit under **Changed** and start with
 - Rust's own panic message (`thread 'main' panicked at ...` on stderr, from
   the panicking thread, with no bound) is replaced by the panic hook's log
   line, on the console and in `daemon.log` (roadmap item 2.4).
+- The keyboard hook no longer asks Windows for the state of eleven
+  modifier codes at every key event, about 4 µs of the 4.7 µs of an
+  ordinary key event (bench row R12; roadmap item 2.5). The engine follows
+  Shift, Ctrl, Alt and Win from the key events it sees, the daemon's own
+  injected ones included. The generic codes `VK_SHIFT`, `VK_CONTROL` and
+  `VK_MENU` count as held only between the key-down and the key-up a
+  program sends under them.
 
 ### Fixed
 

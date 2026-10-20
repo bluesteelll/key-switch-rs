@@ -2457,6 +2457,164 @@ fn a_modifier_pressed_where_the_hook_cannot_see_it_counts_after_an_adapter_note(
         .expect_passed();
 }
 
+#[test]
+fn a_modifier_pressed_where_the_hook_cannot_see_it_counts_after_a_foreground_change() {
+    // Cut D4, E1: LShift went down in a window the hook does not see (a
+    // higher-integrity window in a daemon that is not elevated). The
+    // foreground change moves the hiding count, and the main thread's read
+    // after it finds LShift down, so CapsLock is Shift+CapsLock.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_unnoticed("LShift")
+        .foreground_changed()
+        .down("CapsLock")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_on_the_lock_screen_counts_after_the_unlock_signal() {
+    // E3: nothing is read while input is on another desktop; the unlock
+    // signal brings it back and moves the count.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .session_locked()
+        .down_unnoticed("LShift")
+        .session_unlocked()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_on_the_lock_screen_counts_after_the_first_key_when_no_return_signal_comes() {
+    // E3, D6: no return signal comes (known issue 79). The first key event
+    // the engine decides proves that input is back, and the main thread's
+    // read after it finds LShift down.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .session_locked()
+        .down_unnoticed("LShift")
+        .down("F13")
+        .expect_passed()
+        .up("F13")
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_while_remapping_is_off_counts_after_swch_on() {
+    // E2: the reset of `swch on` reads every key from Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .remapping_off()
+        .down("LShift")
+        .remapping_on()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_modifier_pressed_while_the_hook_was_gone_counts_after_the_reinstall() {
+    // E2: the reset after a hook reinstall reads every key from Windows.
+    Scenario::from_ron(DEFAULT_PAIR)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_unnoticed("LShift")
+        .hook_reinstalled()
+        .down("CapsLock")
+        .expect_fired(&[BindAction::ToggleCapsLock])
+        .up("CapsLock")
+        .up("LShift")
+        .expect_passed();
+}
+
+#[test]
+fn a_swallowed_modifier_stays_held_through_both_reads_and_its_next_press_stays_a_repeat() {
+    // KS-14: Windows never saw the swallowed LShift go down, so neither the
+    // main thread's read nor the check of a key event takes its key state.
+    // Its key-up is lost; the next press reads as an auto-repeat, which
+    // fires nothing and stays swallowed, with its release.
+    Scenario::from_ron(
+        r#"( bindings: [ ( keys: "LShift", action: DoNothing, block_default: true ) ] )"#,
+    )
+    .check_nothing_stuck()
+    .check_no_lone_key_up()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::DoNothing])
+    .down("A")
+    .expect_passed()
+    .up("A")
+    .expect_passed()
+    .up_unnoticed("LShift")
+    .hidden_input_noted()
+    .down("LShift")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_suppressed();
+}
+
+#[test]
+fn another_programs_generic_ctrl_counts_for_matching_between_its_key_down_and_key_up() {
+    // Cut D3: the generic VK_CONTROL that another program injects counts
+    // for the Ctrl family from its key-down to its key-up; the daemon never
+    // takes it from the Windows key state.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down_generic("Ctrl")
+        .expect_passed()
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .expect_suppressed()
+        .up_generic("Ctrl")
+        .expect_passed()
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("J")
+        .expect_passed();
+}
+
+#[test]
+fn the_daemons_own_injected_modifier_counts_for_matching_until_its_injected_key_up() {
+    // Cut D2: the daemon's own sentinel-tagged LCtrl passes undecided, and
+    // the engine follows it, since Windows has it down.
+    Scenario::from_ron(r#"( bindings: [ (keys: "Ctrl+J", action: DoNothing) ] )"#)
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .daemon_injects_down("LCtrl")
+        .down("J")
+        .expect_suppressed()
+        .expect_fired(&[BindAction::DoNothing])
+        .up("J")
+        .expect_suppressed()
+        .daemon_injects_up("LCtrl")
+        .down("J")
+        .expect_passed()
+        .expect_nothing_fired()
+        .up("J")
+        .expect_passed();
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the

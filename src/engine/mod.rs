@@ -52,6 +52,15 @@
 //! - `chords` and `sequences`: pending `Chord` and `Sequence` entries.
 //! - `mask_owed`: a `MaskOnly` auto-blocker matched the last key-down, so
 //!   the next key event asks for the menu mask key too.
+//! - `resync` (`resync::Resync`): when the main thread reads the modifiers
+//!   from the OS between key events (roadmap item 2.5). The engine follows
+//!   Shift, Ctrl, Alt and Win from the key events it decides and from the
+//!   daemon's own injected ones ([`Engine::track_injected`]); what can hide
+//!   a key event from the hook (a foreground change, a reset, input leaving
+//!   this desktop and coming back, a note of hidden input from the adapter)
+//!   moves a hiding count, and the main thread's drain then reads the
+//!   modifiers ([`Engine::resync_if_due`]). No key event reads the modifier
+//!   state.
 //!
 //! [`Engine::reset`] drops every pending entry and an owed mask and starts
 //! a new timer generation, for a [`ResetReason`]: `swch off` or `swch on`,
@@ -115,10 +124,15 @@
 //! The rules are those of the hook callback before the engine existed,
 //! except where a rule names the audit issue that changed it. On a key-down:
 //!
-//! 1. The modifier flags are resynced from [`Env::os_key_down`], skipping
-//!    the key being delivered and every modifier whose key-down was
-//!    suppressed: Windows never saw that key go down, so it stays held for
-//!    matching and its auto-repeats stay auto-repeats (KS-14).
+//! 1. The modifier flags are the engine's own: each key event it decides
+//!    sets or clears its key's flag, and so does each injected modifier
+//!    event of the daemon. They are read from [`Env::os_key_down`] only
+//!    between key events, by the main thread's drain, when something could
+//!    have hidden a key event (roadmap item 2.5), skipping every modifier
+//!    whose key-down was suppressed: Windows never saw that key go down, so
+//!    it stays held for matching and its auto-repeats stay auto-repeats
+//!    (KS-14). A generic code (`VK_SHIFT`) is held only between the
+//!    key-down and the key-up a program sends under it.
 //! 2. The key is marked held; if it already was, the event is an auto-repeat.
 //! 3. Trigger keys are `KeySpec`s fixed at load time (`data::key_spec`):
 //!    `Shift`, `Ctrl`, `Alt` and `Win` accept either key of the pair,
@@ -215,8 +229,8 @@
 //! On every key event, once its record is updated, the decision asks for
 //! the menu mask key (`Decision::mask`, roadmap item 1.2, KS-12) if the
 //! event is suppressed while an Alt or Win key is held whose key-down
-//! Windows saw: one on record as passed, or one the resync found held with
-//! no record. Windows then has a lone Alt or Win press so far, whose release
+//! Windows saw: one on record as passed, or one the main thread's read
+//! found held with no record. Windows then has a lone Alt or Win press so far, whose release
 //! would activate the menu bar or open the Start menu; the mask key comes
 //! between. An Alt or Win whose key-down was swallowed, this event's
 //! included, does not count. A `MaskOnly` auto-blocker also asks for the
@@ -531,12 +545,6 @@ impl Engine {
         // this desktop (roadmap item 2.5).
         self.resync.event(event.vk, true);
 
-        // Repair phantom-held modifiers from any earlier focus transition
-        // before matching. The key being delivered is skipped: its OS state
-        // lags until the hook returns. So is every modifier whose key-down
-        // was swallowed: the OS never saw it go down (KS-14).
-        self.keys.sync_modifiers(env, Some(event.vk));
-
         let mut decision = match event.direction {
             KeyDirection::Down => self.on_key_down(event.vk, bindings, env),
             KeyDirection::Up => self.on_key_up(event.vk, env),
@@ -655,6 +663,24 @@ impl Engine {
     /// (ruling R2 of roadmap item 2.3).
     pub fn input_returned(&mut self) {
         self.resync.input_returned();
+    }
+
+    /// One of the daemon's own injected key events (the sentinel), which
+    /// the adapter passes undecided (roadmap item 2.5, cut D2). Windows
+    /// applies it, so a modifier's flag follows it, and only its flag: no
+    /// record changes, nothing fires and no other key is touched. A
+    /// modifier whose key-down was swallowed is left alone: the user holds
+    /// it, and its auto-repeats must stay auto-repeats (KS-14). It proves
+    /// nothing about where keyboard input is.
+    pub fn track_injected(&mut self, event: KeyEvent) {
+        self.keys.track_injected(event);
+        self.resync.event(event.vk, false);
+    }
+
+    /// Whether the engine holds the key with this exact code.
+    #[cfg(test)]
+    pub(crate) fn holds(&self, vk: VIRTUAL_KEY) -> bool {
+        self.keys.is_active(vk)
     }
 
     /// Starts over for `reason` (roadmap item 2.3; KS-31).
@@ -1604,10 +1630,9 @@ mod tests {
         assert!(!alt.suppress, "Alt alone is no hotkey");
         env.press(VK_LMENU);
         env.press(VK_LSHIFT);
-        // The engine learns LShift from Windows at the next event.
-        let a = engine.on_key(KeyEvent::down(VK_A), &bindings, &env);
-        assert!(!a.suppress);
-        let _ = engine.on_key(KeyEvent::up(VK_A), &bindings, &env);
+        // A foreground change: the main thread's read finds LShift down.
+        engine.on_foreground_changed();
+        assert!(engine.resync_if_due(&env, 0));
 
         let first = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
         assert!(
@@ -1631,6 +1656,40 @@ mod tests {
         );
         let up = engine.on_key(KeyEvent::up(VK_LSHIFT), &bindings, &env);
         assert!(!up.suppress, "and so does its key-up");
+    }
+
+    #[test]
+    fn an_injected_key_up_of_a_held_swallowed_modifier_leaves_it_held() {
+        // Roadmap item 2.5, cut D2, KS-14: the user holds the swallowed
+        // LShift, so the daemon's own injected LShift down and up leave it
+        // held, and its next key-down stays an auto-repeat.
+        let bindings = loaded(r#"( bindings: [ (keys: "LShift", action: DoNothing) ] )"#);
+        let env = FixedEnv(Instant::now());
+        let mut engine = Engine::new();
+        let down = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(down.suppress);
+        assert_eq!(down.fire, [BindAction::DoNothing]);
+
+        engine.track_injected(KeyEvent::down(VK_LSHIFT));
+        engine.track_injected(KeyEvent::up(VK_LSHIFT));
+        assert!(engine.holds(VK_LSHIFT), "the user still holds it");
+
+        let repeat = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(repeat.suppress, "a repeat of a swallowed press");
+        assert!(repeat.fire.is_empty(), "which fires nothing");
+    }
+
+    #[test]
+    fn an_injected_event_of_a_key_that_is_not_a_modifier_changes_nothing() {
+        // Cut D2: only modifiers feed matching, so the daemon's injected A
+        // (a macro's `Key`, a `TypeText` code unit) is not followed.
+        let bindings = loaded(r#"( bindings: [ (keys: "A", action: DoNothing) ] )"#);
+        let env = FixedEnv(Instant::now());
+        let mut engine = Engine::new();
+        engine.track_injected(KeyEvent::down(VK_A));
+        assert!(!engine.holds(VK_A));
+        let down = engine.on_key(KeyEvent::down(VK_A), &bindings, &env);
+        assert_eq!(down.fire, [BindAction::DoNothing], "a first press");
     }
 
     #[test]

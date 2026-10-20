@@ -53,6 +53,17 @@
 //!   (`check_no_lone_key_up`, the KS-06 status). A key held through a lock
 //!   reads its next repeat as a press (known issue 76), so symmetry is not
 //!   checked.
+//! - Unnoticed mode, the Unlock steps with the key-downs and key-ups the
+//!   hook does not see left unnoticed (`down_unnoticed`, `up_unnoticed`):
+//!   nothing the daemon notices comes after them, so the main thread's
+//!   read of the modifiers is not due (roadmap item 2.5, known issue 88).
+//!   No key is left down in Windows and no key-up reaches Windows alone,
+//!   whatever flags the engine holds (cut D11).
+//!
+//! In the modes before Unnoticed every key event the hook does not see is
+//! noticed (`down_unseen`, `up_unseen`), so the main thread reads the
+//! modifiers right after it, as the daemon does for almost every such
+//! event.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
 
@@ -216,6 +227,9 @@ enum Mode {
     /// The Unseen steps, with the four input signals besides the focus
     /// change (roadmap item 2.3).
     Unlock,
+    /// The Unlock steps, with every key event the hook does not see left
+    /// unnoticed (roadmap item 2.5).
+    Unnoticed,
 }
 
 impl Mode {
@@ -226,12 +240,26 @@ impl Mode {
 
     /// Whether the script loses key-ups.
     fn loses_key_ups(self) -> bool {
-        matches!(self, Mode::Focus | Mode::Unseen | Mode::Unlock)
+        matches!(
+            self,
+            Mode::Focus | Mode::Unseen | Mode::Unlock | Mode::Unnoticed
+        )
     }
 
     /// Whether the script presses keys the hook does not see.
     fn presses_unseen(self) -> bool {
-        matches!(self, Mode::Unseen | Mode::Unlock)
+        matches!(self, Mode::Unseen | Mode::Unlock | Mode::Unnoticed)
+    }
+
+    /// Whether the script draws the input signals besides the focus change.
+    fn signals_input(self) -> bool {
+        matches!(self, Mode::Unlock | Mode::Unnoticed)
+    }
+
+    /// Whether nothing the daemon notices comes after a key event the hook
+    /// does not see.
+    fn unnoticed(self) -> bool {
+        self == Mode::Unnoticed
     }
 }
 
@@ -259,7 +287,11 @@ fn step(
         0..35 => match pick(rng, held, false) {
             Some(index) if mode.presses_unseen() && rng.below(10) == 0 => {
                 held[index] = true;
-                scenario.down_unseen(KEYS[index])
+                if mode.unnoticed() {
+                    scenario.down_unnoticed(KEYS[index])
+                } else {
+                    scenario.down_unseen(KEYS[index])
+                }
             }
             Some(index) => press(scenario, held, index),
             None => {
@@ -278,7 +310,11 @@ fn step(
             Some(index) => {
                 held[index] = false;
                 if mode.loses_key_ups() && rng.below(10) == 0 {
-                    scenario.up_unseen(KEYS[index])
+                    if mode.unnoticed() {
+                        scenario.up_unnoticed(KEYS[index])
+                    } else {
+                        scenario.up_unseen(KEYS[index])
+                    }
                 } else {
                     scenario.up(KEYS[index])
                 }
@@ -289,7 +325,7 @@ fn step(
             }
         },
         85..95 => scenario.advance_ms(delay(rng)),
-        95..97 if mode == Mode::Unlock => match rng.below(5) {
+        95..97 if mode.signals_input() => match rng.below(5) {
             0 => scenario.foreground_changed(),
             1 => scenario.session_locked(),
             2 => scenario.session_unlocked(),
@@ -330,7 +366,7 @@ fn run(index: usize, config: &Config, seed: u64, mode: Mode, repeat_check: bool)
     if matches!(mode, Mode::Strict | Mode::FocusWhole) {
         scenario = scenario.check_press_symmetry();
     }
-    if mode == Mode::Unlock {
+    if mode.signals_input() {
         scenario = scenario.check_no_lone_key_up();
     }
     if repeat_check {
@@ -385,4 +421,12 @@ fn every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes() {
 #[test]
 fn no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches() {
     run_all(Mode::Unlock, false);
+}
+
+#[test]
+fn no_key_sticks_and_no_key_up_reaches_windows_alone_when_hidden_modifier_events_go_unnoticed() {
+    // Roadmap item 2.5, cut D11: with the main thread's read not due after
+    // a hidden event, the engine's modifier flags can be stale, and no key
+    // is left down in Windows nor gets a key-up there without its key-down.
+    run_all(Mode::Unnoticed, false);
 }
