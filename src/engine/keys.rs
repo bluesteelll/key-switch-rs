@@ -68,6 +68,13 @@ enum LastDown {
     Passed,
     /// The key-down was suppressed.
     Suppressed,
+    /// The engine never saw this press's key-down, and it suppressed one of
+    /// its auto-repeats (roadmap item 2.5). Its key-up is suppressed like a
+    /// `Suppressed` one's, unless Windows has the key down, and a reset
+    /// keeps it the same way. Otherwise it is `Unknown`: Windows may have
+    /// the key down, so the modifier resync reads it, it counts for the menu
+    /// mask, and its later repeats are decided by the bindings.
+    RepeatSuppressed,
 }
 
 /// Held and suppressed keys, one entry per virtual-key code.
@@ -115,10 +122,11 @@ impl KeyState {
     /// and on record as passed: the engine saw no event while remapping was
     /// off or the hook was gone, Windows saw every key-down, so the key's
     /// auto-repeats and its key-up must reach Windows too. Every other key is up. Its record is
-    /// dropped, except a swallowed key-down's: Windows is no witness for a
-    /// key it never saw go down (KS-14), so its key-up, if one is still
-    /// due, stays swallowed, unless Windows has the key down by then (the
-    /// witness of `Engine::on_key_up`).
+    /// dropped, except a swallowed key-down's or a swallowed auto-repeat's
+    /// (roadmap item 2.5): Windows is no witness for a key it never saw go
+    /// down (KS-14), so its key-up, if one is still due, stays swallowed,
+    /// unless Windows has the key down by then (the witness of
+    /// `Engine::on_key_up`).
     ///
     /// Mouse buttons are left out: a seeded button would stay held for
     /// good, and an auto-blocker would then never see its hotkey alone. A
@@ -135,7 +143,10 @@ impl KeyState {
             self.active[index] = held;
             if held {
                 self.last_down[index] = LastDown::Passed;
-            } else if self.last_down[index] != LastDown::Suppressed {
+            } else if !matches!(
+                self.last_down[index],
+                LastDown::Suppressed | LastDown::RepeatSuppressed
+            ) {
                 self.last_down[index] = LastDown::Unknown;
             }
         }
@@ -178,6 +189,15 @@ impl KeyState {
         }
     }
 
+    /// Records that an auto-repeat of `vk`, a key whose key-down the engine
+    /// never saw, was suppressed (roadmap item 2.5): its key-up is then
+    /// suppressed too, unless Windows has the key down.
+    pub(super) fn mark_repeat_suppressed(&mut self, vk: u16) {
+        if let Some(index) = slot(vk) {
+            self.last_down[index] = LastDown::RepeatSuppressed;
+        }
+    }
+
     /// Records that a completed chord or sequence swallows the key-up of
     /// `vk`, if the key is held and its key-down did not reach the OS. A key
     /// already released has no key-up left to swallow (KS-30), and one whose
@@ -209,13 +229,14 @@ impl KeyState {
         slot(vk).is_some_and(|index| self.last_down[index] == LastDown::Passed)
     }
 
-    /// Forgets the key-down of `vk` and reports whether it was suppressed.
+    /// Forgets the key-down of `vk` and reports whether it was suppressed,
+    /// or an auto-repeat of a press whose key-down the engine never saw was.
     pub(super) fn take_blocked(&mut self, vk: u16) -> bool {
         match slot(vk) {
-            Some(index) => {
-                std::mem::replace(&mut self.last_down[index], LastDown::Unknown)
-                    == LastDown::Suppressed
-            }
+            Some(index) => matches!(
+                std::mem::replace(&mut self.last_down[index], LastDown::Unknown),
+                LastDown::Suppressed | LastDown::RepeatSuppressed
+            ),
             None => false,
         }
     }
@@ -228,7 +249,8 @@ impl KeyState {
     /// Whether Windows has an Alt or Win key down: one is held and its
     /// key-down was not swallowed. The resync keeps every such key in step
     /// with the OS key state, so this asks the OS nothing. A key held with
-    /// no record counts: the resync found it down in Windows. Read after the
+    /// no record counts: the resync found it down in Windows; so does one
+    /// whose swallowed auto-repeat is on record. Read after the
     /// event's own record update, an Alt or Win key-down being swallowed
     /// right now does not count.
     pub(super) fn alt_or_win_down_in_windows(&self) -> bool {
@@ -690,6 +712,55 @@ mod tests {
         );
         state.sync_modifiers(&Down(&[]), None);
         assert!(!state.alt_or_win_down_in_windows());
+    }
+
+    #[test]
+    fn a_repeat_suppressed_record_is_consumed_like_a_swallowed_one_and_kept_by_a_reset() {
+        // Roadmap item 2.5, cut D10: a swallowed auto-repeat of a press
+        // whose key-down the engine never saw keeps its key-up from Windows,
+        // across `swch on` and a lock, until the key-up consumes the record.
+        let mut state = KeyState::new();
+        state.press(VK_LSHIFT);
+        state.mark_repeat_suppressed(VK_LSHIFT.0);
+        assert!(
+            !state.is_blocked(VK_LSHIFT.0),
+            "it is not a swallowed key-down"
+        );
+        assert!(!state.is_passed(VK_LSHIFT.0));
+
+        state.resync_from_os(&Down(&[]));
+        state.release_all();
+        assert!(!state.is_active(VK_LSHIFT));
+        assert!(
+            state.take_blocked(VK_LSHIFT.0),
+            "the record survives both resets and swallows the key-up"
+        );
+        assert!(!state.take_blocked(VK_LSHIFT.0), "and is consumed by it");
+
+        state.mark_repeat_suppressed(300);
+        assert!(!state.take_blocked(300));
+    }
+
+    #[test]
+    fn a_repeat_suppressed_key_is_not_skipped_by_the_modifier_resync_and_counts_for_the_mask() {
+        // Cut D10: Windows may have such a key down, since the engine never
+        // saw its key-down, so it is read like a key with no record (KS-14
+        // skips only a swallowed key-down) and counts for the menu mask.
+        let mut state = KeyState::new();
+        state.press(VK_LMENU);
+        state.mark_repeat_suppressed(VK_LMENU.0);
+        assert!(state.alt_or_win_down_in_windows(), "it counts for the mask");
+
+        state.sync_modifiers(&NothingDown, None);
+        assert!(
+            !state.is_active(VK_LMENU),
+            "the resync reads it: Windows has it up"
+        );
+        assert!(!state.alt_or_win_down_in_windows());
+        assert!(
+            state.take_blocked(VK_LMENU.0),
+            "the record stays for the key-up"
+        );
     }
 
     #[test]

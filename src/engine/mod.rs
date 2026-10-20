@@ -189,7 +189,9 @@
 //!    change, and passed if it is marked passed, whatever the bindings
 //!    asked. A repeat without a mark (a modifier the resync found held,
 //!    whose key-down the engine never saw) is suppressed if a binding asked
-//!    for it; once one passes, the key is marked passed. Actions still fire
+//!    for it, and the key is then marked as a swallowed repeat, whose key-up
+//!    is suppressed unless Windows has the key down (roadmap item 2.5);
+//!    once one passes, the key is marked passed. Actions still fire
 //!    on repeats as rule 4 says. A completed chord or sequence marks the
 //!    keys whose key-ups it swallows as blocked, but only keys still held
 //!    whose key-down did not pass (KS-30, KS-32).
@@ -202,7 +204,8 @@
 //! for the window on a timer of its own (roadmap item 2.2, open question
 //! 5). A DoubleTap window opens if the key-up comes before it closes. The
 //! key-up of a key marked passed always passes. Otherwise it is suppressed
-//! if the key was marked blocked or if a Tap or Hold was pending, unless
+//! if the key was marked blocked or as a swallowed repeat, or if a Tap or
+//! Hold was pending, unless
 //! [`Env::os_key_down`] reports the key down before the event: Windows then
 //! saw a key-down the hook did not, and the key-up passes so that the key
 //! does not stay down there (the witness, roadmap item 2.3). A foreground
@@ -835,12 +838,18 @@ impl Engine {
             // never saw, so Windows has it down. A repeat without a record
             // keeps what the bindings asked. If it passes, the press is one
             // Windows saw: record that, so its later repeats and its key-up
-            // pass too, and no completed chord swallows that key-up.
+            // pass too, and no completed chord swallows that key-up. If it
+            // is swallowed, record that too (roadmap item 2.5): the key's
+            // release unseen and its next press read as this repeat, so
+            // Windows may have it up, and its key-up then asks the witness
+            // as a swallowed press's does.
             if self.keys.is_blocked(vk.0) {
                 decision.suppress = true;
             } else if self.keys.is_passed(vk.0) {
                 decision.suppress = false;
-            } else if !decision.suppress {
+            } else if decision.suppress {
+                self.keys.mark_repeat_suppressed(vk.0);
+            } else {
                 self.keys.mark_passed(vk.0);
             }
         } else if decision.suppress {
@@ -918,7 +927,8 @@ mod tests {
     use crate::data::key_combination::KeyCombination;
     use crate::engine::{Scheduler, TimerQueue};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LSHIFT, VK_MENU, VK_RSHIFT, VK_SHIFT,
+        VK_A, VK_CONTROL, VK_F13, VK_F14, VK_F15, VK_J, VK_K, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+        VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_SHIFT,
     };
 
     /// An [`Env`] stopped at one instant with nothing held and no
@@ -1313,6 +1323,106 @@ mod tests {
             !up.suppress,
             "a Shift is down in Windows: the generic key-up passes"
         );
+    }
+
+    /// An [`Env`] stopped at one instant whose OS key state the test sets;
+    /// a generic modifier code reads down while either side is.
+    struct OsEnv {
+        now: Instant,
+        down: std::cell::RefCell<Vec<VIRTUAL_KEY>>,
+    }
+
+    impl OsEnv {
+        fn new(down: &[VIRTUAL_KEY]) -> Self {
+            Self {
+                now: Instant::now(),
+                down: std::cell::RefCell::new(down.to_vec()),
+            }
+        }
+
+        /// Windows takes `vk` down.
+        fn press(&self, vk: VIRTUAL_KEY) {
+            self.down.borrow_mut().push(vk);
+        }
+
+        /// Windows takes `vk` up.
+        fn release(&self, vk: VIRTUAL_KEY) {
+            self.down.borrow_mut().retain(|&key| key != vk);
+        }
+    }
+
+    impl Env for OsEnv {
+        fn now(&self) -> Instant {
+            self.now
+        }
+        fn os_key_down(&self, vk: VIRTUAL_KEY) -> bool {
+            let down = self.down.borrow();
+            let either = |left, right| down.contains(&left) || down.contains(&right);
+            match vk {
+                VK_SHIFT => either(VK_LSHIFT, VK_RSHIFT),
+                VK_CONTROL => either(VK_LCONTROL, VK_RCONTROL),
+                VK_MENU => either(VK_LMENU, VK_RMENU),
+                other => down.contains(&other),
+            }
+        }
+        fn foreground_app(&self) -> Option<&str> {
+            None
+        }
+        fn foreground_title(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    /// The `Alt+Shift` auto-blocker that `block_original_combo: true` adds,
+    /// built directly: loading it from RON would read the registry.
+    fn alt_shift_blocker() -> Vec<Binding> {
+        vec![Binding::new_auto_blocker(
+            KeyCombination::from_keys([VK_MENU, VK_SHIFT]),
+            BlockerMode::Swallow,
+        )]
+    }
+
+    #[test]
+    fn a_repeat_with_no_record_that_passes_after_a_swallowed_one_is_recorded_as_passed() {
+        // Roadmap item 2.5, cut D10: Windows has LShift down from a key-down
+        // the engine never saw. The Alt+Shift blocker swallows its first
+        // repeat; a repeat that passes while Windows also has LCtrl down
+        // makes the press one Windows saw, so a later repeat that the
+        // blocker would swallow passes, and so does the key-up (KS-06).
+        let bindings = alt_shift_blocker();
+        let env = OsEnv::new(&[]);
+        let mut engine = Engine::new();
+        let alt = engine.on_key(KeyEvent::down(VK_LMENU), &bindings, &env);
+        assert!(!alt.suppress, "Alt alone is no hotkey");
+        env.press(VK_LMENU);
+        env.press(VK_LSHIFT);
+        // The engine learns LShift from Windows at the next event.
+        let a = engine.on_key(KeyEvent::down(VK_A), &bindings, &env);
+        assert!(!a.suppress);
+        let _ = engine.on_key(KeyEvent::up(VK_A), &bindings, &env);
+
+        let first = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(
+            first.suppress,
+            "the blocker swallows a repeat with no record"
+        );
+        let ctrl = engine.on_key(KeyEvent::down(VK_LCONTROL), &bindings, &env);
+        assert!(!ctrl.suppress);
+        env.press(VK_LCONTROL);
+        let second = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(
+            !second.suppress,
+            "with Ctrl down in Windows the blocker does not match"
+        );
+        let _ = engine.on_key(KeyEvent::up(VK_LCONTROL), &bindings, &env);
+        env.release(VK_LCONTROL);
+        let third = engine.on_key(KeyEvent::down(VK_LSHIFT), &bindings, &env);
+        assert!(
+            !third.suppress,
+            "a repeat of a press Windows saw passes whatever the blocker asks"
+        );
+        let up = engine.on_key(KeyEvent::up(VK_LSHIFT), &bindings, &env);
+        assert!(!up.suppress, "and so does its key-up");
     }
 
     #[test]

@@ -563,8 +563,10 @@ the `T` types two capitals and leaves CapsLock alone. Write
   foreground change and `swch off`/`swch on`, so Windows never gets a
   key-up whose press it did not see (roadmap item 2.3). It reaches Windows
   only when Windows has that key down, so the key does not stick (known
-  issue 78). A key released while remapping is off reaches Windows as a
-  lone key-up (known issue 59).
+  issue 78). The same holds for a modifier whose key-down the daemon never
+  saw and one of whose auto-repeats a binding swallowed (roadmap item 2.5).
+  A key released while remapping is off reaches Windows as a lone key-up
+  (known issue 59).
 - Hold is "fire once" semantics, not "press-and-hold synthesized
   modifier". Binding `Hold → PressKey("LShift")` sends one Shift press at
   the threshold moment, not a held Shift. For continuously-held synthesized

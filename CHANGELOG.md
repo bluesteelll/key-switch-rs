@@ -1017,6 +1017,13 @@ minor version; such entries sit under **Changed** and start with
   of leaving every binding dead until the daemon restarts (roadmap item
   2.4; the action half was fixed by roadmap item 2.1). The keys typed
   before the reinstall reach Windows unremapped.
+- An auto-repeat of a modifier whose key-down the daemon never saw (one
+  Windows had down when the daemon read it), which a binding swallows, now
+  keeps the modifier's release from Windows unless Windows has it down, as
+  for any swallowed press. Before, the release always passed, and Windows
+  could get a key-up without its key-down (roadmap item 2.5). Tests:
+  `engine::scenarios::a_swallowed_repeat_of_a_modifier_with_no_record_keeps_its_release_from_windows`,
+  `engine::tests::a_repeat_with_no_record_that_passes_after_a_swallowed_one_is_recorded_as_passed`.
 
 ## [0.1.0] - 2026-05-20
 
