@@ -38,7 +38,8 @@ One package with a library, two binaries, a build script and the book:
 - `src/engine/`: the pure decision core (`#![forbid(unsafe_code)]`; no Win32 calls, threads, locks or clock).
   `Engine::on_key(event, &bindings, &dyn Env)` and `Engine::on_timer(token)` return a `Decision` (`suppress`,
   `fire`, `timers`, and `mask`, the menu mask key of roadmap 1.2). `Env` supplies the clock, the OS key state and the
-  foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`; `schedule.rs` has the
+  foreground window. State: `keys.rs`, `gestures.rs`, `chords.rs`, `sequences.rs`; `modifiers.rs` (`ModifierSet`); `resync.rs` (the
+  hiding count: when main reads the modifiers between events); `schedule.rs` has the
   `Scheduler` trait and the pure `TimerQueue`. `Engine::reset(env, ResetReason)` answers `InputSignal`s. Scenario tests live in
   `engine::scenarios` on the `engine::testing` harness (`Scenario`, fake `Env`). New matching, suppression and
   gesture logic goes here; the hook callback only adapts Win32 to it and carries out the `Decision`.
@@ -69,8 +70,9 @@ The latency bench (`#[ignore = "bench: ..."]`, rows R1-R8, `KS_BENCH_LOAD=1` add
 Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rules of
 `D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8), `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
 against 5.4 us) and `p2-2.4-watchdog/cut.md` (R14 p50 <= R14c p50 + 300 ns; the 1 ms-paced rows gate on p50 only;
-R15 is evidence; R16, one wake per burst, about 50 us, is declared and not gated); a breach is a defect unless the
-cut justified the extra work. A cut that sets a new latency bound probes it with a diagnostic row first.
+R15 is evidence) and `p2-2.5-latency-trim/cut.md` D13 (P on the lane's bench commit, N = P with the removed line, H, in
+one session; R12/R12m/R12m2/R4 against N; R1 against N + 0.5 Delta; R11's witness term; R16 p50 <= R12 p50 + 20 us,
+ruling L3; R17t, R17a, R18 are evidence); a breach is a defect unless the cut justified the extra work. A cut that sets a new latency bound probes it with a diagnostic row first.
 
 ## Coding principles
 
@@ -80,16 +82,20 @@ cut justified the extra work. A cut that sets a new latency bound probes it with
    `keyboard_hook_callback.rs` names no `log::` outside its tests: a per-event condition is a
    `logging::counters::bump(..)`. `logging::flush()` waits up to 1 s, so never call it on the hook path or under `with_main`.
    The hook path runs only `FastAction`s inline; every other action goes through `KeyboardHook::submit` to the executor.
-   The watchdog heartbeat (`health().callback_seen()`, one atomic RMW after `code < 0`, before the remapping gate) and
-   the debug-only hold are the only other additions.
+   The watchdog heartbeat (`health().callback_seen()`, one atomic RMW after `code < 0`, before the remapping gate),
+   the late-callback note (one `GetTickCount` and a compare at exit, `note_late`) and the debug-only hold are the only
+   other additions. The callback reads no modifier state at every event (roadmap 2.5): the sanctioned key-state reads
+   are the witness, the KS-05 blocker read and the clear-only check, one `GetAsyncKeyState` per modifier held for the
+   engine and not swallowed, which only clears a flag Windows has up. The full resync runs on main between events.
 2. **Every path ends in exactly one outcome:** `LRESULT(1)` (drop) or `CallNextHookEx` (pass).
    `code < 0` short-circuits to `CallNextHookEx`. Suppression invariant: a key-up is suppressed
    if and only if its key-down was, unless Windows has the key down (the OS witness, roadmap 2.3), so Windows
    gets a key-up exactly when it has the key down. The witness is the one sanctioned read of the event's own key.
 3. **Injected-event sentinel.** Every synthesized event sets `dwExtraInfo: injected_sentinel()`
    (`core/constants.rs`, PID-mixed `(pid << 32) | 0xDEADBEEF`). The callback passes those events
-   through via `is_injected_event` before it mutates any state. A `SendInput` path without the
-   sentinel causes a feedback loop. Never hard-code the constant.
+   through via `is_injected_event` before it decides anything: such an event always passes and fires nothing. A
+   sentinel modifier event only updates the engine's flag of that modifier (`track_injected`, roadmap 2.5). A
+   `SendInput` path without the sentinel causes a feedback loop. Never hard-code the constant.
 4. **`unsafe`:** Rust 2024 needs `unsafe { }` inside `unsafe fn`. Every `unsafe` block carries
    `// SAFETY: <concrete invariant>`. A comment like "caller's responsibility" or an empty SAFETY line is a defect.
 5. **Shared state:** the hook singleton is `static KEYBOARD_HOOK: LazyLock<KeyboardHook>`, reached
@@ -103,7 +109,8 @@ cut justified the extra work. A cut that sets a new latency bound probes it with
    foreground cache, which the foreground callback fills, and the title of another process's window. Other shared state is atomics (`logging::counters::COUNTERS`), a `OnceLock` (the writer queue in `logging::LOGGER`) or
    `ArcSwap`, with `Release` stores, `Acquire` loads and `AcqRel` RMW. `Relaxed` needs a written pairing argument.
    The `ArcSwapOption<ExecutorHandle>` in `KeyboardHook` is stored only by main (`attach_executor`); `HealthState`
-   (atomics in `KeyboardHook`) is the watchdog's shared state.
+   (atomics in `KeyboardHook`, `unseen_input` included) is the watchdog's shared state. `HIDDEN_INPUT` is a main-thread
+   TLS `Cell`, bumped by a late callback, a long awake stretch, a refused `with_main` and an unknown desktop switch.
    Bindings change only through `KeyboardHook::update_bindings`, which sorts by key count descending
    (stable sort) and then does one atomic store.
 6. **Thread ownership:** the main thread installs and uninstalls both hooks, owns their windows, the engine and
@@ -112,7 +119,8 @@ cut justified the extra work. A cut that sets a new latency bound probes it with
    Hold and waiting-Tap actions run there. `swch on`/`off` and reloads are requests the main thread serves. Main
    installs and removes three hooks (keyboard, foreground, desktop switch) and owns the control window, which is
    dropped after `uninstall` and before `executor.stop()`. A window procedure or WinEvent callback only notes a
-   signal and posts `MAIN_WAKE`; resets run in the drain, and a lost-input reset reads no OS state. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
+   signal and posts `MAIN_WAKE`; resets run in the drain, and a lost-input reset reads no OS state. The drain ends with
+   the modifier read when the hiding count moved (`MainState::resync_if_due`), under the borrow, between events. Hooks belong to the installing thread (KS-01). A thread that uses Win32 UI
    APIs needs its own pump. `Launch`, `OpenUrl` and `Sequence` run on the `action-executor` thread, which owns its STA,
    its bounded queue, its `Delay` timer and its message pump; main starts it before the hooks and stops it after
    they are removed. The `hook-watchdog` thread owns a message-only window, the process's raw keyboard registration
