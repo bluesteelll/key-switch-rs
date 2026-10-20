@@ -94,6 +94,7 @@ The callback blocks all desktop keyboard input until it returns; past `LowLevelH
 - [ ] Safety S1-S4 (roadmap 2.4): every `SetWindowsHookEx*`, `SetWinEventHook` and `RegisterRawInputDevices` call lives in `hook::installer`, compiled out under test; no test can reach a real installer; the installer scan stays whole-file
 - [ ] A new latency bound in a cut was probed with a diagnostic bench row before the cut was final
 - [ ] The hook path never queries a process (`when:` reads the foreground cache); a window procedure or WinEvent callback only notes a signal and posts `MAIN_WAKE`; a reset never runs inside a callback, and a lost-input reset reads no OS state; the OS witness at a swallowed key-up is the only read of the event's own key
+- [ ] The callback reads no modifier state at every event (roadmap 2.5): its key-state reads are the witness, the KS-05 blocker read and the clear-only check (one `GetAsyncKeyState` per modifier held for the engine and not swallowed, which never sets a flag); the full modifier resync runs on main in the drain, never in a callback
 - [ ] The engine is reached only through `with_main` on the main thread: no action, `SendInput`, thread spawn or message pump under the borrow (one `SetWaitableTimer` is allowed); a re-entrant call is refused, never a panic
 - [ ] Foreground-context lookups stay lazy and are skipped when no binding has `when:`
 - [ ] `log` calls on the hot path are level-gated and do not format eagerly
