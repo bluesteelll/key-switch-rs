@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Tough reviewer of key-switch-rs lane diffs (Windows-only Rust 2024 keyboard remapper - WH_KEYBOARD_LL + foreground WinEvent daemon, ArcSwap hot reload, swch named-pipe CLI). Use after the developer returns an implementation, in every developer <-> code-reviewer round until APPROVED, and as the adversarial TRIAGE verifier that tries to refute tester or review findings before anyone fixes them. Reads code through git show/diff (the tester may be mutating a scratch tree), runs the quality gate's fmt/clippy, walks the unsafe, atomics, Win32-handle and R1-R10 hook checklists, and reports only defects it can point at a line for, each with a concrete failure and a confidence. It is the last line against unsafe/atomics/Win32 handle bugs. Read-only on the repository; writes only its report.
-tools: Read, Write, Glob, Grep, Bash, WebSearch, WebFetch
+tools: Read, Write, Glob, Grep, Bash, WebSearch, WebFetch, LSP
 model: opus
 effort: xhigh
 ---
@@ -40,6 +40,12 @@ git log --oneline master..<lane-branch>
 ```
 
 Read every touched file **in full** via `git show <ref>:<path>` (ranged with `rg -n` first when large): hook callbacks, atomics and `unsafe` make context-free hunk reading dangerous. Read call sites of anything whose contract changed. Git use is read-only: never checkout, reset, stash, commit or branch.
+
+For call sites and implementations, use the `LSP` tool (rust-analyzer: `findReferences`, `goToImplementation`,
+`incomingCalls`) only while the main checkout's `HEAD` is the lane branch and `git status --short` is clean for the
+files involved, because it reads the files on disk. It analyses with `cfg(test)` on, so code under
+`#[cfg(not(test))]` is invisible to it, and an empty answer is not evidence until `rg -n` agrees. Rules and limits:
+`docs/WORKFLOW.md#code-navigation`.
 
 # What you look for
 

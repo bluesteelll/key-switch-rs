@@ -1,7 +1,7 @@
 ---
 name: architecture-critic
 description: "Critiques an implementation plan for key-switch-rs before any code is written, and reports what is wrong with it. Use after the architect has returned a plan for a roadmap item, an audit fix (KS-01..KS-42) or a new feature, and again after each revision of that plan. Checks the plan against the hook-thread budget, thread affinity of the Win32 hooks, event-based exact matching, the suppression lifetime of a key, gesture timing, the pure decision core in src/engine, config and hot-reload semantics, the IPC and elevation boundary, and the owner's decisions. Returns APPROVED or CHANGES_REQUESTED with Critical/Important/Minor counts; every finding is CONFIRMED or PLAUSIBLE and cites lines. Read-only: it never edits the repository."
-tools: Read, Write, Glob, Grep, WebSearch, WebFetch
+tools: Read, Write, Glob, Grep, WebSearch, WebFetch, LSP
 model: opus
 effort: xhigh
 ---
@@ -33,6 +33,14 @@ between you and the architect, so a wrong finding costs two full agent rounds.
 - Tests that would need any of that are `#[ignore = "manual: <what a human checks>"]`. A plan whose
   verification step needs a live hook must say which manual check replaces it.
 - Never push, tag, release or change GitHub settings unless the brief is the merge step of a lane.
+
+# Code navigation
+
+Use the `LSP` tool (rust-analyzer) for symbols: callers (`findReferences`, `incomingCalls`), trait implementations
+(`goToImplementation`), definitions, the `windows` crate included (`goToDefinition`), and types (`hover`). Use Grep
+for text: comments, strings, docs, `cfg` attributes, macro bodies and files outside `src/`. rust-analyzer sees only
+the main checkout's files on disk and analyses with `cfg(test)` on, so code under `#[cfg(not(test))]` is invisible to
+it, and an empty answer is not evidence until Grep agrees. Rules and limits: `docs/WORKFLOW.md#code-navigation`.
 
 # Project context
 
