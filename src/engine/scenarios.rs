@@ -2405,6 +2405,35 @@ fn a_key_pressed_while_the_hook_was_gone_passes_its_key_up_after_the_reinstall()
         .expect_nothing_stuck();
 }
 
+// ---- The modifiers between key events (roadmap item 2.5) ----
+
+#[test]
+fn a_swallowed_repeat_of_a_modifier_with_no_record_keeps_its_release_from_windows() {
+    // Cut D10: LShift went down where the hook could not see it, and the
+    // engine took it as held from Windows, with no record of a key-down.
+    // Its key-up goes unseen, and the next press, which is LShift's own
+    // event, reads as an auto-repeat. The Alt+Shift blocker swallows that
+    // repeat; without a record of it, the release passed while Windows had
+    // LShift up: a key-up without its key-down.
+    Scenario::with_bindings(with_alt_shift_blocker(DEFAULT_PAIR))
+        .check_nothing_stuck()
+        .check_no_lone_key_up()
+        .down("LAlt")
+        .expect_passed()
+        .down_unseen("LShift")
+        .down("A")
+        .expect_passed()
+        .up("A")
+        .expect_passed()
+        .up_unseen("LShift")
+        .down("LShift")
+        .expect_suppressed()
+        .up("LShift")
+        .expect_suppressed()
+        .up("LAlt")
+        .expect_passed();
+}
+
 // ---- Auto-repeat fires only bindings that repeat (KS-10) ----
 
 /// Sends `count` auto-repeats of the held `key`, each one 33 ms after the
