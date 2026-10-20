@@ -1356,6 +1356,33 @@ mod tests {
     }
 
     #[test]
+    fn a_key_event_with_no_modifier_held_asks_the_os_about_no_modifier() {
+        // Roadmap item 2.5, ruling W2: the keyboard callback reads no
+        // modifier state at an ordinary key, and Windows has everything up.
+        let bindings = loaded(r#"( bindings: [ (keys: "F13", action: DoNothing) ] )"#);
+        let env = counting_env();
+        let mut engine = Engine::new();
+        let asked = asked_during(&env, || {
+            for event in [
+                KeyEvent::down(VK_A),
+                KeyEvent::up(VK_A),
+                KeyEvent::down(VK_F13),
+                KeyEvent::up(VK_F13),
+            ] {
+                let _ = engine.on_key(event, &bindings, &env);
+            }
+        });
+        let modifiers = asked
+            .iter()
+            .filter(|&&vk| ModifierSet::ALL.contains(vk))
+            .count();
+        assert_eq!(
+            modifiers, 0,
+            "a key event with no modifier held asks Windows about no modifier (roadmap item 2.5)"
+        );
+    }
+
+    #[test]
     fn every_source_of_the_hiding_count_makes_the_next_drain_read_the_modifiers() {
         // Roadmap item 2.5, cut D4: each source moves the count, and the
         // drain after it asks Windows about the eight sided modifiers once.
