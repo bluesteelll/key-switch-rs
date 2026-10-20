@@ -647,8 +647,9 @@ minor version; such entries sit under **Changed** and start with
   injected ones included. The generic codes `VK_SHIFT`, `VK_CONTROL` and
   `VK_MENU` count as held only between the key-down and the key-up a
   program sends under them. A key event asks Windows only about the
-  modifiers held for the daemon, one read each, and stops counting those
-  Windows has up: ordinary typing reads none, Ctrl+J one. A generic code
+  modifiers held for the daemon, one read of about 0.6 µs each (bench rows
+  R12m and R12m2 against R12), and stops counting those Windows has up:
+  ordinary typing reads none, Ctrl+J one. A generic code
   also stops counting once Windows has neither key of its pair down. The
   main thread reads the eight sided modifiers between key events when
   something could have hidden one: at startup, after a foreground change,
