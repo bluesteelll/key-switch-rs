@@ -255,6 +255,9 @@ minor version; such entries sit under **Changed** and start with
   key event (R15), the design the watchdog's own thread replaces; and the
   key-down callback of the first key of a burst, which wakes the idle
   watchdog once (R16).
+- Bench rows R12m and R12m2, a key-down with one and with two modifiers
+  held, R17t, one `GetTickCount`, and R17a, one `GetAsyncKeyState`
+  (roadmap item 2.5).
 
 ### Changed
 
