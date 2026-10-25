@@ -3,7 +3,7 @@
 <a id="s17"></a>
 ## 17. Complete `config.ron` example
 
-The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no `Tap`, `Hold` or `DoubleTap` on Win or Alt alone ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `bf549c0`, the tip of `master` after roadmap Phase 2.
+The example uses every binding kind, every trigger, every action, every macro step, every condition variant, `allow_extra_modifiers` and `repeat`. It contains no bindings that are known not to work: no `Ctrl+Pause`, no modifiers in a chord, and no `Tap`, `Hold` or `DoubleTap` on Win or Alt alone ([KS-12](../audit.md#ks-12)). The workarounds are described in the comments. The file can be copied as a whole; the keys F13–F24 exist on macro keyboards and are often assigned to mouse buttons through the mouse vendor's own software. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5 and the last change of the program's behaviour on `master`.
 
 Checked with the validator (the real loader) on a machine with no values under `HKCU\Keyboard Layout\Toggle`, so the fallback `Alt+Shift` was used:
 
@@ -16,7 +16,7 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 
 ```ron
 // config.ron — complete example for key-switch-rs (behaviour of commit
-// bf549c0, after roadmap Phase 2).
+// f4c1fb6, after roadmap Phase 2).
 //
 // Save the file as UTF-8, with or without a BOM. After a save, the bindings
 // reload on their own after about 250 ms. A file that does not load (for
@@ -229,7 +229,7 @@ That is 25 bindings from the file plus the auto-blocker `Alt+Shift`, which the l
 > Some string values in the example are Russian text. They are data, not comments, so they are left untranslated. In the `F17 → F18` sequence, `Text("С уважением,")` types "Best regards," and the second `Text` types the name "Иван" (Ivan) followed by an emoji. In the `Ctrl+Alt+N` macro, `Text("Заметка: купить хлеб")` types "Note: buy bread" and `Text("Дата: 2026-10-14")` types "Date: 2026-10-14". `TitleEquals("Калькулятор")` matches the Calculator window title on a Russian-language Windows.
 
 > [!WARNING]
-> The comments in the example mark or work around these known defects, all still open at `bf549c0`:
+> The comments in the example mark or work around these known defects, all still open at `f4c1fb6`:
 > - a `Tap`, `Hold` or `DoubleTap` on Win or Alt alone lets the tap reach Windows, which opens the Start menu or the menu bar: the part of [KS-12](../audit.md#ks-12) that the menu mask key of `feat/mask-key` does not cover (a Win or Alt combination whose key is swallowed no longer opens either);
 > - the `CapsLock` auto-blocker (`block_original_combo: true`) swallows the second modifier of Alt, Shift, X (or Shift, Alt, X), so the application gets Alt+X (or Shift+X): the rest of [KS-05](../audit.md#ks-05), which the experimental `MaskOnly` of `feat/mask-key` addresses;
 > - programs started by `Launch` run with the daemon's administrator rights (`F21`, and `wt.exe` in the `F20` macro): [KS-09](../audit.md#ks-09);

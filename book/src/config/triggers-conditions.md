@@ -1,6 +1,6 @@
 # Triggers and conditions
 
-`trigger` decides when a `keys` binding fires: at once (`Immediate`), on a short press (`Tap`), on a long press (`Hold`) or on a double press (`DoubleTap`). `when` restricts a binding to the windows whose application or title matches. Facts describe commit `bf549c0`, the tip of `master` after roadmap Phase 2; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
+`trigger` decides when a `keys` binding fires: at once (`Immediate`), on a short press (`Tap`), on a long press (`Hold`) or on a double press (`DoubleTap`). `when` restricts a binding to the windows whose application or title matches. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5 and the last change of the program's behaviour on `master`; the run-time behaviour is derived from the code of the decision core and its scenario tests, not observed on a live daemon.
 
 <a id="s11"></a>
 ## 11. Triggers (`trigger`)
@@ -18,7 +18,7 @@
 <a id="s11-2"></a>
 ### 11.2 Restrictions and parse errors
 
-[src/config/loader.rs:478-487](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L478-L487), [src/config/loader.rs:625-649](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L625-L649), [src/config/schema.rs:108-118](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/schema.rs#L108-L118):
+[src/config/loader.rs:478-487](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L478-L487), [src/config/loader.rs:625-649](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L625-L649), [src/config/schema.rs:108-118](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/schema.rs#L108-L118):
 
 - Deferred triggers (`Tap`, `Hold`, `DoubleTap`) work only with `keys`. For `sequence` and `chord` the loader reports ``Sequence/Chord cannot use a deferred trigger (Tap(200)); only `Immediate` (the default) is valid for these kinds``. The same holds for `Hold(…)` and `DoubleTap(…)`. An explicit `trigger: Immediate` is allowed for these kinds. This error is checked after the kind, the action and the range of the trigger: if one of those is invalid, only that error is reported. For example, `sequence: (steps: ["F13"])` with `Tap(100)` gives the error about the number of steps.
 - The argument is required. It is a `u64` integer in milliseconds (for the accepted notations, see [§3.7](ron-syntax.md#s3-7)):
@@ -38,7 +38,7 @@
 <a id="s11-3"></a>
 ### 11.3 `Immediate`
 
-[src/engine/mod.rs:747-754](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/mod.rs#L747-L754). The action fires on key-down on the hook thread, after the decision: a fast action runs there, and `Launch`, `OpenUrl` and `Sequence` are queued for the action executor ([§13.1](actions.md#s13-1)).
+[src/engine/mod.rs:844-851](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L844-L851). The action fires on key-down on the hook thread, after the decision: a fast action runs there, and `Launch`, `OpenUrl` and `Sequence` are queued for the action executor ([§13.1](actions.md#s13-1)).
 
 - If several `keys` bindings match one press, one wins ([§16.2](matching.md#s16-2)): the one with the most keys, then one with `when` over one without, then the first in the file. An `Immediate` winner runs alone; the losers, whatever their triggers, neither run nor arm.
 - The event is suppressed if the winner has `block_default: true`. A losing binding no longer suppresses it ([KS-13](../audit.md#ks-13), fixed on `feat/one-winner`), but a `sequence`, a `chord` or an auto-blocker that takes the key still can ([§10](kinds.md#s10)).
@@ -57,7 +57,7 @@
 <a id="s11-4"></a>
 ### 11.4 Common to `Tap`, `Hold` and `DoubleTap`
 
-[src/engine/mod.rs:680-706](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/mod.rs#L680-L706), [src/engine/gestures.rs](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/gestures.rs):
+[src/engine/mod.rs:777-803](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L777-L803), [src/engine/gestures.rs](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/gestures.rs):
 
 - A gesture is armed on a non-repeat key-down that fires the `keys` binding by the rules of [§7](kinds.md#s7): the key just pressed is one of the binding's trigger keys, all its keys are held and the modifiers are exactly its own. The gesture is bound to that key's code, and that key's key-up resolves it. For `keys: "Ctrl+F17"` with `Tap(150)`, press Ctrl, then F17: the time runs from the F17 press to its release. Pressing F17 first, then Ctrl arms nothing.
 - A key pressed while the gesture is pending is not the binding's key: it passes and arms nothing. If the gesture's key passed (`block_default: false`, or a binding made only of modifiers), that key-down cancels the gesture, so that a shortcut such as Ctrl+C is not also a Ctrl `Tap` (owner decision, roadmap [item 2.2](../roadmap.md#22-timers-on-the-main-thread); [§11.8](#s11-8)). A gesture whose key was swallowed is not cancelled. A `Hold` whose term has passed is resolved and fires, and a `Tap` that waits for its DoubleTap window fires at once, ahead of the new key ([§11.6](#s11-6)). A key of the gesture's own combination is not another key for a press that waits for its second press: the second press of a `Ctrl+Shift` `DoubleTap` may begin with Ctrl, and the `DoubleTap` still fires when Shift goes down (roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset)). A `Tap` that waits for that window then fires at the next key outside the combination, or when the window closes, with that modifier down in Windows: with `( keys: "Ctrl+Shift", action: PressKey("Escape"), trigger: Tap(200) )` next to a `DoubleTap` on `"Ctrl+Shift"`, one tap followed by Ctrl+C within the window sends Ctrl+Esc, which opens Start ([§19](known-issues.md#s19) row 68).
@@ -116,11 +116,11 @@ Tap F9: `a` about 0.3 s after the press. Double-tap F9: only `b`. Tap F9 and typ
 
 Since `feat/one-winner` this happens only within one group: bindings on the same keys with the same `when` (written the same way), which win the press together ([§16.2](matching.md#s16-2)). Bindings with other keys or another `when` compete, and only the winner arms: with `"Shift+F13"` on `Tap` and `"F13"` on `Tap` with `allow_extra_modifiers: true`, pressing Shift+F13 runs only the first one, because it has more keys.
 
-- Of several bindings with the same trigger in a group, only the first in the file acts; the others are skipped entirely: they arm nothing and do not ask for suppression ([src/engine/winner.rs:179-202](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/winner.rs#L179-L202)). The loader warns about such a binding, whatever its term ([§18.6](errors.md#s18-6)).
+- Of several bindings with the same trigger in a group, only the first in the file acts; the others are skipped entirely: they arm nothing and do not ask for suppression ([src/engine/winner.rs:179-202](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/winner.rs#L179-L202)). The loader warns about such a binding, whatever its term ([§18.6](errors.md#s18-6)).
 - A `Tap`, a `Hold` and a `DoubleTap` of one group arm together, as one press, and exactly one of them fires ([§11.6](#s11-6)).
 
 > [!NOTE]
-> Fixed on `feat/one-winner`: of two `DoubleTap` bindings on the same keys and `when`, only the first acts, and it fires on the second press. The second binding used to take the first binding's entry, so the first binding's action ran already on the **first** press ([src/engine/winner.rs:187-201](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/winner.rs#L187-L201)). Fixed on `feat/main-thread-timers`: a DoubleTap window belongs to its group, so a press of the key that another group wins no longer completes it ([§19](known-issues.md#s19) row 74).
+> Fixed on `feat/one-winner`: of two `DoubleTap` bindings on the same keys and `when`, only the first acts, and it fires on the second press. The second binding used to take the first binding's entry, so the first binding's action ran already on the **first** press ([src/engine/winner.rs:187-201](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/winner.rs#L187-L201)). Fixed on `feat/main-thread-timers`: a DoubleTap window belongs to its group, so a press of the key that another group wins no longer completes it ([§19](known-issues.md#s19) row 74).
 
 <a id="s11-8"></a>
 ### 11.8 Defects
@@ -129,7 +129,7 @@ Since `feat/one-winner` this happens only within one group: bindings on the same
 > **Slow actions left the hook thread ([KS-08](../audit.md#ks-08), roadmap [item 2.1](../roadmap.md#21-action-executor), fixed on `feat/action-executor`).** `Tap` and `DoubleTap` actions, as well as `chord` and `sequence` completions, are still carried out in the hook callback after the decision, but only the fast actions run there; a `Launch`, `OpenUrl` or `Sequence` is queued for the action executor, so a slow one can no longer exceed `LowLevelHooksTimeout` and get the hook removed ([§13.1](actions.md#s13-1)).
 
 > [!NOTE]
-> **A deferred trigger on a modifier no longer swallows that modifier** (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap), fixed on `feat/deferred-block-default`). `keys: "LShift", trigger: DoubleTap(250)` ([README.md:431](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/README.md?plain=1#L431), [src/config/default_config.ron:318-329](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/default_config.ron#L318-L329)) toggles CapsLock on a double press of the left Shift, and every left-Shift press still reaches the application, so it types capitals. Until then every left-Shift press was suppressed. `block_default: true` keeps the left Shift for the gesture alone.
+> **A deferred trigger on a modifier no longer swallows that modifier** (roadmap [item 1.3](../roadmap.md#13-block_default-for-tap-hold-and-doubletap), fixed on `feat/deferred-block-default`). `keys: "LShift", trigger: DoubleTap(250)` ([README.md:440](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/README.md?plain=1#L440), [src/config/default_config.ron:318-329](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/default_config.ron#L318-L329)) toggles CapsLock on a double press of the left Shift, and every left-Shift press still reaches the application, so it types capitals. Until then every left-Shift press was suppressed. `block_default: true` keeps the left Shift for the gesture alone.
 
 > [!NOTE]
 > **Another key cancels a gesture whose key passes** (owner decision, roadmap [item 2.2](../roadmap.md#22-timers-on-the-main-thread), fixed on `feat/main-thread-timers`; [§19](known-issues.md#s19) row 67). A key-down while a `Tap`, `Hold` or `DoubleTap` whose key passed is pending cancels it, as AutoHotkey does, which matters for a modifier you also type with. With `( keys: "LShift", action: ToggleCapsLock, trigger: DoubleTap(250) )`, typing `<T>` with the left Shift pressed again quickly for the `T` types two capitals and leaves CapsLock alone. With `( keys: "LCtrl", action: PressKey("Escape"), trigger: Tap(200) )`, a Ctrl+C released within 200 ms sends no Escape; a lone quick Ctrl tap does. With `( keys: "Ctrl+Shift", action: SwitchLanguage, trigger: Hold(1000) )`, holding Ctrl+Shift for more than a second to select words with Right leaves the layout alone. Only a key-down cancels: the keyboard hook does not see the mouse, so a quick Ctrl+click still sends Escape. A `Hold` whose term has passed fires whatever comes after it. A key of the gesture's own combination does not cancel a `DoubleTap` that waits for its second press (roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset)): with `( keys: "Ctrl+Shift", action: ToggleCapsLock, trigger: DoubleTap(300) )`, the second Ctrl+Shift press may begin with Ctrl.
@@ -162,7 +162,7 @@ when: And([AppEquals("chrome.exe"), Not(TitleContains("Incognito"))])
 when: Or([AppEquals("firefox.exe"), AppEquals("chrome.exe")])
 ```
 
-Every string comparison ignores case with Unicode lowercasing, in every alphabet ([src/data/condition.rs:55-86](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/data/condition.rs#L55-L86); [KS-28](../audit.md#ks-28), fixed in `4177540`).
+Every string comparison ignores case with Unicode lowercasing, in every alphabet ([src/data/condition.rs:55-86](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/condition.rs#L55-L86); [KS-28](../audit.md#ks-28), fixed in `4177540`).
 
 | Variant | True when |
 |---|---|
@@ -217,7 +217,7 @@ The windows of UWP apps such as Calculator and Settings belong to the `Applicati
 <a id="s12-4"></a>
 ### 12.4 When and how a condition is checked
 
-[src/engine/winner.rs:79-84](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/winner.rs#L79-L84), [src/engine/mod.rs:760-796](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/engine/mod.rs#L760-L796), `src/hook/keyboard_hook_callback.rs` (`HookEnv`), `src/platform/foreground.rs` (`ForegroundCache`):
+[src/engine/winner.rs:79-84](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/winner.rs#L79-L84), [src/engine/mod.rs:857-893](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L857-L893), `src/hook/keyboard_hook_callback.rs` (`HookEnv`), `src/platform/foreground.rs` (`ForegroundCache`):
 
 - Window data is read only on key-down, and only when a condition other than `Always` is evaluated (judged at the top level: `Not(Always)` or `And([])` already count as a condition). The window is the top-level foreground window, not the child control that has focus.
 - The executable name comes from a cache that the daemon's main thread fills when a window takes the foreground (`EVENT_SYSTEM_FOREGROUND`), right after the hooks are installed, at `swch on` and when keyboard input comes back to this desktop. It is read once per window and process, so a key press queries no process (roadmap [item 2.3](../roadmap.md#23-control-window-and-state-reset)). The title changes inside one window (a browser tab), so it is read live, at most once per keystroke, when a title condition first asks: with `GetWindowTextW` into a buffer of 512 UTF-16 code units, so anything longer than 511 is truncated. `GetWindowTextW` reads another process's title without sending it a message, so it does not wait for that process; a window of the daemon's own process is never asked and has no title for `when:`.
