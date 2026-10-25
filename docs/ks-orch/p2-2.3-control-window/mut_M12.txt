@@ -1,0 +1,11 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.23s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 3 tests
+test hook::main_thread::tests::the_drain_logs_one_line_per_input_signal ... ok
+test hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold ... ok
+test hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.51s
+

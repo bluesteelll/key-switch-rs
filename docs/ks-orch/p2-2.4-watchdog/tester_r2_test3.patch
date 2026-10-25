@@ -1,0 +1,27 @@
+diff --git a/src/hook/watchdog/mod.rs b/src/hook/watchdog/mod.rs
+index 1581656..0b0c6a0 100644
+--- a/src/hook/watchdog/mod.rs
++++ b/src/hook/watchdog/mod.rs
+@@ -1517,6 +1517,22 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn an_early_timer_signal_leaves_the_ticks_where_they_were() {
++        // Ruling I1: a signal before the tick's due time changes nothing, so
++        // the request comes at the tick that ends the silence, as it does
++        // with a timer that signals on time. A pass that ticked on the early
++        // signal would move every later tick 10 ms early, and the request
++        // with them, to a tick after the silence has ended.
++        let mut on_time = Drive::new(Recorder::new());
++        on_time.run(0, 3000, a_burst);
++        let mut early = Drive::new(Recorder::new());
++        early.early = 10;
++        early.run(0, 3000, a_burst);
++        assert_eq!(on_time.requests, [1000], "the timer on time");
++        assert_eq!(early.requests, on_time.requests, "the timer 10 ms early");
++    }
++
+     #[test]
+     fn a_timer_that_refuses_once_is_set_again_at_the_next_pass() {
+         // Ruling I1: a failed set is counted, the wait times out at the tick

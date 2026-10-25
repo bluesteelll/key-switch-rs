@@ -1,0 +1,33 @@
+=== mutant line 434: if was_repeat && !binding.repeat {
+exit 101
+thread 'engine::scenarios::held_hold_binding_with_repeating_action_fires_once_across_many_repeats' (1228) panicked at src\engine\scenarios.rs:1951:10:
+scenario: expected the scenario to fire [PressKey(VIRTUAL_KEY(8))] in total, it fired [PressKey(VIRTUAL_KEY(8)), PressKey(VIRTUAL_KEY(8))]
+    engine::scenarios::held_hold_binding_with_repeating_action_fires_once_across_many_repeats
+test result: FAILED. 386 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.84s
+=== mutant line 422: if was_repeat && !binding.repeat {
+exit 101
+thread 'engine::scenarios::deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat' (1380) panicked at src\engine\scenarios.rs:1864:10:
+thread 'engine::scenarios::tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release' (9596) panicked at src\engine\scenarios.rs:356:6:
+    engine::scenarios::deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat
+    engine::scenarios::tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release
+test result: FAILED. 385 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.83s
+=== mutant line 448: if was_repeat && !binding.repeat {
+exit 101
+thread 'engine::scenarios::deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat' (18192) panicked at src\engine\scenarios.rs:1888:5:
+    engine::scenarios::deferred_sequence_and_chord_bindings_never_fire_on_auto_repeat
+test result: FAILED. 386 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.85s
+=== mutant line 464: if was_repeat && !binding.repeat {
+exit 101
+thread 'engine::scenarios::a_repeat_of_a_sequence_step_does_not_count_as_the_next_step' (8720) panicked at src\engine\scenarios.rs:1966:5:
+    engine::scenarios::a_repeat_of_a_sequence_step_does_not_count_as_the_next_step
+test result: FAILED. 386 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.79s
+=== mutant line 489: if was_repeat && !binding.repeat {
+exit 101
+thread 'engine::scenarios::repeats_of_both_chord_keys_do_not_complete_the_chord_again' (23072) panicked at src\engine\scenarios.rs:1998:6:
+    engine::scenarios::repeats_of_both_chord_keys_do_not_complete_the_chord_again
+test result: FAILED. 386 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.83s
+=== mutant line 434 guard deleted: if false {
+exit 101
+    engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed
+    engine::scenarios::held_hold_binding_with_repeating_action_fires_once_across_many_repeats
+test result: FAILED. 385 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.84s

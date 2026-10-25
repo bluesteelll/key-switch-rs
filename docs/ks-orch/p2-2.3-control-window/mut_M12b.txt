@@ -1,0 +1,22 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.98s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::main_thread::tests::a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain ... FAILED
+
+failures:
+
+---- hook::main_thread::tests::a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain stdout ----
+
+thread 'hook::main_thread::tests::a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain' (19496) panicked at src\hook\main_thread.rs:1620:9:
+a drain with remapping off logs and resets nothing: ["2026-10-19T07:07:53.568Z [INFO] session locked\n", "2026-10-19T07:07:53.568Z [INFO] state reset: keyboard input left this desktop\n"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::main_thread::tests::a_signal_noted_before_remapping_went_off_is_dropped_by_the_drain
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 683 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

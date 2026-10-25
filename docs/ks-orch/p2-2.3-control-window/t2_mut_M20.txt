@@ -1,0 +1,30 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.66s
+     Running unittests src\lib.rs (target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test engine::scenarios::win_alt_t_held_across_a_focus_change_does_not_launch_again_on_its_repeats ... FAILED
+
+failures:
+
+---- engine::scenarios::win_alt_t_held_across_a_focus_change_does_not_launch_again_on_its_repeats stdout ----
+
+thread 'engine::scenarios::win_alt_t_held_across_a_focus_change_does_not_launch_again_on_its_repeats' (9384) panicked at src\engine\scenarios.rs:1938:10:
+scenario: repeat T at +500 ms: expected to fire [], fired [Launch { exe: "wt.exe", args: [] }]
+transcript:
+  down Win at +0 ms: passed, fired []
+  down Alt at +0 ms: passed, fired []
+  down T at +0 ms: suppressed, masked, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat T at +500 ms: suppressed, masked, fired [Launch { exe: "wt.exe", args: [] }]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    engine::scenarios::win_alt_t_held_across_a_focus_change_does_not_launch_again_on_its_repeats
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 685 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

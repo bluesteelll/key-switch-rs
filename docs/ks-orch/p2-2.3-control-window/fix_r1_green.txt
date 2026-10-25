@@ -1,0 +1,19 @@
+   Compiling key-switch-rs v0.1.0 (D:\key-switch-rs\key-switch-rs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.82s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 11 tests
+test hook::config_watcher::tests::a_root_path_has_no_watch_target ... ok
+test hook::config_watcher::tests::other_files_and_other_event_kinds_do_not_match ... ok
+test hook::config_watcher::tests::an_event_matches_the_config_file_name_in_any_case ... ok
+test hook::config_watcher::tests::same_file_name_ignores_case_like_the_file_system ... ok
+test hook::config_watcher::tests::an_event_for_a_relative_config_path_matches ... ok
+test hook::config_watcher::tests::the_watcher_thread_has_no_panic_path ... ok
+test hook::config_watcher::tests::a_deleted_config_keeps_the_live_bindings ... ok
+test hook::config_watcher::tests::a_save_with_a_misspelled_field_keeps_the_live_bindings ... ok
+test hook::config_watcher::tests::a_reload_error_is_logged_with_a_timestamp ... ok
+test hook::config_watcher::tests::a_spawned_watcher_reloads_a_path_whose_case_differs_from_the_file ... ok
+test hook::config_watcher::tests::a_spawned_watcher_keeps_the_bindings_when_the_file_is_deleted ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 1.81s
+

@@ -1,0 +1,135 @@
+architecture.md:26 [src/engine/mod.rs:1-251] src/engine/mod.rs#L1-251
+    first: //! The decision core: given one keyboard event, the binding list and an
+    last : #![forbid(unsafe_code)]
+architecture.md:127 [src/hook/main_thread.rs:1-73] src/hook/main_thread.rs#L1-73
+    first: //! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
+    last : //! engine as `swch on` does and keeps the running macros.
+architecture.md:176 [src/hook/watchdog/mod.rs:1-63] src/hook/watchdog/mod.rs#L1-63
+    first: //! The hook watchdog (roadmap item 2.4, KS-08): it finds a keyboard hook
+    last : //! outlives the count of its batch.
+architecture.md:188 [src/hook/main_thread.rs:276-308] src/hook/main_thread.rs#L276-308
+    first: /// What the main thread owns: the engine and its gesture timers.
+    last : }
+architecture.md:192 [src/hook/keyboard_hook_callback.rs:94-131] src/hook/keyboard_hook_callback.rs#L94-131
+    first: //! # Re-entry
+    last : //! (`platform::foreground`).
+architecture.md:193 [src/hook/main_thread.rs:591-699] src/hook/main_thread.rs#L591-699
+    first: /// How another thread reaches the main thread: the IPC connection workers,
+    last : }
+architecture.md:196 [src/hook/main_thread.rs:777-861] src/hook/main_thread.rs#L777-861
+    first: /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
+    last : }
+architecture.md:203 [src/platform/timers.rs:1-12] src/platform/timers.rs#L1-12
+    first: //! A waitable timer for a thread that waits for its own deadlines: the
+    last : //! about 15.6 ms apart.
+architecture.md:211 [src/engine/mod.rs:704-763] src/engine/mod.rs#L704-763
+    first: /// Starts over for `reason` (roadmap item 2.3; KS-31).
+    last : }
+architecture.md:211 [src/engine/keys.rs:161-202] src/engine/keys.rs#L161-202
+    first: /// Rebuilds the table from the OS key state, after remapping was
+    last : }
+architecture.md:222 [src/hook/health.rs:11-68] src/hook/health.rs#L11-68
+    first: /// The heartbeat, alone on its cache line: the main thread writes it at
+    last : }
+architecture.md:228 [src/hook/keyboard_hook_callback.rs:394-457] src/hook/keyboard_hook_callback.rs#L394-457
+    first: pub(crate) unsafe extern "system" fn keyboard_hook_callback(
+    last : }
+architecture.md:228 [src/hook/keyboard_hook_callback.rs:1-64] src/hook/keyboard_hook_callback.rs#L1-64
+    first: //! The hook adapter: where Win32 keyboard events meet the decision core in
+    last : //!
+architecture.md:233 [L417-L421] src/hook/keyboard_hook_callback.rs#L417-421
+    first: // Our own work only: from here until the decision is carried out, not
+    last : let started = Instant::now();
+architecture.md:233 [L438] src/hook/keyboard_hook_callback.rs#L438-438
+    first: let ran = started.elapsed();
+    last : let ran = started.elapsed();
+architecture.md:234 [src/hook/keyboard_hook_callback.rs:240-249] src/hook/keyboard_hook_callback.rs#L240-249
+    first: pub(super) fn decide_event(
+    last : }
+architecture.md:234 [L425-L430] src/hook/keyboard_hook_callback.rs#L425-430
+    first: let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    last : let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+architecture.md:236 [src/hook/keyboard_hook_callback.rs:232-296] src/hook/keyboard_hook_callback.rs#L232-296
+    first: /// Asks the engine about one hook event, on this thread's main state, and
+    last : }
+architecture.md:237 [src/engine/modifiers.rs:13-28] src/engine/modifiers.rs#L13-28
+    first: /// The modifier codes the engine keeps flags for: both sides of Shift, Ctrl,
+    last : ];
+architecture.md:242 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+architecture.md:246 [L920-L956] src/engine/mod.rs#L920-956
+    first: if was_repeat {
+    last : }
+architecture.md:247 [src/engine/mod.rs:961-1009] src/engine/mod.rs#L961-1009
+    first: fn on_key_up(&mut self, vk: VIRTUAL_KEY, env: &dyn Env) -> Decision {
+    last : }
+architecture.md:248 [src/engine/keys.rs:298-309] src/engine/keys.rs#L298-309
+    first: /// Whether Windows has an Alt or Win key down: one is held and its
+    last : }
+architecture.md:296 [src/hook/keyboard_hook_callback.rs:475-503] src/hook/keyboard_hook_callback.rs#L475-503
+    first: /// Foreground-window-change callback installed via `SetWinEventHook`. The
+    last : }
+architecture.md:296 [src/hook/main_thread.rs:358-365] src/hook/main_thread.rs#L358-365
+    first: /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
+    last : }
+architecture.md:296 [src/engine/mod.rs:642-659] src/engine/mod.rs#L642-659
+    first: /// The foreground window changed. Key events may have gone past the
+    last : }
+architecture.md:360 [src/hook/health.rs:17-45] src/hook/health.rs#L17-45
+    first: /// What the hooks and the watchdog share about the keyboard hook's health:
+    last : }
+architecture.md:361 [src/hook/main_thread.rs:112-114] src/hook/main_thread.rs#L112-114
+    first: thread_local! {
+    last : static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+architecture.md:372 [src/engine/mod.rs:508-521] src/engine/mod.rs#L508-521
+    first: /// The decision core. See the [module documentation](self).
+    last : }
+architecture.md:376 [src/engine/keys.rs:54-86] src/engine/keys.rs#L54-86
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+architecture.md:392 [src/engine/keys.rs:1-32] src/engine/keys.rs#L1-32
+    first: //! Per-key state: which keys the engine believes are held, and whether each
+    last : //! next key-down or its key-up replaces it.
+architecture.md:401 [src/engine/keys.rs:54-71] src/engine/keys.rs#L54-71
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+architecture.md:417 [src/engine/env.rs:9-66] src/engine/env.rs#L9-66
+    first: /// Everything the engine needs to know about the world outside the event it
+    last : }
+build-and-run.md:147 [writer.rs:228-241] src/logging/writer.rs#L228-241
+    first: /// One line with the counts since the last report, if any is non-zero,
+    last : }
+glossary.md:131 [src/logging/counters.rs:1-70] src/logging/counters.rs#L1-70
+    first: //! Counts of the diagnostics that must not be logged where they happen.
+    last : }
+glossary.md:169 [src/hook/keyboard_hook_callback.rs:246-249] src/hook/keyboard_hook_callback.rs#L246-249
+    first: if constants::is_injected_event(extra_info) {
+    last : }
+glossary.md:237 [src/engine/matching.rs:33-50] src/engine/matching.rs#L33-50
+    first: /// The keys the engine believes are held, asked one [`KeySpec`] at a time.
+    last : }
+glossary.md:241 [src/hook/health.rs:11-73] src/hook/health.rs#L11-73
+    first: /// The heartbeat, alone on its cache line: the main thread writes it at
+    last : }
+glossary.md:493 [src/engine/mod.rs:920-1009] src/engine/mod.rs#L920-1009
+    first: if was_repeat {
+    last : }
+glossary.md:573 [src/hook/keyboard_hook_callback.rs:475-547] src/hook/keyboard_hook_callback.rs#L475-547
+    first: /// Foreground-window-change callback installed via `SetWinEventHook`. The
+    last : }
+overview.md:16 [src/hook/keyboard_hook_callback.rs:394-547] src/hook/keyboard_hook_callback.rs#L394-547
+    first: pub(crate) unsafe extern "system" fn keyboard_hook_callback(
+    last : }
+overview.md:19 [src/engine/matching.rs:57-106] src/engine/matching.rs#L57-106
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+config/kinds.md:26 [src/engine/mod.rs:765-959] src/engine/mod.rs#L765-959
+    first: fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
+    last : }
+config/kinds.md:162 [src/engine/mod.rs:205-233] src/engine/mod.rs#L205-233
+    first: //! 5. A first key-down is suppressed if anything asked for it, and the key
+    last : //! (rule L, the KS-06 status).
+config/matching.md:121 [src/engine/mod.rs:544-572] src/engine/mod.rs#L544-572
+    first: pub fn on_key(&mut self, event: KeyEvent, bindings: &[Binding], env: &dyn Env) -> Decision {
+    last : }

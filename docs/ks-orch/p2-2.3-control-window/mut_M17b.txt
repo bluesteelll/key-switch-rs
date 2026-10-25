@@ -1,0 +1,24 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.20s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops ... FAILED
+
+failures:
+
+---- hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops stdout ----
+
+thread 'hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops' (19984) panicked at src\hook\main_thread.rs:1096:9:
+assertion `left == right` failed: only the Hold is dropped
+  left: 3
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 684 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

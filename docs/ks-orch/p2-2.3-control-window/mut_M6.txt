@@ -1,0 +1,24 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.09s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::keyboard_hook_callback::tests::a_desktop_switch_is_classified_by_where_input_is ... FAILED
+
+failures:
+
+---- hook::keyboard_hook_callback::tests::a_desktop_switch_is_classified_by_where_input_is stdout ----
+
+thread 'hook::keyboard_hook_callback::tests::a_desktop_switch_is_classified_by_where_input_is' (456) panicked at src\hook\keyboard_hook_callback.rs:1072:9:
+assertion `left == right` failed
+  left: Signal(DesktopSwitchedAway)
+ right: Signal(DesktopSwitchedBack)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::keyboard_hook_callback::tests::a_desktop_switch_is_classified_by_where_input_is
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 682 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

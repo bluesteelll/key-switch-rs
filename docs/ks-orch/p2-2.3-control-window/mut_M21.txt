@@ -1,0 +1,67 @@
+   Compiling windows-link v0.2.1
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling libc v0.2.186
+   Compiling rustversion v1.0.22
+   Compiling serde v1.0.228
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+   Compiling base64 v0.22.1
+   Compiling log v0.4.29
+   Compiling widestring v1.2.1
+   Compiling recvmsg v1.0.0
+   Compiling doctest-file v1.1.1
+   Compiling windows-sys v0.61.2
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling windows-threading v0.2.1
+   Compiling windows-targets v0.53.5
+   Compiling windows-sys v0.60.2
+   Compiling arc-swap v1.9.1
+   Compiling syn v2.0.117
+   Compiling winapi-util v0.1.11
+   Compiling interprocess v2.4.2
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling bitflags v2.11.1
+   Compiling notify-types v2.1.0
+   Compiling notify v8.2.0
+   Compiling windows-interface v0.59.3
+   Compiling windows-implement v0.60.2
+   Compiling serde_derive v1.0.228
+   Compiling windows-core v0.62.2
+   Compiling windows-collections v0.3.2
+   Compiling windows-numerics v0.3.1
+   Compiling windows-future v0.3.2
+   Compiling windows v0.62.2
+   Compiling ron v0.10.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.01s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test engine::scenarios::a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down ... FAILED
+
+failures:
+
+---- engine::scenarios::a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down stdout ----
+
+thread 'engine::scenarios::a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down' (11496) panicked at src\engine\scenarios.rs:1001:10:
+scenario: down F13 at +381 ms: expected to fire [SwitchLanguage], fired []
+transcript:
+  down F13 at +0 ms: suppressed, fired []
+  advance 80 ms to +80 ms: -, fired []
+  up F13 at +80 ms: suppressed, fired []
+  advance 301 ms to +381 ms, timers stalled: -, fired []
+  down F13 at +381 ms: suppressed, fired []
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    engine::scenarios::a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 685 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

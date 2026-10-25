@@ -1,0 +1,2 @@
+    Checking key-switch-rs v0.1.0 (D:\key-switch-rs\key-switch-rs)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.60s

@@ -1,0 +1,668 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p0-A3-suppression\analyst-master)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.62s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p0-A3-suppression/analyst-target-master\debug\deps\key_switch_rs-9c8e127322721cde.exe)
+
+running 142 tests
+test engine::chords::tests::second_chord_key_after_window_starts_over ... ok
+test engine::chords::tests::first_chord_key_arms_pending ... ok
+test engine::gestures::tests::arm_hold_inserts_then_cancel_removes ... ok
+test engine::chords::tests::second_chord_key_within_window_completes ... ok
+test engine::chords::tests::completed_reports_the_pressed_codes ... ok
+test engine::gestures::tests::double_tap_third_press_arms_fresh_pending ... ok
+test engine::chords::tests::third_chord_key_starts_fresh_after_completion ... ok
+test engine::chords::tests::unsided_shift_chord_completes_with_either_shift ... ok
+test engine::chords::tests::canonical_order_independent ... ok
+test engine::gestures::tests::arm_tap_inserts_then_resolve_removes ... ok
+test engine::gestures::tests::cancel_hold_with_no_pending_returns_false ... ok
+test engine::gestures::tests::double_tap_after_the_term_arms_again ... ok
+test engine::gestures::tests::double_tap_fires_the_first_press_action ... ok
+test engine::gestures::tests::double_tap_first_press_arms_second_press_fires ... ok
+test engine::chords::tests::vk_not_in_chord_returns_not_in_chord ... ok
+test engine::gestures::tests::auto_repeat_keydown_does_not_stack ... ok
+test engine::gestures::tests::expired_tap_is_replaced_by_the_next_arm ... ok
+test engine::gestures::tests::forgotten_hold_never_fires_and_frees_its_key ... ok
+test engine::gestures::tests::hold_left_to_its_timer_does_not_block_a_new_arm ... ok
+test engine::gestures::tests::hold_released_at_or_after_its_due_is_left_to_its_timer ... ok
+test engine::gestures::tests::hold_timer_fires_its_own_entry_once ... ok
+test engine::gestures::tests::resolve_tap_with_no_pending_returns_none ... ok
+test engine::gestures::tests::stale_hold_timer_does_not_fire_a_newer_press ... ok
+test engine::gestures::tests::tap_and_hold_pending_simultaneously_on_same_key ... ok
+test engine::gestures::tests::tap_released_at_or_after_its_term_does_not_fire ... ok
+test engine::keys::tests::any_side_is_down_for_either_side_or_the_generic_slot ... ok
+test engine::keys::tests::blocked_flags_are_independent ... ok
+test engine::keys::tests::clear_all_keeps_passed_key_downs ... ok
+test engine::keys::tests::clear_all_resets_every_flag ... ok
+test engine::keys::tests::is_blocked_reads_without_clearing ... ok
+test engine::keys::tests::latest_key_down_replaces_the_record_and_take_forgets_it ... ok
+test engine::keys::tests::out_of_range_codes_are_ignored ... ok
+test engine::keys::tests::second_press_is_a_repeat_until_release ... ok
+test engine::keys::tests::sided_key_is_down_only_on_its_side ... ok
+test engine::keys::tests::sync_overwrites_modifiers_except_the_skipped_key ... ok
+test engine::matching::tests::allow_extra_modifiers_accepts_a_superset ... ok
+test engine::matching::tests::either_side_of_a_family_counts_once ... ok
+test engine::matching::tests::exact_modifiers_reject_an_extra_family ... ok
+test engine::matching::tests::keys_down_needs_every_key_on_its_side ... ok
+test engine::matching::tests::modifier_only_combo_is_exact_too ... ok
+test engine::matching::tests::modifier_only_combo_triggers_on_any_of_its_keys ... ok
+test engine::matching::tests::sided_trigger_needs_its_side ... ok
+test engine::matching::tests::trigger_key_is_a_non_modifier_key_of_the_combo ... ok
+test engine::scenarios::auto_blocker_matches_its_modifiers_exactly ... ok
+test engine::scenarios::allow_extra_modifiers_lets_capslock_fire_while_shift_is_held ... ok
+test engine::scenarios::allow_extra_modifiers_lets_ctrl_j_fire_on_ctrl_shift_j ... ok
+test engine::scenarios::block_default_false_fires_and_lets_both_edges_through ... ok
+test engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows ... ok
+test engine::scenarios::capslock_binding_does_not_fire_while_shift_is_held ... ok
+test engine::scenarios::chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key ... ok
+test engine::scenarios::chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed ... FAILED
+test engine::scenarios::alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier ... FAILED
+test engine::scenarios::a_failed_expectation_panics - should panic ... ok
+test engine::scenarios::chord_fires_when_all_keys_go_down_within_its_window ... ok
+test engine::scenarios::chord_keys_can_go_down_in_any_order ... ok
+test engine::scenarios::chord_does_not_fire_once_its_window_has_passed ... ok
+test engine::scenarios::combo_does_not_fire_without_all_of_its_keys ... ok
+test engine::scenarios::context_is_printed_with_a_failure - should panic ... ok
+test engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed ... FAILED
+test engine::scenarios::chord_keys_held_past_the_repeat_delay_swallow_their_repeats_too ... ok
+test engine::scenarios::ctrl_j_does_not_fire_on_ctrl_shift_j ... ok
+test engine::scenarios::deferred_binding_arms_while_shift_is_held_with_allow_extra_modifiers ... ok
+test engine::scenarios::ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift ... FAILED
+test engine::scenarios::deferred_binding_does_not_arm_while_shift_is_held ... ok
+test engine::scenarios::deferred_combo_arms_only_on_its_trigger_key ... ok
+test engine::properties::every_press_is_suppressed_or_passed_as_a_whole ... FAILED
+test engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed ... FAILED
+test engine::scenarios::double_tap_fires_on_the_second_press_within_its_term ... ok
+test engine::scenarios::double_tap_lshift_held_past_the_repeat_delay_swallows_its_repeats_too ... ok
+test engine::scenarios::double_tap_second_press_after_the_term_arms_again ... ok
+test engine::scenarios::either_shift_counts_as_the_same_modifier ... ok
+test engine::scenarios::first_binding_whose_condition_holds_wins_on_a_shared_key ... ok
+test engine::scenarios::foreground_change_forgets_pending_key_up_suppression ... ok
+test engine::scenarios::equal_tap_and_hold_terms_with_a_late_timer_fire_exactly_one ... ok
+test engine::scenarios::four_quick_presses_double_tap_twice ... ok
+test engine::scenarios::hold_fires_once_its_term_passes_while_held ... ok
+test engine::scenarios::hold_left_to_a_late_timer_does_not_block_the_next_press ... ok
+test engine::scenarios::hold_released_after_its_term_fires_when_its_late_timer_wakes ... ok
+test engine::scenarios::hold_released_before_its_term_with_a_late_timer_is_cancelled ... ok
+test engine::scenarios::hold_released_early_is_cancelled ... ok
+test engine::scenarios::hold_whose_timer_cannot_start_never_fires ... ok
+test engine::scenarios::immediate_combo_fires_on_its_last_key_and_lets_the_modifiers_through ... ok
+test engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed ... FAILED
+test engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_suppressed ... ok
+test engine::scenarios::immediate_combo_that_stops_matching_mid_hold_keeps_its_key_suppressed_once ... ok
+test engine::scenarios::immediate_single_key_fires_on_down_and_swallows_both_edges ... ok
+test engine::scenarios::key_outside_the_chord_passes ... ok
+test engine::scenarios::key_pressed_while_a_tap_hold_key_is_held_passes_and_arms_nothing ... ok
+test engine::scenarios::key_pressed_while_an_immediate_binding_key_is_held_passes ... ok
+test engine::scenarios::key_up_of_a_suppressed_press_is_suppressed_only_once ... ok
+test engine::scenarios::lshift_double_tap_fires_only_for_the_left_shift ... ok
+test engine::scenarios::lshift_in_keys_fires_only_for_the_left_shift ... ok
+test engine::scenarios::modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed ... FAILED
+test engine::scenarios::modifier_lost_by_the_os_is_resynced_before_matching ... ok
+test engine::scenarios::modifier_pressed_last_does_not_fire_a_combo ... ok
+test engine::scenarios::modifier_pressed_while_capslock_is_held_does_not_fire_shift_capslock ... ok
+test engine::scenarios::more_specific_immediate_binding_wins ... ok
+test engine::scenarios::nothing_stuck_holds_for_a_plain_press_and_an_unseen_release ... ok
+test engine::scenarios::press_after_a_lost_key_up_and_a_focus_change_follows_its_binding ... ok
+test engine::scenarios::one_long_press_of_shift_does_not_fire_its_double_tap ... FAILED
+test engine::scenarios::press_key_fires_again_on_auto_repeat_and_the_repeats_stay_suppressed ... ok
+test engine::scenarios::releasing_a_key_that_is_up_is_a_script_error - should panic ... ok
+test engine::scenarios::press_symmetry_check_reports_a_key_up_that_differs_from_its_key_down - should panic ... ok
+test engine::scenarios::press_symmetry_check_reports_a_repeat_that_differs_from_its_key_down - should panic ... ok
+test engine::scenarios::repeat_of_a_key_whose_down_passed_is_passed_across_a_focus_change ... ok
+test engine::scenarios::repeat_of_a_key_whose_down_passed_is_passed_and_so_is_its_key_up ... ok
+test engine::scenarios::right_hand_modifiers_match_unsided_combo_keys ... ok
+test engine::scenarios::repeat_of_a_suppressed_key_is_suppressed_after_its_hold_fired ... ok
+test engine::scenarios::rwin_and_lwin_in_keys_fire_only_for_their_side ... ok
+test engine::scenarios::sequence_broken_by_another_key_does_not_fire ... ok
+test engine::scenarios::sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed ... FAILED
+test engine::scenarios::sequence_fires_when_its_steps_follow_within_max_gap ... ok
+test engine::scenarios::sequence_times_out_after_max_gap ... ok
+test engine::scenarios::shift_capslock_fires_toggle_capslock_with_either_shift ... ok
+test engine::scenarios::shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press ... FAILED
+test engine::scenarios::sequence_with_a_modifier_held_through_both_steps ... ok
+test engine::scenarios::shift_held_by_a_double_tap_still_counts_for_shift_capslock ... FAILED
+test engine::scenarios::sided_shift_in_a_chord_is_only_its_side ... ok
+test engine::scenarios::sided_shift_in_a_sequence_step_matches_only_its_side ... ok
+test engine::scenarios::stale_hold_timer_does_not_fire_the_next_press_early ... ok
+test engine::scenarios::suppressed_modifier_stays_an_auto_repeat_across_a_focus_change ... FAILED
+test engine::scenarios::tap_fires_on_a_release_within_its_term ... ok
+test engine::scenarios::tap_held_past_its_term_fires_nothing_and_swallows_the_release ... ok
+test engine::scenarios::tap_and_hold_with_equal_terms_fire_exactly_one ... ok
+test engine::scenarios::tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release ... ok
+test engine::scenarios::two_quick_taps_fire_twice ... ok
+test engine::scenarios::unbound_key_passes_through ... ok
+test engine::scenarios::unsided_shift_and_win_in_keys_fire_for_either_side ... ok
+test engine::scenarios::unsided_shift_in_a_chord_fires_for_either_side ... ok
+test engine::scenarios::when_app_equals_matches_the_foreground_app_case_insensitively ... ok
+test engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_suppressed ... ok
+test engine::sequences::tests::ctrl_x_ctrl_s_sequence ... ok
+test engine::sequences::tests::each_step_restarts_the_gap ... ok
+test engine::scenarios::when_title_contains_and_not_conditions ... ok
+test engine::scenarios::win_in_the_last_sequence_step_does_not_swallow_its_key_up ... ok
+test engine::sequences::tests::first_step_match_advances ... ok
+test engine::sequences::tests::mismatched_intermediate_aborts ... ok
+test engine::sequences::tests::second_step_completes_sequence ... ok
+test engine::sequences::tests::sided_step_needs_its_side ... ok
+test engine::sequences::tests::step_after_max_gap_does_not_complete ... ok
+test engine::tests::forget_timer_makes_a_late_timer_fire_nothing ... ok
+test engine::properties::nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups ... FAILED
+
+failures:
+
+---- engine::scenarios::chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed stdout ----
+
+thread 'engine::scenarios::chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed' (20812) panicked at src\engine\scenarios.rs:1875:6:
+scenario: up J at +0 ms: VK 0x4A is down in Windows but physically up
+transcript:
+  down J at +0 ms: suppressed, fired []
+  up J at +0 ms: suppressed, fired []
+  down J at +0 ms: passed, fired []
+  down K at +0 ms: suppressed, fired [SwitchLanguage]
+  up K at +0 ms: suppressed, fired []
+  up J at +0 ms: suppressed, fired []
+
+
+---- engine::scenarios::alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier stdout ----
+
+thread 'engine::scenarios::alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier' (29424) panicked at src\engine\scenarios.rs:1532:10:
+scenario: down X at +0 ms: expected the event to be suppressed, it was passed
+transcript:
+  down LAlt at +0 ms: passed, fired []
+  down LShift at +0 ms: suppressed, fired [DoNothing]
+  down X at +0 ms: passed, fired []
+
+
+---- engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed stdout ----
+
+thread 'engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed' (37736) panicked at src\engine\scenarios.rs:1747:6:
+scenario: repeat K at +500 ms: expected the event to be suppressed, it was passed
+transcript:
+  down J at +0 ms: suppressed, fired []
+  advance 20 ms to +20 ms: -, fired []
+  down K at +20 ms: suppressed, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +20 ms: -, fired []
+  advance 480 ms to +500 ms: -, fired []
+  repeat K at +500 ms: passed, fired []
+
+
+---- engine::scenarios::ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift stdout ----
+
+thread 'engine::scenarios::ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift' (18552) panicked at src\engine\scenarios.rs:1635:6:
+scenario: repeat LShift at +500 ms: expected the event to be suppressed, it was passed
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  advance 20 ms to +20 ms: -, fired []
+  down LShift at +20 ms: suppressed, fired []
+  advance 100 ms to +120 ms: -, fired []
+  up LCtrl at +120 ms: passed, fired []
+  advance 380 ms to +500 ms: -, fired []
+  repeat LShift at +500 ms: passed, fired []
+
+
+---- engine::properties::every_press_is_suppressed_or_passed_as_a_whole stdout ----
+
+thread 'engine::properties::every_press_is_suppressed_or_passed_as_a_whole' (28884) panicked at src\engine\properties.rs:162:37:
+scenario: repeat LAlt at +3079 ms: press of LAlt: key-down suppressed, repeat passed
+context: config default, seed 0, Strict mode
+transcript:
+  down LShift at +0 ms: passed, fired []
+  up LShift at +0 ms: passed, fired []
+  down LAlt at +0 ms: passed, fired []
+  down J at +0 ms: passed, fired []
+  advance 0 ms to +0 ms, timers stalled: -, fired []
+  down Space at +0 ms: passed, fired []
+  up LAlt at +0 ms: passed, fired []
+  down F13 at +0 ms: passed, fired []
+  down LCtrl at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  up F13 at +500 ms: passed, fired []
+  down LShift at +500 ms: passed, fired []
+  repeat Space at +500 ms: passed, fired []
+  up LShift at +500 ms: passed, fired []
+  up J at +500 ms: passed, fired []
+  repeat Space at +500 ms: passed, fired []
+  up Space at +500 ms: passed, fired []
+  up LCtrl at +500 ms: passed, fired []
+  down F13 at +500 ms: passed, fired []
+  advance 200 ms to +700 ms: -, fired []
+  advance 250 ms to +950 ms: -, fired []
+  up F13 at +950 ms: passed, fired []
+  down F15 at +950 ms: passed, fired []
+  down K at +950 ms: passed, fired []
+  repeat F15 at +950 ms: passed, fired []
+  advance 199 ms to +1149 ms: -, fired []
+  down RShift at +1149 ms: passed, fired []
+  up K at +1149 ms: passed, fired []
+  down CapsLock at +1149 ms: suppressed, fired [ToggleCapsLock]
+  down LCtrl at +1149 ms: passed, fired []
+  advance 49 ms to +1198 ms, timers stalled: -, fired []
+  up F15 at +1198 ms: passed, fired []
+  down F16 at +1198 ms: passed, fired []
+  down LShift at +1198 ms: passed, fired []
+  down LAlt at +1198 ms: passed, fired []
+  repeat F16 at +1198 ms: passed, fired []
+  down K at +1198 ms: passed, fired []
+  up LShift at +1198 ms: passed, fired []
+  up LCtrl at +1198 ms: passed, fired []
+  advance 1 ms to +1199 ms: -, fired []
+  up LAlt at +1199 ms: passed, fired []
+  down LShift at +1199 ms: passed, fired []
+  down A at +1199 ms: passed, fired []
+  advance 199 ms to +1398 ms: -, fired []
+  up LShift at +1398 ms: passed, fired []
+  down Space at +1398 ms: passed, fired []
+  advance 201 ms to +1599 ms: -, fired []
+  advance 200 ms to +1799 ms: -, fired []
+  down LAlt at +1799 ms: suppressed, fired [DoNothing]
+  advance 33 ms to +1832 ms: -, fired []
+  advance 199 ms to +2031 ms: -, fired []
+  advance 1 ms to +2032 ms: -, fired []
+  up K at +2032 ms: passed, fired []
+  up LAlt at +2032 ms: suppressed, fired []
+  advance 500 ms to +2532 ms: -, fired []
+  repeat A at +2532 ms: passed, fired []
+  advance 50 ms to +2582 ms: -, fired []
+  up Space at +2582 ms: passed, fired []
+  down F13 at +2582 ms: passed, fired []
+  down Space at +2582 ms: passed, fired []
+  up Space at +2582 ms: passed, fired []
+  advance 50 ms to +2632 ms, timers stalled: -, fired []
+  down F14 at +2632 ms: passed, fired []
+  down LShift at +2632 ms: passed, fired []
+  advance 199 ms to +2831 ms, timers stalled: -, fired []
+  repeat F16 at +2831 ms: passed, fired []
+  down F15 at +2831 ms: passed, fired []
+  down Space at +2831 ms: passed, fired []
+  advance 49 ms to +2880 ms: -, fired []
+  down LAlt at +2880 ms: suppressed, fired [DoNothing]
+  repeat F13 at +2880 ms: passed, fired []
+  up F14 at +2880 ms: passed, fired []
+  down LCtrl at +2880 ms: passed, fired []
+  advance 199 ms to +3079 ms: -, fired []
+  up F15 at +3079 ms: passed, fired []
+  repeat LAlt at +3079 ms: passed, fired []
+
+
+---- engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed stdout ----
+
+thread 'engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed' (11348) panicked at src\engine\scenarios.rs:1775:6:
+scenario: repeat CapsLock at +500 ms: expected the event to be suppressed, it was passed
+transcript:
+  down CapsLock at +0 ms: suppressed, fired []
+  advance 300 ms to +300 ms: -, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +300 ms: -, fired []
+  advance 200 ms to +500 ms: -, fired []
+  repeat CapsLock at +500 ms: passed, fired []
+
+
+---- engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed stdout ----
+
+thread 'engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed' (14464) panicked at src\engine\scenarios.rs:1817:10:
+scenario: repeat F13 at +500 ms: expected the event to be suppressed, it was passed
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  down F13 at +0 ms: suppressed, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +0 ms: -, fired []
+  up LCtrl at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat F13 at +500 ms: passed, fired []
+
+
+---- engine::scenarios::modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed stdout ----
+
+thread 'engine::scenarios::modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed' (27304) panicked at src\engine\scenarios.rs:1905:10:
+scenario: repeat LShift at +533 ms: expected the event to be passed, it was suppressed
+transcript:
+  down LCtrl unseen by the hook at +0 ms: -, fired []
+  down LAlt unseen by the hook at +0 ms: -, fired []
+  down A unseen by the hook at +0 ms: -, fired []
+  down LShift unseen by the hook at +0 ms: -, fired []
+  up A at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat LShift at +500 ms: passed, fired []
+  up LCtrl at +500 ms: passed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat LShift at +533 ms: suppressed, fired [DoNothing]
+
+
+---- engine::scenarios::one_long_press_of_shift_does_not_fire_its_double_tap stdout ----
+
+thread 'engine::scenarios::one_long_press_of_shift_does_not_fire_its_double_tap' (30940) panicked at src\engine\scenarios.rs:1605:6:
+scenario: repeat LShift at +500 ms: expected to fire [], fired [ToggleCapsLock]
+transcript:
+  down A at +0 ms: passed, fired []
+  advance 10 ms to +10 ms: -, fired []
+  down LShift at +10 ms: suppressed, fired []
+  advance 10 ms to +20 ms: -, fired []
+  up A at +20 ms: passed, fired []
+  advance 480 ms to +500 ms: -, fired []
+  repeat LShift at +500 ms: suppressed, fired [ToggleCapsLock]
+
+
+---- engine::scenarios::sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed stdout ----
+
+thread 'engine::scenarios::sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed' (28548) panicked at src\engine\scenarios.rs:1846:6:
+scenario: up F14 at +0 ms: VK 0x7D is down in Windows but physically up
+transcript:
+  down F14 at +0 ms: passed, fired []
+  down F15 at +0 ms: suppressed, fired []
+  up F15 at +0 ms: suppressed, fired []
+  down F16 at +0 ms: suppressed, fired [SwitchLanguage]
+  up F16 at +0 ms: suppressed, fired []
+  up F14 at +0 ms: suppressed, fired []
+
+
+---- engine::scenarios::shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press stdout ----
+
+thread 'engine::scenarios::shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press' (13080) panicked at src\engine\scenarios.rs:1665:10:
+scenario: repeat LShift at +500 ms: expected the event to be suppressed, it was passed
+transcript:
+  down LAlt at +0 ms: passed, fired []
+  down LShift at +0 ms: suppressed, fired [DoNothing]
+  up LAlt at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat LShift at +500 ms: passed, fired []
+
+
+---- engine::scenarios::shift_held_by_a_double_tap_still_counts_for_shift_capslock stdout ----
+
+thread 'engine::scenarios::shift_held_by_a_double_tap_still_counts_for_shift_capslock' (16768) panicked at src\engine\scenarios.rs:1577:10:
+scenario: down CapsLock at +50 ms: expected to fire [ToggleCapsLock], fired [SwitchLanguage]
+transcript:
+  down LShift at +0 ms: suppressed, fired []
+  advance 50 ms to +50 ms: -, fired []
+  down CapsLock at +50 ms: suppressed, fired [SwitchLanguage]
+
+
+---- engine::scenarios::suppressed_modifier_stays_an_auto_repeat_across_a_focus_change stdout ----
+
+thread 'engine::scenarios::suppressed_modifier_stays_an_auto_repeat_across_a_focus_change' (33520) panicked at src\engine\scenarios.rs:1722:6:
+scenario: repeat LShift at +500 ms: expected to fire [], fired [ToggleCapsLock]
+transcript:
+  down A at +0 ms: passed, fired []
+  down LShift at +0 ms: suppressed, fired []
+  foreground change at +0 ms: -, fired []
+  up A at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat LShift at +500 ms: suppressed, fired [ToggleCapsLock]
+
+
+---- engine::properties::nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups stdout ----
+
+thread 'engine::properties::nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups' (27356) panicked at src\engine\properties.rs:214:33:
+scenario: up LCtrl at +4114 ms: VK 0xA2 is down in Windows but physically up
+context: config gestures, seed 3, Focus mode
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  repeat LCtrl at +0 ms: passed, fired []
+  down J at +0 ms: passed, fired []
+  repeat J at +0 ms: passed, fired []
+  down LShift at +0 ms: suppressed, fired []
+  repeat LShift at +0 ms: suppressed, fired []
+  repeat LShift at +0 ms: suppressed, fired []
+  up LShift at +0 ms: suppressed, fired []
+  down A at +0 ms: passed, fired []
+  repeat A at +0 ms: passed, fired []
+  advance 50 ms to +50 ms: -, fired []
+  down CapsLock at +50 ms: passed, fired []
+  down K at +50 ms: passed, fired []
+  down F15 at +50 ms: passed, fired []
+  down Space at +50 ms: passed, fired []
+  advance 500 ms to +550 ms: -, fired []
+  up CapsLock at +550 ms: passed, fired []
+  repeat J at +550 ms: passed, fired []
+  repeat A at +550 ms: passed, fired []
+  down F16 at +550 ms: passed, fired []
+  down LShift at +550 ms: suppressed, fired []
+  repeat Space at +550 ms: passed, fired []
+  repeat K at +550 ms: passed, fired []
+  down RShift at +550 ms: suppressed, fired []
+  down LAlt at +550 ms: passed, fired []
+  down CapsLock at +550 ms: passed, fired []
+  down F14 at +550 ms: passed, fired []
+  up LAlt at +550 ms: passed, fired []
+  down LAlt at +550 ms: passed, fired []
+  up A at +550 ms: passed, fired []
+  down F13 at +550 ms: passed, fired []
+  down A at +550 ms: passed, fired []
+  repeat F16 at +550 ms: passed, fired []
+  repeat J at +550 ms: passed, fired []
+  up A at +550 ms: passed, fired []
+  down A at +550 ms: passed, fired []
+  repeat CapsLock at +550 ms: passed, fired []
+  up LShift at +550 ms: suppressed, fired []
+  repeat K at +550 ms: passed, fired []
+  down LShift at +550 ms: passed, fired []
+  up F14 at +550 ms: passed, fired []
+  advance 50 ms to +600 ms: -, fired []
+  down F14 at +600 ms: passed, fired []
+  repeat F15 at +600 ms: passed, fired []
+  repeat K at +600 ms: passed, fired []
+  repeat F15 at +600 ms: passed, fired []
+  advance 250 ms to +850 ms: -, fired []
+  repeat F13 at +850 ms: passed, fired []
+  repeat K at +850 ms: passed, fired []
+  repeat LAlt at +850 ms: passed, fired []
+  repeat A at +850 ms: passed, fired []
+  advance 500 ms to +1350 ms: -, fired []
+  repeat A at +1350 ms: passed, fired []
+  repeat F13 at +1350 ms: passed, fired []
+  repeat F16 at +1350 ms: passed, fired []
+  repeat LShift at +1350 ms: passed, fired []
+  up F16 at +1350 ms: passed, fired []
+  down F16 at +1350 ms: passed, fired []
+  up F14 at +1350 ms: passed, fired []
+  down F14 at +1350 ms: passed, fired []
+  up CapsLock at +1350 ms: passed, fired []
+  foreground change at +1350 ms: -, fired []
+  repeat F15 at +1350 ms: passed, fired []
+  down CapsLock at +1350 ms: passed, fired []
+  repeat F13 at +1350 ms: passed, fired []
+  repeat LShift at +1350 ms: passed, fired []
+  up J at +1350 ms: passed, fired []
+  advance 250 ms to +1600 ms, timers stalled: -, fired []
+  repeat LShift at +1600 ms: passed, fired []
+  up CapsLock at +1600 ms: passed, fired []
+  down J at +1600 ms: passed, fired []
+  repeat J at +1600 ms: passed, fired []
+  repeat RShift at +1600 ms: passed, fired []
+  up LAlt at +1600 ms: passed, fired []
+  repeat F14 at +1600 ms: passed, fired []
+  up F13 at +1600 ms: passed, fired []
+  advance 200 ms to +1800 ms: -, fired [SwitchLanguage]
+  down CapsLock at +1800 ms: passed, fired []
+  up CapsLock at +1800 ms: passed, fired []
+  repeat K at +1800 ms: passed, fired []
+  down LAlt at +1800 ms: passed, fired []
+  repeat F16 at +1800 ms: passed, fired []
+  down F13 at +1800 ms: passed, fired []
+  up LAlt at +1800 ms: passed, fired []
+  repeat RShift at +1800 ms: passed, fired []
+  up J at +1800 ms: passed, fired []
+  down LAlt at +1800 ms: passed, fired []
+  up F14 at +1800 ms: passed, fired []
+  repeat K at +1800 ms: passed, fired []
+  down J at +1800 ms: passed, fired []
+  down F14 at +1800 ms: passed, fired []
+  repeat A at +1800 ms: passed, fired []
+  down CapsLock at +1800 ms: passed, fired []
+  repeat K at +1800 ms: passed, fired []
+  repeat A at +1800 ms: passed, fired []
+  repeat LCtrl at +1800 ms: passed, fired []
+  repeat LCtrl at +1800 ms: passed, fired []
+  repeat LAlt at +1800 ms: passed, fired []
+  repeat A at +1800 ms: passed, fired []
+  repeat LAlt at +1800 ms: passed, fired []
+  repeat F16 at +1800 ms: passed, fired []
+  up F15 at +1800 ms: passed, fired []
+  repeat LAlt at +1800 ms: passed, fired []
+  repeat F16 at +1800 ms: passed, fired []
+  down F15 at +1800 ms: passed, fired []
+  up F14 at +1800 ms: passed, fired []
+  down F14 at +1800 ms: passed, fired []
+  repeat F13 at +1800 ms: passed, fired []
+  repeat F15 at +1800 ms: passed, fired []
+  repeat RShift at +1800 ms: passed, fired []
+  repeat F15 at +1800 ms: passed, fired []
+  up J at +1800 ms: passed, fired []
+  repeat CapsLock at +1800 ms: passed, fired []
+  down J at +1800 ms: passed, fired []
+  up F14 at +1800 ms: passed, fired []
+  down F14 at +1800 ms: passed, fired []
+  up CapsLock at +1800 ms: passed, fired []
+  advance 199 ms to +1999 ms: -, fired []
+  up Space at +1999 ms: passed, fired []
+  up J at +1999 ms: passed, fired []
+  up F15 at +1999 ms: passed, fired []
+  repeat RShift at +1999 ms: passed, fired []
+  repeat LCtrl at +1999 ms: passed, fired []
+  up LShift at +1999 ms: passed, fired []
+  down CapsLock at +1999 ms: passed, fired []
+  down J at +1999 ms: passed, fired []
+  up RShift unseen by the hook at +1999 ms: -, fired []
+  down F15 at +1999 ms: passed, fired []
+  down LShift at +1999 ms: passed, fired []
+  repeat CapsLock at +1999 ms: passed, fired []
+  repeat J at +1999 ms: passed, fired []
+  repeat F13 at +1999 ms: passed, fired []
+  repeat F13 at +1999 ms: passed, fired []
+  up F16 unseen by the hook at +1999 ms: -, fired []
+  down Space at +1999 ms: passed, fired []
+  down F16 at +1999 ms: passed, fired []
+  down RShift at +1999 ms: passed, fired []
+  repeat F14 at +1999 ms: passed, fired []
+  repeat F13 at +1999 ms: passed, fired []
+  repeat A at +1999 ms: passed, fired []
+  advance 33 ms to +2032 ms: -, fired []
+  repeat LCtrl at +2032 ms: passed, fired []
+  up J at +2032 ms: passed, fired []
+  down J at +2032 ms: passed, fired []
+  repeat CapsLock at +2032 ms: passed, fired []
+  repeat F14 at +2032 ms: passed, fired []
+  up Space at +2032 ms: passed, fired []
+  repeat CapsLock at +2032 ms: passed, fired []
+  advance 200 ms to +2232 ms: -, fired []
+  down Space at +2232 ms: passed, fired []
+  repeat LShift at +2232 ms: passed, fired []
+  repeat LShift at +2232 ms: passed, fired []
+  repeat LAlt at +2232 ms: passed, fired []
+  repeat J at +2232 ms: passed, fired []
+  up CapsLock unseen by the hook at +2232 ms: -, fired []
+  repeat LShift at +2232 ms: passed, fired []
+  repeat A at +2232 ms: passed, fired []
+  up J at +2232 ms: passed, fired []
+  down J at +2232 ms: passed, fired []
+  repeat F15 at +2232 ms: passed, fired []
+  repeat A at +2232 ms: passed, fired []
+  advance 50 ms to +2282 ms: -, fired []
+  down CapsLock at +2282 ms: passed, fired []
+  up Space at +2282 ms: passed, fired []
+  down Space at +2282 ms: passed, fired []
+  up K at +2282 ms: passed, fired []
+  down K at +2282 ms: passed, fired []
+  repeat F13 at +2282 ms: passed, fired []
+  up F13 unseen by the hook at +2282 ms: -, fired []
+  repeat F14 at +2282 ms: passed, fired []
+  repeat F16 at +2282 ms: passed, fired []
+  down F13 at +2282 ms: passed, fired []
+  repeat F16 at +2282 ms: passed, fired []
+  up RShift at +2282 ms: passed, fired []
+  up LAlt at +2282 ms: passed, fired []
+  up A at +2282 ms: passed, fired []
+  up J unseen by the hook at +2282 ms: -, fired []
+  down LAlt at +2282 ms: passed, fired []
+  down RShift at +2282 ms: passed, fired []
+  up LAlt at +2282 ms: passed, fired []
+  down J at +2282 ms: passed, fired []
+  repeat F16 at +2282 ms: passed, fired []
+  down LAlt at +2282 ms: passed, fired []
+  down A at +2282 ms: passed, fired []
+  repeat LAlt at +2282 ms: passed, fired []
+  repeat LAlt at +2282 ms: passed, fired []
+  repeat CapsLock at +2282 ms: passed, fired []
+  repeat F16 at +2282 ms: passed, fired []
+  repeat F15 at +2282 ms: passed, fired []
+  repeat J at +2282 ms: passed, fired []
+  advance 0 ms to +2282 ms: -, fired []
+  up CapsLock at +2282 ms: passed, fired []
+  down CapsLock at +2282 ms: passed, fired []
+  repeat CapsLock at +2282 ms: passed, fired []
+  up F16 at +2282 ms: passed, fired []
+  down F16 at +2282 ms: passed, fired []
+  repeat F16 at +2282 ms: passed, fired []
+  advance 201 ms to +2483 ms: -, fired []
+  repeat F13 at +2483 ms: passed, fired []
+  repeat LShift at +2483 ms: passed, fired []
+  repeat F15 at +2483 ms: passed, fired []
+  up F13 at +2483 ms: passed, fired []
+  up F16 at +2483 ms: passed, fired []
+  down F13 at +2483 ms: passed, fired []
+  down F16 at +2483 ms: passed, fired []
+  repeat F16 at +2483 ms: passed, fired []
+  repeat LAlt at +2483 ms: passed, fired []
+  up LCtrl at +2483 ms: passed, fired []
+  down LCtrl at +2483 ms: passed, fired []
+  up F13 at +2483 ms: passed, fired []
+  down F13 at +2483 ms: passed, fired []
+  repeat RShift at +2483 ms: passed, fired []
+  repeat F13 at +2483 ms: passed, fired []
+  repeat LShift at +2483 ms: passed, fired []
+  repeat LCtrl at +2483 ms: passed, fired []
+  repeat F16 at +2483 ms: passed, fired []
+  repeat J at +2483 ms: passed, fired []
+  repeat K at +2483 ms: passed, fired []
+  repeat LShift at +2483 ms: passed, fired []
+  repeat F15 at +2483 ms: passed, fired []
+  repeat F13 at +2483 ms: passed, fired []
+  advance 600 ms to +3083 ms, timers stalled: -, fired []
+  repeat Space at +3083 ms: passed, fired []
+  up K at +3083 ms: passed, fired []
+  repeat F14 at +3083 ms: passed, fired []
+  advance 250 ms to +3333 ms: -, fired []
+  down K at +3333 ms: passed, fired []
+  repeat F15 at +3333 ms: passed, fired []
+  advance 33 ms to +3366 ms: -, fired []
+  repeat LAlt at +3366 ms: passed, fired []
+  advance 49 ms to +3415 ms: -, fired []
+  repeat LShift at +3415 ms: passed, fired []
+  repeat K at +3415 ms: passed, fired []
+  up LShift unseen by the hook at +3415 ms: -, fired []
+  down LShift at +3415 ms: passed, fired []
+  up LCtrl at +3415 ms: passed, fired []
+  advance 199 ms to +3614 ms: -, fired []
+  up F16 at +3614 ms: passed, fired []
+  up LAlt at +3614 ms: passed, fired []
+  down LCtrl at +3614 ms: suppressed, fired []
+  down LAlt at +3614 ms: passed, fired []
+  down F16 at +3614 ms: passed, fired []
+  repeat LCtrl at +3614 ms: passed, fired []
+  up F16 at +3614 ms: passed, fired []
+  repeat K at +3614 ms: passed, fired []
+  advance 500 ms to +4114 ms: -, fired []
+  down F16 at +4114 ms: passed, fired []
+  up LShift at +4114 ms: passed, fired []
+  up F15 at +4114 ms: passed, fired []
+  down F15 at +4114 ms: passed, fired []
+  up RShift at +4114 ms: passed, fired []
+  up LCtrl at +4114 ms: suppressed, fired []
+
+
+
+failures:
+    engine::properties::every_press_is_suppressed_or_passed_as_a_whole
+    engine::properties::nothing_is_left_down_in_windows_across_focus_changes_and_lost_key_ups
+    engine::scenarios::alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier
+    engine::scenarios::chord_completion_keeps_the_key_up_of_a_chord_key_whose_down_passed
+    engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed
+    engine::scenarios::ctrl_shift_hold_with_ctrl_released_first_neither_leaks_nor_sticks_shift
+    engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed
+    engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed
+    engine::scenarios::modifier_held_before_the_engine_saw_it_keeps_passing_once_a_repeat_passed
+    engine::scenarios::one_long_press_of_shift_does_not_fire_its_double_tap
+    engine::scenarios::sequence_completion_keeps_the_key_up_of_a_key_whose_down_passed
+    engine::scenarios::shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press
+    engine::scenarios::shift_held_by_a_double_tap_still_counts_for_shift_capslock
+    engine::scenarios::suppressed_modifier_stays_an_auto_repeat_across_a_focus_change
+
+test result: FAILED. 128 passed; 14 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.23s
+
+error: test failed, to rerun pass `--lib`

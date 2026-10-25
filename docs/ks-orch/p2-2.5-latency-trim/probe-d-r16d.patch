@@ -1,0 +1,117 @@
+diff --git a/src/bench.rs b/src/bench.rs
+index 1998fe5..988caf5 100644
+--- a/src/bench.rs
++++ b/src/bench.rs
+@@ -703,6 +703,71 @@ fn r16_first_key_of_a_burst(count: usize) -> Vec<Duration> {
+     samples
+ }
+ 
++/// D-R16d (lane 2.5 probe, uncommitted): a helper thread that does what the
++/// deferred wake of cut D12 does, one wait return, a `SetWaitableTimer` and
++/// a wait that leaves the posted bit out, then at its 5 ms timer pumps
++/// everything and goes idle. Each sample posts one message to it and at
++/// once times the A key-down callback; the key-up is untimed, then a 10 ms
++/// spin lets the helper go idle again.
++fn d_r16d_deferred_wake(count: usize) -> Vec<Duration> {
++    use crate::platform::timers::WaitableTimer;
++    bind_f13_to_do_nothing();
++    let (ready_tx, ready) = mpsc::channel();
++    let helper = thread::spawn(move || {
++        let mut msg = MSG::default();
++        // SAFETY: probe; `msg` is a local; makes this thread's queue.
++        let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
++        let timer = WaitableTimer::new().expect("probe timer");
++        // SAFETY: probe; no arguments.
++        let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
++        let mut ticking = false;
++        loop {
++            let mask = if ticking {
++                QS_ALLINPUT & !QS_POSTMESSAGE
++            } else {
++                QS_ALLINPUT
++            };
++            // SAFETY: probe; the handle lives in `timer`.
++            let woke = unsafe {
++                MsgWaitForMultipleObjectsEx(
++                    Some(&[timer.handle()]),
++                    windows::Win32::System::Threading::INFINITE,
++                    mask,
++                    MWMO_INPUTAVAILABLE,
++                )
++            };
++            if woke == WAIT_OBJECT_0 {
++                // SAFETY: probe; `msg` is a local of this thread.
++                while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
++                    if msg.message == WM_QUIT {
++                        return;
++                    }
++                }
++                ticking = false;
++            } else {
++                std::hint::black_box(Instant::now());
++                let _ = timer.set(Duration::from_millis(5));
++                ticking = true;
++            }
++        }
++    });
++    let thread_id = ready.recv().expect("probe helper starts");
++    let mut samples = Vec::with_capacity(count);
++    for _ in 0..count {
++        // SAFETY: probe; posts to the helper's queue, no pointer.
++        let _ = unsafe { PostThreadMessageW(thread_id, WM_APP + 0x16, WPARAM(0), LPARAM(0)) };
++        let begun = Instant::now();
++        std::hint::black_box(call_keyboard_callback(VK_A, WM_KEYDOWN));
++        samples.push(begun.elapsed());
++        call_keyboard_callback(VK_A, WM_KEYUP);
++        spin_for(Duration::from_millis(10));
++    }
++    // SAFETY: probe; posts WM_QUIT to the helper.
++    let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
++    helper.join().expect("probe helper ends");
++    samples
++}
++
+ /// The message R15 posts to its window.
+ const R15_MESSAGE: u32 = WM_APP + 0x15;
+ 
+@@ -1235,6 +1300,11 @@ fn latency_bench() {
+             what: "keyboard_hook_callback, A key-down that wakes the idle hook watchdog",
+             samples: r16_first_key_of_a_burst(1_000),
+         },
++        Row {
++            id: "D-R16d",
++            what: "probe: A key-down next to a deferred wake (wait return, SetWaitableTimer, wait)",
++            samples: d_r16d_deferred_wake(1_000),
++        },
+         Row {
+             id: "R17t",
+             what: "GetTickCount, per call (mean of 1000 per sample)",
+@@ -1268,3 +1338,28 @@ fn latency_bench() {
+     file.write_all(table.as_bytes())
+         .expect("write the table to KS_BENCH_OUT");
+ }
++
++/// Lane 2.5 probe only (uncommitted): R12, R12m, R12m2, R17t and R17a alone,
++/// for repeated short runs.
++#[test]
++#[ignore = "probe"]
++fn probe_reads_only() {
++    let _alone = BENCH.lock().unwrap_or_else(PoisonError::into_inner);
++    let out = std::env::var_os("KS_BENCH_OUT").expect("KS_BENCH_OUT");
++    let label = std::env::var("KS_BENCH_LABEL").unwrap_or_else(|_| "unlabelled".to_owned());
++    let _main = MainThread::new().expect("main");
++    let rows = [
++        ("R12", r12_ordinary_key(2_000)),
++        ("R12m", r12m_key_down_with_injected_modifiers(&[VK_LCONTROL], 2_000)),
++        ("R12m2", r12m_key_down_with_injected_modifiers(&[VK_LCONTROL, VK_LSHIFT], 2_000)),
++        ("R17t", r17t_tick_count(2_000)),
++        ("R17a", r17a_async_key_state(2_000)),
++    ];
++    get_hook().update_bindings(Vec::new());
++    let mut table = format!("\n#### {label}\n\n| Row | n | mean us | p50 us | p99 us | max us |\n|---|---|---|---|---|---|\n");
++    for (id, samples) in &rows {
++        let _ = writeln!(table, "| {id} {}", summary(samples));
++    }
++    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&out).expect("open");
++    file.write_all(table.as_bytes()).expect("write");
++}

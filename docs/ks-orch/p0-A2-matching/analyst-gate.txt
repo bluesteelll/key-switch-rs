@@ -1,0 +1,34 @@
+== fmt
+fmt exit 0
+== clippy
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+clippy exit 0
+== test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-9c8e127322721cde.exe)
+     Running unittests src\bin\swch.rs (target\debug\deps\swch-82e5670c4bbd8878.exe)
+   Doc-tests key_switch_rs
+test exit 0
+2:running 263 tests
+267:test result: ok. 263 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+270:running 0 tests
+272:test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+275:running 0 tests
+277:test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== ignored list
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-9c8e127322721cde.exe)
+0 tests, 0 benchmarks
+     Running unittests src\bin\swch.rs (target\debug\deps\swch-82e5670c4bbd8878.exe)
+0 tests, 0 benchmarks
+   Doc-tests key_switch_rs
+0 tests, 0 benchmarks
+== doc
+warning: unclosed HTML tag `raw`
+ --> src\data\vk_name.rs:4:47
+  |
+4 | /// "F5", "A", "CapsLock"). Falls back to "VK(<raw>)" for unmapped codes.
+--
+warning: `key-switch-rs` (lib doc) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.09s
+   Generated D:\key-switch-rs\key-switch-rs\target\doc\key_switch_rs\index.html and 1 other file

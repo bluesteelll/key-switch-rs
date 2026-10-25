@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/phase-2/target-measure\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+bench::latency_bench: test
+core::executor::tests::the_win32_runner_opens_a_url: test
+hook::ipc_server::tests::hold_the_daemon_pipe_name_for_a_manual_start: test
+hook::keyboard_hook_callback::tests::the_menu_mask_key_is_inserted_into_the_input_stream: test
+platform::desktop::tests::input_is_on_this_desktop_while_a_human_uses_it: test
+platform::foreground::tests::the_foreground_cache_names_the_focused_notepad: test
+system::registry::tests::live_registry_with_the_language_hotkey_not_assigned_has_no_combination: test
+
+7 tests, 0 benchmarks
+     Running unittests src\bin\swch.rs (D:/tmp/ks-orch/phase-2/target-measure\debug\deps\swch-34644f70ed23b659.exe)
+0 tests, 0 benchmarks
+     Running tests\ipc_roundtrip.rs (D:/tmp/ks-orch/phase-2/target-measure\debug\deps\ipc_roundtrip-46369503fabe571f.exe)
+0 tests, 0 benchmarks
+   Doc-tests key_switch_rs
+0 tests, 0 benchmarks

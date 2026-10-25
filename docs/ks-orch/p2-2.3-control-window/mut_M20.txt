@@ -1,0 +1,136 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 3 tests
+test engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed ... ok
+test engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once ... FAILED
+test engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes ... FAILED
+
+failures:
+
+---- engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once stdout ----
+
+thread 'engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once' (7292) panicked at src\engine\scenarios.rs:2530:5:
+scenario: repeat CapsLock at +500 ms: expected to fire [], fired [SwitchLanguage]
+transcript:
+  down CapsLock at +0 ms: suppressed, fired [SwitchLanguage]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat CapsLock at +500 ms: suppressed, fired [SwitchLanguage]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes stdout ----
+
+thread 'engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes' (13732) panicked at src\engine\properties.rs:271:37:
+scenario: repeat CapsLock at +922 ms: press of CapsLock: key-down passed, repeat suppressed
+context: config default, seed 2, FocusWhole mode
+transcript:
+  down J at +0 ms: passed, fired []
+  repeat J at +0 ms: passed, fired []
+  down F15 at +0 ms: passed, fired []
+  up J at +0 ms: passed, fired []
+  repeat F15 at +0 ms: passed, fired []
+  repeat F15 at +0 ms: passed, fired []
+  down F14 at +0 ms: passed, fired []
+  advance 199 ms to +199 ms, timers stalled: -, fired []
+  repeat F14 at +199 ms: passed, fired []
+  up F14 at +199 ms: passed, fired []
+  repeat F15 at +199 ms: passed, fired []
+  down F16 at +199 ms: passed, fired []
+  down LShift at +199 ms: passed, fired []
+  advance 1 ms to +200 ms: -, fired []
+  up LShift at +200 ms: passed, fired []
+  up F15 at +200 ms: passed, fired []
+  repeat F16 at +200 ms: passed, fired []
+  down LShift at +200 ms: passed, fired []
+  repeat LShift at +200 ms: passed, fired []
+  up LShift at +200 ms: passed, fired []
+  up F16 at +200 ms: passed, fired []
+  down Space at +200 ms: passed, fired []
+  up Space at +200 ms: passed, fired []
+  down J at +200 ms: passed, fired []
+  repeat J at +200 ms: passed, fired []
+  foreground change at +200 ms: -, fired []
+  down F13 at +200 ms: passed, fired []
+  up F13 at +200 ms: passed, fired []
+  up J at +200 ms: passed, fired []
+  down RShift at +200 ms: passed, fired []
+  down J at +200 ms: passed, fired []
+  repeat J at +200 ms: passed, fired []
+  repeat RShift at +200 ms: passed, fired []
+  down F16 at +200 ms: passed, fired []
+  down F13 at +200 ms: passed, fired []
+  down F15 at +200 ms: passed, fired []
+  repeat F13 at +200 ms: passed, fired []
+  down A at +200 ms: passed, fired []
+  up RShift at +200 ms: passed, fired []
+  down LCtrl at +200 ms: passed, fired []
+  repeat J at +200 ms: passed, fired []
+  up A at +200 ms: passed, fired []
+  down K at +200 ms: passed, fired []
+  down Space at +200 ms: passed, fired []
+  down LShift at +200 ms: passed, fired []
+  up Space at +200 ms: passed, fired []
+  up LShift at +200 ms: passed, fired []
+  down LAlt at +200 ms: passed, fired []
+  advance 1 ms to +201 ms: -, fired []
+  up J at +201 ms: passed, fired []
+  down J at +201 ms: passed, fired []
+  up F13 at +201 ms: passed, fired []
+  advance 1 ms to +202 ms: -, fired []
+  advance 0 ms to +202 ms, timers stalled: -, fired []
+  foreground change at +202 ms: -, fired []
+  repeat K at +202 ms: passed, fired []
+  up F15 at +202 ms: passed, fired []
+  up F16 at +202 ms: passed, fired []
+  repeat LCtrl at +202 ms: passed, fired []
+  repeat LCtrl at +202 ms: passed, fired []
+  advance 20 ms to +222 ms: -, fired []
+  advance 200 ms to +422 ms: -, fired []
+  up J at +422 ms: passed, fired []
+  down RShift at +422 ms: passed, fired []
+  up LCtrl at +422 ms: passed, fired []
+  repeat LAlt at +422 ms: passed, fired []
+  up RShift at +422 ms: passed, fired []
+  down LCtrl at +422 ms: passed, fired []
+  foreground change at +422 ms: -, fired []
+  repeat LAlt at +422 ms: passed, fired []
+  repeat K at +422 ms: passed, fired []
+  up K at +422 ms: passed, fired []
+  repeat LAlt at +422 ms: passed, fired []
+  down K at +422 ms: passed, fired []
+  down Space at +422 ms: passed, fired []
+  down F14 at +422 ms: passed, fired []
+  down F15 at +422 ms: passed, fired []
+  up F15 at +422 ms: passed, fired []
+  down J at +422 ms: passed, fired []
+  down F13 at +422 ms: passed, fired []
+  down CapsLock at +422 ms: passed, fired []
+  repeat K at +422 ms: passed, fired []
+  down A at +422 ms: passed, fired []
+  up LAlt at +422 ms: passed, fired []
+  up K at +422 ms: passed, fired []
+  foreground change at +422 ms: -, fired []
+  repeat Space at +422 ms: passed, fired []
+  repeat F14 at +422 ms: passed, fired []
+  up Space at +422 ms: passed, fired []
+  down LAlt at +422 ms: passed, fired []
+  up LCtrl at +422 ms: passed, fired []
+  down Space at +422 ms: passed, fired []
+  up LAlt at +422 ms: passed, fired []
+  repeat J at +422 ms: passed, fired []
+  down F16 at +422 ms: passed, fired []
+  advance 500 ms to +922 ms: -, fired []
+  repeat CapsLock at +922 ms: suppressed, fired [SwitchLanguage]
+
+
+
+failures:
+    engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes
+    engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

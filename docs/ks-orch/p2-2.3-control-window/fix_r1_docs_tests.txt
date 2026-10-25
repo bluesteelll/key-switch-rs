@@ -1,0 +1,3 @@
+running 88 tests
+test hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold ... ok
+test result: ok. 87 passed; 0 failed; 1 ignored; 0 measured; 598 filtered out; finished in 1.01s

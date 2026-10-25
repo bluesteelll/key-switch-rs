@@ -1,0 +1,6 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "rust-analyzer-local",
+  "version": "0.1.0",
+  "description": "Declares rust-analyzer as an LSP server with an absolute command path. Exists because the official rust-analyzer-lsp plugin declares its server only on its marketplace entry, which the LSP config loader never reads."
+}

@@ -1,0 +1,30 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.15s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 3 tests
+test engine::scenarios::a_tap_armed_before_a_reload_fires_nothing_at_its_key_up ... ok
+test hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing ... FAILED
+test hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold ... FAILED
+
+failures:
+
+---- hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing stdout ----
+
+thread 'hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing' (24012) panicked at src\hook\main_thread.rs:1355:9:
+the old Tap fired: [SwitchLanguage]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold stdout ----
+
+thread 'hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold' (18668) panicked at src\hook\main_thread.rs:1391:9:
+a Hold armed before the reload never fires
+
+
+failures:
+    hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing
+    hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.31s
+
+error: test failed, to rerun pass `--lib`

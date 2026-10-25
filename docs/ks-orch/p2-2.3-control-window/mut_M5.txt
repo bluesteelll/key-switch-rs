@@ -1,0 +1,33 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.90s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 2 tests
+test hook::control_window::tests::only_the_lock_and_the_unlock_are_input_signals ... FAILED
+test hook::control_window::tests::the_session_messages_note_the_lock_and_the_unlock ... FAILED
+
+failures:
+
+---- hook::control_window::tests::only_the_lock_and_the_unlock_are_input_signals stdout ----
+
+thread 'hook::control_window::tests::only_the_lock_and_the_unlock_are_input_signals' (4936) panicked at src\hook\control_window.rs:309:9:
+assertion `left == right` failed
+  left: None
+ right: Some(SessionLocked)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hook::control_window::tests::the_session_messages_note_the_lock_and_the_unlock stdout ----
+
+thread 'hook::control_window::tests::the_session_messages_note_the_lock_and_the_unlock' (21020) panicked at src\hook\control_window.rs:338:9:
+assertion `left == right` failed
+  left: []
+ right: [SessionLocked]
+
+
+failures:
+    hook::control_window::tests::only_the_lock_and_the_unlock_are_input_signals
+    hook::control_window::tests::the_session_messages_note_the_lock_and_the_unlock
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
