@@ -439,7 +439,7 @@ At the audit the harness called `config::load(&path)`, printed `block_original_c
 | 2 | The file does not exist; `ERR: file does not exist` on stderr, and nothing was written |
 | 101 | No argument given (panic from `expect`) |
 
-Output for the shipped `src/config/default_config.ron`, with stdout and stderr together (`2>&1`), from the harness above built against the branch `feat/file-logging` (roadmap item 1.7) on the machine of that lane, and again against `20af28d` and `bf549c0` for the book syncs after Phases 1 and 2, with the same lines apart from the path in the first one:
+Output for the shipped `src/config/default_config.ron`, with stdout and stderr together (`2>&1`), from the harness above built against the branch `feat/file-logging` (roadmap item 1.7) on the machine of that lane, and again against `20af28d`, `bf549c0` and `252daef` for the book syncs after Phases 1 and 2 and after item 2.5, with the same lines apart from the path in the first one:
 
 ```text
 [INFO] loading config from D:/key-switch-rs/key-switch-rs/src/config/default_config.ron
@@ -554,6 +554,17 @@ The four Phase 2 lanes again updated the configuration reference, the README and
 - A script checked every internal link and anchor of the built book, and every test name the changed text cites was looked up in `cargo test --locked -- --list`.
 - Run-time behaviour was taken from the code, the scenario tests and the lanes' measurements. The daemon was not run, and none of the manual checks of the three phases was performed.
 
+### The book sync after item 2.5
+
+Item 2.5, the last item of Phase 2, merged after the sync above, so it had a sync of its own. Its lane updated the configuration pages whose costs or messages it changed and the README in the lane, and the orchestrator's chore after the merge updated the README and two doc comments; the lane listed the other pages, with file and line, for this sync. One agent updated the book to commit `f4c1fb6` from the merged code, `git diff` since `bf549c0`, and the lane's cut, rulings, implementation notes, test and review reports, results and bench runs. The line numbers of the lane's hand-off were taken on its branch and were found again on `master` first. Every item of the hand-off was either done, found done by the lane or the chore, or recorded with the reason it did not apply. The checks:
+
+- The harness above was rebuilt from this page, against `252daef`, whose source differs from `f4c1fb6` only in comments, and gave the output shown for the shipped template. Every `ron` block of the configuration reference and the README ran through it, and so did the configurations of the new manual checks.
+- A script moved every permalink of the pages that describe the program from `bf549c0` to `f4c1fb6`: automatically where the cited lines are unchanged or moved unchanged, and by a line diff, read against the new lines, where the code changed. Status notes of the roadmap and of the gaps page that describe the state after the Phase 2 sync keep their `bf549c0` links. The two key-path diagrams of the architecture chapter, whose decision nodes the Phase 2 sync had lost, were written again.
+- Test counts come from the merge gate log of the lane on `f4c1fb6`, and the test list from `cargo test --locked -- --list` at `252daef` with a fresh target directory outside the repository; line counts come from the line-count script at `f4c1fb6`, which gives the `bf549c0` numbers of the Phase 2 sync too. Every test name the changed text cites was looked up in that list.
+- Bench figures come from the bench runs of the lane's tester, all of one session, and each is quoted with that session; the developer's figure for the same row is quoted beside it where the two differ.
+- A script checked every internal link and anchor of the book, and the book was built with `mdbook build`.
+- Run-time behaviour was taken from the code, the scenario tests and the lane's measurements. The daemon was not run, and none of the manual checks was performed.
+
 ## Limitations
 
 - **No live keyboard input.** The daemon was never run with its hook installed, and no keystrokes were typed or injected against it. Behaviour that depends on Windows delivering events is inferred from the code and the Win32 documentation. This covers the dead hook after `swch on` ([KS-01](audit.md#ks-01)), stuck keys ([KS-06](audit.md#ks-06)), the `LowLevelHooksTimeout` risk ([KS-08](audit.md#ks-08)), auto-repeat ([KS-10](audit.md#ks-10)) and the Start menu opening ([KS-12](audit.md#ks-12)). The repro crate calls the state machines directly instead of through hook events.
@@ -563,7 +574,7 @@ The four Phase 2 lanes again updated the configuration reference, the README and
 - **Pinned line numbers.** Every line reference is to `7cb3521`. The permalinks keep working, but after any later commit the line numbers in the text no longer match `master`.
 - **Dependency behaviour.** The behaviour of `notify`, `interprocess` and `ron` was read from their sources at the locked versions (8.2.0, 2.4.2, 0.10.1). Three findings depend on it: [KS-02](audit.md#ks-02) on `interprocess` passing a null security descriptor, [KS-21](audit.md#ks-21) on the absolute event paths `notify` reports, and [KS-24](audit.md#ks-24) on `ron` not treating U+FEFF as whitespace. An upgrade can change them.
 - **Harness scope.** The harness checks parsing and validation only. Runtime statements in the configuration reference were checked by reading code.
-- **No measurements.** The audit took no latency, CPU or memory figures. The latency figures in the roadmap's Phase 2 status blocks come from the lanes' runs of the latency bench of roadmap item 2.2, on one machine, without a live hook.
+- **No measurements.** The audit took no latency, CPU or memory figures. The latency figures in the roadmap's Phase 2 status blocks and in the architecture chapter come from the lanes' runs of the latency bench of roadmap item 2.2, on one machine, without a live hook. Each figure belongs to the session that measured it: for one row the tester's and the developer's sessions of item 2.5 differ by a factor of about five.
 - **Temporary artefacts.** The scratch directory with the snapshot, probes and digests, and the raw workflow output, are temporary. This chapter reproduces the sources of `probe-modname`, the gesture repro crate, the harness and its runner. The watcher, RON and BOM probes are described above but not reproduced.
 
 ### Live checks not yet performed

@@ -3,7 +3,7 @@
 <a id="s3"></a>
 ## 3. RON syntax essentials
 
-The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:264-265](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L264-L265)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:187-197](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L187-L197)). Facts describe commit `bf549c0`, the tip of `master` after roadmap Phase 2. Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
+The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` ([src/config/loader.rs:264-265](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L264-L265)). The whole file is read at once with `fs::read_to_string` ([src/config/loader.rs:187-197](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L187-L197)). Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5 and the last change of the program's behaviour on `master`. Parsing stops at the first error; the message format is described in [§18](errors.md#s18).
 
 <a id="s3-1"></a>
 ### 3.1 Encoding, whitespace and line breaks
@@ -13,7 +13,7 @@ The file is parsed by `ron 0.10.1` with one extension enabled, `IMPLICIT_SOME` (
 - A file in cp1251 gives the same error only if it contains non-ASCII bytes (for example, Cyrillic in comments). A cp1251 file made only of ASCII characters is byte-for-byte identical to UTF-8 and loads normally.
 
 > [!NOTE]
-> A byte-order mark at the start of the file is skipped ([src/config/loader.rs:255-258](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L255-L258)), so Notepad's "UTF-8 with BOM" and `Set-Content -Encoding UTF8` in Windows PowerShell 5.1 work. Until `1dfd80a` such a file failed with ``1:1: Expected opening `(` for struct `RawConfig` `` ([KS-24](../audit.md#ks-24), fixed). Only the leading mark is skipped: a U+FEFF inside a string stays part of the text.
+> A byte-order mark at the start of the file is skipped ([src/config/loader.rs:255-258](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L255-L258)), so Notepad's "UTF-8 with BOM" and `Set-Content -Encoding UTF8` in Windows PowerShell 5.1 work. Until `1dfd80a` such a file failed with ``1:1: Expected opening `(` for struct `RawConfig` `` ([KS-24](../audit.md#ks-24), fixed). Only the leading mark is skipped: a U+FEFF inside a string stays part of the text.
 
 **Whitespace.** Any number of spaces, tabs and line breaks may appear between tokens. The exception is the **non-breaking space U+00A0**: RON does not treat it as whitespace. The one-line file `( bindings: [ ( keys: "F13",<NBSP>action: DoNothing ) ] )` gives `1:29: Expected identifier`. This is a common trap when copying examples from a browser or from Word: in an editor the character looks like an ordinary space. U+2028 (line separator) between tokens, on the other hand, is accepted. **Inside strings** that hold key names and `WM_*` names, U+00A0 and all other whitespace characters are silently removed ([§6.3](keys.md#s6-3), [§13.4](actions.md#s13-4)), so `"Ctrl+<NBSP>F13"` loads as `Ctrl+F13`.
 
@@ -137,7 +137,7 @@ Rejected forms:
 <a id="s3-8"></a>
 ### 3.8 Time values
 
-All times are given as an integer number of milliseconds. The `Tap`, `Hold` and `DoubleTap` terms, `max_gap_ms` and `window_ms` must be 1 to 10000; another value is a load error that names the binding ([src/config/loader.rs:34-37](https://github.com/bluesteelll/key-switch-rs/blob/bf549c0/src/config/loader.rs#L34-L37); [KS-27](../audit.md#ks-27), fixed in `1dfd80a`). `Delay(…)` in a macro is not checked: `Delay(0)` and any value up to `u64::MAX` are accepted. Each field is described in ([§8](kinds.md#s8), [§9](kinds.md#s9), [§11](triggers-conditions.md#s11), [§14](actions.md#s14)).
+All times are given as an integer number of milliseconds. The `Tap`, `Hold` and `DoubleTap` terms, `max_gap_ms` and `window_ms` must be 1 to 10000; another value is a load error that names the binding ([src/config/loader.rs:34-37](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L34-L37); [KS-27](../audit.md#ks-27), fixed in `1dfd80a`). `Delay(…)` in a macro is not checked: `Delay(0)` and any value up to `u64::MAX` are accepted. Each field is described in ([§8](kinds.md#s8), [§9](kinds.md#s9), [§11](triggers-conditions.md#s11), [§14](actions.md#s14)).
 
 <a id="s3-9"></a>
 ### 3.9 Strings and escapes
