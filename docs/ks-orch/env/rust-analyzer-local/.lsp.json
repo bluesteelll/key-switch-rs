@@ -7,7 +7,7 @@
     "settings": {
       "rust-analyzer": {
         "linkedProjects": [
-          "D:/key-switch-rs/key-switch-rs/Cargo.toml"
+          "E:/key-switch-rs/key-switch-rs/Cargo.toml"
         ],
         "checkOnSave": false,
         "cachePriming": { "enable": false },
@@ -15,7 +15,7 @@
         "cargo": {
           "buildScripts": { "enable": true },
           "allTargets": true,
-          "targetDir": "D:/wt/_targets/ra-msvc",
+          "targetDir": "E:/wt/_targets/ra-msvc",
           "extraEnv": {
             "RUSTUP_TOOLCHAIN": "stable-x86_64-pc-windows-msvc",
             "CARGO_BUILD_JOBS": "2"

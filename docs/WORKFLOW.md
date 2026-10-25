@@ -85,12 +85,12 @@ Two named workflows live in [.claude/workflows/](../.claude/workflows/).
 
 ```js
 workflow('ks-lane', {
-  name: 'p0-engine-core',        // lane id; also the reports dir D:/tmp/ks-orch/<name>/
+  name: 'p0-engine-core',        // lane id; also the reports dir E:/tmp/ks-orch/<name>/
   branch: 'feat/engine-core',    // the lane branch, cut from base
   title: 'Phase 0: pure decision core',
   spec: '<what, why, acceptance criteria; cite KS-xx / roadmap IDs>',
   base: 'master',                // optional, default 'master'
-  wt: 'D:/key-switch-rs/key-switch-rs', // optional work tree, default the main checkout
+  wt: 'E:/key-switch-rs/key-switch-rs', // optional work tree, default the main checkout
   merge: true,                   // optional; false stops after results
   stopAfter: 'cut',              // optional: 'cut' | 'critique' | 'results'
   testerModel: 'sonnet',         // optional; default 'sonnet'
@@ -120,7 +120,7 @@ Use `merge: false` when the owner wants to look before the merge.
 
 ## Reports directory
 
-Each lane has its own `D:/tmp/ks-orch/<lane>/`. A phase's book sync writes `D:/tmp/ks-orch/<phase>/book.md`.
+Each lane has its own `E:/tmp/ks-orch/<lane>/`. A phase's book sync writes `E:/tmp/ks-orch/<phase>/book.md`.
 
 | File | Written by |
 |---|---|
@@ -215,7 +215,7 @@ the driver, and every modelled stage merge cost more.
 ## Code navigation
 
 Every role has the `LSP` tool, backed by rust-analyzer: the user-level `rust-analyzer-local` plugin, whose
-`linkedProjects` names `D:/key-switch-rs/key-switch-rs/Cargo.toml`. It answers what Grep can only approximate:
+`linkedProjects` names `E:/key-switch-rs/key-switch-rs/Cargo.toml`. It answers what Grep can only approximate:
 same-named methods, trait impls, re-exports and `use` aliases. One query replaces a loop of searches and reads, so it
 also saves turns.
 
@@ -241,7 +241,7 @@ also saves turns.
 - **An empty answer is not evidence.** "No references found" also means "not indexed yet": the first query after a
   start can take minutes while rust-analyzer loads the `windows` crate. Before a report says that a symbol is unused or
   has no other caller, Grep confirms it, and the report names both tools.
-- rust-analyzer builds into its own target directory (`D:/wt/_targets/ra-msvc`) with `checkOnSave` off, so it never
+- rust-analyzer builds into its own target directory (`E:/wt/_targets/ra-msvc`) with `checkOnSave` off, so it never
   locks a lane's `target/` and never runs the gate.
 
 ## Safety

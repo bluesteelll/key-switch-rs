@@ -7,8 +7,9 @@ kinds, `when:` conditions on the foreground app/title, and macro Sequences sent 
 `swch` CLI talks to the daemon over a named pipe (`interprocess`).
 
 **Orchestrator: read [docs/WORKFLOW.md](docs/WORKFLOW.md) before launching lanes.** Lane reports
-live in `D:/tmp/ks-orch/<lane>/`. **Resuming on a new machine: read [docs/HANDOFF.md](docs/HANDOFF.md) first**; the
-reports up to the Phase 3 plan are archived in `docs/ks-orch/` and are restored to `D:/tmp/ks-orch/`.
+live in `E:/tmp/ks-orch/<lane>/`. The working checkout is `E:/key-switch-rs/key-switch-rs` on the owner's external
+drive (exFAT, since 2026-10-26). **Resuming on a new machine: read [docs/HANDOFF.md](docs/HANDOFF.md) first**; the
+reports up to the Phase 3 plan are archived in `docs/ks-orch/` and are restored to `E:/tmp/ks-orch/`.
 
 ## Layout
 
@@ -60,7 +61,7 @@ cargo build --release --locked                          # release daemon + swch
 cargo fmt --check                                       # gate 1
 cargo clippy --all-targets --locked -- -D warnings      # gate 2
 cargo test --locked                                     # gate 3
-mdbook build book -d D:/tmp/ks-orch/<lane>/book         # book; output outside the repo
+mdbook build book -d E:/tmp/ks-orch/<lane>/book         # book; output outside the repo
 $env:KS_BENCH_OUT='<file>'; cargo test --release --locked --lib bench::latency_bench -- --ignored --exact --test-threads=1   # latency bench
 ```
 
@@ -69,7 +70,7 @@ live hook, injected input or a registry write is `#[ignore = "manual: <what a hu
 `cargo test` does not run it. Report those tests as manual checks. Do not count them as passes.
 The latency bench (`#[ignore = "bench: ..."]`, rows R1-R8, `KS_BENCH_LOAD=1` adds R8) is counted apart and never as a pass.
 Every lane runs it on its parent and on HEAD (3 runs each) and applies the comparison rules of
-`D:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8), `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
+`E:/tmp/ks-orch/p2-2.2-timers/cut.md` D10 (R1-R8), `p2-2.3-control-window/cut.md` D14 (R9-R13; R11, the witness,
 against 5.4 us) and `p2-2.4-watchdog/cut.md` (R14 p50 <= R14c p50 + 300 ns; the 1 ms-paced rows gate on p50 only;
 R15 is evidence) and `p2-2.5-latency-trim/cut.md` D13 (P on the lane's bench commit, N = P with the removed line, H, in
 one session; R12/R12m/R12m2/R4 against N; R1 against N + 0.5 Delta; R11's witness term; R16 p50 <= R12 p50 + 20 us,

@@ -13,11 +13,11 @@ architect's plan **before** the developer writes code. A wrong cut found now cos
 found after merge it costs a stuck key on the owner's desktop and a second fix lane.
 
 **Write is for reports only.** Use it solely to save your report to the path your brief names (or
-under `D:/tmp/ks-orch/<lane>/`); never edit the repository: you find and critique, others change code.
+under `E:/tmp/ks-orch/<lane>/`); never edit the repository: you find and critique, others change code.
 
 **Deliverable:** the first line of your answer is your verdict, for example
 `CHANGES_REQUESTED (Critical 1, Important 2, Minor 3)` or `APPROVED (Critical 0, Important 0, Minor 1)`.
-Save the full report where your brief says (default `D:/tmp/ks-orch/<lane>/critique.md`, and
+Save the full report where your brief says (default `E:/tmp/ks-orch/<lane>/critique.md`, and
 `critique_v2.md` for the second pass after a revised cut) and return verdict + path + a summary of at most 5 lines, not
 the report text.
 
@@ -44,7 +44,7 @@ it, and an empty answer is not evidence until Grep agrees. Rules and limits: `do
 
 # Project context
 
-`key-switch-rs` (`D:/key-switch-rs/key-switch-rs`, GitHub `bluesteelll/key-switch-rs`) is a Windows-only
+`key-switch-rs` (`E:/key-switch-rs/key-switch-rs`, GitHub `bluesteelll/key-switch-rs`) is a Windows-only
 Rust 2024 keyboard remapper. One package builds the library `key_switch_rs`, the daemon
 `key-switch-rs.exe` and the CLI `swch.exe`.
 
@@ -194,7 +194,7 @@ KS-codes and root causes are in `book/src/audit.md` and `book/src/architecture.m
 
 1. **Read the whole plan**: goal, decisions and reasons, data structures, API, the key-event path,
    threading, config changes, tests, rollout, book and CHANGELOG work.
-2. **Read the code it touches** with `Read`/`Grep` in `D:/key-switch-rs/key-switch-rs` (read-only),
+2. **Read the code it touches** with `Read`/`Grep` in `E:/key-switch-rs/key-switch-rs` (read-only),
    and the matching book chapters. Verify every claim the plan makes about current behaviour. Use
    `WebSearch`/`WebFetch` only for Win32 semantics the plan relies on (Microsoft Learn), and cite the URL.
 3. **Walk sections 1-11.** A topic the plan does not mention is not by itself a defect; a plan may

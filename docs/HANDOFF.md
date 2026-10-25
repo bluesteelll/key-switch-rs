@@ -1,8 +1,9 @@
 # Hand-off: moving to a new machine (2026-10-25)
 
-The owner stopped all work on 2026-10-25 to move to another machine. This page is the state of the programme and the
-steps to resume it. [CLAUDE.md](../CLAUDE.md) stays authoritative for the rules; [WORKFLOW.md](WORKFLOW.md) for the
-lane pipeline.
+The owner stopped all work on 2026-10-25 to move to another machine. On 2026-10-26 the working project moved to the
+external drive **E:** (KINGSTON, exFAT), and the owner works from that drive on the new machine. This page is the state
+of the programme and the steps to resume it. [CLAUDE.md](../CLAUDE.md) stays authoritative for the rules;
+[WORKFLOW.md](WORKFLOW.md) for the lane pipeline.
 
 ## State
 
@@ -13,8 +14,8 @@ lane pipeline.
   the owner has not approved the lane list.
 - **Stopped mid-run:** the uiAccess workflow (evidence plus plan revision) was stopped before it wrote anything.
   `D:/tmp/ks-orch/phase-3/uiaccess/` was empty.
-- **The owner's daily build** (`D:/tmp/ks-release/key-switch-rs-252daef/`, old machine) worked without problems in daily
-  use (CapsLock = layout, Shift+CapsLock = CapsLock). It is not archived; rebuild it on the new machine.
+- **The owner's daily build** (`key-switch-rs-252daef/`) worked without problems in daily use (CapsLock = layout,
+  Shift+CapsLock = CapsLock). It was copied to `E:/tmp/ks-release/` with the build before 2.5.
 - **No manual check has been run**: roadmap "Manual checks after Phase 1" 1-18 and "Manual checks after Phase 2" 1-59
   (49-59 are lane 2.5's M1-M11). The owner will run them later as a batch; do not ask again during Phase 3 unless a lane
   needs one decided.
@@ -30,46 +31,73 @@ Not archived (scratch, regenerable or large): cargo target directories, the test
 output, cfgcheck crates, `*.log` gate and mutation logs, `.rs` snapshots, and the post-A1 copies of the agent files.
 Reports cite some logs by path; those citations do not resolve in the archive.
 
-Restore it where the workflows, agent files and CLAUDE.md expect it:
+On drive E: the archive is already restored to `E:/tmp/ks-orch/`, where the workflows, agent files and CLAUDE.md
+expect it. To restore it again from the repository:
 
 ```powershell
-New-Item -ItemType Directory -Force D:/tmp/ks-orch | Out-Null
-Copy-Item -Recurse -Force docs/ks-orch/* D:/tmp/ks-orch/
+New-Item -ItemType Directory -Force E:/tmp/ks-orch | Out-Null
+Copy-Item -Recurse -Force docs/ks-orch/* E:/tmp/ks-orch/
 ```
 
-If the new machine has no `D:` drive, change the paths instead. They are hard-coded in `.claude/workflows/ks-lane.js`,
-`.claude/workflows/ks-phase.js`, the ten files of `.claude/agents/`, `CLAUDE.md`, `docs/WORKFLOW.md` and
-`book/src/methodology.md`: `D:/tmp/ks-orch` (reports), `D:/key-switch-rs/key-switch-rs` (the main checkout) and
-`D:/wt/_targets/ra-msvc` (rust-analyzer's target directory). `git grep -n -E "D:/tmp/ks-orch|D:/key-switch-rs|D:/wt/"`
-lists every site.
+The archived reports themselves still cite the old machine's `D:/tmp/ks-orch/...` and `D:/key-switch-rs/...`; read
+those as `E:/tmp/ks-orch/...` and `E:/key-switch-rs/...`.
 
-## Setting up the new machine
+## Working from drive E:
 
-1. Clone `https://github.com/bluesteelll/key-switch-rs` to `D:/key-switch-rs/key-switch-rs` (the path the scripts use).
-2. Rust with the MSVC host (`stable-x86_64-pc-windows-msvc`; the old machine had rustc 1.98.1; `rust-version` is 1.88),
+The layout on the drive:
+
+| Path | What |
+|---|---|
+| `E:/key-switch-rs/key-switch-rs/` | The working checkout, with `.git`, on `master`, the same commit as `origin/master` |
+| `E:/key-switch-rs/claude/projects/E--key-switch-rs-key-switch-rs/` | The old machine's Claude Code project folder for this checkout: the auto-memory (`memory/`) and the session transcripts, renamed for the `E:` path |
+| `E:/key-switch-rs/claude/skills/rust-analyzer-local/` | The LSP plugin for agents, `linkedProjects` set to the `E:` checkout |
+| `E:/key-switch-rs/README-move.txt` | The same steps, short, in Russian |
+| `E:/tmp/ks-orch/` | Lane reports (restored from `docs/ks-orch/`); new lanes write here |
+| `E:/tmp/ks-release/` | The owner's release builds (`key-switch-rs-252daef/`, `key-switch-rs-3cde1d0/`) |
+| `E:/tmp/key-switch-rs/` | The owner's Russian translations: `roadmap.ru.md`, `config-reference.ru.md` |
+
+Every live path in the repository names `E:`: `.claude/workflows/ks-lane.js` and `ks-phase.js`, the ten files of
+`.claude/agents/`, `CLAUDE.md`, `docs/WORKFLOW.md`, the plugin template and the uiAccess workflow script
+(`git grep -n -E "E:/tmp/ks-orch|E:/key-switch-rs|E:/wt/"` lists them). `book/src/methodology.md` keeps the old
+machine's paths, because it records how the past runs were made.
+
+Steps on the new machine:
+
+1. Connect the drive and make sure Windows gives it the letter **E:** (Disk Management, "Change Drive Letter and
+   Paths"; the owner does this, agents never change system settings). Every path above depends on it.
+2. exFAT records no file owner, so Git refuses the checkout as "dubious ownership" until it is trusted, once per machine:
+   `git config --global --add safe.directory E:/key-switch-rs/key-switch-rs`.
+3. Rust with the MSVC host (`stable-x86_64-pc-windows-msvc`; the old machine had rustc 1.98.1; `rust-version` is 1.88),
    the Visual Studio Build Tools, `mdbook` 0.5.3 (CI's version; the old machine had 0.5.2) and `mdbook-mermaid`
-   (0.17.0 there), `git`, `gh`, ripgrep.
-3. The LSP for agents: the user-level plugin `rust-analyzer-local`, whose template is in
-   [docs/ks-orch/env/rust-analyzer-local/](ks-orch/env/rust-analyzer-local/). Copy it to
-   `%USERPROFILE%/.claude/skills/rust-analyzer-local/`, set `command` to the MSVC toolchain's `rust-analyzer.exe`, keep
-   `linkedProjects` on this checkout's `Cargo.toml` (add other projects the machine works on), then `/reload-plugins`.
-   Its README explains the four traps (strict schema, forward slashes, `linkedProjects` replaces discovery, reload).
-4. Check the gate on master: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+   (0.17.0 there), `git`, `gh`, ripgrep. Sign in to `gh`/Git for the push.
+4. Claude Code: copy `E:/key-switch-rs/claude/projects/E--key-switch-rs-key-switch-rs/` into
+   `%USERPROFILE%/.claude/projects/`, so the auto-memory loads for the `E:` checkout. Copy
+   `E:/key-switch-rs/claude/skills/rust-analyzer-local/` to `%USERPROFILE%/.claude/skills/rust-analyzer-local/`, set
+   `command` to the new machine's MSVC `rust-analyzer.exe`, add other projects to `linkedProjects` if the machine works
+   on them, then `/reload-plugins`. Its README explains the four traps (strict schema, forward slashes,
+   `linkedProjects` replaces discovery, reload). Open the session in `E:/key-switch-rs/key-switch-rs`.
+5. Check the gate on master: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
    `cargo test --locked`. The real-clock test `core::executor::tests::a_delay_ends_within_a_few_ms_of_its_deadline`
    flakes (it failed once in 2.5's final gate run); lane p3-3.4-groundwork fixes it.
-5. The owner's daemon: `cargo build --release --locked`, start it with `swch open` (today it asks for UAC, the
+6. The owner's daemon: `cargo build --release --locked`, start it with `swch open` (today it asks for UAC, the
    `requireAdministrator` manifest). Its config and `daemon.log` live as the book's "Building and running" page says.
+
+exFAT and USB notes: exFAT has no hard links, so cargo copies its outputs instead of linking them, and builds on a USB
+drive are slower than on an internal SSD. If that hurts, point `CARGO_TARGET_DIR` at an internal disk; the lanes'
+`target-wt/` directories under `E:/tmp/ks-orch/` grow by about 1 GB per tester round. Eject the drive only when no
+cargo, git or Claude Code process writes to it.
 
 ## Orchestrator memory from the old machine
 
-The old machine's auto-memory does not travel. What it held, still true:
+The auto-memory travels on the drive (step 4 above). What it holds, in case it is not copied:
 
 - The owner writes in **Russian**; answer in Russian. Every repository artifact is in English.
 - Git flow: one branch per feature from `master`, `git merge --no-ff` into `master` (no pull requests), then push
   `master`. Only a lane's merge step (or a chore the owner asked for) pushes.
 - Owner decisions: CLAUDE.md "Owner decisions", including the Phase 3 answers of 2026-10-25.
 - History: the owner paused the programme on 2026-10-20 after lane 2.5 to use a release build, resumed on 2026-10-25
-  ("Продолжай"), and stopped again the same day for this machine move.
+  ("Продолжай"), and stopped again the same day for this machine move. On 2026-10-26 the working project moved to the
+  external drive E:.
 
 ## Phase 3: what exists
 
@@ -116,13 +144,13 @@ The old machine's auto-memory does not travel. What it held, still true:
 
 ## Next steps, in order
 
-1. Set up the machine and restore the archive (above). Confirm `git log -1` on master and the gate.
+1. Set up the machine for drive E: ("Working from drive E:" above). Confirm `git log -1` on master and the gate.
 2. Re-run the uiAccess evidence and plan revision: `docs/ks-orch/phase-3/uiaccess-scope.workflow.js` (a Workflow script;
-   it already carries every owner answer). It writes `D:/tmp/ks-orch/phase-3/uiaccess/{research,impact,plan_revision}.md`
+   it already carries every owner answer). It writes `E:/tmp/ks-orch/phase-3/uiaccess/{research,impact,plan_revision}.md`
    and rewrites the affected specs. If the researcher is stopped again, narrow its brief to question 1, 2 and 4.
 3. Enter **Plan Mode** with the Phase 3 plan: `plan_draft.md` plus `plan_revision.md`, the final lane list, the owner's
    manual steps for the deployment, and any new owner question (for example the signing route: self-signed on the
    owner's machine, a commercial certificate, Microsoft's cloud signing, SignPath for open source). Get approval.
 4. The orchestrator's chore before the lanes, if the plan changes rules: CLAUDE.md layout and bench rows.
-5. Run `ks-phase` with the approved lanes in order (each `spec` argument points at its `D:/tmp/ks-orch/<lane>/spec.md`),
+5. Run `ks-phase` with the approved lanes in order (each `spec` argument points at its `E:/tmp/ks-orch/<lane>/spec.md`),
    `bookSync: true`. Then the Phase 3 book sync and Checkpoint 3 for the owner.
