@@ -1,0 +1,63 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 56 tests
+test engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed ... ok
+test engine::scenarios::a_swallowed_key_pressed_again_on_the_lock_screen_is_released_in_windows ... ok
+test engine::scenarios::a_swallowed_key_released_while_remapping_is_off_and_pressed_again_unseen_is_released_in_windows ... ok
+test engine::scenarios::a_hold_armed_between_two_return_notifications_fires ... ok
+test engine::scenarios::a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_is_released_in_windows ... ok
+test engine::scenarios::a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed ... ok
+test engine::scenarios::a_swallowed_key_pressed_again_where_the_hook_cannot_see_it_across_focus_changes_is_released_in_windows ... ok
+test engine::scenarios::a_second_lock_releases_a_key_pressed_after_the_first ... ok
+test engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed ... ok
+test engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order ... ok
+test engine::scenarios::a_late_unlock_notification_keeps_a_press_made_after_the_unlock ... ok
+test engine::scenarios::a_reload_drops_a_pending_double_tap_and_keeps_each_press_whole ... ok
+test engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys ... ok
+test engine::scenarios::a_tap_armed_before_a_reload_fires_nothing_at_its_key_up ... ok
+test engine::scenarios::a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows ... ok
+test engine::scenarios::a_waiting_tap_whose_window_closed_while_its_timer_was_late_fires_at_its_own_key_down ... ok
+test engine::scenarios::after_a_lock_the_next_press_of_a_passing_key_is_a_new_press ... ok
+test engine::scenarios::after_a_lock_the_next_press_of_a_swallowed_non_repeating_key_fires ... ok
+test engine::scenarios::after_input_leaves_for_the_secure_desktop_the_next_press_of_a_swallowed_key_fires ... ok
+test engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows ... ok
+test engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed ... ok
+test engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed ... ok
+test engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed ... ok
+test engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed ... ok
+test engine::scenarios::nothing_is_stuck_after_win_l ... ok
+test engine::scenarios::press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding ... ok
+test engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed ... ok
+test engine::tests::a_refused_window_timer_drops_no_gesture ... ok
+test engine::tests::a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes ... ok
+test engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once ... ok
+test engine::tests::only_a_key_up_the_engine_would_swallow_asks_the_os_about_its_own_key ... ok
+test engine::tests::only_a_signal_that_input_left_asks_for_a_reset ... ok
+test hook::config_watcher::tests::the_watcher_thread_has_no_panic_path ... ok
+test hook::control_window::tests::only_the_lock_and_the_unlock_are_input_signals ... ok
+test hook::control_window::tests::the_session_end_messages_are_answered_and_end_the_loop ... ok
+test hook::keyboard_hook_callback::tests::a_desktop_switch_is_classified_by_where_input_is ... ok
+test hook::control_window::tests::the_session_messages_note_the_lock_and_the_unlock ... ok
+test hook::main_thread::tests::a_gesture_timer_that_cannot_be_moved_earlier_is_set_again_by_the_loop ... ok
+test hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops ... ok
+test platform::foreground::tests::an_invalid_foreground_window_keeps_the_cache ... ok
+test hook::main_thread::tests::a_reload_the_watcher_stopped_waiting_for_is_logged_when_it_lands ... ok
+test hook::main_thread::tests::a_reload_on_the_main_thread_drops_an_armed_tap_so_its_key_up_fires_nothing ... ok
+test hook::keyboard_hook_callback::tests::a_window_of_this_process_is_never_asked_for_its_title ... ok
+test hook::keyboard_hook_callback::tests::a_title_condition_reads_the_cached_windows_title_on_each_key_down ... ok
+test platform::foreground::tests::the_cache_queries_again_only_for_another_window ... ok
+test hook::main_thread::tests::the_drain_logs_one_line_per_input_signal ... ok
+test hook::keyboard_hook_callback::tests::a_desktop_switch_notes_a_signal_only_while_remapping_is_on ... ok
+test hook::keyboard_hook_callback::tests::remapping_off_callbacks_pass_without_asking_for_the_engine ... ok
+test hook::keyboard_hook_callback::tests::a_hundred_conditional_presses_in_one_window_query_its_process_once ... ok
+test hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop ... ok
+test hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold ... ok
+test hook::main_thread::tests::a_reload_request_is_carried_out_by_the_main_thread_and_drops_a_pending_hold ... ok
+test hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key ... ok
+test engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches ... ok
+test engine::properties::nothing_is_left_down_in_windows_when_the_hook_misses_key_downs ... ok
+test engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 627 filtered out; finished in 1.23s
+

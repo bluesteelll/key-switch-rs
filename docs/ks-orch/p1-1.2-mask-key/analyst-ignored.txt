@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-7db7aa9f2e43d9e8.exe)
+data::condition::tests::foreground_context_names_the_focused_notepad: test
+hook::keyboard_hook_callback::tests::the_menu_mask_key_is_inserted_into_the_input_stream: test
+
+2 tests, 0 benchmarks
+     Running unittests src\bin\swch.rs (target\debug\deps\swch-30c01523bb5c10d4.exe)
+0 tests, 0 benchmarks
+     Running tests\ipc_roundtrip.rs (target\debug\deps\ipc_roundtrip-4a63a76875fe161c.exe)
+0 tests, 0 benchmarks
+   Doc-tests key_switch_rs
+0 tests, 0 benchmarks
+LIST_EXIT=0

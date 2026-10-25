@@ -1,0 +1,42 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.65s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 2 tests
+test engine::scenarios::nothing_is_stuck_after_win_l ... FAILED
+test hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key ... FAILED
+
+failures:
+
+---- engine::scenarios::nothing_is_stuck_after_win_l stdout ----
+
+thread 'engine::scenarios::nothing_is_stuck_after_win_l' (9052) panicked at src\engine\scenarios.rs:2117:10:
+scenario: down L at +0 ms: expected the event to be suppressed, it was passed
+transcript:
+  down Win at +0 ms: passed, fired []
+  down L at +0 ms: passed, fired []
+  session locked at +0 ms: -, fired []
+  up Win unseen by the hook at +0 ms: -, fired []
+  up L unseen by the hook at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  down LCtrl at +0 ms: passed, fired []
+  down LAlt at +0 ms: passed, fired []
+  down L at +0 ms: passed, fired [PressKey(VIRTUAL_KEY(124))]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key stdout ----
+
+thread 'hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key' (13080) panicked at src\hook\main_thread.rs:1516:9:
+assertion `left == right` failed: the first F14 after the lock is a press, not a repeat (owner decision, open question 9)
+  left: []
+ right: [SwitchLanguage]
+
+
+failures:
+    engine::scenarios::nothing_is_stuck_after_win_l
+    hook::main_thread::tests::a_lock_signal_drops_gestures_cancels_macros_and_releases_a_swallowed_key
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.52s
+
+error: test failed, to rerun pass `--lib`

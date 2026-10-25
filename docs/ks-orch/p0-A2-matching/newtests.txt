@@ -1,0 +1,77 @@
+
+#[test]
+fn deferred_binding_does_not_arm_while_shift_is_held() {
+    // The exact rule covers Tap/Hold/DoubleTap too, not only `Immediate`.
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200)) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(20)
+    .down("CapsLock")
+    .expect_passed()
+    .expect_nothing_fired()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_passed()
+    .expect_nothing_fired()
+    .up("LShift")
+    .expect_passed()
+    .advance_ms(400)
+    .down("CapsLock")
+    .expect_suppressed()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn deferred_binding_arms_while_shift_is_held_with_allow_extra_modifiers() {
+    Scenario::from_ron(
+        r#"( bindings: [ (keys: "CapsLock", action: SwitchLanguage, trigger: Tap(200), allow_extra_modifiers: true) ] )"#,
+    )
+    .down("LShift")
+    .expect_passed()
+    .advance_ms(20)
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(20)
+    .up("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn shift_capslock_fires_next_to_the_alt_shift_and_ctrl_shift_auto_blockers() {
+    // The default config with `block_original_combo: true` on CapsLock adds
+    // the registry's language-hotkey blockers; they must not take over a
+    // Shift held for Shift+CapsLock. Built directly: loading from RON would
+    // read the registry.
+    Scenario::with_bindings(vec![
+        Binding::new_auto_blocker(KeyCombination::from_keys(vec![VK_MENU, VK_SHIFT])),
+        Binding::new_auto_blocker(KeyCombination::from_keys(vec![VK_CONTROL, VK_SHIFT])),
+        Binding::new(
+            KeyCombination::from_keys(vec![VK_CAPITAL]),
+            BindAction::SwitchLanguage,
+        ),
+        Binding::new(
+            KeyCombination::from_keys(vec![VK_SHIFT, VK_CAPITAL]),
+            BindAction::ToggleCapsLock,
+        ),
+    ])
+    .down("LShift")
+    .expect_passed()
+    .expect_nothing_fired()
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::ToggleCapsLock])
+    .up("CapsLock")
+    .expect_suppressed()
+    .up("LShift")
+    .expect_passed()
+    .down("CapsLock")
+    .expect_suppressed()
+    .expect_fired(&[BindAction::SwitchLanguage]);
+}

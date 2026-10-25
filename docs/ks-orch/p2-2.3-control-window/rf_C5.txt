@@ -1,0 +1,44 @@
+=== tree 668e80e
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\parent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.85s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/parent\debug\deps\key_switch_rs-9008e7660f7a33b9.exe)
+
+running 3 tests
+test engine::tests::a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes ... FAILED
+test engine::tests::a_refused_window_timer_drops_no_gesture ... FAILED
+test hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops ... FAILED
+
+failures:
+
+---- engine::tests::a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes stdout ----
+
+thread 'engine::tests::a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes' (23196) panicked at src\engine\mod.rs:1059:9:
+assertion `left == right` failed: the window's timer is refused, and no Hold is dropped with it
+  left: 1
+ right: 0
+
+---- engine::tests::a_refused_window_timer_drops_no_gesture stdout ----
+
+thread 'engine::tests::a_refused_window_timer_drops_no_gesture' (5948) panicked at src\engine\mod.rs:1098:9:
+assertion `left == right` failed: a refused window timer drops no gesture
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops stdout ----
+
+thread 'hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops' (12336) panicked at src\hook\main_thread.rs:870:9:
+assertion `left == right` failed: only the Hold is dropped
+  left: 3
+ right: 1
+
+
+failures:
+    engine::tests::a_refused_window_timer_drops_no_gesture
+    engine::tests::a_tap_whose_window_timer_is_refused_fires_when_a_later_timer_wakes
+    hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 637 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+exit 101

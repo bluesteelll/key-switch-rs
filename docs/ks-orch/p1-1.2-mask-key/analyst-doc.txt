@@ -1,0 +1,39 @@
+    Checking key-switch-rs v0.1.0 (D:\key-switch-rs\key-switch-rs)
+ Documenting key-switch-rs v0.1.0 (D:\key-switch-rs\key-switch-rs)
+warning: public documentation for `load` links to private item `ConfigError::Missing`
+   --> src\config\loader.rs:156:7
+    |
+156 | /// [`ConfigError::Missing`] and nothing is created for it: a typo must not
+    |       ^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+    = note: `#[warn(rustdoc::private_intra_doc_links)]` on by default
+
+warning: public documentation for `reload` links to private item `ConfigError::Missing`
+   --> src\config\loader.rs:176:36
+    |
+176 | /// a deleted or renamed file is [`ConfigError::Missing`], and the caller
+    |                                    ^^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `set_enabled` links to private item `Self::with_engine`
+   --> src\hook\keyboard_hook.rs:132:32
+    |
+132 |     /// inside [`with_engine`](Self::with_engine).
+    |                                ^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: unclosed HTML tag `raw`
+ --> src\data\vk_name.rs:4:47
+  |
+4 | /// "F5", "A", "CapsLock"). Falls back to "VK(<raw>)" for unmapped codes.
+  |                                               ^^^^^
+  |
+  = note: `#[warn(rustdoc::invalid_html_tags)]` on by default
+
+warning: `key-switch-rs` (lib doc) generated 4 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.36s
+   Generated D:\key-switch-rs\key-switch-rs\target\doc\key_switch_rs\index.html and 1 other file
+DOC_EXIT=0

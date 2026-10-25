@@ -1,0 +1,33 @@
+=== cfg/ctrl_shift_tap_double.ron
+[INFO] loading config from cfg/ctrl_shift_tap_double.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), AnySide(Shift)] }) action=PressKey(VIRTUAL_KEY(27)) block_default=false block_original_combo=None condition=Always trigger=Tap(200)
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), AnySide(Shift)] }) action=ToggleCapsLock block_default=false block_original_combo=None condition=Always trigger=DoubleTap(300)
+exit 0
+=== cfg/ctrl_shift_double.ron
+[INFO] loading config from cfg/ctrl_shift_double.ron
+OK: 1 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), AnySide(Shift)] }) action=ToggleCapsLock block_default=false block_original_combo=None condition=Always trigger=DoubleTap(300)
+exit 0
+=== cfg/when_notepad.ron
+[INFO] loading config from cfg/when_notepad.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=AppEquals("notepad.exe") trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(121))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=TitleContains("GitHub") trigger=Immediate
+exit 0
+=== cfg/manual_checks.ron
+[INFO] loading config from cfg/manual_checks.ron
+OK: 4 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(120))] }) action=SwitchLanguage block_default=false block_original_combo=None condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(121))] }) action=Launch { exe: "notepad.exe", args: [] } block_default=true block_original_combo=None condition=Always trigger=Hold(3000)
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Win), AnySide(Alt), Key(VIRTUAL_KEY(84))] }) action=Launch { exe: "wt.exe", args: [] } block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #3: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(44))] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate
+exit 0
+=== D:/key-switch-rs/key-switch-rs/src/config/default_config.ron
+[INFO] loading config from D:/key-switch-rs/key-switch-rs/src/config/default_config.ron
+[INFO] SwitchLanguage: using default combination
+OK: 3 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=Some(Swallow) condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(20))] }) action=ToggleCapsLock block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Alt), AnySide(Shift)] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate
+exit 0

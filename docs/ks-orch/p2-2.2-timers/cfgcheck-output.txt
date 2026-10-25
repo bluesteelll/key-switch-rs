@@ -1,0 +1,53 @@
+=== f13-tap-hold.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/f13-tap-hold.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(124))] }) action=Media(PlayPause) block_default=true block_original_combo=None condition=Always trigger=Tap(200)
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(124))] }) action=Media(Next) block_default=true block_original_combo=None condition=Always trigger=Hold(200)
+=== f9-tap-double.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/f9-tap-double.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=Always trigger=Tap(200)
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(66)) block_default=true block_original_combo=None condition=Always trigger=DoubleTap(300)
+=== manual-m1.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/manual-m1.ron
+[INFO] SwitchLanguage: using default combination
+OK: 4 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=Some(Swallow) condition=Always trigger=Tap(200)
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=PressKey(VIRTUAL_KEY(160)) block_default=true block_original_combo=None condition=Always trigger=Hold(200)
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(20))] }) action=ToggleCapsLock block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #3: kind=Combo(KeyCombination { keys: [AnySide(Alt), AnySide(Shift)] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate
+=== manual-m3.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/manual-m3.ron
+OK: 1 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(162))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=false block_original_combo=None condition=Always trigger=Tap(200)
+=== manual-m4.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/manual-m4.ron
+OK: 1 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), AnySide(Shift)] }) action=SwitchLanguage block_default=false block_original_combo=None condition=Always trigger=Hold(1000)
+=== manual-m6.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/manual-m6.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=Always trigger=DoubleTap(300)
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(20))] }) action=PressKey(VIRTUAL_KEY(66)) block_default=true block_original_combo=None condition=Always trigger=DoubleTap(300)
+=== manual-m8.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/manual-m8.ron
+OK: 1 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=Always trigger=Hold(5000)
+=== note-11-8.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/note-11-8.ron
+OK: 3 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(160))] }) action=ToggleCapsLock block_default=false block_original_combo=None condition=Always trigger=DoubleTap(250)
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(162))] }) action=PressKey(VIRTUAL_KEY(27)) block_default=false block_original_combo=None condition=Always trigger=Tap(200)
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), AnySide(Shift)] }) action=SwitchLanguage block_default=false block_original_combo=None condition=Always trigger=Hold(1000)
+=== row-75.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/row-75.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(65)) block_default=true block_original_combo=None condition=Always trigger=Tap(200)
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(120))] }) action=PressKey(VIRTUAL_KEY(66)) block_default=true block_original_combo=None condition=Always trigger=DoubleTap(300)
+=== template.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.2-timers/cfg/template.ron
+[INFO] SwitchLanguage: using default combination
+OK: 3 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=Some(Swallow) condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Shift), Key(VIRTUAL_KEY(20))] }) action=ToggleCapsLock block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #2: kind=Combo(KeyCombination { keys: [AnySide(Alt), AnySide(Shift)] }) action=DoNothing block_default=true block_original_combo=None condition=Always trigger=Immediate

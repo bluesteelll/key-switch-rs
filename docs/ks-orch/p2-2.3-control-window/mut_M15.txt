@@ -1,0 +1,54 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.59s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 3 tests
+test engine::scenarios::a_hold_armed_between_two_return_notifications_fires ... FAILED
+test engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order ... FAILED
+test hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold ... FAILED
+
+failures:
+
+---- engine::scenarios::a_hold_armed_between_two_return_notifications_fires stdout ----
+
+thread 'engine::scenarios::a_hold_armed_between_two_return_notifications_fires' (21800) panicked at src\engine\scenarios.rs:2271:6:
+scenario: advance 300 ms to +300 ms: expected to fire [SwitchLanguage], fired []
+transcript:
+  session locked at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  down F13 at +0 ms: suppressed, fired []
+  keyboard input switched back to this desktop at +0 ms: -, fired []
+  advance 300 ms to +300 ms: -, fired []
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order stdout ----
+
+thread 'engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order' (18992) panicked at src\engine\scenarios.rs:2252:10:
+scenario: repeat F13 at +500 ms: expected to fire [], fired [SwitchLanguage]
+transcript:
+  session locked at +0 ms: -, fired []
+  keyboard input switched to another desktop at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  down F13 at +0 ms: suppressed, fired [SwitchLanguage]
+  keyboard input switched back to this desktop at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat F13 at +500 ms: suppressed, fired [SwitchLanguage]
+
+
+---- hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold stdout ----
+
+thread 'hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold' (20972) panicked at src\hook\main_thread.rs:1570:9:
+assertion `left == right` failed: the macro started after the return still runs
+  left: 0
+ right: 1
+
+
+failures:
+    engine::scenarios::a_hold_armed_between_two_return_notifications_fires
+    engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order
+    hook::main_thread::tests::a_late_return_signal_keeps_a_running_macro_and_an_armed_hold
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.62s
+
+error: test failed, to rerun pass `--lib`

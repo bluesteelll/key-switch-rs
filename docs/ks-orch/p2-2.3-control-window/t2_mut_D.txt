@@ -1,0 +1,24 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.53s
+     Running unittests src\lib.rs (target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::main_thread::tests::a_return_signal_reads_the_foreground_window_again ... FAILED
+
+failures:
+
+---- hook::main_thread::tests::a_return_signal_reads_the_foreground_window_again stdout ----
+
+thread 'hook::main_thread::tests::a_return_signal_reads_the_foreground_window_again' (6536) panicked at src\hook\main_thread.rs:1684:13:
+assertion `left == right` failed: the drain of session unlocked reads the foreground window again
+  left: Some(Some("p4096.exe"))
+ right: Some(Some("p8192.exe"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::main_thread::tests::a_return_signal_reads_the_foreground_window_again
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 685 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

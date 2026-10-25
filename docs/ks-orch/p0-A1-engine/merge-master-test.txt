@@ -1,0 +1,213 @@
+   Compiling key-switch-rs v0.1.0 (D:\key-switch-rs\key-switch-rs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.97s
+     Running unittests src\lib.rs (target\debug\deps\key_switch_rs-9c8e127322721cde.exe)
+
+running 193 tests
+test build_script::tests::debug_builds_embed_nothing_and_do_not_warn ... ok
+test build_script::tests::non_windows_targets_embed_nothing_and_do_not_warn ... ok
+test build_script::tests::bin_sets_false_ignores_whitespace_and_comments ... ok
+test build_script::tests::bin_sets_false_matches_the_whole_key ... ok
+test build_script::tests::bin_sets_false_stops_at_an_indented_table_header ... ok
+test build_script::tests::bin_sets_false_reads_the_named_bin_table ... ok
+test build_script::tests::gnu_release_gets_no_msvc_linker_flags_but_a_warning ... ok
+test build_script::tests::msvc_release_embeds_uac_manifest_into_daemon_only ... ok
+test config::loader::tests::all_per_binding_errors_collected ... ok
+test config::loader::tests::auto_blocker_not_added_for_non_system_actions ... ok
+test build_script::tests::daemon_bin_builds_no_test_or_bench_harness ... ok
+test config::loader::tests::auto_blocker_not_added_without_flag ... ok
+test config::loader::tests::chord_too_short_is_error ... ok
+test config::loader::tests::auto_blocker_deduped_when_two_bindings_want_the_same_combo ... ok
+test config::loader::tests::coexisting_tap_and_hold_on_same_key ... ok
+test config::loader::tests::chord_duplicate_key_is_error ... ok
+test config::loader::tests::default_condition_is_always ... ok
+test config::loader::tests::default_trigger_is_immediate ... ok
+test config::loader::tests::empty_config_is_ok_but_warned ... ok
+test config::loader::tests::parse_chord_default_window ... ok
+test config::loader::tests::default_config_parses ... ok
+test config::loader::tests::parse_chord_keys ... ok
+test config::loader::tests::parse_double_tap_trigger ... ok
+test config::loader::tests::parse_empty_sequence_is_ok ... ok
+test config::loader::tests::parse_hold_trigger ... ok
+test config::loader::tests::parse_launch_no_args ... ok
+test config::loader::tests::parse_launch_with_args ... ok
+test config::loader::tests::parse_multiple_bindings ... ok
+test config::loader::tests::parse_open_url ... ok
+test config::loader::tests::parse_media_variants ... ok
+test config::loader::tests::parse_post_message_by_name ... ok
+test config::loader::tests::parse_post_message_by_numeric_code ... ok
+test config::loader::tests::parse_press_key_action ... ok
+test config::loader::tests::parse_sequence_all_step_kinds ... ok
+test config::loader::tests::parse_sequence_keys ... ok
+test config::loader::tests::parse_sequence_with_combos ... ok
+test config::loader::tests::parse_sequence_with_new_step_kinds ... ok
+test config::loader::tests::parse_tap_trigger ... ok
+test config::loader::tests::parse_simple_binding ... ok
+test config::loader::tests::parse_when_app_equals ... ok
+test config::loader::tests::parse_when_complex_and_or_not ... ok
+test config::loader::tests::sequence_text_with_emoji_roundtrips ... ok
+test config::loader::tests::sequence_too_short_is_error ... ok
+test config::loader::tests::sequence_unknown_key_in_step_is_bindings_error ... ok
+test config::loader::tests::sequence_unknown_step_variant_is_error ... ok
+test config::loader::tests::sequence_unknown_window_variant_is_error ... ok
+test config::loader::tests::unknown_action_variant_is_error ... ok
+test config::loader::tests::sequence_with_deferred_trigger_is_error ... ok
+test config::loader::tests::unknown_key_in_combo_is_error ... ok
+test config::loader::tests::unknown_press_key_target_is_error ... ok
+test config::parsing::tests::parse_combo_case_insensitive ... ok
+test config::parsing::tests::parse_combo_dedup ... ok
+test config::parsing::tests::parse_combo_multi ... ok
+test config::parsing::tests::parse_combo_rejects_empty ... ok
+test config::parsing::tests::parse_combo_rejects_stray_plus ... ok
+test config::parsing::tests::parse_combo_rejects_unknown ... ok
+test config::parsing::tests::parse_combo_single_key ... ok
+test config::parsing::tests::parse_combo_whitespace_tolerant ... ok
+test config::parsing::tests::parse_wm_known ... ok
+test config::parsing::tests::parse_wm_unknown ... ok
+test data::condition::tests::always_is_true ... ok
+test data::condition::tests::is_always_helper ... ok
+test data::condition::tests::leaf_conditions_read_the_foreground_info ... ok
+test data::condition::tests::and_short_circuits_on_first_false ... ok
+test data::condition::tests::nested_and_or_evaluates_correctly ... ok
+test data::condition::tests::not_inverts ... ok
+test data::key_combination::tests::test_extra_keys ... ok
+test data::condition::tests::or_short_circuits_on_first_true ... ok
+test data::key_combination::tests::test_key_combination ... ok
+test data::key_combination::tests::test_single_key ... ok
+test data::sequence::tests::display_combo_uses_plus ... ok
+test data::sequence::tests::display_delay_includes_ms ... ok
+test data::sequence::tests::display_short_text_unchanged ... ok
+test data::sequence::tests::display_truncates_long_text ... ok
+test data::sequence::tests::is_modifier_classifies_correctly ... ok
+test data::vk_name::tests::function_keys ... ok
+test data::vk_name::tests::digits_map_to_chars ... ok
+test data::trigger::tests::default_is_immediate ... ok
+test data::vk_name::tests::letters_map_to_chars ... ok
+test data::vk_name::tests::modifiers ... ok
+test data::vk_name::tests::parse_digits ... ok
+test data::vk_name::tests::parse_function_keys ... ok
+test data::vk_name::tests::parse_letters_case_insensitive ... ok
+test data::vk_name::tests::parse_modifier_aliases ... ok
+test data::vk_name::tests::parse_named_keys ... ok
+test data::vk_name::tests::parse_numpad ... ok
+test data::vk_name::tests::parse_oem_punctuation ... ok
+test data::vk_name::tests::parse_unknown_returns_none ... ok
+test data::vk_name::tests::unknown_falls_back ... ok
+test data::vk_name::tests::vk_name_roundtrip_for_common_keys ... ok
+test engine::chords::tests::canonical_order_independent ... ok
+test engine::chords::tests::first_chord_key_arms_pending ... ok
+test engine::chords::tests::second_chord_key_after_window_starts_over ... ok
+test engine::chords::tests::second_chord_key_within_window_completes ... ok
+test engine::chords::tests::third_chord_key_starts_fresh_after_completion ... ok
+test engine::chords::tests::vk_not_in_chord_returns_not_in_chord ... ok
+test engine::gestures::tests::arm_hold_inserts_then_cancel_removes ... ok
+test engine::gestures::tests::arm_tap_inserts_then_resolve_removes ... ok
+test engine::gestures::tests::auto_repeat_keydown_does_not_stack ... ok
+test engine::gestures::tests::cancel_hold_with_no_pending_returns_false ... ok
+test engine::gestures::tests::double_tap_after_the_term_arms_again ... ok
+test engine::gestures::tests::double_tap_fires_the_first_press_action ... ok
+test engine::gestures::tests::double_tap_first_press_arms_second_press_fires ... ok
+test engine::gestures::tests::double_tap_third_press_arms_fresh_pending ... ok
+test engine::gestures::tests::expired_tap_is_replaced_by_the_next_arm ... ok
+test engine::gestures::tests::forgotten_hold_never_fires_and_frees_its_key ... ok
+test engine::gestures::tests::hold_left_to_its_timer_does_not_block_a_new_arm ... ok
+test engine::gestures::tests::hold_released_at_or_after_its_due_is_left_to_its_timer ... ok
+test engine::gestures::tests::hold_timer_fires_its_own_entry_once ... ok
+test engine::gestures::tests::resolve_tap_with_no_pending_returns_none ... ok
+test engine::gestures::tests::stale_hold_timer_does_not_fire_a_newer_press ... ok
+test engine::gestures::tests::tap_and_hold_pending_simultaneously_on_same_key ... ok
+test engine::gestures::tests::tap_released_at_or_after_its_term_does_not_fire ... ok
+test engine::keys::tests::active_keys_capacity_bound ... ok
+test engine::keys::tests::active_keys_dedup ... ok
+test engine::keys::tests::active_keys_fold_sided_modifiers ... ok
+test engine::keys::tests::blocked_flags_are_independent ... ok
+test engine::keys::tests::clear_all_resets_every_flag ... ok
+test engine::keys::tests::out_of_range_codes_are_ignored ... ok
+test engine::keys::tests::second_press_is_a_repeat_until_release ... ok
+test engine::keys::tests::sync_overwrites_modifiers_except_the_skipped_key ... ok
+test engine::scenarios::block_default_false_fires_and_lets_both_edges_through ... ok
+test engine::scenarios::a_failed_expectation_panics - should panic ... ok
+test engine::scenarios::chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key ... ok
+test engine::scenarios::chord_does_not_fire_once_its_window_has_passed ... ok
+test engine::scenarios::chord_fires_when_all_keys_go_down_within_its_window ... ok
+test engine::scenarios::chord_keys_can_go_down_in_any_order ... ok
+test engine::scenarios::combo_does_not_fire_without_all_of_its_keys ... ok
+test engine::scenarios::double_tap_fires_on_the_second_press_within_its_term ... ok
+test engine::scenarios::double_tap_second_press_after_the_term_arms_again ... ok
+test engine::scenarios::first_binding_whose_condition_holds_wins_on_a_shared_key ... ok
+test engine::scenarios::foreground_change_forgets_pending_key_up_suppression ... ok
+test engine::scenarios::equal_tap_and_hold_terms_with_a_late_timer_fire_exactly_one ... ok
+test engine::scenarios::four_quick_presses_double_tap_twice ... ok
+test engine::scenarios::hold_fires_once_its_term_passes_while_held ... ok
+test engine::scenarios::hold_left_to_a_late_timer_does_not_block_the_next_press ... ok
+test engine::scenarios::hold_released_after_its_term_fires_when_its_late_timer_wakes ... ok
+test engine::scenarios::hold_released_before_its_term_with_a_late_timer_is_cancelled ... ok
+test engine::scenarios::hold_released_early_is_cancelled ... ok
+test engine::scenarios::hold_whose_timer_cannot_start_never_fires ... ok
+test engine::scenarios::immediate_combo_fires_on_its_last_key_and_lets_the_modifiers_through ... ok
+test engine::scenarios::immediate_single_key_fires_on_down_and_swallows_both_edges ... ok
+test engine::scenarios::key_outside_the_chord_passes ... ok
+test engine::scenarios::modifier_lost_by_the_os_is_resynced_before_matching ... ok
+test engine::scenarios::more_specific_immediate_binding_wins ... ok
+test engine::scenarios::press_key_fires_again_on_auto_repeat_and_the_repeats_stay_suppressed ... ok
+test engine::scenarios::releasing_a_key_that_is_up_is_a_script_error - should panic ... ok
+test engine::scenarios::right_hand_modifiers_match_unsided_combo_keys ... ok
+test engine::scenarios::sequence_broken_by_another_key_does_not_fire ... ok
+test engine::scenarios::sequence_fires_when_its_steps_follow_within_max_gap ... ok
+test engine::scenarios::sequence_times_out_after_max_gap ... ok
+test engine::scenarios::sequence_with_a_modifier_held_through_both_steps ... ok
+test engine::scenarios::stale_hold_timer_does_not_fire_the_next_press_early ... ok
+test engine::scenarios::tap_and_hold_with_equal_terms_fire_exactly_one ... ok
+test engine::scenarios::tap_fires_on_a_release_within_its_term ... ok
+test engine::scenarios::tap_held_past_its_term_fires_nothing_and_swallows_the_release ... ok
+test engine::scenarios::tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release ... ok
+test engine::scenarios::two_quick_taps_fire_twice ... ok
+test engine::scenarios::unbound_key_passes_through ... ok
+test engine::scenarios::when_app_equals_matches_the_foreground_app_case_insensitively ... ok
+test engine::sequences::tests::each_step_restarts_the_gap ... ok
+test engine::sequences::tests::ctrl_x_ctrl_s_sequence ... ok
+test engine::sequences::tests::first_step_match_advances ... ok
+test engine::scenarios::when_title_contains_and_not_conditions ... ok
+test engine::sequences::tests::mismatched_intermediate_aborts ... ok
+test engine::sequences::tests::second_step_completes_sequence ... ok
+test engine::sequences::tests::step_after_max_gap_does_not_complete ... ok
+test engine::tests::forget_timer_makes_a_late_timer_fire_nothing ... ok
+test hook::keyboard_hook::tests::bindings_sorted_by_specificity ... ok
+test hook::keyboard_hook::tests::equal_specificity_keeps_config_order ... ok
+test hook::keyboard_hook::tests::initial_bindings_are_empty ... ok
+test hook::keyboard_hook::tests::update_bindings_can_clear_to_empty ... ok
+test hook::keyboard_hook::tests::update_bindings_replaces_list ... ok
+test hook::keyboard_hook::tests::with_engine_refuses_reentry_on_the_same_thread ... ok
+test hook::keyboard_hook::tests::with_engine_works_again_after_a_call ... ok
+test hook::keyboard_hook_callback::tests::injected_and_unknown_events_bypass_the_engine ... ok
+test ipc::tests::command_parse_aliases ... ok
+test ipc::tests::command_parse_case_insensitive ... ok
+test ipc::tests::command_parse_roundtrip ... ok
+test ipc::tests::command_parse_unknown ... ok
+test hook::keyboard_hook_callback::tests::extern_callback_returns_one_for_a_suppressed_key_and_passes_an_unbound_one ... ok
+test ipc::tests::response_format ... ok
+test ipc::tests::response_parse_err ... ok
+test ipc::tests::response_parse_ok ... ok
+test hook::keyboard_hook_callback::tests::physical_key_events_reach_the_engine ... ok
+test system::registry::tests::test_char_to_vk ... ok
+test system::registry::tests::test_default_combinations ... ok
+test system::registry::tests::test_parse_language_hotkey ... ok
+test system::registry::tests::test_get_system_hotkey_returns_combinations ... ok
+test system::registry::tests::test_parse_win_key_combo ... ok
+test system::system_function::tests::system32_path_includes_system32 ... ok
+test system::system_function::tests::test_capslock_has_no_combination ... ok
+test system::system_function::tests::test_hardcoded_combinations ... ok
+
+test result: ok. 193 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src\bin\swch.rs (target\debug\deps\swch-82e5670c4bbd8878.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests key_switch_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

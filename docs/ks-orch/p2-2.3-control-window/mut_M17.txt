@@ -1,0 +1,25 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.26s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 2 tests
+test hook::main_thread::tests::a_wake_that_cannot_be_set_counts_only_the_holds_it_drops ... ok
+test engine::tests::a_refused_window_timer_drops_no_gesture ... FAILED
+
+failures:
+
+---- engine::tests::a_refused_window_timer_drops_no_gesture stdout ----
+
+thread 'engine::tests::a_refused_window_timer_drops_no_gesture' (5684) panicked at src\engine\mod.rs:1364:9:
+assertion `left == right` failed: a refused window timer drops no gesture
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    engine::tests::a_refused_window_timer_drops_no_gesture
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

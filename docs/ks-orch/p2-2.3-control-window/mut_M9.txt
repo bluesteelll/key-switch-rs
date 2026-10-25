@@ -1,0 +1,31 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+warning: unused variable: `wparam`
+   --> src\hook\control_window.rs:212:17
+    |
+212 | fn session_ends(wparam: WPARAM) -> bool {
+    |                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_wparam`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `key-switch-rs` (lib test) generated 1 warning (run `cargo fix --lib -p key-switch-rs --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.26s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::control_window::tests::the_session_end_messages_are_answered_and_end_the_loop ... FAILED
+
+failures:
+
+---- hook::control_window::tests::the_session_end_messages_are_answered_and_end_the_loop stdout ----
+
+thread 'hook::control_window::tests::the_session_end_messages_are_answered_and_end_the_loop' (24396) panicked at src\hook\control_window.rs:369:9:
+a session that does not end ends nothing
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::control_window::tests::the_session_end_messages_are_answered_and_end_the_loop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 682 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

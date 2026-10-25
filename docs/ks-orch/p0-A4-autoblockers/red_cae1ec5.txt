@@ -1,0 +1,6 @@
+running 292 tests
+test config::loader::tests::auto_blocker_is_skipped_when_the_flagged_binding_uses_the_hotkey_keys ... FAILED
+test config::loader::tests::auto_blocker_is_skipped_when_a_binding_uses_the_hotkey_keys_in_either_order ... FAILED
+test config::loader::tests::auto_blockers_follow_the_bindings_of_the_file ... FAILED
+test engine::scenarios::user_binding_on_the_language_hotkey_fires_in_either_file_order ... FAILED
+test result: FAILED. 288 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s

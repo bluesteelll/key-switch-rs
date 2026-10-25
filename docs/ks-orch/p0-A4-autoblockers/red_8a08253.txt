@@ -1,0 +1,16 @@
+running 303 tests
+test engine::scenarios::alt_shift_pressed_while_a_letter_is_held_reaches_windows ... FAILED
+test engine::scenarios::alt_shift_x_fires_after_the_auto_blocker_swallowed_the_second_modifier ... FAILED
+test engine::scenarios::auto_blocker_matches_its_modifiers_exactly ... FAILED
+test engine::scenarios::ctrl_shift_blocker_swallows_a_bare_shift_and_fires_nothing ... FAILED
+test engine::scenarios::grave_blocker_acts_only_on_a_lone_grave ... FAILED
+test engine::scenarios::key_swallowed_by_a_binding_does_not_disable_the_blocker ... FAILED
+test engine::scenarios::key_whose_release_the_hook_missed_does_not_disable_the_blocker ... FAILED
+test engine::scenarios::modifier_swallowed_by_a_binding_does_not_disable_the_blocker ... FAILED
+test engine::scenarios::shift_pressed_while_alt_and_tab_are_held_reaches_windows ... FAILED
+test engine::scenarios::shift_pressed_while_ctrl_and_t_are_held_reaches_windows ... FAILED
+test engine::scenarios::shift_pressed_after_tab_was_released_is_still_swallowed ... FAILED
+test engine::scenarios::shift_held_after_the_auto_blocker_and_alt_released_stays_swallowed_for_its_whole_press ... FAILED
+test engine::scenarios::sided_user_binding_fires_and_the_blocker_keeps_the_other_sides ... FAILED
+test engine::scenarios::user_binding_on_alt_shift_fires_with_the_blocker_in_either_order ... FAILED
+test result: FAILED. 289 passed; 14 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.22s

@@ -1,0 +1,195 @@
+CHANGED(0) architecture.md:26 bf549c0 src/engine/mod.rs#L1-L226
+CHANGED(0) architecture.md:127 bf549c0 src/hook/main_thread.rs#L1-L67
+MOVED architecture.md:176 bf549c0 src/hook/watchdog/mod.rs#L456-L479 -> L476-L499
+CHANGED(0) architecture.md:176 bf549c0 src/hook/watchdog/mod.rs#L1-L58
+CHANGED(0) architecture.md:188 bf549c0 src/hook/main_thread.rs#L199-L229
+CHANGED(0) architecture.md:191 bf549c0 src/hook/main_thread.rs#L8-L21
+CHANGED(0) architecture.md:192 bf549c0 src/hook/keyboard_hook_callback.rs#L83-L109
+MOVED architecture.md:193 bf549c0 src/hook/main_thread.rs#L442-L462 -> L539-L559
+CHANGED(0) architecture.md:193 bf549c0 src/hook/main_thread.rs#L494-L595
+CHANGED(0) architecture.md:196 bf549c0 src/hook/main_thread.rs#L673-L744
+MOVED architecture.md:201 bf549c0 src/hook/main_thread.rs#L888-L910 -> L1005-L1027
+CHANGED(0) architecture.md:203 bf549c0 src/platform/timers.rs#L1-L11
+MOVED architecture.md:208 bf549c0 src/hook/main_thread.rs#L231-L255 -> L310-L334
+MOVED architecture.md:210 bf549c0 src/hook/keyboard_hook_callback.rs#L364-L373 -> L406-L415
+CHANGED(0) architecture.md:211 bf549c0 src/engine/mod.rs#L617-L666
+CHANGED(0) architecture.md:211 bf549c0 src/engine/keys.rs#L112-L142
+MOVED architecture.md:221 bf549c0 src/hook/keyboard_hook_callback.rs#L280-L292 -> L322-L334
+CHANGED(0) architecture.md:222 bf549c0 src/hook/health.rs#L11-L61
+MOVED architecture.md:222 bf549c0 src/hook/main_thread.rs#L832-L872 -> L949-L989
+MOVED architecture.md:222 bf549c0 src/hook/health.rs#L144-L183 -> L165-L204
+CHANGED(0) architecture.md:228 bf549c0 src/hook/keyboard_hook_callback.rs#L352-L401
+CHANGED(0) architecture.md:228 bf549c0 src/hook/keyboard_hook_callback.rs#L1-L53
+MOVED architecture.md:230 bf549c0 src/hook/keyboard_hook_callback.rs#L357-L362 -> L399-L404
+MOVED architecture.md:231 bf549c0 src/hook/keyboard_hook_callback.rs#L364-L367 -> L406-L409
+MOVED architecture.md:232 bf549c0 src/hook/keyboard_hook_callback.rs#L368-L373 -> L410-L415
+CHANGED(0) architecture.md:233 bf549c0 src/hook/keyboard_hook_callback.rs#L375-L378
+CHANGED(0) architecture.md:233 bf549c0 src/hook/keyboard_hook_callback.rs#L393-L393
+CHANGED(0) architecture.md:234 bf549c0 src/hook/keyboard_hook_callback.rs#L216-L224
+CHANGED(0) architecture.md:234 bf549c0 src/hook/keyboard_hook_callback.rs#L382-L385
+MOVED architecture.md:235 bf549c0 src/hook/keyboard_hook_callback.rs#L197-L207 -> L220-L230
+CHANGED(0) architecture.md:236 bf549c0 src/hook/keyboard_hook_callback.rs#L209-L254
+MOVED architecture.md:236 bf549c0 src/hook/keyboard_hook_callback.rs#L154-L195 -> L177-L218
+MOVED architecture.md:236 bf549c0 src/engine/mod.rs#L469-L477 -> L498-L506
+CHANGED(0) architecture.md:237 bf549c0 src/engine/keys.rs#L95-L110
+MOVED architecture.md:238 bf549c0 src/engine/keys.rs#L158-L165 -> L218-L225
+MOVED architecture.md:239 bf549c0 src/engine/matching.rs#L65-L79 -> L69-L83
+MOVED architecture.md:240 bf549c0 src/engine/mod.rs#L680-L706 -> L777-L803
+MOVED architecture.md:241 bf549c0 src/engine/mod.rs#L708-L821 -> L805-L918
+CHANGED(0) architecture.md:242 bf549c0 src/engine/matching.rs#L81-L102
+MOVED architecture.md:242 bf549c0 src/engine/mod.rs#L711-L739 -> L808-L836
+MOVED architecture.md:243 bf549c0 src/engine/mod.rs#L746-L758 -> L843-L855
+MOVED architecture.md:244 bf549c0 src/engine/mod.rs#L760-L793 -> L857-L890
+MOVED architecture.md:245 bf549c0 src/engine/mod.rs#L794-L819 -> L891-L916
+CHANGED(0) architecture.md:246 bf549c0 src/engine/mod.rs#L823-L853
+CHANGED(0) architecture.md:247 bf549c0 src/engine/mod.rs#L858-L899
+MOVED architecture.md:248 bf549c0 src/engine/mod.rs#L901-L909 -> L1011-L1019
+CHANGED(0) architecture.md:248 bf549c0 src/engine/keys.rs#L228-L239
+MOVED architecture.md:249 bf549c0 src/hook/keyboard_hook_callback.rs#L256-L292 -> L298-L334
+MOVED architecture.md:249 bf549c0 src/hook/keyboard_hook_callback.rs#L325-L336 -> L367-L378
+CHANGED(0) architecture.md:249 bf549c0 src/hook/keyboard_hook_callback.rs#L385-L400
+CHANGED(0) architecture.md:294 bf549c0 src/hook/keyboard_hook_callback.rs#L403-L426
+CHANGED(0) architecture.md:294 bf549c0 src/hook/main_thread.rs#L279-L286
+CHANGED(0) architecture.md:294 bf549c0 src/engine/mod.rs#L600-L615
+MOVED architecture.md:297 bf549c0 src/hook/keyboard_hook_callback.rs#L428-L470 -> L505-L547
+MOVED architecture.md:297 bf549c0 src/hook/main_thread.rs#L760-L790 -> L877-L907
+MOVED architecture.md:307 bf549c0 src/hook/keyboard_hook_callback.rs#L133-L145 -> L156-L168
+CHANGED(0) architecture.md:316 bf549c0 src/hook/health.rs#L17-L39
+CHANGED(0) architecture.md:317 bf549c0 src/hook/main_thread.rs#L103-L112
+MOVED architecture.md:322 bf549c0 src/logging/counters.rs#L104-L126 -> L134-L156
+MOVED architecture.md:327 bf549c0 src/hook/main_thread.rs#L199-L206 -> L276-L283
+MOVED architecture.md:327 bf549c0 src/hook/main_thread.rs#L305-L313 -> L402-L410
+CHANGED(0) architecture.md:327 bf549c0 src/engine/mod.rs#L479-L489
+CHANGED(0) architecture.md:331 bf549c0 src/engine/keys.rs#L61-L85
+MOVED architecture.md:340 bf549c0 src/hook/main_thread.rs#L257-L265 -> L336-L344
+CHANGED(0) architecture.md:346 bf549c0 src/engine/keys.rs#L1-L17
+CHANGED(0) architecture.md:354 bf549c0 src/engine/mod.rs#L617-L666
+CHANGED(0) architecture.md:358 bf549c0 src/engine/keys.rs#L112-L142
+MOVED architecture.md:360 bf549c0 src/engine/keys.rs#L144-L151 -> L204-L211
+MOVED architecture.md:370 bf549c0 src/engine/mod.rs#L358-L377 -> L387-L406
+MOVED architecture.md:370 bf549c0 src/engine/mod.rs#L296-L356 -> L325-L385
+MOVED architecture.md:370 bf549c0 src/engine/mod.rs#L560-L598 -> L602-L640
+CHANGED(0) architecture.md:370 bf549c0 src/engine/env.rs#L9-L60
+MOVED architecture.md:407 bf549c0 src/hook/main_thread.rs#L372-L410 -> L469-L507
+MOVED architecture.md:433 bf549c0 src/engine/env.rs#L62-L75 -> L68-L81
+MOVED architecture.md:440 bf549c0 src/engine/mod.rs#L760-L796 -> L857-L893
+MOVED architecture.md:469 bf549c0 src/hook/keyboard_hook_callback.rs#L294-L311 -> L336-L353
+MOVED architecture.md:482 bf549c0 src/hook/main_thread.rs#L804-L830 -> L921-L947
+MOVED architecture.md:521 bf549c0 src/hook/main_thread.rs#L564-L572 -> L661-L669
+MOVED architecture.md:526 bf549c0 src/hook/main_thread.rs#L464-L486 -> L561-L583
+CHANGED(0) architecture.md:567 bf549c0 src/hook/keyboard_hook_callback.rs#L403-L426
+MOVED architecture.md:569 bf549c0 src/engine/mod.rs#L878-L896 -> L981-L999
+MOVED build-and-run.md:146 bf549c0 src/hook/main_thread.rs#L815-L824 -> L932-L941
+CHANGED(0) build-and-run.md:147 bf549c0 src/logging/writer.rs#L228-L234
+MOVED build-and-run.md:151 bf549c0 src/hook/main_thread.rs#L760-L790 -> L877-L907
+MOVED build-and-run.md:152 bf549c0 src/hook/main_thread.rs#L832-L872 -> L949-L989
+MOVED build-and-run.md:153 bf549c0 src/hook/watchdog/mod.rs#L246-L251 -> L260-L265
+MOVED build-and-run.md:158 bf549c0 src/hook/watchdog/mod.rs#L675-L683 -> L695-L703
+MOVED build-and-run.md:254 bf549c0 src/hook/main_thread.rs#L464-L486 -> L561-L583
+MOVED build-and-run.md:254 bf549c0 src/hook/health.rs#L163-L183 -> L184-L204
+MOVED build-and-run.md:318 bf549c0 README.md#L891-L895 -> L907-L911
+MOVED build-and-run.md:516 bf549c0 src/engine/mod.rs#L901-L909 -> L1011-L1019
+MOVED config/actions.md:42 bf549c0 src/engine/mod.rs#L747-L754 -> L844-L851
+MOVED config/actions.md:43 bf549c0 src/engine/mod.rs#L858-L876 -> L961-L979
+MOVED config/actions.md:46 bf549c0 src/engine/mod.rs#L811-L817 -> L908-L914
+MOVED config/actions.md:47 bf549c0 src/engine/mod.rs#L782-L791 -> L879-L888
+MOVED config/actions.md:65 bf549c0 src/engine/mod.rs#L901-L909 -> L1011-L1019
+MOVED config/actions.md:65 bf549c0 src/hook/keyboard_hook_callback.rs#L256-L336 -> L298-L378
+CHANGED(0) config/actions.md:69 bf549c0 src/hook/keyboard_hook_callback.rs#L222-L224
+CHANGED(0) config/keys.md:178 bf549c0 src/hook/keyboard_hook_callback.rs#L382-L385
+MOVED config/keys.md:196 bf549c0 src/engine/keys.rs#L242-L252 -> L312-L322
+MOVED config/keys.md:197 bf549c0 src/engine/matching.rs#L38-L45 -> L42-L49
+MOVED config/kinds.md:14 bf549c0 src/engine/matching.rs#L53-L79 -> L57-L83
+MOVED config/kinds.md:16 bf549c0 src/engine/matching.rs#L53-L63 -> L57-L67
+MOVED config/kinds.md:18 bf549c0 src/engine/matching.rs#L76-L78 -> L80-L82
+CHANGED(0) config/kinds.md:26 bf549c0 src/engine/mod.rs#L668-L856
+MOVED config/kinds.md:71 bf549c0 src/engine/mod.rs#L760-L793 -> L857-L890
+MOVED config/kinds.md:77 bf549c0 src/engine/keys.rs#L181-L192 -> L250-L261
+MOVED config/kinds.md:137 bf549c0 src/engine/mod.rs#L794-L819 -> L891-L916
+MOVED config/kinds.md:142 bf549c0 src/engine/keys.rs#L181-L192 -> L250-L261
+CHANGED(0) config/kinds.md:162 bf549c0 src/engine/keys.rs#L61-L71
+CHANGED(0) config/kinds.md:162 bf549c0 src/engine/mod.rs#L185-L210
+CHANGED(0) config/kinds.md:171 1dfd80a src/engine/mod.rs#L413-L452
+MOVED config/kinds.md:183 bf549c0 src/engine/mod.rs#L708-L821 -> L805-L918
+CHANGED(0) config/known-issues.md:41 bf549c0 src/hook/keyboard_hook_callback.rs#L382-L385
+CHANGED(0) config/known-issues.md:42 bf549c0 src/hook/keyboard_hook_callback.rs#L382-L385
+MOVED config/known-issues.md:64 bf549c0 src/hook/keyboard_hook_callback.rs#L280-L292 -> L322-L334
+MOVED config/known-issues.md:124 bf549c0 src/engine/matching.rs#L70-L79 -> L74-L83
+MOVED config/known-issues.md:125 bf549c0 src/engine/matching.rs#L53-L63 -> L57-L67
+MOVED config/known-issues.md:127 bf549c0 src/hook/keyboard_hook_callback.rs#L364-L373 -> L406-L415
+CHANGED(0) config/known-issues.md:129 bf549c0 src/engine/matching.rs#L81-L102
+MOVED config/known-issues.md:141 bf549c0 src/engine/mod.rs#L747-L754 -> L844-L851
+MOVED config/known-issues.md:144 bf549c0 src/engine/keys.rs#L144-L151 -> L204-L211
+MOVED config/known-issues.md:145 bf549c0 src/hook/main_thread.rs#L257-L265 -> L336-L344
+MOVED config/known-issues.md:146 bf549c0 src/engine/mod.rs#L878-L896 -> L981-L999
+MOVED config/known-issues.md:147 bf549c0 src/hook/main_thread.rs#L760-L790 -> L877-L907
+MOVED config/known-issues.md:149 bf549c0 src/hook/watchdog/mod.rs#L38-L42 -> L43-L47
+MOVED config/known-issues.md:152 bf549c0 src/hook/watchdog/mod.rs#L289-L318 -> L309-L338
+MOVED config/known-issues.md:154 bf549c0 src/hook/main_thread.rs#L295-L302 -> L392-L399
+MOVED config/known-issues.md:155 bf549c0 src/hook/watchdog/mod.rs#L44-L49 -> L49-L54
+MOVED config/matching.md:8 bf549c0 src/engine/mod.rs#L711-L739 -> L808-L836
+CHANGED(0) config/matching.md:8 bf549c0 src/engine/matching.rs#L81-L102
+MOVED config/matching.md:28 bf549c0 src/engine/mod.rs#L711-L739 -> L808-L836
+CHANGED(0) config/matching.md:30 bf549c0 src/engine/matching.rs#L81-L102
+MOVED config/matching.md:121 bf549c0 src/engine/mod.rs#L711-L739 -> L808-L836
+CHANGED(0) config/matching.md:121 bf549c0 src/engine/mod.rs#L511-L530
+MOVED config/matching.md:162 bf549c0 src/engine/mod.rs#L469-L477 -> L498-L506
+CHANGED(0) config/matching.md:172 bf549c0 src/engine/mod.rs#L668-L856
+MOVED config/triggers-conditions.md:41 bf549c0 src/engine/mod.rs#L747-L754 -> L844-L851
+MOVED config/triggers-conditions.md:60 bf549c0 src/engine/mod.rs#L680-L706 -> L777-L803
+MOVED config/triggers-conditions.md:132 bf549c0 README.md#L431-L431 -> L440-L440
+MOVED config/triggers-conditions.md:220 bf549c0 src/engine/mod.rs#L760-L796 -> L857-L893
+CHANGED(0) gaps.md:168 bf549c0 src/hook/keyboard_hook_callback.rs#L83-L109
+CHANGED(0) gaps.md:170 20af28d src/data/sequence.rs#L111-L122
+CHANGED(0) glossary.md:67 bf549c0 src/engine/keys.rs#L95-L110
+CHANGED(0) glossary.md:71 bf549c0 src/engine/matching.rs#L81-L102
+CHANGED(0) glossary.md:131 bf549c0 src/logging/counters.rs#L1-L62
+MOVED glossary.md:153 bf549c0 src/engine/mod.rs#L358-L377 -> L387-L406
+MOVED glossary.md:161 bf549c0 src/engine/mod.rs#L680-L706 -> L777-L803
+CHANGED(0) glossary.md:169 bf549c0 src/hook/keyboard_hook_callback.rs#L222-L224
+CHANGED(0) glossary.md:183 bf549c0 src/engine/mod.rs#L1-L226
+CHANGED(0) glossary.md:187 bf549c0 src/engine/env.rs#L9-L60
+MOVED glossary.md:195 bf549c0 src/engine/matching.rs#L65-L79 -> L69-L83
+MOVED glossary.md:223 bf549c0 src/engine/mod.rs#L296-L356 -> L325-L385
+CHANGED(0) glossary.md:237 bf549c0 src/engine/matching.rs#L28-L46
+CHANGED(0) glossary.md:241 bf549c0 src/hook/health.rs#L11-L66
+MOVED glossary.md:253 bf549c0 src/hook/keyboard_hook_callback.rs#L394-L400 -> L450-L456
+CHANGED(0) glossary.md:261 bf549c0 src/hook/watchdog/mod.rs#L1-L58
+MOVED glossary.md:269 bf549c0 src/hook/main_thread.rs#L257-L265 -> L336-L344
+MOVED glossary.md:287 bf549c0 src/engine/mod.rs#L408-L467 -> L437-L496
+CHANGED(0) glossary.md:297 bf549c0 src/hook/keyboard_hook_callback.rs#L382-L385
+MOVED glossary.md:309 bf549c0 src/hook/keyboard_hook_callback.rs#L133-L145 -> L156-L168
+CHANGED(0) glossary.md:357 bf549c0 src/hook/main_thread.rs#L199-L229
+MOVED glossary.md:369 bf549c0 src/hook/keyboard_hook_callback.rs#L294-L336 -> L336-L378
+CHANGED(0) glossary.md:373 bf549c0 src/hook/main_thread.rs#L673-L744
+CHANGED(0) glossary.md:377 bf549c0 src/engine/keys.rs#L25-L42
+CHANGED(0) glossary.md:401 bf549c0 src/engine/keys.rs#L61-L85
+MOVED glossary.md:411 bf549c0 src/hook/watchdog/mod.rs#L44-L58 -> L49-L63
+MOVED glossary.md:477 bf549c0 src/engine/mod.rs#L469-L477 -> L498-L506
+CHANGED(0) glossary.md:489 bf549c0 src/engine/mod.rs#L823-L899
+CHANGED(0) glossary.md:493 bf549c0 src/engine/keys.rs#L61-L71
+MOVED glossary.md:527 bf549c0 src/engine/matching.rs#L53-L63 -> L57-L67
+MOVED glossary.md:535 bf549c0 src/engine/keys.rs#L158-L165 -> L218-L225
+CHANGED(0) glossary.md:569 bf549c0 src/hook/keyboard_hook_callback.rs#L403-L470
+MOVED glossary.md:577 bf549c0 src/engine/mod.rs#L878-L896 -> L981-L999
+MOVED glossary.md:585 bf549c0 src/hook/keyboard_hook_callback.rs#L197-L207 -> L220-L230
+CHANGED(0) overview.md:16 bf549c0 src/hook/keyboard_hook_callback.rs#L352-L470
+CHANGED(0) overview.md:17 bf549c0 src/hook/watchdog/mod.rs#L1-L58
+CHANGED(0) overview.md:18 bf549c0 src/engine/mod.rs#L1-L226
+CHANGED(0) overview.md:19 bf549c0 src/engine/matching.rs#L53-L102
+MOVED overview.md:26 bf549c0 src/hook/main_thread.rs#L257-L265 -> L336-L344
+CHANGED(0) roadmap.md:458 1dfd80a src/hook/keyboard_hook_callback.rs#L185-L195
+CHANGED(0) roadmap.md:525 1dfd80a src/engine/mod.rs#L342-L363
+MOVED roadmap.md:684 20af28d src/hook/keyboard_hook_callback.rs#L223-L252 -> L336-L365
+CHANGED(0) roadmap.md:737 20af28d src/engine/mod.rs#L531-L560
+MOVED roadmap.md:963 20af28d src/engine/mod.rs#L646-L654 -> L1011-L1019
+CHANGED(0) roadmap.md:964 20af28d src/hook/keyboard_hook_callback.rs#L199-L221
+CHANGED(0) roadmap.md:966 20af28d src/engine/gestures.rs#L197-L219
+MOVED roadmap.md:985 bf549c0 src/hook/keyboard_hook_callback.rs#L173-L176 -> L196-L199
+MOVED roadmap.md:987 bf549c0 src/hook/main_thread.rs#L503-L542 -> L600-L639
+MOVED roadmap.md:991 bf549c0 src/engine/keys.rs#L181-L192 -> L250-L261
+MOVED roadmap.md:996 bf549c0 src/engine/mod.rs#L878-L896 -> L981-L999
+CHANGED(0) roadmap.md:999 bf549c0 src/hook/watchdog/mod.rs#L23-L42
+MOVED roadmap.md:1003 bf549c0 src/hook/watchdog/mod.rs#L456-L479 -> L476-L499
+MOVED roadmap.md:1006 bf549c0 src/hook/main_thread.rs#L874-L886 -> L991-L1003
+MOVED roadmap.md:1012 bf549c0 src/hook/watchdog/mod.rs#L51-L58 -> L56-L63

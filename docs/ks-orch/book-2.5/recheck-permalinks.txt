@@ -1,0 +1,7 @@
+permalinks=1788 bad=0
+  f4c1fb6: 769
+  7cb3521: 602
+  bf549c0: 32
+  13ce323: 24
+  82f542f: 23
+  3befec7: 20

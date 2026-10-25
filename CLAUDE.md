@@ -7,7 +7,8 @@ kinds, `when:` conditions on the foreground app/title, and macro Sequences sent 
 `swch` CLI talks to the daemon over a named pipe (`interprocess`).
 
 **Orchestrator: read [docs/WORKFLOW.md](docs/WORKFLOW.md) before launching lanes.** Lane reports
-live in `D:/tmp/ks-orch/<lane>/`.
+live in `D:/tmp/ks-orch/<lane>/`. **Resuming on a new machine: read [docs/HANDOFF.md](docs/HANDOFF.md) first**; the
+reports up to the Phase 3 plan are archived in `docs/ks-orch/` and are restored to `D:/tmp/ks-orch/`.
 
 ## Layout
 
@@ -181,6 +182,16 @@ ruling L3; R17t, R17a, R18 are evidence); a breach is a defect unless the cut ju
   resolution, wake-ups), and added delay there is a defect unless the cut justifies it and the orchestrator accepts it.
 - Licence: MIT OR Apache-2.0.
 - Full roadmap scope, new features included.
+- Phase 3 (2026-10-25): key output under held modifiers follows AutoHotkey's remap: `PressKey` releases only its
+  trigger's own modifiers, extras that `allow_extra_modifiers` let in stay, macro `Key`/`Text`/`Combo` steps release
+  every held modifier (KS-19). `PressKey("Ctrl+S")` exists on the fast path. Known issue 66 is fixed for `Tap` and
+  `Hold`; a `DoubleTap`'s first tap stays a real lone tap. The binding that won a key-down keeps every auto-repeat
+  until the key-up or a reload (known issue 73). Right Alt on an AltGr layout stops counting as Ctrl+Alt (Breaking).
+- Deployment (open question 3, 2026-10-25): `uiAccess="true"`, a signed daemon in a secure location, instead of
+  `requireAdministrator`. `Launch(elevated: true)` shows a UAC prompt (`runas`); only `Launch` has `elevated:`; without
+  `cwd:` a program starts in the user's profile folder.
+- Versions (2026-10-25): no v0.2.0 tag; v0.3.0 after Checkpoint 3's manual checks and the owner's go. Phase 3 lanes run
+  back to back, each merged and pushed on ACCEPT; a REWORK, RETHINK or owner question stops the phase.
 
 ## Agents, model routing and effort
 

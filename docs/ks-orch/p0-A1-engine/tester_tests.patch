@@ -1,0 +1,135 @@
+diff --git a/src/engine/mod.rs b/src/engine/mod.rs
+index f36b51c..bc82e7b 100644
+--- a/src/engine/mod.rs
++++ b/src/engine/mod.rs
+@@ -439,3 +439,83 @@ impl Engine {
+         decision
+     }
+ }
++
++/// Tests added by the tester (round 1), uncommitted.
++#[cfg(test)]
++mod tester_tests {
++    use super::testing::Scenario;
++    use super::*;
++    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F13;
++
++    struct FixedEnv(Instant);
++
++    impl Env for FixedEnv {
++        fn now(&self) -> Instant {
++            self.0
++        }
++        fn os_key_down(&self, _vk: VIRTUAL_KEY) -> bool {
++            false
++        }
++        fn foreground_app(&self) -> Option<&str> {
++            None
++        }
++        fn foreground_title(&self) -> Option<&str> {
++            None
++        }
++    }
++
++    #[test]
++    fn engine_forget_timer_makes_a_late_timer_fire_nothing() {
++        let t0 = Instant::now();
++        let mut bindings = crate::config::from_ron_str(
++            r#"( bindings: [ (keys: "F13", action: PressKey("LShift"), trigger: Hold(200)) ] )"#,
++        )
++        .expect("config parses");
++        sort_by_specificity(&mut bindings);
++        let mut engine = Engine::new();
++
++        let decision = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FixedEnv(t0));
++        let token = decision.timers[0].token;
++        engine.forget_timer(token);
++
++        assert_eq!(
++            engine.on_timer(token),
++            Decision::default(),
++            "a timer the caller could not start but that wakes anyway must not fire the forgotten Hold"
++        );
++    }
++
++    #[test]
++    fn tap_held_past_its_term_with_auto_repeat_fires_nothing_on_release() {
++        Scenario::from_ron(
++            r#"( bindings: [ (keys: "CapsLock", action: PressKey("LShift"), trigger: Tap(200)) ] )"#,
++        )
++        .down("CapsLock")
++        .advance_ms(300)
++        .repeat("CapsLock")
++        .advance_ms(10)
++        .up("CapsLock")
++        .expect_suppressed()
++        .expect_nothing_fired();
++    }
++
++    #[test]
++    fn chord_completed_after_a_focus_change_swallows_the_key_up_of_its_first_key() {
++        // The focus change forgets that J's key-down was swallowed; the chord
++        // completing on K marks every chord key again, so J's key-up is
++        // swallowed as well and the app never sees an unmatched J key-up.
++        Scenario::from_ron(
++            r#"( bindings: [ (chord: (keys: ["J", "K"], window_ms: 500), action: SwitchLanguage) ] )"#,
++        )
++        .down("J")
++        .expect_suppressed()
++        .foreground_changed()
++        .down("K")
++        .expect_suppressed()
++        .expect_fired(&[BindAction::SwitchLanguage])
++        .up("J")
++        .expect_suppressed()
++        .up("K")
++        .expect_suppressed();
++    }
++}
+diff --git a/src/hook/keyboard_hook_callback.rs b/src/hook/keyboard_hook_callback.rs
+index 445f895..ca6e060 100644
+--- a/src/hook/keyboard_hook_callback.rs
++++ b/src/hook/keyboard_hook_callback.rs
+@@ -332,4 +332,42 @@ mod tests {
+ 
+         assert_eq!(decide_event(&hook, message(WM_CHAR), f13, 0), None);
+     }
++
++    #[test]
++    fn tester_extern_callback_returns_one_for_a_suppressed_key_and_passes_an_unbound_one() {
++        // Tester addition (uncommitted): drives the real extern fn on the
++        // global hook with a DoNothing binding. No hook is installed, no
++        // input is injected; CallNextHookEx finds no next hook.
++        let f13 = u32::from(VK_F13.0);
++        get_hook().update_bindings(vec![Binding::new(
++            KeyCombination::new(VK_F13),
++            BindAction::DoNothing,
++        )]);
++        let call = |vk: u32, msg: u32| {
++            let info = KBDLLHOOKSTRUCT {
++                vkCode: vk,
++                ..Default::default()
++            };
++            // SAFETY: lparam points to a live KBDLLHOOKSTRUCT for the call.
++            unsafe {
++                keyboard_hook_callback(
++                    0,
++                    WPARAM(msg as usize),
++                    LPARAM(&info as *const KBDLLHOOKSTRUCT as isize),
++                )
++            }
++        };
++        assert_eq!(
++            call(f13, WM_KEYDOWN),
++            LRESULT(1),
++            "bound F13 down is swallowed"
++        );
++        assert_eq!(call(f13, WM_KEYUP), LRESULT(1), "its key-up is swallowed");
++        assert_ne!(
++            call(u32::from(VK_A.0), WM_KEYDOWN),
++            LRESULT(1),
++            "an unbound key is passed on"
++        );
++        assert_ne!(call(u32::from(VK_A.0), WM_KEYUP), LRESULT(1));
++    }
+ }

@@ -1,0 +1,25 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.05s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 2 tests
+test platform::foreground::tests::the_cache_queries_again_only_for_another_window ... FAILED
+test hook::keyboard_hook_callback::tests::a_hundred_conditional_presses_in_one_window_query_its_process_once ... ok
+
+failures:
+
+---- platform::foreground::tests::the_cache_queries_again_only_for_another_window stdout ----
+
+thread 'platform::foreground::tests::the_cache_queries_again_only_for_another_window' (22964) panicked at src\platform\foreground.rs:300:9:
+assertion `left == right` failed: the same window asks nothing
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    platform::foreground::tests::the_cache_queries_again_only_for_another_window
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

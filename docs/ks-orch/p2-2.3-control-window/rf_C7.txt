@@ -1,0 +1,50 @@
+=== tree a0ae250
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\parent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.90s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/parent\debug\deps\key_switch_rs-9008e7660f7a33b9.exe)
+
+running 2 tests
+test engine::scenarios::a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows ... FAILED
+test engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys ... FAILED
+
+failures:
+
+---- engine::scenarios::a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows stdout ----
+
+thread 'engine::scenarios::a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows' (18184) panicked at src\engine\scenarios.rs:3921:6:
+scenario: down LCtrl at +50 ms: expected to fire [], fired [PressKey(VIRTUAL_KEY(27))]
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  down LShift at +0 ms: passed, fired []
+  advance 20 ms to +20 ms: -, fired []
+  up LShift at +20 ms: passed, fired []
+  up LCtrl at +20 ms: passed, fired []
+  advance 30 ms to +50 ms: -, fired []
+  down LCtrl at +50 ms: passed, fired [PressKey(VIRTUAL_KEY(27))]
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys stdout ----
+
+thread 'engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys' (17252) panicked at src\engine\scenarios.rs:3862:6:
+scenario: down LShift at +50 ms: expected to fire [ToggleCapsLock], fired []
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  down LShift at +0 ms: passed, fired []
+  advance 20 ms to +20 ms: -, fired []
+  up LShift at +20 ms: passed, fired []
+  up LCtrl at +20 ms: passed, fired []
+  advance 30 ms to +50 ms: -, fired []
+  down LCtrl at +50 ms: passed, fired []
+  down LShift at +50 ms: passed, fired []
+
+
+
+failures:
+    engine::scenarios::a_passing_ctrl_shift_double_tap_is_not_cancelled_by_its_own_keys
+    engine::scenarios::a_waiting_tap_of_a_passing_ctrl_shift_double_tap_fires_with_ctrl_down_in_windows
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 640 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+exit 101

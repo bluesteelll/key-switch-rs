@@ -1,0 +1,445 @@
+=== tree 765e5b5
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\parent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.86s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/parent\debug\deps\key_switch_rs-9008e7660f7a33b9.exe)
+
+running 22 tests
+test engine::scenarios::after_input_leaves_for_the_secure_desktop_the_next_press_of_a_swallowed_key_fires ... ok
+test engine::scenarios::a_swallowed_key_pressed_again_on_the_lock_screen_is_released_in_windows ... ok
+test engine::scenarios::a_hold_armed_between_two_return_notifications_fires ... ok
+test engine::scenarios::after_a_lock_the_next_press_of_a_swallowed_non_repeating_key_fires ... ok
+test engine::scenarios::a_second_lock_releases_a_key_pressed_after_the_first ... ok
+test engine::scenarios::a_late_unlock_notification_keeps_a_press_made_after_the_unlock ... ok
+test engine::scenarios::a_late_return_notification_keeps_a_press_made_after_the_return_in_either_order ... ok
+test engine::scenarios::a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed ... FAILED
+test engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once ... FAILED
+test engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed ... FAILED
+test engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows ... FAILED
+test engine::scenarios::after_a_lock_the_next_press_of_a_passing_key_is_a_new_press ... FAILED
+test engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed ... FAILED
+test engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed ... FAILED
+test engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed ... FAILED
+test engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed ... FAILED
+test engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed ... FAILED
+test engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes ... FAILED
+test engine::scenarios::nothing_is_stuck_after_win_l ... FAILED
+test engine::scenarios::press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding ... FAILED
+test engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed ... FAILED
+test engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches ... FAILED
+
+failures:
+
+---- engine::scenarios::a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed stdout ----
+
+thread 'engine::scenarios::a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed' (5440) panicked at src\engine\scenarios.rs:2075:10:
+scenario: up F13 at +0 ms: Windows got a lone key-up of F13
+transcript:
+  down F13 at +0 ms: suppressed, fired [SwitchLanguage]
+  session locked at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  up F13 at +0 ms: passed, fired []
+
+
+---- engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once stdout ----
+
+thread 'engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once' (20588) panicked at src\engine\scenarios.rs:2532:10:
+scenario: up CapsLock at +599 ms: expected the event to be suppressed, it was passed
+transcript:
+  down CapsLock at +0 ms: suppressed, fired [SwitchLanguage]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat CapsLock at +500 ms: suppressed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat CapsLock at +533 ms: suppressed, fired []
+  advance 33 ms to +566 ms: -, fired []
+  repeat CapsLock at +566 ms: suppressed, fired []
+  advance 33 ms to +599 ms: -, fired []
+  up CapsLock at +599 ms: passed, fired []
+
+
+---- engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed stdout ----
+
+thread 'engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed' (22116) panicked at src\engine\scenarios.rs:2090:10:
+scenario: up F13 at +0 ms: Windows got a lone key-up of F13
+transcript:
+  down F13 at +0 ms: suppressed, fired [SwitchLanguage]
+  remapping off at +0 ms: -, fired []
+  remapping on at +0 ms: -, fired []
+  up F13 at +0 ms: passed, fired []
+
+
+---- engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows stdout ----
+
+thread 'engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows' (9576) panicked at src\engine\scenarios.rs:1894:10:
+scenario: up CapsLock at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down CapsLock at +0 ms: suppressed, fired [SwitchLanguage]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat CapsLock at +500 ms: suppressed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat CapsLock at +533 ms: suppressed, fired []
+  up CapsLock at +533 ms: passed, fired []
+
+
+---- engine::scenarios::after_a_lock_the_next_press_of_a_passing_key_is_a_new_press stdout ----
+
+thread 'engine::scenarios::after_a_lock_the_next_press_of_a_passing_key_is_a_new_press' (15140) panicked at src\engine\scenarios.rs:2140:6:
+scenario: down F13 at +1000 ms: expected to fire [SwitchLanguage], fired []
+transcript:
+  down F13 at +0 ms: passed, fired [SwitchLanguage]
+  session locked at +0 ms: -, fired []
+  up F13 unseen by the hook at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  advance 1000 ms to +1000 ms: -, fired []
+  down F13 at +1000 ms: passed, fired []
+
+
+---- engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed stdout ----
+
+thread 'engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed' (18768) panicked at src\engine\scenarios.rs:215:10:
+scenario: up F13 at +0 ms: Windows got a lone key-up of F13
+transcript:
+  down F13 at +0 ms: suppressed, fired [SwitchLanguage]
+  foreground change at +0 ms: -, fired []
+  up F13 at +0 ms: passed, fired []
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed stdout ----
+
+thread 'engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed' (20856) panicked at src\engine\scenarios.rs:2982:6:
+scenario: up J at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down J at +0 ms: suppressed, fired []
+  advance 20 ms to +20 ms: -, fired []
+  down K at +20 ms: suppressed, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +20 ms: -, fired []
+  advance 480 ms to +500 ms: -, fired []
+  repeat K at +500 ms: suppressed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat K at +533 ms: suppressed, fired []
+  up J at +533 ms: passed, fired []
+
+
+---- engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed stdout ----
+
+thread 'engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed' (4648) panicked at src\engine\scenarios.rs:3010:6:
+scenario: up CapsLock at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down CapsLock at +0 ms: suppressed, fired []
+  advance 300 ms to +300 ms: -, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +300 ms: -, fired []
+  advance 200 ms to +500 ms: -, fired []
+  repeat CapsLock at +500 ms: suppressed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat CapsLock at +533 ms: suppressed, fired []
+  up CapsLock at +533 ms: passed, fired []
+
+
+---- engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed stdout ----
+
+thread 'engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed' (24572) panicked at src\engine\scenarios.rs:1870:10:
+scenario: up F13 at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down F13 at +0 ms: suppressed, fired [PressKey(VIRTUAL_KEY(37))]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat F13 at +500 ms: suppressed, fired [PressKey(VIRTUAL_KEY(37))]
+  advance 33 ms to +533 ms: -, fired []
+  repeat F13 at +533 ms: suppressed, fired [PressKey(VIRTUAL_KEY(37))]
+  up F13 at +533 ms: passed, fired []
+
+
+---- engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed stdout ----
+
+thread 'engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed' (20260) panicked at src\engine\scenarios.rs:3053:10:
+scenario: up F13 at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down LCtrl at +0 ms: passed, fired []
+  down F13 at +0 ms: suppressed, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +0 ms: -, fired []
+  up LCtrl at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat F13 at +500 ms: suppressed, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat F13 at +533 ms: suppressed, fired []
+  up F13 at +533 ms: passed, fired []
+
+
+---- engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes stdout ----
+
+thread 'engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes' (12636) panicked at src\engine\properties.rs:283:30:
+scenario: up CapsLock at +4399 ms: press of CapsLock: key-down suppressed, up passed
+context: config default, seed 0, FocusWhole mode
+transcript:
+  down LShift at +0 ms: passed, fired []
+  up LShift at +0 ms: passed, fired []
+  down LAlt at +0 ms: passed, fired []
+  down J at +0 ms: passed, fired []
+  advance 0 ms to +0 ms, timers stalled: -, fired []
+  down Space at +0 ms: passed, fired []
+  up LAlt at +0 ms: passed, fired []
+  down F13 at +0 ms: passed, fired []
+  down LCtrl at +0 ms: passed, fired []
+  advance 500 ms to +500 ms: -, fired []
+  up F13 at +500 ms: passed, fired []
+  down LShift at +500 ms: passed, fired []
+  repeat Space at +500 ms: passed, fired []
+  up LShift at +500 ms: passed, fired []
+  up J at +500 ms: passed, fired []
+  repeat Space at +500 ms: passed, fired []
+  up Space at +500 ms: passed, fired []
+  up LCtrl at +500 ms: passed, fired []
+  down F13 at +500 ms: passed, fired []
+  advance 200 ms to +700 ms: -, fired []
+  advance 250 ms to +950 ms: -, fired []
+  up F13 at +950 ms: passed, fired []
+  down F15 at +950 ms: passed, fired []
+  down K at +950 ms: passed, fired []
+  repeat F15 at +950 ms: passed, fired []
+  advance 199 ms to +1149 ms: -, fired []
+  down RShift at +1149 ms: passed, fired []
+  up K at +1149 ms: passed, fired []
+  down CapsLock at +1149 ms: suppressed, fired [ToggleCapsLock]
+  down LCtrl at +1149 ms: passed, fired []
+  advance 49 ms to +1198 ms, timers stalled: -, fired []
+  up F15 at +1198 ms: passed, fired []
+  down F16 at +1198 ms: passed, fired []
+  down LShift at +1198 ms: passed, fired []
+  down LAlt at +1198 ms: passed, fired []
+  repeat F16 at +1198 ms: passed, fired []
+  down K at +1198 ms: passed, fired []
+  up LShift at +1198 ms: passed, fired []
+  up LCtrl at +1198 ms: passed, fired []
+  advance 1 ms to +1199 ms: -, fired []
+  up LAlt at +1199 ms: passed, fired []
+  down LShift at +1199 ms: passed, fired []
+  down A at +1199 ms: passed, fired []
+  advance 199 ms to +1398 ms: -, fired []
+  up LShift at +1398 ms: passed, fired []
+  down Space at +1398 ms: passed, fired []
+  advance 201 ms to +1599 ms: -, fired []
+  advance 200 ms to +1799 ms: -, fired []
+  down LAlt at +1799 ms: passed, fired []
+  advance 33 ms to +1832 ms: -, fired []
+  advance 199 ms to +2031 ms: -, fired []
+  advance 1 ms to +2032 ms: -, fired []
+  up K at +2032 ms: passed, fired []
+  up LAlt at +2032 ms: passed, fired []
+  advance 500 ms to +2532 ms: -, fired []
+  repeat A at +2532 ms: passed, fired []
+  advance 50 ms to +2582 ms: -, fired []
+  up Space at +2582 ms: passed, fired []
+  down F13 at +2582 ms: passed, fired []
+  down Space at +2582 ms: passed, fired []
+  up Space at +2582 ms: passed, fired []
+  advance 50 ms to +2632 ms, timers stalled: -, fired []
+  down F14 at +2632 ms: passed, fired []
+  down LShift at +2632 ms: passed, fired []
+  advance 199 ms to +2831 ms, timers stalled: -, fired []
+  repeat F16 at +2831 ms: passed, fired []
+  down F15 at +2831 ms: passed, fired []
+  down Space at +2831 ms: passed, fired []
+  advance 49 ms to +2880 ms: -, fired []
+  down LAlt at +2880 ms: passed, fired []
+  repeat F13 at +2880 ms: passed, fired []
+  up F14 at +2880 ms: passed, fired []
+  down LCtrl at +2880 ms: passed, fired []
+  advance 199 ms to +3079 ms: -, fired []
+  up F15 at +3079 ms: passed, fired []
+  repeat LAlt at +3079 ms: passed, fired []
+  down F14 at +3079 ms: passed, fired []
+  advance 20 ms to +3099 ms: -, fired []
+  repeat LAlt at +3099 ms: passed, fired []
+  repeat A at +3099 ms: passed, fired []
+  advance 50 ms to +3149 ms: -, fired []
+  up LAlt at +3149 ms: passed, fired []
+  up F16 at +3149 ms: passed, fired []
+  down LAlt at +3149 ms: passed, fired []
+  up RShift at +3149 ms: passed, fired []
+  advance 500 ms to +3649 ms: -, fired []
+  repeat F14 at +3649 ms: passed, fired []
+  repeat F14 at +3649 ms: passed, fired []
+  foreground change at +3649 ms: -, fired []
+  advance 250 ms to +3899 ms, timers stalled: -, fired []
+  down F16 at +3899 ms: passed, fired []
+  advance 500 ms to +4399 ms: -, fired []
+  up LCtrl at +4399 ms: passed, fired []
+  repeat F13 at +4399 ms: passed, fired []
+  foreground change at +4399 ms: -, fired []
+  up A at +4399 ms: passed, fired []
+  repeat F16 at +4399 ms: passed, fired []
+  repeat LShift at +4399 ms: passed, fired []
+  repeat LShift at +4399 ms: passed, fired []
+  up CapsLock at +4399 ms: passed, fired []
+
+
+---- engine::scenarios::nothing_is_stuck_after_win_l stdout ----
+
+thread 'engine::scenarios::nothing_is_stuck_after_win_l' (20068) panicked at src\engine\scenarios.rs:2117:10:
+scenario: down L at +0 ms: expected the event to be suppressed, it was passed
+transcript:
+  down Win at +0 ms: passed, fired []
+  down L at +0 ms: passed, fired []
+  session locked at +0 ms: -, fired []
+  up Win unseen by the hook at +0 ms: -, fired []
+  up L unseen by the hook at +0 ms: -, fired []
+  session unlocked at +0 ms: -, fired []
+  down LCtrl at +0 ms: passed, fired []
+  down LAlt at +0 ms: passed, fired []
+  down L at +0 ms: passed, fired [PressKey(VIRTUAL_KEY(124))]
+
+
+---- engine::scenarios::press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding stdout ----
+
+thread 'engine::scenarios::press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding' (18608) panicked at src\engine\scenarios.rs:1943:10:
+scenario: up F13 at +1000 ms: expected the event to be suppressed, it was passed
+transcript:
+  down F13 at +0 ms: suppressed, fired [SwitchLanguage]
+  up F13 unseen by the hook at +0 ms: -, fired []
+  foreground change at +0 ms: -, fired []
+  advance 1000 ms to +1000 ms: -, fired []
+  down F13 at +1000 ms: suppressed, fired []
+  up F13 at +1000 ms: passed, fired []
+
+
+---- engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed stdout ----
+
+thread 'engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed' (24568) panicked at src\engine\scenarios.rs:1918:10:
+scenario: up T at +533 ms: expected the event to be suppressed, it was passed
+transcript:
+  down Win at +0 ms: passed, fired []
+  down Alt at +0 ms: passed, fired []
+  down T at +0 ms: suppressed, masked, fired [Launch { exe: "wt.exe", args: [] }]
+  foreground change at +0 ms: -, fired []
+  advance 500 ms to +500 ms: -, fired []
+  repeat T at +500 ms: suppressed, masked, fired []
+  advance 33 ms to +533 ms: -, fired []
+  repeat T at +533 ms: suppressed, masked, fired []
+  up T at +533 ms: passed, fired []
+
+
+---- engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches stdout ----
+
+thread 'engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches' (14116) panicked at src\engine\properties.rs:283:30:
+scenario: up CapsLock at +1299 ms: Windows got a lone key-up of CapsLock
+context: config default, seed 7, Unlock mode
+transcript:
+  down J at +0 ms: passed, fired []
+  up J at +0 ms: passed, fired []
+  down CapsLock at +0 ms: suppressed, fired [SwitchLanguage]
+  down LShift at +0 ms: passed, fired []
+  down F14 at +0 ms: passed, fired []
+  repeat CapsLock at +0 ms: suppressed, fired []
+  up LShift at +0 ms: passed, fired []
+  up CapsLock at +0 ms: suppressed, fired []
+  up F14 at +0 ms: passed, fired []
+  down LCtrl at +0 ms: passed, fired []
+  up LCtrl at +0 ms: passed, fired []
+  down F13 at +0 ms: passed, fired []
+  advance 33 ms to +33 ms: -, fired []
+  up F13 at +33 ms: passed, fired []
+  down K at +33 ms: passed, fired []
+  repeat K at +33 ms: passed, fired []
+  advance 199 ms to +232 ms, timers stalled: -, fired []
+  up K at +232 ms: passed, fired []
+  down K at +232 ms: passed, fired []
+  up K at +232 ms: passed, fired []
+  down A at +232 ms: passed, fired []
+  repeat A at +232 ms: passed, fired []
+  down F13 at +232 ms: passed, fired []
+  down J at +232 ms: passed, fired []
+  down F16 at +232 ms: passed, fired []
+  down F15 at +232 ms: passed, fired []
+  repeat F15 at +232 ms: passed, fired []
+  down F14 at +232 ms: passed, fired []
+  up J at +232 ms: passed, fired []
+  down CapsLock at +232 ms: suppressed, fired [SwitchLanguage]
+  down LCtrl at +232 ms: passed, fired []
+  advance 33 ms to +265 ms, timers stalled: -, fired []
+  down K at +265 ms: passed, fired []
+  down LShift at +265 ms: passed, fired []
+  up F15 at +265 ms: passed, fired []
+  repeat CapsLock at +265 ms: suppressed, fired []
+  up A at +265 ms: passed, fired []
+  advance 201 ms to +466 ms: -, fired []
+  down RShift at +466 ms: passed, fired []
+  repeat LCtrl at +466 ms: passed, fired []
+  up F16 at +466 ms: passed, fired []
+  down J at +466 ms: passed, fired []
+  down A at +466 ms: passed, fired []
+  repeat RShift at +466 ms: passed, fired []
+  down F16 at +466 ms: passed, fired []
+  down F15 at +466 ms: passed, fired []
+  repeat J at +466 ms: passed, fired []
+  down Space at +466 ms: passed, fired []
+  down LAlt at +466 ms: passed, fired []
+  repeat LCtrl at +466 ms: passed, fired []
+  repeat LCtrl at +466 ms: passed, fired []
+  up J at +466 ms: passed, fired []
+  down J at +466 ms: passed, fired []
+  repeat F13 at +466 ms: passed, fired []
+  repeat F13 at +466 ms: passed, fired []
+  repeat LShift at +466 ms: passed, fired []
+  repeat LCtrl at +466 ms: passed, fired []
+  repeat LAlt at +466 ms: passed, fired []
+  advance 1 ms to +467 ms: -, fired []
+  repeat CapsLock at +467 ms: suppressed, masked, fired []
+  advance 199 ms to +666 ms: -, fired []
+  up RShift at +666 ms: passed, fired []
+  down RShift at +666 ms: passed, fired []
+  repeat F13 at +666 ms: passed, fired []
+  advance 600 ms to +1266 ms: -, fired []
+  repeat CapsLock at +1266 ms: suppressed, masked, fired []
+  up Space at +1266 ms: passed, fired []
+  up J at +1266 ms: passed, fired []
+  up F14 at +1266 ms: passed, fired []
+  repeat F16 at +1266 ms: passed, fired []
+  down Space at +1266 ms: passed, fired []
+  down J at +1266 ms: passed, fired []
+  down F14 at +1266 ms: passed, fired []
+  repeat F15 at +1266 ms: passed, fired []
+  repeat F13 at +1266 ms: passed, fired []
+  foreground change at +1266 ms: -, fired []
+  up LCtrl unseen by the hook at +1266 ms: -, fired []
+  repeat RShift at +1266 ms: passed, fired []
+  repeat Space at +1266 ms: passed, fired []
+  up LAlt at +1266 ms: passed, fired []
+  advance 0 ms to +1266 ms: -, fired []
+  down LAlt at +1266 ms: passed, fired []
+  up F15 at +1266 ms: passed, fired []
+  down F15 at +1266 ms: passed, fired []
+  up K at +1266 ms: passed, fired []
+  down K at +1266 ms: suppressed, masked, fired [ToggleCapsLock]
+  up J at +1266 ms: passed, fired []
+  up LShift at +1266 ms: passed, fired []
+  repeat F15 at +1266 ms: passed, fired []
+  repeat K at +1266 ms: suppressed, masked, fired []
+  repeat F14 at +1266 ms: passed, fired []
+  advance 33 ms to +1299 ms: -, fired []
+  up CapsLock at +1299 ms: passed, fired []
+
+
+
+failures:
+    engine::properties::every_press_is_suppressed_or_passed_as_a_whole_across_focus_changes
+    engine::properties::no_key_up_reaches_windows_alone_across_focus_changes_unseen_presses_and_desktop_switches
+    engine::scenarios::a_foreground_change_keeps_a_swallowed_key_up_swallowed
+    engine::scenarios::a_key_swallowed_before_remapping_off_and_released_after_remapping_on_keeps_its_key_up_swallowed
+    engine::scenarios::a_swallowed_key_held_through_a_lock_keeps_its_key_up_swallowed
+    engine::scenarios::after_a_lock_the_next_press_of_a_passing_key_is_a_new_press
+    engine::scenarios::capslock_held_across_a_focus_change_does_not_reach_windows
+    engine::scenarios::capslock_held_across_a_focus_change_switches_the_language_once
+    engine::scenarios::chord_keys_held_across_a_focus_change_keep_their_repeats_suppressed
+    engine::scenarios::deferred_key_held_across_a_focus_change_keeps_its_repeats_suppressed
+    engine::scenarios::immediate_combo_that_stops_matching_after_a_focus_change_keeps_its_key_suppressed
+    engine::scenarios::immediate_key_held_across_a_focus_change_keeps_its_repeats_and_release_suppressed
+    engine::scenarios::nothing_is_stuck_after_win_l
+    engine::scenarios::press_after_a_lost_key_up_without_a_reset_reads_as_a_repeat_and_fires_only_a_repeating_binding
+    engine::scenarios::win_alt_t_held_across_a_focus_change_keeps_the_t_repeats_and_release_suppressed
+
+test result: FAILED. 7 passed; 15 failed; 0 ignored; 0 measured; 641 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--lib`
+exit 101

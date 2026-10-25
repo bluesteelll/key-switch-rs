@@ -1,0 +1,12 @@
+== m10.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.5-latency-trim/cfg/m10.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [AnySide(Ctrl), Key(VIRTUAL_KEY(74))] }) action=SwitchLanguage block_default=true block_original_combo=None condition=Always trigger=Immediate
+exit 0
+== m11.ron
+[INFO] loading config from D:/tmp/ks-orch/p2-2.5-latency-trim/cfg/m11.ron
+OK: 2 bindings (after auto-blocker expansion)
+  #0: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(20))] }) action=SwitchLanguage block_default=true block_original_combo=None condition=Always trigger=Immediate
+  #1: kind=Combo(KeyCombination { keys: [Key(VIRTUAL_KEY(124))] }) action=SwitchLanguage block_default=true block_original_combo=None condition=Always trigger=Immediate
+exit 0

@@ -1,0 +1,22 @@
+   Compiling key-switch-rs v0.1.0 (D:\tmp\ks-orch\p2-2.3-control-window\wt\mut)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.15s
+     Running unittests src\lib.rs (D:/tmp/ks-orch/p2-2.3-control-window/target-wt/mut\debug\deps\key_switch_rs-7e6eaa70abb95dcc.exe)
+
+running 1 test
+test hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop ... FAILED
+
+failures:
+
+---- hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop stdout ----
+
+thread 'hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop' (21832) panicked at src\hook\control_window.rs:448:9:
+destroyed on drop
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hook::control_window::tests::the_control_window_is_a_hidden_top_level_window_released_on_drop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 682 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

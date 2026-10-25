@@ -1,0 +1,2178 @@
+architecture.md:10 [src/lib.rs:1-25] src/lib.rs#L1-25
+    first: //! key-switch-rs internals exposed as a library so the `swch` CLI binary
+    last : mod build_script;
+architecture.md:23 [src/config/mod.rs:17] src/config/mod.rs#L17-17
+    first: pub use loader::{ConfigPath, load, reload};
+    last : pub use loader::{ConfigPath, load, reload};
+architecture.md:24 [src/core/executor/mod.rs:1-30] src/core/executor/mod.rs#L1-30
+    first: //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
+    last : //! tests, so that no test runs a real action.
+architecture.md:26 [src/engine/mod.rs:1-251] src/engine/mod.rs#L1-251
+    first: //! The decision core: given one keyboard event, the binding list and an
+    last : #![forbid(unsafe_code)]
+architecture.md:29 [src/logging/mod.rs:1-19] src/logging/mod.rs#L1-19
+    first: //! Diagnostics through the `log` facade, with an in-house sink (roadmap
+    last : //! check it calls [`init`] first and [`flush`] before it exits.
+architecture.md:30 [src/platform/mod.rs:1-15] src/platform/mod.rs#L1-15
+    first: //! Wrappers around the Win32 primitives that the daemon's threads use the
+    last : pub mod timers;
+architecture.md:33 [src/hook/ipc_server.rs:32-55] src/hook/ipc_server.rs#L32-55
+    first: /// What the IPC commands do to the daemon. Called on the connection
+    last : }
+architecture.md:33 [src/hook/config_watcher.rs:41-52] src/hook/config_watcher.rs#L41-52
+    first: /// Where a reload goes: the daemon's main thread, which swaps the list and
+    last : }
+architecture.md:100 [src/main.rs:14-19] src/main.rs#L14-19
+    first: fn main() -> ExitCode {
+    last : logging::init();
+architecture.md:100 [src/logging/mod.rs:106-131] src/logging/mod.rs#L106-131
+    first: /// Installs the logger, at level [`MAX_LEVEL`], and starts the `log-writer`
+    last : }
+architecture.md:101 [src/main.rs:20-36] src/main.rs#L20-36
+    first: // First of all: no config is read or template written, and no hook or
+    last : };
+architecture.md:101 [src/system/single_instance.rs:35-65] src/system/single_instance.rs#L35-65
+    first: impl InstanceGuard {
+    last : }
+architecture.md:102 [src/main.rs:88-109] src/main.rs#L88-109
+    first: /// Adds `%LOCALAPPDATA%\key-switch-rs\daemon.log` to the log, now that this
+    last : }
+architecture.md:103 [src/main.rs:71-76] src/main.rs#L71-76
+    first: // Resolution order for the config path:
+    last : let config = config::ConfigPath::from_arg(std::env::args_os().nth(1))?;
+architecture.md:103 [src/config/loader.rs:110-149] src/config/loader.rs#L110-149
+    first: /// Where the config file is, decided once at startup.
+    last : }
+architecture.md:104 [src/main.rs:78] src/main.rs#L78-78
+    first: let bindings = config::load(&config)?;
+    last : let bindings = config::load(&config)?;
+architecture.md:105 [src/main.rs:80-84] src/main.rs#L80-84
+    first: let mut app = App::new().with_config_watcher(config.into_path());
+    last : app.run()?;
+architecture.md:106 [src/core/app.rs:185-194] src/core/app.rs#L185-194
+    first: pub fn run(mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    last : .map_err(|error| pipe_error_message(&ipc::pipe_path(ipc::PIPE_NAME), &error))?;
+architecture.md:106 [src/core/app.rs:340-359] src/core/app.rs#L340-359
+    first: /// The fatal message for a pipe that could not be created. A taken pipe
+    last : }
+architecture.md:107 [src/core/app.rs:139-166] src/core/app.rs#L139-166
+    first: /// Console only, never logged: a binding line can hold the text of a
+    last : }
+architecture.md:107 [L196-L197] src/core/app.rs#L196-197
+    first: self.print_welcome();
+    last : self.setup_ctrl_c_handler()?;
+architecture.md:108 [src/core/app.rs:199-240] src/core/app.rs#L199-240
+    first: // Before the hooks, so that the first slow action has somewhere to
+    last : crate::hook::debug_hold::arm_from_env();
+architecture.md:117 [L241-L249] src/core/app.rs#L241-249
+    first: // On failure the listener is dropped on return, which closes the
+    last : log::info!("Hook installed successfully");
+architecture.md:117 [src/hook/keyboard_hook.rs:147-205] src/hook/keyboard_hook.rs#L147-205
+    first: /// Installs the keyboard hook, the foreground hook and the
+    last : }
+architecture.md:118 [src/core/app.rs:251-266] src/core/app.rs#L251-266
+    first: // Served only once the hooks are installed: a server started before
+    last : log::info!("IPC server listening (use `swch on/off/exit`)");
+architecture.md:118 [src/hook/ipc_server.rs:122-148] src/hook/ipc_server.rs#L122-148
+    first: impl IpcListener {
+    last : }
+architecture.md:119 [src/core/app.rs:268-292] src/core/app.rs#L268-292
+    first: // Spawn the file watcher AFTER the hook is live, and keep it alive
+    last : };
+architecture.md:120 [src/core/app.rs:294-310] src/core/app.rs#L294-310
+    first: // Every keystroke on the desktop waits for this thread while it runs
+    last : drop(raised);
+architecture.md:121 [src/core/app.rs:310-325] src/core/app.rs#L310-325
+    first: drop(raised);
+    last : Ok(())
+architecture.md:121 [src/hook/keyboard_hook.rs:215-254] src/hook/keyboard_hook.rs#L215-254
+    first: /// Removes the three hooks. A WinEvent hook that cannot be removed is
+    last : }
+architecture.md:121 [src/main.rs:37-43] src/main.rs#L37-43
+    first: match run(instance) {
+    last : }
+architecture.md:123 [src/main.rs:46-62] src/main.rs#L46-62
+    first: /// Logs `error` as fatal, waits for Enter and returns the failure code.
+    last : }
+architecture.md:127 [src/hook/keyboard_hook.rs:147-152] src/hook/keyboard_hook.rs#L147-152
+    first: /// Installs the keyboard hook, the foreground hook and the
+    last : /// installs them and are called through its message loop (KS-01).
+architecture.md:127 [src/hook/main_thread.rs:1-73] src/hook/main_thread.rs#L1-73
+    first: //! The daemon's main thread (roadmap item 2.2, KS-11, KS-25, KS-33): the
+    last : //! engine as `swch on` does and keeps the running macros.
+architecture.md:174 [src/core/app.rs:158-166] src/core/app.rs#L158-166
+    first: fn setup_ctrl_c_handler(&self) -> Result<()> {
+    last : }
+architecture.md:174 [src/core/app.rs:361-388] src/core/app.rs#L361-388
+    first: unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+    last : }
+architecture.md:175 [src/core/executor/mod.rs:281-300] src/core/executor/mod.rs#L281-300
+    first: pub fn start<R: Runner>(
+    last : })?;
+architecture.md:175 [src/core/executor/mod.rs:587-701] src/core/executor/mod.rs#L587-701
+    first: fn run_loop(
+    last : None
+architecture.md:176 [src/hook/watchdog/mod.rs:476-499] src/hook/watchdog/mod.rs#L476-499
+    first: fn spawn<R: RequestReinstall>(
+    last : }
+architecture.md:176 [L281-L286] src/hook/watchdog/mod.rs#L281-286
+    first: // Raw key events that no callback explains may have changed what
+    last : }
+architecture.md:176 [src/hook/watchdog/mod.rs:1-63] src/hook/watchdog/mod.rs#L1-63
+    first: //! The hook watchdog (roadmap item 2.4, KS-08): it finds a keyboard hook
+    last : //! outlives the count of its batch.
+architecture.md:177 [src/hook/ipc_server.rs:122-148] src/hook/ipc_server.rs#L122-148
+    first: impl IpcListener {
+    last : }
+architecture.md:178 [src/hook/ipc_server.rs:138] src/hook/ipc_server.rs#L138-138
+    first: thread::spawn(move || handle_connection(stream, control.as_ref()));
+    last : thread::spawn(move || handle_connection(stream, control.as_ref()));
+architecture.md:179 [src/hook/config_watcher.rs:137-145] src/hook/config_watcher.rs#L137-145
+    first: let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+    last : })?;
+architecture.md:180 [src/hook/config_watcher.rs:153-158] src/hook/config_watcher.rs#L153-158
+    first: // A thread that cannot be started is the caller's error to log: the
+    last : .map_err(notify::Error::io)?;
+architecture.md:181 [src/logging/writer.rs:38-57] src/logging/writer.rs#L38-57
+    first: /// Starts the `log-writer` thread, which writes to `console` and reports
+    last : }
+architecture.md:188 [src/hook/main_thread.rs:276-308] src/hook/main_thread.rs#L276-308
+    first: /// What the main thread owns: the engine and its gesture timers.
+    last : }
+architecture.md:191 [L8-L23] src/hook/main_thread.rs#L8-23
+    first: //! The engine, the gesture timers and the foreground cache of `when:`
+    last : //! pumped or sent.
+architecture.md:192 [src/hook/keyboard_hook_callback.rs:94-131] src/hook/keyboard_hook_callback.rs#L94-131
+    first: //! # Re-entry
+    last : //! (`platform::foreground`).
+architecture.md:193 [src/hook/main_thread.rs:539-559] src/hook/main_thread.rs#L539-559
+    first: /// A request to the main thread.
+    last : }
+architecture.md:193 [src/hook/main_thread.rs:591-699] src/hook/main_thread.rs#L591-699
+    first: /// How another thread reaches the main thread: the IPC connection workers,
+    last : }
+architecture.md:196 [src/hook/main_thread.rs:777-861] src/hook/main_thread.rs#L777-861
+    first: /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
+    last : }
+architecture.md:198 [L837-L861] src/hook/main_thread.rs#L837-861
+    first: /// Step 1 of the loop: serves the requests, answers the noted input
+    last : }
+architecture.md:199 [L798-L806] src/hook/main_thread.rs#L798-806
+    first: // E5 (roadmap item 2.5): a stretch away from the messages that
+    last : }
+architecture.md:201 [src/hook/main_thread.rs:1005-1027] src/hook/main_thread.rs#L1005-1027
+    first: /// Step 4 of the loop: takes this thread's messages until its queue is
+    last : }
+architecture.md:203 [src/platform/timers.rs:1-12] src/platform/timers.rs#L1-12
+    first: //! A waitable timer for a thread that waits for its own deadlines: the
+    last : //! about 15.6 ms apart.
+architecture.md:203 [src/platform/priority.rs:1-14] src/platform/priority.rs#L1-14
+    first: //! The priority of the daemon's main thread while it runs its main loop
+    last : //! before this landed.
+architecture.md:208 [src/core/app.rs:79-98] src/core/app.rs#L79-98
+    first: impl DaemonControl for DaemonHandle {
+    last : }
+architecture.md:208 [src/hook/main_thread.rs:310-334] src/hook/main_thread.rs#L310-334
+    first: impl MainState {
+    last : }
+architecture.md:208 [src/hook/keyboard_hook.rs:136-145] src/hook/keyboard_hook.rs#L136-145
+    first: /// Flips the remapping switch and returns whether it changed. Only
+    last : }
+architecture.md:210 [src/hook/keyboard_hook_callback.rs:406-415] src/hook/keyboard_hook_callback.rs#L406-415
+    first: let hook = get_hook();
+    last : }
+architecture.md:211 [src/engine/mod.rs:704-763] src/engine/mod.rs#L704-763
+    first: /// Starts over for `reason` (roadmap item 2.3; KS-31).
+    last : }
+architecture.md:211 [src/engine/keys.rs:161-202] src/engine/keys.rs#L161-202
+    first: /// Rebuilds the table from the OS key state, after remapping was
+    last : }
+architecture.md:212 [src/core/app.rs:87-93] src/core/app.rs#L87-93
+    first: fn status(&self) -> DaemonStatus {
+    last : }
+architecture.md:221 [src/hook/keyboard_hook_callback.rs:322-334] src/hook/keyboard_hook_callback.rs#L322-334
+    first: /// Runs a fast action here, or queues a slow one for the action executor
+    last : }
+architecture.md:221 [src/core/windows_actions.rs:182-206] src/core/windows_actions.rs#L182-206
+    first: impl BindAction {
+    last : }
+architecture.md:221 [src/core/executor/mod.rs:1-30] src/core/executor/mod.rs#L1-30
+    first: //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
+    last : //! tests, so that no test runs a real action.
+architecture.md:221 [src/core/executor/runs.rs:1-11] src/core/executor/runs.rs#L1-11
+    first: //! The macro runs of the action executor: bookkeeping only, with no Win32
+    last : //! a stretch of steps between two of them.
+architecture.md:222 [src/hook/health.rs:11-68] src/hook/health.rs#L11-68
+    first: /// The heartbeat, alone on its cache line: the main thread writes it at
+    last : }
+architecture.md:222 [src/hook/watchdog/decision.rs:1-56] src/hook/watchdog/decision.rs#L1-56
+    first: //! The watchdog's decision (roadmap item 2.4, cut D3): counts and instants
+    last : //! no wake-up.
+architecture.md:222 [src/hook/main_thread.rs:949-989] src/hook/main_thread.rs#L949-989
+    first: /// Serves a reinstall request of the hook watchdog (roadmap item 2.4, cut
+    last : }
+architecture.md:222 [src/hook/keyboard_hook.rs:256-291] src/hook/keyboard_hook.rs#L256-291
+    first: /// Replaces the keyboard hook with a new one, for the hook watchdog
+    last : }
+architecture.md:222 [src/hook/health.rs:165-204] src/hook/health.rs#L165-204
+    first: /// The keyboard hook's health as `swch status` reports it (roadmap item
+    last : }
+architecture.md:228 [src/hook/keyboard_hook_callback.rs:394-457] src/hook/keyboard_hook_callback.rs#L394-457
+    first: pub(crate) unsafe extern "system" fn keyboard_hook_callback(
+    last : }
+architecture.md:228 [src/hook/keyboard_hook_callback.rs:1-64] src/hook/keyboard_hook_callback.rs#L1-64
+    first: //! The hook adapter: where Win32 keyboard events meet the decision core in
+    last : //!
+architecture.md:230 [L399-L404] src/hook/keyboard_hook_callback.rs#L399-404
+    first: if code < 0 {
+    last : }
+architecture.md:231 [L406-L409] src/hook/keyboard_hook_callback.rs#L406-409
+    first: let hook = get_hook();
+    last : hook.health().callback_seen();
+architecture.md:232 [L410-L415] src/hook/keyboard_hook_callback.rs#L410-415
+    first: if !hook.is_enabled() {
+    last : }
+architecture.md:233 [L417-L421] src/hook/keyboard_hook_callback.rs#L417-421
+    first: // Our own work only: from here until the decision is carried out, not
+    last : let started = Instant::now();
+architecture.md:233 [L438] src/hook/keyboard_hook_callback.rs#L438-438
+    first: let ran = started.elapsed();
+    last : let ran = started.elapsed();
+architecture.md:234 [src/hook/keyboard_hook_callback.rs:240-249] src/hook/keyboard_hook_callback.rs#L240-249
+    first: pub(super) fn decide_event(
+    last : }
+architecture.md:234 [src/hook/keyboard_hook_callback.rs:281-296] src/hook/keyboard_hook_callback.rs#L281-296
+    first: /// One of the daemon's own injected events (the sentinel): Windows applies
+    last : }
+architecture.md:234 [src/engine/keys.rs:145-159] src/engine/keys.rs#L145-159
+    first: /// Follows one of the daemon's own injected key events (roadmap item
+    last : }
+architecture.md:234 [L425-L430] src/hook/keyboard_hook_callback.rs#L425-430
+    first: let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    last : let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+architecture.md:235 [src/hook/keyboard_hook_callback.rs:220-230] src/hook/keyboard_hook_callback.rs#L220-230
+    first: /// Translates a hook message into an engine event, or `None` for anything
+    last : }
+architecture.md:236 [src/hook/keyboard_hook_callback.rs:232-296] src/hook/keyboard_hook_callback.rs#L232-296
+    first: /// Asks the engine about one hook event, on this thread's main state, and
+    last : }
+architecture.md:236 [src/hook/keyboard_hook_callback.rs:177-218] src/hook/keyboard_hook_callback.rs#L177-218
+    first: /// The engine's [`Env`], backed by the OS key state and the main thread's
+    last : }
+architecture.md:236 [src/engine/mod.rs:498-506] src/engine/mod.rs#L498-506
+    first: /// Sorts a binding list into the order the engine visits it: more keys
+    last : }
+architecture.md:237 [src/engine/modifiers.rs:13-28] src/engine/modifiers.rs#L13-28
+    first: /// The modifier codes the engine keeps flags for: both sides of Shift, Ctrl,
+    last : ];
+architecture.md:237 [src/engine/mod.rs:557-566] src/engine/mod.rs#L557-566
+    first: KeyDirection::Down => {
+    last : self.on_key_down(event.vk, bindings, env)
+architecture.md:237 [src/engine/keys.rs:118-143] src/engine/keys.rs#L118-143
+    first: /// The check of a decided key event of `own` (roadmap item 2.5, ruling
+    last : }
+architecture.md:238 [src/engine/keys.rs:218-225] src/engine/keys.rs#L218-225
+    first: /// Records a key-down. Returns true if the key was already held, which
+    last : }
+architecture.md:239 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+architecture.md:239 [src/engine/matching.rs:69-83] src/engine/matching.rs#L69-83
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+architecture.md:240 [src/engine/mod.rs:777-803] src/engine/mod.rs#L777-803
+    first: if !was_repeat {
+    last : }
+architecture.md:240 [src/engine/gestures.rs:291-349] src/engine/gestures.rs#L291-349
+    first: /// A first key-down of `vk` at `now`, for the presses of the other
+    last : }
+architecture.md:241 [src/engine/mod.rs:805-918] src/engine/mod.rs#L805-918
+    first: for (index, binding) in bindings.iter().enumerate() {
+    last : }
+architecture.md:242 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+architecture.md:242 [L808-L836] src/engine/mod.rs#L808-836
+    first: if let Some(mode) = binding.auto_blocker {
+    last : }
+architecture.md:243 [src/engine/winner.rs:147-176] src/engine/winner.rs#L147-176
+    first: /// Whether the `keys` user binding at `index` acts on this key-down:
+    last : }
+architecture.md:243 [L843-L855] src/engine/mod.rs#L843-855
+    first: match binding.trigger {
+    last : }
+architecture.md:244 [L857-L890] src/engine/mod.rs#L857-890
+    first: BindingKind::Sequence { steps, max_gap } => {
+    last : }
+architecture.md:245 [L891-L916] src/engine/mod.rs#L891-916
+    first: BindingKind::Chord { keys, window } => {
+    last : }
+architecture.md:246 [src/engine/mod.rs:940-948] src/engine/mod.rs#L940-948
+    first: if self.keys.is_blocked(vk.0) {
+    last : }
+architecture.md:246 [src/engine/keys.rs:241-248] src/engine/keys.rs#L241-248
+    first: /// Records that an auto-repeat of `vk`, a key whose key-down the engine
+    last : }
+architecture.md:246 [L920-L956] src/engine/mod.rs#L920-956
+    first: if was_repeat {
+    last : }
+architecture.md:247 [src/engine/mod.rs:961-1009] src/engine/mod.rs#L961-1009
+    first: fn on_key_up(&mut self, vk: VIRTUAL_KEY, env: &dyn Env) -> Decision {
+    last : }
+architecture.md:248 [L1000-L1006] src/engine/mod.rs#L1000-1006
+    first: if decision.suppress {
+    last : }
+architecture.md:248 [src/engine/mod.rs:1011-1019] src/engine/mod.rs#L1011-1019
+    first: /// Asks for the menu mask key if `decision` swallows its event while
+    last : }
+architecture.md:248 [src/engine/keys.rs:298-309] src/engine/keys.rs#L298-309
+    first: /// Whether Windows has an Alt or Win key down: one is held and its
+    last : }
+architecture.md:249 [src/hook/keyboard_hook_callback.rs:298-334] src/hook/keyboard_hook_callback.rs#L298-334
+    first: /// Carries out a decision on the calling thread, outside the main state's
+    last : }
+architecture.md:249 [src/hook/keyboard_hook_callback.rs:367-378] src/hook/keyboard_hook_callback.rs#L367-378
+    first: /// Sends the menu mask key. `SendInput` inserts fewer events when another
+    last : }
+architecture.md:250 [src/hook/keyboard_hook_callback.rs:438-449] src/hook/keyboard_hook_callback.rs#L438-449
+    first: let ran = started.elapsed();
+    last : }
+architecture.md:250 [src/hook/keyboard_hook_callback.rs:459-473] src/hook/keyboard_hook_callback.rs#L459-473
+    first: /// How long ago a key event stamped `stamp_ms` happened, at tick `now_ms`
+    last : }
+architecture.md:250 [L450-L456] src/hook/keyboard_hook_callback.rs#L450-456
+    first: if suppress {
+    last : unsafe { CallNextHookEx(None, code, wparam, lparam) }
+architecture.md:296 [src/hook/keyboard_hook_callback.rs:475-503] src/hook/keyboard_hook_callback.rs#L475-503
+    first: /// Foreground-window-change callback installed via `SetWinEventHook`. The
+    last : }
+architecture.md:296 [src/hook/main_thread.rs:358-365] src/hook/main_thread.rs#L358-365
+    first: /// `window` took the foreground (`EVENT_SYSTEM_FOREGROUND`): the cache
+    last : }
+architecture.md:296 [src/engine/mod.rs:642-659] src/engine/mod.rs#L642-659
+    first: /// The foreground window changed. Key events may have gone past the
+    last : }
+architecture.md:299 [src/hook/control_window.rs:233-265] src/hook/control_window.rs#L233-265
+    first: /// The control window's procedure. It notes signals and answers the
+    last : }
+architecture.md:299 [src/hook/keyboard_hook_callback.rs:505-547] src/hook/keyboard_hook_callback.rs#L505-547
+    first: /// What a desktop switch tells the main loop (roadmap item 2.3).
+    last : }
+architecture.md:299 [src/platform/desktop.rs:1-11] src/platform/desktop.rs#L1-11
+    first: //! Which desktop has keyboard input (roadmap item 2.3).
+    last : //! daemon could not open it. Nothing here imports the rest of the crate.
+architecture.md:299 [src/hook/main_thread.rs:877-907] src/hook/main_thread.rs#L877-907
+    first: /// Step 1 of the loop, for the input signals noted since the last drain
+    last : }
+architecture.md:312 [src/engine/keys.rs:96-116] src/engine/keys.rs#L96-116
+    first: /// Reads the modifiers of `which` from the OS key state, on the main
+    last : }
+architecture.md:312 [src/hook/main_thread.rs:376-390] src/hook/main_thread.rs#L376-390
+    first: /// The drain's read of the modifiers from the OS key state (roadmap
+    last : }
+architecture.md:314 [src/engine/resync.rs:1-46] src/engine/resync.rs#L1-46
+    first: //! When the main thread reads the modifiers from Windows between key events
+    last : }
+architecture.md:329 [src/hook/main_thread.rs:122-143] src/hook/main_thread.rs#L122-143
+    first: /// How many times something on this thread noticed that a key event
+    last : }
+architecture.md:332 [src/engine/resync.rs:96-116] src/engine/resync.rs#L96-116
+    first: /// The codes the drain reads now, with `notes` the adapter's note count;
+    last : }
+architecture.md:351 [src/hook/keyboard_hook.rs:23-58] src/hook/keyboard_hook.rs#L23-58
+    first: /// What the hooks share with the other threads: the binding list, the hook
+    last : }
+architecture.md:351 [src/hook/keyboard_hook_callback.rs:156-168] src/hook/keyboard_hook_callback.rs#L156-168
+    first: /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
+    last : }
+architecture.md:360 [src/hook/health.rs:17-45] src/hook/health.rs#L17-45
+    first: /// What the hooks and the watchdog share about the keyboard hook's health:
+    last : }
+architecture.md:361 [src/hook/main_thread.rs:112-114] src/hook/main_thread.rs#L112-114
+    first: thread_local! {
+    last : static MAIN: RefCell<Option<MainState>> = const { RefCell::new(None) };
+architecture.md:363 [src/hook/main_thread.rs:122-143] src/hook/main_thread.rs#L122-143
+    first: /// How many times something on this thread noticed that a key event
+    last : }
+architecture.md:364 [src/core/constants.rs:5] src/core/constants.rs#L5-5
+    first: static SENTINEL: OnceLock<usize> = OnceLock::new();
+    last : static SENTINEL: OnceLock<usize> = OnceLock::new();
+architecture.md:365 [src/core/app.rs:27] src/core/app.rs#L27-27
+    first: static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+    last : static MAIN_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+architecture.md:366 [src/logging/mod.rs:51-59] src/logging/mod.rs#L51-59
+    first: struct DaemonLogger {
+    last : };
+architecture.md:367 [src/logging/counters.rs:134-156] src/logging/counters.rs#L134-156
+    first: /// One count per [`Counter`], and the longest keyboard callback.
+    last : }
+architecture.md:369 [src/main.rs:64-68] src/main.rs#L64-68
+    first: /// Takes the guard by value, so it lives until `run` returns, as every
+    last : fn run(_instance: InstanceGuard) -> Result<(), Box<dyn std::error::Error>> {
+architecture.md:372 [src/hook/main_thread.rs:276-283] src/hook/main_thread.rs#L276-283
+    first: /// What the main thread owns: the engine and its gesture timers.
+    last : }
+architecture.md:372 [src/hook/main_thread.rs:402-410] src/hook/main_thread.rs#L402-410
+    first: /// The main thread's gesture timers: the queue of every timer the engine
+    last : }
+architecture.md:372 [src/engine/mod.rs:508-521] src/engine/mod.rs#L508-521
+    first: /// The decision core. See the [module documentation](self).
+    last : }
+architecture.md:376 [src/engine/keys.rs:54-86] src/engine/keys.rs#L54-86
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+architecture.md:377 [src/engine/gestures.rs:54-154] src/engine/gestures.rs#L54-154
+    first: /// The keys and `when:` of the group that opened a DoubleTap window: what
+    last : }
+architecture.md:378 [src/engine/chords.rs:32-47] src/engine/chords.rs#L32-47
+    first: struct PendingChord {
+    last : }
+architecture.md:378 [src/engine/sequences.rs:32-61] src/engine/sequences.rs#L32-61
+    first: struct PendingSequence {
+    last : }
+architecture.md:381 [src/engine/resync.rs:31-46] src/engine/resync.rs#L31-46
+    first: /// The hiding count and what the next read leaves out (roadmap item 2.5).
+    last : }
+architecture.md:386 [src/hook/keyboard_hook.rs:75-91] src/hook/keyboard_hook.rs#L75-91
+    first: /// Atomically replace the binding list. Callable any number of times
+    last : }
+architecture.md:386 [src/data/binding.rs:34-47] src/data/binding.rs#L34-47
+    first: impl BindingKind {
+    last : }
+architecture.md:386 [src/hook/main_thread.rs:336-344] src/hook/main_thread.rs#L336-344
+    first: /// Makes `bindings` the live list and resets the engine with it, on the
+    last : }
+architecture.md:392 [src/engine/keys.rs:1-32] src/engine/keys.rs#L1-32
+    first: //! Per-key state: which keys the engine believes are held, and whether each
+    last : //! next key-down or its key-up replaces it.
+architecture.md:401 [src/engine/keys.rs:54-71] src/engine/keys.rs#L54-71
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+architecture.md:401 [src/engine/mod.rs:704-763] src/engine/mod.rs#L704-763
+    first: /// Starts over for `reason` (roadmap item 2.3; KS-31).
+    last : }
+architecture.md:405 [src/engine/keys.rs:161-202] src/engine/keys.rs#L161-202
+    first: /// Rebuilds the table from the OS key state, after remapping was
+    last : }
+architecture.md:407 [src/engine/keys.rs:204-211] src/engine/keys.rs#L204-211
+    first: /// Releases every key and keeps every record, without asking the OS:
+    last : }
+architecture.md:413 [src/core/constants.rs:15-28] src/core/constants.rs#L15-28
+    first: pub fn injected_sentinel() -> usize {
+    last : }
+architecture.md:413 [src/core/constants.rs:30-32] src/core/constants.rs#L30-32
+    first: pub fn is_injected_event(extra_info: usize) -> bool {
+    last : }
+architecture.md:417 [src/engine/mod.rs:387-406] src/engine/mod.rs#L387-406
+    first: /// What to do about one event or timer. The engine has already updated its
+    last : }
+architecture.md:417 [src/engine/mod.rs:325-385] src/engine/mod.rs#L325-385
+    first: /// Identifies the pending entry a timer was started for. Opaque: the caller
+    last : }
+architecture.md:417 [src/engine/schedule.rs:1-28] src/engine/schedule.rs#L1-28
+    first: //! Where the timers the engine asks for go: the [`Scheduler`] trait, and
+    last : }
+architecture.md:417 [src/engine/mod.rs:602-640] src/engine/mod.rs#L602-640
+    first: /// Hands the timers of a decision to `scheduler`, after dropping every
+    last : }
+architecture.md:417 [src/engine/env.rs:9-66] src/engine/env.rs#L9-66
+    first: /// Everything the engine needs to know about the world outside the event it
+    last : }
+architecture.md:424 [src/engine/gestures.rs:1-42] src/engine/gestures.rs#L1-42
+    first: //! Pending `Tap`, `Hold` and `DoubleTap` gestures, as plain data: one
+    last : //! new number: the timer of its cancelled Hold then finds nothing.
+architecture.md:428 [src/engine/gestures.rs:161-235] src/engine/gestures.rs#L161-235
+    first: /// A first key-down of `vk`, at `now`, which `group` wins if it is a
+    last : }
+architecture.md:428 [src/engine/gestures.rs:237-289] src/engine/gestures.rs#L237-289
+    first: /// The key-up of `vk` at `now`; `passed` is whether its key-down
+    last : }
+architecture.md:429 [src/engine/gestures.rs:351-378] src/engine/gestures.rs#L351-378
+    first: /// The timer of `vk` armed as `seq` is due: fires the Hold or the
+    last : }
+architecture.md:430 [L179-L199] src/engine/gestures.rs#L179-199
+    first: if let Some(index) = self.presses.iter().position(|p| p.vk == vk) {
+    last : fire.extend(deferred_tap);
+architecture.md:432 [src/engine/winner.rs:179-202] src/engine/winner.rs#L179-202
+    first: /// The trigger kinds the winning group has used on this key-down.
+    last : }
+architecture.md:454 [src/hook/main_thread.rs:469-507] src/hook/main_thread.rs#L469-507
+    first: /// Step 2 of the loop: drops the timers no entry of `engine` waits for
+    last : }
+architecture.md:459 [src/engine/chords.rs:65-137] src/engine/chords.rs#L65-137
+    first: impl Chords {
+    last : }
+architecture.md:462 [L85-L125] src/engine/chords.rs#L85-125
+    first: // Drop expired entries. Cheap enough to do every event; keeps the
+    last : ChordOutcome::Started { due }
+architecture.md:465 [src/engine/chords.rs:12-18] src/engine/chords.rs#L12-18
+    first: //! **Suppression**: every key-down of a key that belongs to a chord binding
+    last : //! part of normal typing.
+architecture.md:470 [src/engine/sequences.rs:63-148] src/engine/sequences.rs#L63-148
+    first: impl Sequences {
+    last : }
+architecture.md:473 [L88-L107] src/engine/sequences.rs#L88-107
+    first: // Look for an existing pending entry for this sequence shape.
+    last : }
+architecture.md:474 [L108-L133] src/engine/sequences.rs#L108-133
+    first: // Mismatch: abort this pending entry. The code below then checks
+    last : }
+architecture.md:480 [src/data/condition.rs:18-45] src/data/condition.rs#L18-45
+    first: /// Equality is structural, the condition as written: `AppEquals("Code.exe")`
+    last : }
+architecture.md:480 [src/data/condition.rs:1-16] src/data/condition.rs#L1-16
+    first: //! Foreground-context predicates used to gate bindings.
+    last : //! reliably remember the casing of window titles either.
+architecture.md:480 [src/engine/env.rs:68-81] src/engine/env.rs#L68-81
+    first: /// Lets a `when:` [`Condition`](crate::data::condition::Condition) read the
+    last : }
+architecture.md:480 [src/platform/foreground.rs:1-23] src/platform/foreground.rs#L1-23
+    first: //! The foreground window as `when:` conditions see it (roadmap item 2.3,
+    last : //! counts the questions. Nothing here imports the rest of the crate.
+architecture.md:482 [src/platform/foreground.rs:77-162] src/platform/foreground.rs#L77-162
+    first: /// The executable name of the foreground window, cached per window. Not
+    last : }
+architecture.md:483 [src/platform/foreground.rs:184-225] src/platform/foreground.rs#L184-225
+    first: fn process_image_name(pid: u32) -> windows::core::Result<String> {
+    last : }
+architecture.md:485 [src/data/condition.rs:77-86] src/data/condition.rs#L77-86
+    first: /// Equality under the lowercasing `TitleContains` uses, so a title that
+    last : }
+architecture.md:487 [L857-L893] src/engine/mod.rs#L857-893
+    first: BindingKind::Sequence { steps, max_gap } => {
+    last : continue;
+architecture.md:487 [src/config/loader.rs:418-437] src/config/loader.rs#L418-437
+    first: /// The condition that holds where any of `conditions` holds: `Always` if
+    last : }
+architecture.md:491 [src/core/windows_actions.rs:17-51] src/core/windows_actions.rs#L17-51
+    first: #[derive(Debug, Clone)]
+    last : }
+architecture.md:491 [src/core/windows_actions.rs:182-206] src/core/windows_actions.rs#L182-206
+    first: impl BindAction {
+    last : }
+architecture.md:495 [src/system/system_function.rs:45-81] src/system/system_function.rs#L45-81
+    first: fn switch_language_forward() {
+    last : }
+architecture.md:496 [src/system/system_function.rs:119-159] src/system/system_function.rs#L119-159
+    first: fn toggle_caps_lock() {
+    last : }
+architecture.md:497 [src/core/windows_actions.rs:252-291] src/core/windows_actions.rs#L252-291
+    first: /// Synthesize a single key press (down + up), for `PressKey` and
+    last : }
+architecture.md:498 [src/core/windows_actions.rs:293-310] src/core/windows_actions.rs#L293-310
+    first: /// Posts `msg` to the foreground window, for `PostMessage`. It runs on the
+    last : }
+architecture.md:500 [src/core/windows_actions.rs:312-326] src/core/windows_actions.rs#L312-326
+    first: pub(crate) fn launch_process(exe: &str, args: &[String]) {
+    last : }
+architecture.md:501 [src/core/windows_actions.rs:328-351] src/core/windows_actions.rs#L328-351
+    first: pub(crate) fn shell_open(target: &str) {
+    last : }
+architecture.md:502 [src/core/executor/runs.rs:1-11] src/core/executor/runs.rs#L1-11
+    first: //! The macro runs of the action executor: bookkeeping only, with no Win32
+    last : //! a stretch of steps between two of them.
+architecture.md:504 [src/core/windows_actions.rs:139-166] src/core/windows_actions.rs#L139-166
+    first: impl FastAction {
+    last : }
+architecture.md:506 [src/system/system_function.rs:83-117] src/system/system_function.rs#L83-117
+    first: fn lock_workstation() {
+    last : }
+architecture.md:506 [src/core/windows_actions.rs:208-215] src/core/windows_actions.rs#L208-215
+    first: pub fn to_system_function(&self) -> Option<SystemFunction> {
+    last : }
+architecture.md:506 [src/system/registry.rs:65-78] src/system/registry.rs#L65-78
+    first: pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
+    last : }
+architecture.md:506 [src/system/registry.rs:80-114] src/system/registry.rs#L80-114
+    first: /// The hotkey of `function`, given the data of its registry values in the
+    last : }
+architecture.md:506 [src/system/registry.rs:223-231] src/system/registry.rs#L223-231
+    first: fn parse_language_hotkey(value: &str) -> HotkeySetting {
+    last : }
+architecture.md:510 [src/core/executor/mod.rs:71-109] src/core/executor/mod.rs#L71-109
+    first: /// The window a macro's `Window(...)` steps act on: the foreground window
+    last : }
+architecture.md:510 [L645-L672] src/core/executor/mod.rs#L645-672
+    first: // SAFETY: the slice holds the Delay timer's handle, which `timer`
+    last : }
+architecture.md:510 [src/data/sequence.rs:104-117] src/data/sequence.rs#L104-117
+    first: /// Runs one step against `target`, on the calling thread.
+    last : }
+architecture.md:510 [src/data/sequence.rs:246-279] src/data/sequence.rs#L246-279
+    first: fn apply_window_op(op: WindowOp, target: HWND) {
+    last : }
+architecture.md:512 [src/core/executor/mod.rs:240-263] src/core/executor/mod.rs#L240-263
+    first: /// Starts a new epoch: every job queued and every macro running is
+    last : }
+architecture.md:516 [L123-L227] src/data/sequence.rs#L123-227
+    first: fn type_text(s: &str) {
+    last : }
+architecture.md:516 [src/hook/keyboard_hook_callback.rs:336-353] src/hook/keyboard_hook_callback.rs#L336-353
+    first: /// The menu mask key's key-down and key-up (`constants::MENU_MASK_VK`),
+    last : }
+architecture.md:516 [src/core/windows_actions.rs:257] src/core/windows_actions.rs#L257-257
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+architecture.md:520 [src/config/loader.rs:151-182] src/config/loader.rs#L151-182
+    first: /// Loads the bindings at startup.
+    last : }
+architecture.md:522 [L184-L197] src/config/loader.rs#L184-197
+    first: /// The text of the config file. A missing file, or a missing folder on its
+    last : }
+architecture.md:522 [L160-L165] src/config/loader.rs#L160-165
+    first: let text = match (config, read_config(path)) {
+    last : }
+architecture.md:523 [L255-L258] src/config/loader.rs#L255-258
+    first: // Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+    last : let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+architecture.md:524 [L260-L270] src/config/loader.rs#L260-270
+    first: // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
+    last : })?;
+architecture.md:524 [src/config/schema.rs:18-28] src/config/schema.rs#L18-28
+    first: // Every container with named fields denies unknown ones: a misspelled field
+    last : }
+architecture.md:525 [L272-L284] src/config/loader.rs#L272-284
+    first: let mut user_bindings = Vec::with_capacity(raw.bindings.len());
+    last : }
+architecture.md:525 [L636-L649] src/config/loader.rs#L636-649
+    first: /// `Ok(ms)` inside [`TIMING_RANGE_MS`], else "`<written>` is out of range:
+    last : }
+architecture.md:525 [L499-L523] src/config/loader.rs#L499-523
+    first: // Deferred triggers, sequences and chords never fire on an auto-repeat,
+    last : };
+architecture.md:525 [L287-L289] src/config/loader.rs#L287-289
+    first: if user_bindings.is_empty() {
+    last : }
+architecture.md:526 [L298-L320] src/config/loader.rs#L298-320
+    first: /// One warning for every binding that duplicates an earlier one
+    last : }
+architecture.md:527 [L322-L416] src/config/loader.rs#L322-416
+    first: /// Appends an auto-blocker for the Windows hotkey of every binding that
+    last : }
+architecture.md:527 [L211-L234] src/config/loader.rs#L211-234
+    first: /// The Windows hotkey of an action's system function, if it has one. The
+    last : ) -> Result<Vec<Binding>, ConfigError> {
+architecture.md:529 [src/hook/config_watcher.rs:122-213] src/hook/config_watcher.rs#L122-213
+    first: /// Install a watcher on the parent directory of `config_path` and spawn the
+    last : }
+architecture.md:529 [L147-L151] src/hook/config_watcher.rs#L147-151
+    first: // Watch the parent directory, not the file itself: editors that save by
+    last : watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+architecture.md:529 [L92-L120] src/hook/config_watcher.rs#L92-120
+    first: /// A create, modify (data, metadata, rename) or remove of an entry whose
+    last : }
+architecture.md:529 [L163-L186] src/hook/config_watcher.rs#L163-186
+    first: fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, sink: &dyn ApplyReload) {
+    last : }
+architecture.md:529 [L188-L213] src/hook/config_watcher.rs#L188-213
+    first: /// Loads the config at `config_path` and hands it to `sink`, then logs one
+    last : }
+architecture.md:529 [src/hook/main_thread.rs:921-947] src/hook/main_thread.rs#L921-947
+    first: /// Carries out one request. The answer never blocks: a requester that gave
+    last : }
+architecture.md:561 [src/ipc.rs:31-43] src/ipc.rs#L31-43
+    first: /// Local-socket name used by both sides. On Windows the OS-mapped form
+    last : }
+architecture.md:561 [src/ipc.rs:1-17] src/ipc.rs#L1-17
+    first: //! IPC protocol between the daemon (`key-switch-rs.exe`) and the CLI
+    last : //! without a reply, because interprocess pipe streams take no I/O timeouts.
+architecture.md:568 [src/hook/main_thread.rs:661-669] src/hook/main_thread.rs#L661-669
+    first: /// Ends the main loop: posts `WM_QUIT` to the main thread, which then
+    last : }
+architecture.md:569 [src/bin/swch.rs:71-142] src/bin/swch.rs#L71-142
+    first: fn cmd_open() -> Result<(), String> {
+    last : }
+architecture.md:571 [src/bin/swch.rs:49-53] src/bin/swch.rs#L49-53
+    first: other => {
+    last : }
+architecture.md:573 [src/ipc.rs:173-184] src/ipc.rs#L173-184
+    first: impl Command {
+    last : }
+architecture.md:573 [src/hook/ipc_server.rs:178-205] src/hook/ipc_server.rs#L178-205
+    first: /// Carries out one command and formats the reply line.
+    last : }
+architecture.md:573 [src/hook/main_thread.rs:561-583] src/hook/main_thread.rs#L561-583
+    first: /// Why a request to the main thread got no answer.
+    last : impl std::error::Error for MainThreadError {}
+architecture.md:573 [src/ipc.rs:207-219] src/ipc.rs#L207-219
+    first: /// Parse a daemon response — strips OK:/ERR: prefix, returns the message
+    last : }
+architecture.md:575 [src/ipc.rs:87-155] src/ipc.rs#L87-155
+    first: /// Sends `command` to the daemon on the namespaced pipe `pipe_name` and
+    last : }
+architecture.md:605 [src/hook/ipc_server.rs:57-106] src/hook/ipc_server.rs#L57-106
+    first: /// The pipe's security descriptor (KS-02), in the security descriptor
+    last : }
+architecture.md:605 [src/hook/ipc_server.rs:158-163] src/hook/ipc_server.rs#L158-163
+    first: let mut reader = BufReader::new(stream);
+    last : }
+architecture.md:609 [build.rs:21-47] build.rs#L21-47
+    first: fn directives(is_windows: bool, target_env: &str, profile: &str) -> Vec<String> {
+    last : }
+architecture.md:614 [src/hook/keyboard_hook.rs:171-187] src/hook/keyboard_hook.rs#L171-187
+    first: // Foreground-change hook re-syncs modifier state after focus returns from
+    last : self.foreground_hook.store(we_hook, Ordering::Release);
+architecture.md:614 [src/hook/installer.rs:104-121] src/hook/installer.rs#L104-121
+    first: fn set_win_event_hook(&self, event: u32, callback: WINEVENTPROC) -> Option<RawHandle> {
+    last : }
+architecture.md:614 [src/hook/keyboard_hook_callback.rs:475-503] src/hook/keyboard_hook_callback.rs#L475-503
+    first: /// Foreground-window-change callback installed via `SetWinEventHook`. The
+    last : }
+architecture.md:615 [src/hook/keyboard_hook.rs:189-202] src/hook/keyboard_hook.rs#L189-202
+    first: // A switch of the input desktop (a lock, Ctrl+Alt+Del, a UAC prompt
+    last : self.desktop_hook.store(desktop_hook, Ordering::Release);
+architecture.md:616 [src/engine/mod.rs:981-999] src/engine/mod.rs#L981-999
+    first: // A key-up whose key-down reached Windows always reaches it too, or
+    last : decision.suppress = swallow && !env.os_key_down(vk);
+architecture.md:622 [src/core/windows_actions.rs:312-326] src/core/windows_actions.rs#L312-326
+    first: pub(crate) fn launch_process(exe: &str, args: &[String]) {
+    last : }
+audit.md:409 [src/engine/keys.rs:96-143] src/engine/keys.rs#L96-143
+    first: /// Reads the modifiers of `which` from the OS key state, on the main
+    last : }
+build-and-run.md:12 [Cargo.toml:41] Cargo.toml#L41-41
+    first: windows = { version = "0.62", features = [
+    last : windows = { version = "0.62", features = [
+build-and-run.md:15 [Cargo.toml:4] Cargo.toml#L4-4
+    first: edition = "2024"
+    last : edition = "2024"
+build-and-run.md:16 [Cargo.toml:5-8] Cargo.toml#L5-8
+    first: # MSRV: let-chains need 1.88 with edition 2024; the highest rust-version of
+    last : rust-version = "1.88"
+build-and-run.md:39 [build.rs:21-47] build.rs#L21-47
+    first: fn directives(is_windows: bool, target_env: &str, profile: &str) -> Vec<String> {
+    last : }
+build-and-run.md:50 [Cargo.toml:18-34] Cargo.toml#L18-34
+    first: # The daemon. `test = false` and `bench = false` keep `cargo test` and
+    last : bench = false
+build-and-run.md:66 [src/bin/swch.rs:96-103] src/bin/swch.rs#L96-103
+    first: // The daemon binary sits next to swch.exe.
+    last : }
+build-and-run.md:76 [src/config/loader.rs:110-149] src/config/loader.rs#L110-149
+    first: /// Where the config file is, decided once at startup.
+    last : }
+build-and-run.md:79 [src/config/loader.rs:151-173] src/config/loader.rs#L151-173
+    first: /// Loads the bindings at startup.
+    last : }
+build-and-run.md:84 [src/main.rs:46-62] src/main.rs#L46-62
+    first: /// Logs `error` as fatal, waits for Enter and returns the failure code.
+    last : }
+build-and-run.md:86 [src/main.rs:25-36] src/main.rs#L25-36
+    first: let instance = match InstanceGuard::acquire(INSTANCE_MUTEX_NAME) {
+    last : };
+build-and-run.md:90 [src/main.rs:14-86] src/main.rs#L14-86
+    first: fn main() -> ExitCode {
+    last : }
+build-and-run.md:90 [`App::run`] src/core/app.rs#L168-326
+    first: /// Runs the daemon on the calling thread, which becomes its main
+    last : }
+build-and-run.md:125 [main.rs:27-34] src/main.rs#L27-34
+    first: Err(InstanceError::AlreadyRunning) => {
+    last : }
+build-and-run.md:125 [single_instance.rs:87-98] src/system/single_instance.rs#L87-98
+    first: impl fmt::Display for InstanceError {
+    last : }
+build-and-run.md:126 [main.rs:88-109] src/main.rs#L88-109
+    first: /// Adds `%LOCALAPPDATA%\key-switch-rs\daemon.log` to the log, now that this
+    last : }
+build-and-run.md:127 [main.rs:92-107] src/main.rs#L92-107
+    first: let local_app_data = match known_folder::local_app_data() {
+    last : Err(error) => log::warn!("no log file in {}: {error}", dir.display()),
+build-and-run.md:128 [loader.rs:160-181] src/config/loader.rs#L160-181
+    first: let text = match (config, read_config(path)) {
+    last : parse_config(path, &text)
+build-and-run.md:129 [registry.rs:80-114] src/system/registry.rs#L80-114
+    first: /// The hotkey of `function`, given the data of its registry values in the
+    last : }
+build-and-run.md:130 [loader.rs:379] src/config/loader.rs#L379-379
+    first: log::info!("no auto-blocker for {hotkey}: binding #{index} uses the same keys");
+    last : log::info!("no auto-blocker for {hotkey}: binding #{index} uses the same keys");
+build-and-run.md:131 [loader.rs:298-320] src/config/loader.rs#L298-320
+    first: /// One warning for every binding that duplicates an earlier one
+    last : }
+build-and-run.md:132 [loader.rs:401-411] src/config/loader.rs#L401-411
+    first: // Only where the blocker is added, so a hotkey that a binding takes
+    last : }
+build-and-run.md:133 [loader.rs:287-289] src/config/loader.rs#L287-289
+    first: if user_bindings.is_empty() {
+    last : }
+build-and-run.md:134 [app.rs:340-359] src/core/app.rs#L340-359
+    first: /// The fatal message for a pipe that could not be created. A taken pipe
+    last : }
+build-and-run.md:135 [app.rs:139-156] src/core/app.rs#L139-156
+    first: /// Console only, never logged: a binding line can hold the text of a
+    last : }
+build-and-run.md:136 [app.rs:199-236] src/core/app.rs#L199-236
+    first: // Before the hooks, so that the first slow action has somewhere to
+    last : .map_err(|error| format!("could not create the control window: {error}"))?;
+build-and-run.md:137 [app.rs:217-229] src/core/app.rs#L217-229
+    first: // Before the hooks (see the executor's start): the watchdog counts
+    last : };
+build-and-run.md:138 [control_window.rs:168-178] src/hook/control_window.rs#L168-178
+    first: // SAFETY: `hwnd` is the live window made above, on this thread.
+    last : };
+build-and-run.md:139 [app.rs:249] src/core/app.rs#L249-249
+    first: log::info!("Hook installed successfully");
+    last : log::info!("Hook installed successfully");
+build-and-run.md:140 [app.rs:266] src/core/app.rs#L266-266
+    first: log::info!("IPC server listening (use `swch on/off/exit`)");
+    last : log::info!("IPC server listening (use `swch on/off/exit`)");
+build-and-run.md:141 [app.rs:259-265] src/core/app.rs#L259-265
+    first: if let Err(error) = listener.serve(control) {
+    last : }
+build-and-run.md:142 [app.rs:279] src/core/app.rs#L279-279
+    first: log::info!("Watching {} for changes", path.display());
+    last : log::info!("Watching {} for changes", path.display());
+build-and-run.md:143 [app.rs:282-288] src/core/app.rs#L282-288
+    first: Err(e) => {
+    last : None
+build-and-run.md:144 [config_watcher.rs:201] src/hook/config_watcher.rs#L201-201
+    first: Ok(()) => log::info!("config reloaded ({count} bindings live)"),
+    last : Ok(()) => log::info!("config reloaded ({count} bindings live)"),
+build-and-run.md:145 [config_watcher.rs:193-197] src/hook/config_watcher.rs#L193-197
+    first: Err(e) => {
+    last : }
+build-and-run.md:146 [config_watcher.rs:202-204] src/hook/config_watcher.rs#L202-204
+    first: Err(MainThreadError::NoAnswer) => log::warn!(
+    last : ),
+build-and-run.md:146 [main_thread.rs:932-941] src/hook/main_thread.rs#L932-941
+    first: Request::Reload { bindings, reply } => {
+    last : }
+build-and-run.md:147 [writer.rs:228-241] src/logging/writer.rs#L228-241
+    first: /// One line with the counts since the last report, if any is non-zero,
+    last : }
+build-and-run.md:148 [writer.rs:199-226] src/logging/writer.rs#L199-226
+    first: /// Writes `line` to the files, if attached, and returns the notice for
+    last : }
+build-and-run.md:149 [ipc_server.rs:160-174] src/hook/ipc_server.rs#L160-174
+    first: if let Err(e) = reader.read_line(&mut line) {
+    last : }
+build-and-run.md:150 [app.rs:361-388] src/core/app.rs#L361-388
+    first: unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+    last : }
+build-and-run.md:151 [main_thread.rs:877-907] src/hook/main_thread.rs#L877-907
+    first: /// Step 1 of the loop, for the input signals noted since the last drain
+    last : }
+build-and-run.md:152 [main_thread.rs:949-989] src/hook/main_thread.rs#L949-989
+    first: /// Serves a reinstall request of the hook watchdog (roadmap item 2.4, cut
+    last : }
+build-and-run.md:153 [watchdog/mod.rs:260-265] src/hook/watchdog/mod.rs#L260-265
+    first: if raw_keys > 0 && context.health.hook_installed() {
+    last : self.watchdog.raw_batch(raw_keys, now);
+build-and-run.md:154 [panic.rs:1-26] src/logging/panic.rs#L1-26
+    first: //! The panic hook (roadmap item 2.4; roadmap item 1.7, question 4): a
+    last : //! the line to stderr and does not wait: there is nobody to wait for.
+build-and-run.md:155 [control_window.rs:216-231] src/hook/control_window.rs#L216-231
+    first: /// The session ends: "the session can end any time after all applications
+    last : }
+build-and-run.md:156 [app.rs:315] src/core/app.rs#L315-315
+    first: log::info!("Removing keyboard hook...");
+    last : log::info!("Removing keyboard hook...");
+build-and-run.md:157 [keyboard_hook.rs:228-244] src/hook/keyboard_hook.rs#L228-244
+    first: let desktop_handle = self
+    last : }
+build-and-run.md:158 [watchdog/mod.rs:695-703] src/hook/watchdog/mod.rs#L695-703
+    first: // Once per run, in every build: the release daemon's evidence that the
+    last : Some(stats)
+build-and-run.md:162 [config_watcher.rs:163-186] src/hook/config_watcher.rs#L163-186
+    first: fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, sink: &dyn ApplyReload) {
+    last : }
+build-and-run.md:162 [config_watcher.rs:92-120] src/hook/config_watcher.rs#L92-120
+    first: /// A create, modify (data, metadata, rename) or remove of an entry whose
+    last : }
+build-and-run.md:186 [app.rs:306-325] src/core/app.rs#L306-325
+    first: // This is the thread that installed both hooks, so their callbacks
+    last : Ok(())
+build-and-run.md:188 [app.rs:361-388] src/core/app.rs#L361-388
+    first: unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+    last : }
+build-and-run.md:211 [src/ipc.rs:31-33] src/ipc.rs#L31-33
+    first: /// Local-socket name used by both sides. On Windows the OS-mapped form
+    last : pub const PIPE_NAME: &str = "key-switch-rs.sock";
+build-and-run.md:212 [src/hook/ipc_server.rs:57-83] src/hook/ipc_server.rs#L57-83
+    first: /// The pipe's security descriptor (KS-02), in the security descriptor
+    last : );
+build-and-run.md:213 [src/ipc.rs:197-205] src/ipc.rs#L197-205
+    first: /// Response framing used by the daemon. `"OK: <msg>"` for success,
+    last : }
+build-and-run.md:213 [src/hook/ipc_server.rs:138] src/hook/ipc_server.rs#L138-138
+    first: thread::spawn(move || handle_connection(stream, control.as_ref()));
+    last : thread::spawn(move || handle_connection(stream, control.as_ref()));
+build-and-run.md:214 [src/ipc.rs:35-37] src/ipc.rs#L35-37
+    first: /// How long `swch` waits for the daemon, from the start of the connect to
+    last : pub const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+build-and-run.md:214 [src/ipc.rs:87-116] src/ipc.rs#L87-116
+    first: /// Sends `command` to the daemon on the namespaced pipe `pipe_name` and
+    last : }
+build-and-run.md:215 [src/ipc.rs:173-184] src/ipc.rs#L173-184
+    first: impl Command {
+    last : }
+build-and-run.md:216 [src/ipc.rs:207-219] src/ipc.rs#L207-219
+    first: /// Parse a daemon response — strips OK:/ERR: prefix, returns the message
+    last : }
+build-and-run.md:216 [src/bin/swch.rs:146-165] src/bin/swch.rs#L146-165
+    first: fn send(cmd: Command) -> ExitCode {
+    last : }
+build-and-run.md:243 [src/bin/swch.rs:24-55] src/bin/swch.rs#L24-55
+    first: fn main() -> ExitCode {
+    last : }
+build-and-run.md:254 [`cmd_open`] src/bin/swch.rs#L71-142
+    first: fn cmd_open() -> Result<(), String> {
+    last : }
+build-and-run.md:254 [`dispatch`] src/hook/ipc_server.rs#L178-205
+    first: /// Carries out one command and formats the reply line.
+    last : }
+build-and-run.md:254 [src/hook/main_thread.rs:561-583] src/hook/main_thread.rs#L561-583
+    first: /// Why a request to the main thread got no answer.
+    last : impl std::error::Error for MainThreadError {}
+build-and-run.md:254 [src/hook/health.rs:184-204] src/hook/health.rs#L184-204
+    first: impl fmt::Display for HookHealth {
+    last : }
+build-and-run.md:256 [src/bin/swch.rs:57-67] src/bin/swch.rs#L57-67
+    first: fn print_usage(prog: &str) {
+    last : }
+build-and-run.md:287 [src/ipc.rs:45-83] src/ipc.rs#L45-83
+    first: /// Why [`request`] got no reply.
+    last : }
+build-and-run.md:289 [src/core/app.rs:87-93] src/core/app.rs#L87-93
+    first: fn status(&self) -> DaemonStatus {
+    last : }
+build-and-run.md:291 [src/ipc.rs:215-218] src/ipc.rs#L215-218
+    first: } else {
+    last : }
+build-and-run.md:292 [src/bin/swch.rs:122-131] src/bin/swch.rs#L122-131
+    first: let hinst = unsafe {
+    last : };
+build-and-run.md:293 [src/bin/swch.rs:71-94] src/bin/swch.rs#L71-94
+    first: fn cmd_open() -> Result<(), String> {
+    last : }
+build-and-run.md:314 [app.manifest:16-18] app.manifest#L16-18
+    first: uiAccess="false" because uiAccess="true" requires a signed binary
+    last : ship as. The user will see one UAC consent prompt at launch.
+build-and-run.md:318 [README.md:907-911] README.md#L907-911
+    first: ### Avoiding the UAC prompt at every boot
+    last : elevated without a prompt; `swch` then talks to it normally.
+build-and-run.md:513 [app.rs:191-194] src/core/app.rs#L191-194
+    first: // Before the hooks: the usual failure, a pipe name another program
+    last : .map_err(|error| pipe_error_message(&ipc::pipe_path(ipc::PIPE_NAME), &error))?;
+build-and-run.md:519 [src/engine/mod.rs:1011-1019] src/engine/mod.rs#L1011-1019
+    first: /// Asks for the menu mask key if `decision` swallows its event while
+    last : }
+gaps.md:117 [src/ipc.rs:87-116] src/ipc.rs#L87-116
+    first: /// Sends `command` to the daemon on the namespaced pipe `pipe_name` and
+    last : }
+gaps.md:132 [src/system/registry.rs:65-78] src/system/registry.rs#L65-78
+    first: pub fn get_system_hotkey(function: SystemFunction) -> Option<KeyCombination> {
+    last : }
+gaps.md:168 [src/hook/keyboard_hook_callback.rs:94-131] src/hook/keyboard_hook_callback.rs#L94-131
+    first: //! # Re-entry
+    last : //! (`platform::foreground`).
+gaps.md:169 [src/data/binding.rs:92-99] src/data/binding.rs#L92-99
+    first: pub struct Binding {
+    last : pub block_default: bool,
+glossary.md:47 [src/core/executor/mod.rs:1-30] src/core/executor/mod.rs#L1-30
+    first: //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
+    last : //! tests, so that no test runs a real action.
+glossary.md:55 [src/config/schema.rs:71-76] src/config/schema.rs#L71-76
+    first: /// Lets a `keys` binding fire while modifiers it does not name are held
+    last : pub allow_extra_modifiers: bool,
+glossary.md:63 [src/hook/keyboard_hook.rs:23-58] src/hook/keyboard_hook.rs#L23-58
+    first: /// What the hooks share with the other threads: the binding list, the hook
+    last : }
+glossary.md:63 [src/hook/keyboard_hook.rs:75-91] src/hook/keyboard_hook.rs#L75-91
+    first: /// Atomically replace the binding list. Callable any number of times
+    last : }
+glossary.md:67 [src/engine/keys.rs:96-143] src/engine/keys.rs#L96-143
+    first: /// Reads the modifiers of `which` from the OS key state, on the main
+    last : }
+glossary.md:71 [src/config/loader.rs:322-416] src/config/loader.rs#L322-416
+    first: /// Appends an auto-blocker for the Windows hotkey of every binding that
+    last : }
+glossary.md:71 [src/data/binding.rs:156-171] src/data/binding.rs#L156-171
+    first: /// An auto-blocker for the Windows hotkey `combination`, acting in
+    last : }
+glossary.md:71 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+glossary.md:81 [src/data/binding.rs:91-133] src/data/binding.rs#L91-133
+    first: #[derive(Debug, Clone)]
+    last : }
+glossary.md:85 [src/config/loader.rs:528-558] src/config/loader.rs#L528-558
+    first: fn raw_binding_to_kind(raw: &RawBinding) -> Result<BindingKind, String> {
+    last : }
+glossary.md:85 [src/data/binding.rs:21-32] src/data/binding.rs#L21-32
+    first: #[derive(Debug, Clone)]
+    last : }
+glossary.md:89 [src/config/schema.rs:43-50] src/config/schema.rs#L43-50
+    first: /// Whether the key events that fire or arm a `keys` binding are kept
+    last : pub block_default: Option<bool>,
+glossary.md:89 [src/data/binding.rs:178-188] src/data/binding.rs#L178-188
+    first: /// The `block_default` of a binding whose config does not set it:
+    last : }
+glossary.md:93 [src/config/schema.rs:52-56] src/config/schema.rs#L52-56
+    first: /// Whether the loader adds an auto-blocker for the Windows hotkey of the
+    last : pub block_original_combo: RawBlockOriginalCombo,
+glossary.md:93 [src/config/default_config.ron:236-246] src/config/default_config.ron#L236-246
+    first: (
+    last : ),
+glossary.md:107 [src/config/schema.rs:130-138] src/config/schema.rs#L130-138
+    first: /// Simultaneous chord (all keys go down within a tight window).
+    last : }
+glossary.md:107 [src/engine/chords.rs:12-18] src/engine/chords.rs#L12-18
+    first: //! **Suppression**: every key-down of a key that belongs to a chord binding
+    last : //! part of normal typing.
+glossary.md:107 [src/data/binding.rs:18-20] src/data/binding.rs#L18-20
+    first: /// - `Chord` requires the listed keys to all go down within `window` of
+    last : ///   project's `Combo`). Order doesn't matter.
+glossary.md:115 [src/data/binding.rs:21-23] src/data/binding.rs#L21-23
+    first: #[derive(Debug, Clone)]
+    last : Combo(KeyCombination),
+glossary.md:119 [src/data/condition.rs:18-45] src/data/condition.rs#L18-45
+    first: /// Equality is structural, the condition as written: `AppEquals("Code.exe")`
+    last : }
+glossary.md:123 [src/core/app.rs:361-388] src/core/app.rs#L361-388
+    first: unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+    last : }
+glossary.md:127 [src/hook/control_window.rs:1-28] src/hook/control_window.rs#L1-28
+    first: //! The daemon's control window (roadmap item 2.3): a hidden top-level
+    last : //! stop.
+glossary.md:131 [src/logging/counters.rs:1-70] src/logging/counters.rs#L1-70
+    first: //! Counts of the diagnostics that must not be logged where they happen.
+    last : }
+glossary.md:137 [src/hook/ipc_server.rs:57-83] src/hook/ipc_server.rs#L57-83
+    first: /// The pipe's security descriptor (KS-02), in the security descriptor
+    last : );
+glossary.md:145 [src/hook/ipc_server.rs:32-55] src/hook/ipc_server.rs#L32-55
+    first: /// What the IPC commands do to the daemon. Called on the connection
+    last : }
+glossary.md:145 [src/core/app.rs:69-98] src/core/app.rs#L69-98
+    first: /// The daemon's side of the IPC commands, called on the IPC connection
+    last : }
+glossary.md:149 [src/hook/config_watcher.rs:64-69] src/hook/config_watcher.rs#L64-69
+    first: /// Coalescing window: any save burst that completes within this many ms is
+    last : const DEBOUNCE_MS: u64 = 250;
+glossary.md:149 [L163-L186] src/hook/config_watcher.rs#L163-186
+    first: fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, sink: &dyn ApplyReload) {
+    last : }
+glossary.md:153 [src/engine/mod.rs:387-406] src/engine/mod.rs#L387-406
+    first: /// What to do about one event or timer. The engine has already updated its
+    last : }
+glossary.md:157 [src/config/loader.rs:30-32] src/config/loader.rs#L30-32
+    first: /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
+    last : const DEFAULT_CONFIG: &str = include_str!("default_config.ron");
+glossary.md:157 [src/config/loader.rs:151-173] src/config/loader.rs#L151-173
+    first: /// Loads the bindings at startup.
+    last : }
+glossary.md:157 [src/config/default_config.ron:236-246] src/config/default_config.ron#L236-246
+    first: (
+    last : ),
+glossary.md:161 [src/engine/mod.rs:777-803] src/engine/mod.rs#L777-803
+    first: if !was_repeat {
+    last : }
+glossary.md:161 [src/config/loader.rs:478-487] src/config/loader.rs#L478-487
+    first: // Sequence/Chord have their own temporal semantics; pairing them with
+    last : }
+glossary.md:169 [src/hook/keyboard_hook_callback.rs:246-249] src/hook/keyboard_hook_callback.rs#L246-249
+    first: if constants::is_injected_event(extra_info) {
+    last : }
+glossary.md:179 [src/hook/keyboard_hook.rs:41-49] src/hook/keyboard_hook.rs#L41-49
+    first: /// Whether remapping is on (`swch on`, `swch off`). While it is off the
+    last : enabled: AtomicBool,
+glossary.md:179 [src/hook/keyboard_hook.rs:136-145] src/hook/keyboard_hook.rs#L136-145
+    first: /// Flips the remapping switch and returns whether it changed. Only
+    last : }
+glossary.md:183 [src/engine/mod.rs:1-251] src/engine/mod.rs#L1-251
+    first: //! The decision core: given one keyboard event, the binding list and an
+    last : #![forbid(unsafe_code)]
+glossary.md:187 [src/engine/env.rs:9-66] src/engine/env.rs#L9-66
+    first: /// Everything the engine needs to know about the world outside the event it
+    last : }
+glossary.md:191 [src/core/executor/mod.rs:240-263] src/core/executor/mod.rs#L240-263
+    first: /// Starts a new epoch: every job queued and every macro running is
+    last : }
+glossary.md:195 [src/engine/matching.rs:69-83] src/engine/matching.rs#L69-83
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+glossary.md:205 [src/core/windows_actions.rs:118-166] src/core/windows_actions.rs#L118-166
+    first: /// An action that runs on the thread that fires it, the main thread, in the
+    last : }
+glossary.md:213 [src/platform/foreground.rs:1-23] src/platform/foreground.rs#L1-23
+    first: //! The foreground window as `when:` conditions see it (roadmap item 2.3,
+    last : //! counts the questions. Nothing here imports the rest of the crate.
+glossary.md:217 [src/core/executor/mod.rs:71-109] src/core/executor/mod.rs#L71-109
+    first: /// The window a macro's `Window(...)` steps act on: the foreground window
+    last : }
+glossary.md:223 [src/engine/mod.rs:325-385] src/engine/mod.rs#L325-385
+    first: /// Identifies the pending entry a timer was started for. Opaque: the caller
+    last : }
+glossary.md:231 [src/engine/winner.rs:90-202] src/engine/winner.rs#L90-202
+    first: /// What a deferred winner and its group arm on a first key-down: the term
+    last : }
+glossary.md:237 [src/engine/matching.rs:33-50] src/engine/matching.rs#L33-50
+    first: /// The keys the engine believes are held, asked one [`KeySpec`] at a time.
+    last : }
+glossary.md:241 [src/hook/health.rs:11-73] src/hook/health.rs#L11-73
+    first: /// The heartbeat, alone on its cache line: the main thread writes it at
+    last : }
+glossary.md:245 [src/engine/resync.rs:1-46] src/engine/resync.rs#L1-46
+    first: //! When the main thread reads the modifiers from Windows between key events
+    last : }
+glossary.md:245 [src/engine/mod.rs:661-677] src/engine/mod.rs#L661-677
+    first: /// The main thread's read of the modifiers between key events (roadmap
+    last : }
+glossary.md:249 [src/system/system_function.rs:45-81] src/system/system_function.rs#L45-81
+    first: fn switch_language_forward() {
+    last : }
+glossary.md:257 [src/hook/keyboard_hook_callback.rs:450-456] src/hook/keyboard_hook_callback.rs#L450-456
+    first: if suppress {
+    last : unsafe { CallNextHookEx(None, code, wparam, lparam) }
+glossary.md:261 [src/core/app.rs:168-326] src/core/app.rs#L168-326
+    first: /// Runs the daemon on the calling thread, which becomes its main
+    last : }
+glossary.md:265 [src/hook/watchdog/mod.rs:1-63] src/hook/watchdog/mod.rs#L1-63
+    first: //! The hook watchdog (roadmap item 2.4, KS-08): it finds a keyboard hook
+    last : //! outlives the count of its batch.
+glossary.md:273 [src/hook/config_watcher.rs:122-213] src/hook/config_watcher.rs#L122-213
+    first: /// Install a watcher on the parent directory of `config_path` and spawn the
+    last : }
+glossary.md:273 [src/hook/main_thread.rs:336-344] src/hook/main_thread.rs#L336-344
+    first: /// Makes `bindings` the live list and resets the engine with it, on the
+    last : }
+glossary.md:279 [src/data/trigger.rs:17-33] src/data/trigger.rs#L17-33
+    first: pub enum Trigger {
+    last : }
+glossary.md:283 [src/config/loader.rs:260-265] src/config/loader.rs#L260-265
+    first: // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
+    last : ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+glossary.md:287 [src/hook/keyboard_hook_callback.rs:440-446] src/hook/keyboard_hook_callback.rs#L440-446
+    first: // An injected event's stamp is its injector's own unless it passed 0
+    last : };
+glossary.md:291 [src/engine/mod.rs:437-496] src/engine/mod.rs#L437-496
+    first: /// A signal about where keyboard input is, noted by the daemon's main
+    last : }
+glossary.md:301 [src/hook/keyboard_hook_callback.rs:422-427] src/hook/keyboard_hook_callback.rs#L422-427
+    first: // SAFETY: for code >= 0 (HC_ACTION) lparam points to a valid
+    last : let injected = event.flags.contains(LLKHF_INJECTED);
+glossary.md:313 [src/hook/keyboard_hook_callback.rs:156-168] src/hook/keyboard_hook_callback.rs#L156-168
+    first: /// Process-wide hook singleton, lazily initialised on first access. `LazyLock`
+    last : }
+glossary.md:313 [src/hook/keyboard_hook.rs:23-58] src/hook/keyboard_hook.rs#L23-58
+    first: /// What the hooks share with the other threads: the binding list, the hook
+    last : }
+glossary.md:317 [src/data/sequence.rs:119-161] src/data/sequence.rs#L119-161
+    first: /// Emits each UTF-16 code unit as a Unicode key-down/key-up pair. Surrogate
+    last : }
+glossary.md:321 [src/data/key_spec.rs:116-182] src/data/key_spec.rs#L116-182
+    first: /// One trigger key of a binding.
+    last : }
+glossary.md:331 [src/system/registry.rs:30-39] src/system/registry.rs#L30-39
+    first: fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
+    last : }
+glossary.md:331 [src/system/registry.rs:223-231] src/system/registry.rs#L223-231
+    first: fn parse_language_hotkey(value: &str) -> HotkeySetting {
+    last : }
+glossary.md:335 [src/bench.rs:1-30] src/bench.rs#L1-30
+    first: //! The latency bench of roadmap item 2.2: the cost of the key path, how late
+    last : //!   with the bench thread as the main thread (`hook::main_thread`).
+glossary.md:339 [src/data/binding.rs:13-17] src/data/binding.rs#L13-17
+    first: /// - `Sequence` is a Vim/Emacs leader-key flow: each step is its own combo,
+    last : ///   *lost* (no replay). Bind only to keys not used in normal typing.
+glossary.md:343 [src/logging/mod.rs:1-19] src/logging/mod.rs#L1-19
+    first: //! Diagnostics through the `log` facade, with an in-house sink (roadmap
+    last : //! check it calls [`init`] first and [`flush`] before it exits.
+glossary.md:357 [src/core/executor/runs.rs:1-11] src/core/executor/runs.rs#L1-11
+    first: //! The macro runs of the action executor: bookkeeping only, with no Win32
+    last : //! a stretch of steps between two of them.
+glossary.md:361 [src/hook/main_thread.rs:276-308] src/hook/main_thread.rs#L276-308
+    first: /// What the main thread owns: the engine and its gesture timers.
+    last : }
+glossary.md:373 [src/core/constants.rs:36-48] src/core/constants.rs#L36-48
+    first: /// Win or Alt key down whose key-down it saw. Windows then sees a key
+    last : pub const MENU_MASK_VK: u16 = 0xE8;
+glossary.md:373 [src/hook/keyboard_hook_callback.rs:336-378] src/hook/keyboard_hook_callback.rs#L336-378
+    first: /// The menu mask key's key-down and key-up (`constants::MENU_MASK_VK`),
+    last : }
+glossary.md:377 [src/hook/main_thread.rs:777-861] src/hook/main_thread.rs#L777-861
+    first: /// Runs the main loop (see the module docs) until `WM_QUIT`, carrying
+    last : }
+glossary.md:381 [src/engine/modifiers.rs:13-28] src/engine/modifiers.rs#L13-28
+    first: /// The modifier codes the engine keeps flags for: both sides of Shift, Ctrl,
+    last : ];
+glossary.md:391 [src/ipc.rs:31-43] src/ipc.rs#L31-43
+    first: /// Local-socket name used by both sides. On Windows the OS-mapped form
+    last : }
+glossary.md:391 [src/hook/ipc_server.rs:97-148] src/hook/ipc_server.rs#L97-148
+    first: /// Creates the listener on the namespaced pipe `pipe_name`
+    last : }
+glossary.md:397 [src/logging/panic.rs:1-26] src/logging/panic.rs#L1-26
+    first: //! The panic hook (roadmap item 2.4; roadmap item 1.7, question 4): a
+    last : //! the line to stderr and does not wait: there is nobody to wait for.
+glossary.md:401 [src/data/sequence.rs:179-212] src/data/sequence.rs#L179-212
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : }
+glossary.md:405 [src/engine/keys.rs:54-86] src/engine/keys.rs#L54-86
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+glossary.md:409 [src/platform/foreground.rs:184-217] src/platform/foreground.rs#L184-217
+    first: fn process_image_name(pid: u32) -> windows::core::Result<String> {
+    last : }
+glossary.md:415 [src/hook/installer.rs:130-142] src/hook/installer.rs#L130-142
+    first: fn register_raw_keyboard(&self, sink: HWND) -> Result<()> {
+    last : }
+glossary.md:415 [src/hook/watchdog/mod.rs:49-63] src/hook/watchdog/mod.rs#L49-63
+    first: //! # Raw input in this process
+    last : //! outlives the count of its batch.
+glossary.md:419 [src/config/schema.rs:78-84] src/config/schema.rs#L78-84
+    first: /// Whether a `keys` binding with the `Immediate` trigger fires again on
+    last : pub repeat: Option<bool>,
+glossary.md:435 [src/config/loader.rs:260-270] src/config/loader.rs#L260-270
+    first: // `IMPLICIT_SOME` lets users write `keys: "CapsLock"` instead of
+    last : })?;
+glossary.md:443 [src/bin/swch.rs:105-131] src/bin/swch.rs#L105-131
+    first: // Use ShellExecuteW with the "runas" verb to trigger UAC. The daemon's
+    last : };
+glossary.md:465 [src/core/constants.rs:15-28] src/core/constants.rs#L15-28
+    first: pub fn injected_sentinel() -> usize {
+    last : }
+glossary.md:465 [src/core/constants.rs:30-32] src/core/constants.rs#L30-32
+    first: pub fn is_injected_event(extra_info: usize) -> bool {
+    last : }
+glossary.md:469 [src/config/schema.rs:120-128] src/config/schema.rs#L120-128
+    first: /// Vim/Emacs-style leader sequence. Used as `sequence: (steps: ["g", "g"])`
+    last : }
+glossary.md:469 [src/config/loader.rs:560-577] src/config/loader.rs#L560-577
+    first: fn sequence_spec_to_kind(seq: &SequenceSpec) -> Result<BindingKind, String> {
+    last : }
+glossary.md:477 [src/system/single_instance.rs:1-65] src/system/single_instance.rs#L1-65
+    first: //! One daemon per Windows session (roadmap item 1.5, KS-20).
+    last : }
+glossary.md:481 [src/engine/mod.rs:498-506] src/engine/mod.rs#L498-506
+    first: /// Sorts a binding list into the order the engine visits it: more keys
+    last : }
+glossary.md:481 [src/data/binding.rs:34-47] src/data/binding.rs#L34-47
+    first: impl BindingKind {
+    last : }
+glossary.md:493 [src/engine/mod.rs:920-1009] src/engine/mod.rs#L920-1009
+    first: if was_repeat {
+    last : }
+glossary.md:497 [src/engine/keys.rs:54-71] src/engine/keys.rs#L54-71
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+glossary.md:515 [src/data/trigger.rs:17-33] src/data/trigger.rs#L17-33
+    first: pub enum Trigger {
+    last : }
+glossary.md:527 [src/data/trigger.rs:17-33] src/data/trigger.rs#L17-33
+    first: pub enum Trigger {
+    last : }
+glossary.md:531 [src/engine/matching.rs:57-67] src/engine/matching.rs#L57-67
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+glossary.md:539 [src/engine/keys.rs:218-225] src/engine/keys.rs#L218-225
+    first: /// Records a key-down. Returns true if the key was already held, which
+    last : }
+glossary.md:545 [build.rs:21-47] build.rs#L21-47
+    first: fn directives(is_windows: bool, target_env: &str, profile: &str) -> Vec<String> {
+    last : }
+glossary.md:549 [build.rs:33-36] build.rs#L33-36
+    first: out.push(
+    last : );
+glossary.md:553 [app.manifest:9-19] app.manifest#L9-19
+    first: <!--
+    last : -->
+glossary.md:563 [src/data/vk_name.rs:76-173] src/data/vk_name.rs#L76-173
+    first: /// Parses a single human-readable key name back into a `VIRTUAL_KEY`. Matching
+    last : }
+glossary.md:563 [src/data/vk_name.rs:137] src/data/vk_name.rs#L137-137
+    first: "alt" | "menu" => Some(VK_MENU),
+    last : "alt" | "menu" => Some(VK_MENU),
+glossary.md:569 [src/hook/installer.rs:85-102] src/hook/installer.rs#L85-102
+    first: impl Installer for System {
+    last : }
+glossary.md:573 [src/hook/keyboard_hook.rs:171-202] src/hook/keyboard_hook.rs#L171-202
+    first: // Foreground-change hook re-syncs modifier state after focus returns from
+    last : self.desktop_hook.store(desktop_hook, Ordering::Release);
+glossary.md:573 [src/hook/keyboard_hook_callback.rs:475-547] src/hook/keyboard_hook_callback.rs#L475-547
+    first: /// Foreground-window-change callback installed via `SetWinEventHook`. The
+    last : }
+glossary.md:577 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+glossary.md:581 [src/engine/mod.rs:981-999] src/engine/mod.rs#L981-999
+    first: // A key-up whose key-down reached Windows always reaches it too, or
+    last : decision.suppress = swallow && !env.os_key_down(vk);
+glossary.md:585 [src/system/system_function.rs:45-81] src/system/system_function.rs#L45-81
+    first: fn switch_language_forward() {
+    last : }
+glossary.md:589 [src/hook/keyboard_hook_callback.rs:220-230] src/hook/keyboard_hook_callback.rs#L220-230
+    first: /// Translates a hook message into an engine event, or `None` for anything
+    last : }
+overview.md:16 [src/hook/keyboard_hook.rs:147-205] src/hook/keyboard_hook.rs#L147-205
+    first: /// Installs the keyboard hook, the foreground hook and the
+    last : }
+overview.md:16 [src/hook/keyboard_hook_callback.rs:394-547] src/hook/keyboard_hook_callback.rs#L394-547
+    first: pub(crate) unsafe extern "system" fn keyboard_hook_callback(
+    last : }
+overview.md:16 [src/core/constants.rs:15-48] src/core/constants.rs#L15-48
+    first: pub fn injected_sentinel() -> usize {
+    last : pub const MENU_MASK_VK: u16 = 0xE8;
+overview.md:17 [src/hook/watchdog/mod.rs:1-63] src/hook/watchdog/mod.rs#L1-63
+    first: //! The hook watchdog (roadmap item 2.4, KS-08): it finds a keyboard hook
+    last : //! outlives the count of its batch.
+overview.md:17 [src/hook/health.rs:1-5] src/hook/health.rs#L1-5
+    first: //! The keyboard hook's health (roadmap item 2.4, KS-08): the heartbeat that
+    last : //! reports: [`HookHealth`].
+overview.md:18 [src/engine/mod.rs:1-251] src/engine/mod.rs#L1-251
+    first: //! The decision core: given one keyboard event, the binding list and an
+    last : #![forbid(unsafe_code)]
+overview.md:19 [src/data/binding.rs:21-32] src/data/binding.rs#L21-32
+    first: #[derive(Debug, Clone)]
+    last : }
+overview.md:19 [src/engine/matching.rs:57-106] src/engine/matching.rs#L57-106
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+overview.md:19 [src/engine/winner.rs:1-24] src/engine/winner.rs#L1-24
+    first: //! One winner per key-down among the `keys` bindings (roadmap item 1.6,
+    last : //! borrows its binding for the one key-down.
+overview.md:20 [src/data/trigger.rs:17-33] src/data/trigger.rs#L17-33
+    first: pub enum Trigger {
+    last : }
+overview.md:20 [src/engine/gestures.rs:1-42] src/engine/gestures.rs#L1-42
+    first: //! Pending `Tap`, `Hold` and `DoubleTap` gestures, as plain data: one
+    last : //! new number: the timer of its cancelled Hold then finds nothing.
+overview.md:21 [src/core/windows_actions.rs:17-51] src/core/windows_actions.rs#L17-51
+    first: #[derive(Debug, Clone)]
+    last : }
+overview.md:21 [src/core/windows_actions.rs:182-206] src/core/windows_actions.rs#L182-206
+    first: impl BindAction {
+    last : }
+overview.md:22 [src/core/executor/mod.rs:1-30] src/core/executor/mod.rs#L1-30
+    first: //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
+    last : //! tests, so that no test runs a real action.
+overview.md:22 [src/data/sequence.rs:104-117] src/data/sequence.rs#L104-117
+    first: /// Runs one step against `target`, on the calling thread.
+    last : }
+overview.md:23 [src/data/condition.rs:18-95] src/data/condition.rs#L18-95
+    first: /// Equality is structural, the condition as written: `AppEquals("Code.exe")`
+    last : }
+overview.md:23 [src/platform/foreground.rs:1-23] src/platform/foreground.rs#L1-23
+    first: //! The foreground window as `when:` conditions see it (roadmap item 2.3,
+    last : //! counts the questions. Nothing here imports the rest of the crate.
+overview.md:24 [src/config/loader.rs:466-526] src/config/loader.rs#L466-526
+    first: fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, String> {
+    last : }
+overview.md:24 [src/config/loader.rs:322-437] src/config/loader.rs#L322-437
+    first: /// Appends an auto-blocker for the Windows hotkey of every binding that
+    last : }
+overview.md:24 [src/system/registry.rs:30-39] src/system/registry.rs#L30-39
+    first: fn get_registry_location(function: SystemFunction) -> Option<RegistryLocation> {
+    last : }
+overview.md:25 [src/config/loader.rs:151-320] src/config/loader.rs#L151-320
+    first: /// Loads the bindings at startup.
+    last : }
+overview.md:26 [src/hook/config_watcher.rs:1-24] src/hook/config_watcher.rs#L1-24
+    first: //! File-watcher driven hot-reload for `config.ron`.
+    last : //!      file, so it is not recreated from the template (KS-23).
+overview.md:26 [src/hook/main_thread.rs:336-344] src/hook/main_thread.rs#L336-344
+    first: /// Makes `bindings` the live list and resets the engine with it, on the
+    last : }
+overview.md:27 [src/ipc.rs:31-37] src/ipc.rs#L31-37
+    first: /// Local-socket name used by both sides. On Windows the OS-mapped form
+    last : pub const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+overview.md:27 [src/hook/ipc_server.rs:57-83] src/hook/ipc_server.rs#L57-83
+    first: /// The pipe's security descriptor (KS-02), in the security descriptor
+    last : );
+overview.md:28 [src/system/single_instance.rs:21-65] src/system/single_instance.rs#L21-65
+    first: /// The daemon's instance mutex, one per Windows session (roadmap item 1.5,
+    last : }
+overview.md:28 [src/main.rs:20-36] src/main.rs#L20-36
+    first: // First of all: no config is read or template written, and no hook or
+    last : };
+overview.md:29 [src/logging/mod.rs:1-19] src/logging/mod.rs#L1-19
+    first: //! Diagnostics through the `log` facade, with an in-house sink (roadmap
+    last : //! check it calls [`init`] first and [`flush`] before it exits.
+overview.md:30 [build.rs:21-47] build.rs#L21-47
+    first: fn directives(is_windows: bool, target_env: &str, profile: &str) -> Vec<String> {
+    last : }
+overview.md:36 [src/config/default_config.ron:236-246] src/config/default_config.ron#L236-246
+    first: (
+    last : ),
+overview.md:42 [src/system/registry.rs:223-231] src/system/registry.rs#L223-231
+    first: fn parse_language_hotkey(value: &str) -> HotkeySetting {
+    last : }
+overview.md:54 [src/bin/swch.rs:33-54] src/bin/swch.rs#L33-54
+    first: match subcommand.as_str() {
+    last : }
+overview.md:56 [src/main.rs:71-76] src/main.rs#L71-76
+    first: // Resolution order for the config path:
+    last : let config = config::ConfigPath::from_arg(std::env::args_os().nth(1))?;
+overview.md:89 [src/core/app.rs:168-326] src/core/app.rs#L168-326
+    first: /// Runs the daemon on the calling thread, which becomes its main
+    last : }
+roadmap.md:610 [src/bench.rs:82-90] src/bench.rs#L82-90
+    first: //! - R16: the key-down callback of the first key of a burst, which wakes
+    last : //!   p50 plus 20 us; its p99 is reported.
+roadmap.md:1041 [src/engine/keys.rs:118-143] src/engine/keys.rs#L118-143
+    first: /// The check of a decided key event of `own` (roadmap item 2.5, ruling
+    last : }
+roadmap.md:1043 [src/hook/keyboard_hook_callback.rs:438-449] src/hook/keyboard_hook_callback.rs#L438-449
+    first: let ran = started.elapsed();
+    last : }
+roadmap.md:1045 [src/hook/keyboard_hook_callback.rs:281-296] src/hook/keyboard_hook_callback.rs#L281-296
+    first: /// One of the daemon's own injected events (the sentinel): Windows applies
+    last : }
+config/README.md:5 [`config::reload`] src/config/loader.rs#L175-182
+    first: /// Loads the bindings again after the file at `path` changed. Never writes:
+    last : }
+config/actions.md:8 [src/config/schema.rs:171-205] src/config/schema.rs#L171-205
+    first: /// `BindAction` mirror with VK fields kept as strings until the loader runs.
+    last : }
+config/actions.md:8 [src/config/loader.rs:667-725] src/config/loader.rs#L667-725
+    first: fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
+    last : }
+config/actions.md:23 [src/system/system_function.rs:18-25] src/system/system_function.rs#L18-25
+    first: pub enum SystemFunction {
+    last : }
+config/actions.md:42 [src/engine/mod.rs:844-851] src/engine/mod.rs#L844-851
+    first: Trigger::Immediate => {
+    last : }
+config/actions.md:43 [src/engine/mod.rs:961-979] src/engine/mod.rs#L961-979
+    first: fn on_key_up(&mut self, vk: VIRTUAL_KEY, env: &dyn Env) -> Decision {
+    last : }
+config/actions.md:45 [src/engine/gestures.rs:179-199] src/engine/gestures.rs#L179-199
+    first: if let Some(index) = self.presses.iter().position(|p| p.vk == vk) {
+    last : fire.extend(deferred_tap);
+config/actions.md:46 [src/engine/mod.rs:908-914] src/engine/mod.rs#L908-914
+    first: ChordOutcome::Completed { action, keys } => {
+    last : }
+config/actions.md:47 [src/engine/mod.rs:879-888] src/engine/mod.rs#L879-888
+    first: SequenceOutcome::Completed {
+    last : }
+config/actions.md:62 [src/core/windows_actions.rs:257] src/core/windows_actions.rs#L257-257
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+config/actions.md:62 [src/data/sequence.rs:179] src/data/sequence.rs#L179-179
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : fn press_combo(keys: &[VIRTUAL_KEY]) {
+config/actions.md:65 [src/engine/mod.rs:1011-1019] src/engine/mod.rs#L1011-1019
+    first: /// Asks for the menu mask key if `decision` swallows its event while
+    last : }
+config/actions.md:65 [src/hook/keyboard_hook_callback.rs:298-378] src/hook/keyboard_hook_callback.rs#L298-378
+    first: /// Carries out a decision on the calling thread, outside the main state's
+    last : }
+config/actions.md:69 [src/core/constants.rs:15-28] src/core/constants.rs#L15-28
+    first: pub fn injected_sentinel() -> usize {
+    last : }
+config/actions.md:69 [src/hook/keyboard_hook_callback.rs:246-249] src/hook/keyboard_hook_callback.rs#L246-249
+    first: if constants::is_injected_event(extra_info) {
+    last : }
+config/actions.md:70 [build.rs:24-43] build.rs#L24-43
+    first: // `/MANIFEST:EMBED` and `/MANIFESTUAC` are MSVC linker switches. GNU ld
+    last : }
+config/actions.md:80 [src/system/system_function.rs:45-81] src/system/system_function.rs#L45-81
+    first: fn switch_language_forward() {
+    last : }
+config/actions.md:97 [src/system/system_function.rs:119-159] src/system/system_function.rs#L119-159
+    first: fn toggle_caps_lock() {
+    last : }
+config/actions.md:114 [src/config/parsing.rs:57-78] src/config/parsing.rs#L57-78
+    first: pub(crate) fn parse_wm_name(name: &str) -> Option<u32> {
+    last : }
+config/actions.md:114 [src/config/parsing.rs:61] src/config/parsing.rs#L61-61
+    first: .flat_map(|c| c.to_uppercase())
+    last : .flat_map(|c| c.to_uppercase())
+config/actions.md:132 [src/config/schema.rs:224-229] src/config/schema.rs#L224-229
+    first: #[derive(Debug, Deserialize)]
+    last : }
+config/actions.md:140 [src/config/loader.rs:697-701] src/config/loader.rs#L697-701
+    first: BindAction::PostMessage {
+    last : }
+config/actions.md:142 [src/core/windows_actions.rs:298-310] src/core/windows_actions.rs#L298-310
+    first: fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
+    last : }
+config/actions.md:168 [src/core/windows_actions.rs:257-291] src/core/windows_actions.rs#L257-291
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : }
+config/actions.md:185 [src/core/windows_actions.rs:312-326] src/core/windows_actions.rs#L312-326
+    first: pub(crate) fn launch_process(exe: &str, args: &[String]) {
+    last : }
+config/actions.md:197 [src/core/windows_actions.rs:318] src/core/windows_actions.rs#L318-318
+    first: match std::process::Command::new(exe).args(args).spawn() {
+    last : match std::process::Command::new(exe).args(args).spawn() {
+config/actions.md:197 [build.rs:27-36] build.rs#L27-36
+    first: if is_windows && profile == "release" && target_env == "msvc" {
+    last : );
+config/actions.md:200 [src/core/windows_actions.rs:318] src/core/windows_actions.rs#L318-318
+    first: match std::process::Command::new(exe).args(args).spawn() {
+    last : match std::process::Command::new(exe).args(args).spawn() {
+config/actions.md:200 [src/core/windows_actions.rs:35-38] src/core/windows_actions.rs#L35-38
+    first: /// Spawn a process with `Command::spawn`. The child outlives the daemon
+    last : /// PATH lookup.
+config/actions.md:217 [src/core/windows_actions.rs:328-351] src/core/windows_actions.rs#L328-351
+    first: pub(crate) fn shell_open(target: &str) {
+    last : }
+config/actions.md:229 [src/core/windows_actions.rs:335] src/core/windows_actions.rs#L335-335
+    first: ShellExecuteW(
+    last : ShellExecuteW(
+config/actions.md:240 [src/core/windows_actions.rs:67-79] src/core/windows_actions.rs#L67-79
+    first: impl MediaKey {
+    last : }
+config/actions.md:240 [src/core/windows_actions.rs:162] src/core/windows_actions.rs#L162-162
+    first: FastAction::Media(key) => press_vk(key.as_vk()),
+    last : FastAction::Media(key) => press_vk(key.as_vk()),
+config/actions.md:250 [src/core/windows_actions.rs:163] src/core/windows_actions.rs#L163-163
+    first: FastAction::DoNothing => {}
+    last : FastAction::DoNothing => {}
+config/actions.md:250 [src/data/binding.rs:156-171] src/data/binding.rs#L156-171
+    first: /// An auto-blocker for the Windows hotkey `combination`, acting in
+    last : }
+config/actions.md:259 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+config/actions.md:275 [src/config/schema.rs:231-249] src/config/schema.rs#L231-249
+    first: /// One step inside a `Sequence(...)`. Direct enum-variant syntax in RON:
+    last : }
+config/actions.md:276 [src/config/loader.rs:704-714] src/config/loader.rs#L704-714
+    first: RawAction::Sequence(steps) => {
+    last : }
+config/actions.md:276 [src/config/loader.rs:739-774] src/config/loader.rs#L739-774
+    first: fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
+    last : }
+config/actions.md:331 [src/data/sequence.rs:123-161] src/data/sequence.rs#L123-161
+    first: fn type_text(s: &str) {
+    last : }
+config/actions.md:342 [src/data/sequence.rs:132-135] src/data/sequence.rs#L132-135
+    first: for code in s.encode_utf16() {
+    last : }
+config/actions.md:349 [src/data/sequence.rs:163-174] src/data/sequence.rs#L163-174
+    first: fn press_key(vk: VIRTUAL_KEY) {
+    last : }
+config/actions.md:358 [src/data/sequence.rs:179-244] src/data/sequence.rs#L179-244
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : }
+config/actions.md:374 [src/data/sequence.rs:200-202] src/data/sequence.rs#L200-202
+    first: for vk in mods.iter().rev() {
+    last : }
+config/actions.md:376 [src/data/sequence.rs:179] src/data/sequence.rs#L179-179
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : fn press_combo(keys: &[VIRTUAL_KEY]) {
+config/actions.md:381 [src/data/sequence.rs:113-115] src/data/sequence.rs#L113-115
+    first: SequenceStep::Launch { exe, args } => launch_process(exe, args),
+    last : SequenceStep::Media(key) => press_key(key.as_vk()),
+config/errors.md:13 [src/config/loader.rs:184-197] src/config/loader.rs#L184-197
+    first: /// The text of the config file. A missing file, or a missing folder on its
+    last : }
+config/errors.md:20 [src/main.rs:47-62] src/main.rs#L47-62
+    first: fn fatal(error: &dyn std::error::Error) -> ExitCode {
+    last : }
+config/errors.md:31 [src/hook/config_watcher.rs:193-197] src/hook/config_watcher.rs#L193-197
+    first: Err(e) => {
+    last : }
+config/errors.md:58 [src/config/loader.rs:127-136] src/config/loader.rs#L127-136
+    first: pub fn from_arg(arg: Option<OsString>) -> Result<Self, ConfigError> {
+    last : }
+config/errors.md:137 [src/config/loader.rs:272-284] src/config/loader.rs#L272-284
+    first: let mut user_bindings = Vec::with_capacity(raw.bindings.len());
+    last : }
+config/errors.md:137 [src/config/loader.rs:466-649] src/config/loader.rs#L466-649
+    first: fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, String> {
+    last : }
+config/errors.md:137 [src/config/loader.rs:667-774] src/config/loader.rs#L667-774
+    first: fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
+    last : }
+config/errors.md:143 [src/config/loader.rs:466-526] src/config/loader.rs#L466-526
+    first: fn raw_binding_to_binding(raw: &RawBinding, index: usize) -> Result<Binding, String> {
+    last : }
+config/errors.md:145 [src/config/loader.rs:604-615] src/config/loader.rs#L604-615
+    first: fn format_raw_binding_keys(raw: &RawBinding) -> String {
+    last : }
+config/errors.md:170 [src/config/loader.rs:752-754] src/config/loader.rs#L752-754
+    first: if keys.is_empty() {
+    last : }
+config/errors.md:182 [src/config/loader.rs:298-320] src/config/loader.rs#L298-320
+    first: /// One warning for every binding that duplicates an earlier one
+    last : }
+config/errors.md:185 [src/config/loader.rs:349-363] src/config/loader.rs#L349-363
+    first: for (index, binding) in user_bindings.iter().enumerate() {
+    last : }
+config/keys.md:15 [src/config/loader.rs:545-547] src/config/loader.rs#L545-547
+    first: if let Some(s) = &raw.keys {
+    last : }
+config/keys.md:16 [src/config/loader.rs:568-571] src/config/loader.rs#L568-571
+    first: for (i, step) in seq.steps.iter().enumerate() {
+    last : }
+config/keys.md:17 [src/config/loader.rs:583-596] src/config/loader.rs#L583-596
+    first: let mut specs: Vec<KeySpec> = Vec::with_capacity(chord.keys.len());
+    last : }
+config/keys.md:18 [src/config/loader.rs:674-677] src/config/loader.rs#L674-677
+    first: RawAction::PressKey(key) => {
+    last : }
+config/keys.md:19 [src/config/loader.rs:745-748] src/config/loader.rs#L745-748
+    first: RawStep::Key(name) => {
+    last : }
+config/keys.md:20 [src/config/loader.rs:750-756] src/config/loader.rs#L750-756
+    first: RawStep::Combo(combo) => {
+    last : }
+config/keys.md:22 [src/data/key_spec.rs:116-129] src/data/key_spec.rs#L116-129
+    first: /// One trigger key of a binding.
+    last : }
+config/keys.md:24 [src/config/schema.rs:207-219] src/config/schema.rs#L207-219
+    first: /// On-disk representation of the runtime `MediaKey` enum. Same variants;
+    last : }
+config/keys.md:36 [src/config/parsing.rs:15-52] src/config/parsing.rs#L15-52
+    first: pub(crate) fn parse_combo(s: &str) -> Result<KeyCombination, String> {
+    last : }
+config/keys.md:38 [lines 36-39] src/config/parsing.rs#L36-39
+    first: let trimmed = s.trim();
+    last : }
+config/keys.md:39 [line 42] src/config/parsing.rs#L42-42
+    first: for raw_segment in trimmed.split('+') {
+    last : for raw_segment in trimmed.split('+') {
+config/keys.md:40 [lines 43-46] src/config/parsing.rs#L43-46
+    first: let segment = raw_segment.trim();
+    last : }
+config/keys.md:41 [lines 47-48] src/config/parsing.rs#L47-48
+    first: let key =
+    last : parse(segment).ok_or_else(|| format!("unknown key {:?} in combo {:?}", segment, s))?;
+config/keys.md:42 [src/data/key_combination.rs:50-59] src/data/key_combination.rs#L50-59
+    first: pub fn from_keys<K: Into<KeySpec>>(keys: impl IntoIterator<Item = K>) -> Self {
+    last : }
+config/keys.md:48 [src/data/vk_name.rs:175-183] src/data/vk_name.rs#L175-183
+    first: /// The form key names are matched in: whitespace stripped, lowercase. Length
+    last : }
+config/keys.md:57 [src/data/vk_name.rs:111-127] src/data/vk_name.rs#L111-127
+    first: // F1..F24
+    last : }
+config/keys.md:66 [src/data/vk_name.rs:131-141] src/data/vk_name.rs#L131-141
+    first: "shift" => Some(VK_SHIFT),
+    last : "rwin" | "rightwin" => Some(VK_RWIN),
+config/keys.md:66 [src/data/key_spec.rs:162-170] src/data/key_spec.rs#L162-170
+    first: /// Parses a config key name. `"Win"` and `"Super"` mean either Win key;
+    last : }
+config/keys.md:85 [src/data/vk_name.rs:103-127] src/data/vk_name.rs#L103-127
+    first: // Single-character forms: letters, digits, OEM punctuation.
+    last : }
+config/keys.md:85 [src/data/vk_name.rs:185-192] src/data/vk_name.rs#L185-192
+    first: fn single_char_vk(ch: char) -> Option<VIRTUAL_KEY> {
+    last : }
+config/keys.md:96 [src/data/vk_name.rs:142-161] src/data/vk_name.rs#L142-161
+    first: "capslock" | "caps" => Some(VK_CAPITAL),
+    last : "prtsc" | "printscreen" | "prtscn" => Some(VK_SNAPSHOT),
+config/keys.md:123 [src/data/vk_name.rs:193-206] src/data/vk_name.rs#L193-206
+    first: match ch {
+    last : }
+config/keys.md:146 [src/data/vk_name.rs:162-170] src/data/vk_name.rs#L162-170
+    first: // Media / volume keys. Recognised so hardware multimedia buttons can
+    last : "volumemute" | "volmute" | "mute" => Some(VK_VOLUME_MUTE),
+config/keys.md:160 [src/core/app.rs:139-156] src/core/app.rs#L139-156
+    first: /// Console only, never logged: a binding line can hold the text of a
+    last : }
+config/keys.md:160 [src/data/key_spec.rs:184-194] src/data/key_spec.rs#L184-194
+    first: impl fmt::Display for KeySpec {
+    last : }
+config/keys.md:160 [src/data/vk_name.rs:5-73] src/data/vk_name.rs#L5-73
+    first: pub fn vk_name(vk: VIRTUAL_KEY) -> String {
+    last : .to_string()
+config/keys.md:160 [src/data/vk_name.rs:71] src/data/vk_name.rs#L71-71
+    first: _ => return format!("VK({})", raw),
+    last : _ => return format!("VK({})", raw),
+config/keys.md:178 [src/hook/keyboard_hook_callback.rs:425-430] src/hook/keyboard_hook_callback.rs#L425-430
+    first: let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    last : let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+config/keys.md:195 [src/data/key_spec.rs:131-139] src/data/key_spec.rs#L131-139
+    first: impl KeySpec {
+    last : }
+config/keys.md:196 [src/engine/keys.rs:312-322] src/engine/keys.rs#L312-322
+    first: impl HeldKeys for KeyState {
+    last : }
+config/keys.md:196 [src/engine/chords.rs:81-83] src/engine/chords.rs#L81-83
+    first: if !chord_keys.iter().any(|key| key.accepts(vk)) {
+    last : }
+config/keys.md:197 [src/engine/matching.rs:42-49] src/engine/matching.rs#L42-49
+    first: /// The modifier families held: a family counts if either of its keys is
+    last : }
+config/keys.md:214 [src/engine/chords.rs:12-18] src/engine/chords.rs#L12-18
+    first: //! **Suppression**: every key-down of a key that belongs to a chord binding
+    last : //! part of normal typing.
+config/keys.md:219 [src/core/windows_actions.rs:257-291] src/core/windows_actions.rs#L257-291
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : }
+config/keys.md:219 [src/data/sequence.rs:163-227] src/data/sequence.rs#L163-227
+    first: fn press_key(vk: VIRTUAL_KEY) {
+    last : }
+config/keys.md:223 [src/data/sequence.rs:229-244] src/data/sequence.rs#L229-244
+    first: fn is_modifier(vk: VIRTUAL_KEY) -> bool {
+    last : }
+config/keys.md:223 [src/data/sequence.rs:179-212] src/data/sequence.rs#L179-212
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : }
+config/keys.md:223 [src/config/parsing.rs:19-32] src/config/parsing.rs#L19-32
+    first: /// Parses the keys a macro `Combo("Ctrl+S")` step sends: the codes
+    last : }
+config/keys.md:229 [src/core/windows_actions.rs:257] src/core/windows_actions.rs#L257-257
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+config/keys.md:229 [src/data/sequence.rs:163] src/data/sequence.rs#L163-163
+    first: fn press_key(vk: VIRTUAL_KEY) {
+    last : fn press_key(vk: VIRTUAL_KEY) {
+config/keys.md:229 [src/data/sequence.rs:179] src/data/sequence.rs#L179-179
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : fn press_combo(keys: &[VIRTUAL_KEY]) {
+config/kinds.md:14 [src/engine/matching.rs:57-83] src/engine/matching.rs#L57-83
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+config/kinds.md:16 [src/engine/matching.rs:57-67] src/engine/matching.rs#L57-67
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+config/kinds.md:18 [src/engine/matching.rs:80-82] src/engine/matching.rs#L80-82
+    first: is_trigger_key(combo, pressed)
+    last : && (allow_extra_modifiers || held.modifiers() == combo.modifiers())
+config/kinds.md:26 [src/engine/mod.rs:765-959] src/engine/mod.rs#L765-959
+    first: fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
+    last : }
+config/kinds.md:51 [src/config/schema.rs:122-128] src/config/schema.rs#L122-128
+    first: #[derive(Debug, Deserialize)]
+    last : }
+config/kinds.md:56 [src/config/loader.rs:560-577] src/config/loader.rs#L560-577
+    first: fn sequence_spec_to_kind(seq: &SequenceSpec) -> Result<BindingKind, String> {
+    last : }
+config/kinds.md:71 [src/engine/sequences.rs:63-148] src/engine/sequences.rs#L63-148
+    first: impl Sequences {
+    last : }
+config/kinds.md:71 [src/engine/mod.rs:857-890] src/engine/mod.rs#L857-890
+    first: BindingKind::Sequence { steps, max_gap } => {
+    last : }
+config/kinds.md:76 [src/engine/sequences.rs:91-94] src/engine/sequences.rs#L91-94
+    first: if next_step < steps.len() && keys_down(&steps[next_step], held) {
+    last : entry.expires_at = now + max_gap;
+config/kinds.md:77 [src/engine/sequences.rs:150-170] src/engine/sequences.rs#L150-170
+    first: /// The keys whose key-ups a completed sequence swallows: the codes of the
+    last : }
+config/kinds.md:77 [src/engine/keys.rs:250-261] src/engine/keys.rs#L250-261
+    first: /// Records that a completed chord or sequence swallows the key-up of
+    last : }
+config/kinds.md:78 [src/engine/sequences.rs:108-110] src/engine/sequences.rs#L108-110
+    first: // Mismatch: abort this pending entry. The code below then checks
+    last : self.pending.remove(index);
+config/kinds.md:78 [src/engine/sequences.rs:113-133] src/engine/sequences.rs#L113-133
+    first: // Fresh start: does this key-down match step 0?
+    last : }
+config/kinds.md:79 [src/engine/sequences.rs:84-86] src/engine/sequences.rs#L84-86
+    first: // Drop expired entries first: keeps the list short and lets a fresh
+    last : self.pending.retain(|p| p.expires_at > now);
+config/kinds.md:91 [src/engine/sequences.rs:84-135] src/engine/sequences.rs#L84-135
+    first: // Drop expired entries first: keeps the list short and lets a fresh
+    last : SequenceOutcome::NotMatching
+config/kinds.md:97 [src/engine/sequences.rs:91] src/engine/sequences.rs#L91-91
+    first: if next_step < steps.len() && keys_down(&steps[next_step], held) {
+    last : if next_step < steps.len() && keys_down(&steps[next_step], held) {
+config/kinds.md:100 [src/engine/sequences.rs:108-110] src/engine/sequences.rs#L108-110
+    first: // Mismatch: abort this pending entry. The code below then checks
+    last : self.pending.remove(index);
+config/kinds.md:120 [src/config/schema.rs:132-138] src/config/schema.rs#L132-138
+    first: #[derive(Debug, Deserialize)]
+    last : }
+config/kinds.md:125 [src/config/loader.rs:579-602] src/config/loader.rs#L579-602
+    first: fn chord_spec_to_kind(chord: &ChordSpec) -> Result<BindingKind, String> {
+    last : }
+config/kinds.md:129 [src/data/key_spec.rs:150-160] src/data/key_spec.rs#L150-160
+    first: /// Whether one key is accepted by both: `Shift` and `LShift`, `Win` and
+    last : }
+config/kinds.md:137 [src/engine/chords.rs:65-137] src/engine/chords.rs#L65-137
+    first: impl Chords {
+    last : }
+config/kinds.md:137 [src/engine/mod.rs:891-916] src/engine/mod.rs#L891-916
+    first: BindingKind::Chord { keys, window } => {
+    last : }
+config/kinds.md:141 [src/engine/chords.rs:115-125] src/engine/chords.rs#L115-125
+    first: // No pending entry: start a fresh one with this key as the first
+    last : ChordOutcome::Started { due }
+config/kinds.md:142 [src/engine/keys.rs:250-261] src/engine/keys.rs#L250-261
+    first: /// Records that a completed chord or sequence swallows the key-up of
+    last : }
+config/kinds.md:143 [src/engine/chords.rs:85-87] src/engine/chords.rs#L85-87
+    first: // Drop expired entries. Cheap enough to do every event; keeps the
+    last : self.pending.retain(|p| p.expires_at > now);
+config/kinds.md:144 [src/engine/chords.rs:81-83] src/engine/chords.rs#L81-83
+    first: if !chord_keys.iter().any(|key| key.accepts(vk)) {
+    last : }
+config/kinds.md:146 [src/engine/chords.rs:89-136] src/engine/chords.rs#L89-136
+    first: // Look for a pending entry for the same key set, so two bindings
+    last : }
+config/kinds.md:162 [src/engine/keys.rs:54-71] src/engine/keys.rs#L54-71
+    first: /// What became of a key's latest key-down, as far as the engine knows.
+    last : }
+config/kinds.md:162 [src/engine/mod.rs:205-233] src/engine/mod.rs#L205-233
+    first: //! 5. A first key-down is suppressed if anything asked for it, and the key
+    last : //! (rule L, the KS-06 status).
+config/kinds.md:167 [src/engine/mod.rs:940-948] src/engine/mod.rs#L940-948
+    first: if self.keys.is_blocked(vk.0) {
+    last : }
+config/kinds.md:184 [src/engine/mod.rs:805-918] src/engine/mod.rs#L805-918
+    first: for (index, binding) in bindings.iter().enumerate() {
+    last : }
+config/kinds.md:189 [src/data/binding.rs:9-20] src/data/binding.rs#L9-20
+    first: /// What kind of input pattern triggers this binding.
+    last : ///   project's `Combo`). Order doesn't matter.
+config/kinds.md:189 [src/engine/chords.rs:12-18] src/engine/chords.rs#L12-18
+    first: //! **Suppression**: every key-down of a key that belongs to a chord binding
+    last : //! part of normal typing.
+config/kinds.md:189 [src/engine/sequences.rs:18-23] src/engine/sequences.rs#L18-23
+    first: //! **Suppression** mirrors chords: every key-down that starts or advances a
+    last : //! replay. Don't bind sequences to keys used in normal typing.
+config/known-issues.md:25 [src/hook/config_watcher.rs:188-197] src/hook/config_watcher.rs#L188-197
+    first: /// Loads the config at `config_path` and hands it to `sink`, then logs one
+    last : }
+config/known-issues.md:40 [src/engine/chords.rs:12-18] src/engine/chords.rs#L12-18
+    first: //! **Suppression**: every key-down of a key that belongs to a chord binding
+    last : //! part of normal typing.
+config/known-issues.md:41 [src/hook/keyboard_hook_callback.rs:425-430] src/hook/keyboard_hook_callback.rs#L425-430
+    first: let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    last : let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+config/known-issues.md:42 [src/hook/keyboard_hook_callback.rs:425-430] src/hook/keyboard_hook_callback.rs#L425-430
+    first: let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    last : let suppress = match decide_event(hook, wparam, event.vkCode, event.dwExtraInfo) {
+config/known-issues.md:49 [src/engine/sequences.rs:91] src/engine/sequences.rs#L91-91
+    first: if next_step < steps.len() && keys_down(&steps[next_step], held) {
+    last : if next_step < steps.len() && keys_down(&steps[next_step], held) {
+config/known-issues.md:50 [src/engine/sequences.rs:108-110] src/engine/sequences.rs#L108-110
+    first: // Mismatch: abort this pending entry. The code below then checks
+    last : self.pending.remove(index);
+config/known-issues.md:51 [src/engine/sequences.rs:84-135] src/engine/sequences.rs#L84-135
+    first: // Drop expired entries first: keeps the list short and lets a fresh
+    last : SequenceOutcome::NotMatching
+config/known-issues.md:64 [src/hook/keyboard_hook_callback.rs:322-334] src/hook/keyboard_hook_callback.rs#L322-334
+    first: /// Runs a fast action here, or queues a slow one for the action executor
+    last : }
+config/known-issues.md:74 [src/core/windows_actions.rs:257] src/core/windows_actions.rs#L257-257
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+config/known-issues.md:74 [src/data/sequence.rs:163] src/data/sequence.rs#L163-163
+    first: fn press_key(vk: VIRTUAL_KEY) {
+    last : fn press_key(vk: VIRTUAL_KEY) {
+config/known-issues.md:74 [:179] src/data/sequence.rs#L179-179
+    first: fn press_combo(keys: &[VIRTUAL_KEY]) {
+    last : fn press_combo(keys: &[VIRTUAL_KEY]) {
+config/known-issues.md:76 [src/core/windows_actions.rs:318] src/core/windows_actions.rs#L318-318
+    first: match std::process::Command::new(exe).args(args).spawn() {
+    last : match std::process::Command::new(exe).args(args).spawn() {
+config/known-issues.md:76 [:335] src/core/windows_actions.rs#L335-335
+    first: ShellExecuteW(
+    last : ShellExecuteW(
+config/known-issues.md:77 [src/core/windows_actions.rs:318] src/core/windows_actions.rs#L318-318
+    first: match std::process::Command::new(exe).args(args).spawn() {
+    last : match std::process::Command::new(exe).args(args).spawn() {
+config/known-issues.md:78 [src/data/sequence.rs:132-135] src/data/sequence.rs#L132-135
+    first: for code in s.encode_utf16() {
+    last : }
+config/known-issues.md:79 [src/data/sequence.rs:200-202] src/data/sequence.rs#L200-202
+    first: for vk in mods.iter().rev() {
+    last : }
+config/known-issues.md:82 [src/core/windows_actions.rs:257-291] src/core/windows_actions.rs#L257-291
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : }
+config/known-issues.md:82 [src/data/sequence.rs:163-227] src/data/sequence.rs#L163-227
+    first: fn press_key(vk: VIRTUAL_KEY) {
+    last : }
+config/known-issues.md:92 [src/config/loader.rs:365-381] src/config/loader.rs#L365-381
+    first: let mut blockers = Vec::new();
+    last : }
+config/known-issues.md:111 [src/config/default_config.ron:124-132] src/config/default_config.ron#L124-132
+    first: // Multiple bindings on the same combo and when: with different triggers
+    last : // double press fires only the DoubleTap.
+config/known-issues.md:113 [src/config/default_config.ron:278] src/config/default_config.ron#L278-278
+    first: // ( keys: "Ctrl+Pause",  action: Media(Next) ),
+    last : // ( keys: "Ctrl+Pause",  action: Media(Next) ),
+config/known-issues.md:114 [src/config/default_config.ron:318-329] src/config/default_config.ron#L318-329
+    first: // // Double-tap LShift to toggle CapsLock state. Made only of
+    last : // ),
+config/known-issues.md:115 [src/engine/sequences.rs:1-23] src/engine/sequences.rs#L1-23
+    first: //! Pending `BindingKind::Sequence` gestures: a Vim/Emacs-style leader flow.
+    last : //! replay. Don't bind sequences to keys used in normal typing.
+config/known-issues.md:124 [src/engine/matching.rs:74-83] src/engine/matching.rs#L74-83
+    first: pub(super) fn combo_matches<H: HeldKeys + ?Sized>(
+    last : }
+config/known-issues.md:125 [src/engine/matching.rs:57-67] src/engine/matching.rs#L57-67
+    first: /// Whether a key-down of `pressed` can fire or arm `combo`: `pressed` is
+    last : }
+config/known-issues.md:126 [src/data/key_spec.rs:162-170] src/data/key_spec.rs#L162-170
+    first: /// Parses a config key name. `"Win"` and `"Super"` mean either Win key;
+    last : }
+config/known-issues.md:127 [src/hook/keyboard_hook_callback.rs:406-415] src/hook/keyboard_hook_callback.rs#L406-415
+    first: let hook = get_hook();
+    last : }
+config/known-issues.md:129 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+config/known-issues.md:132 [src/core/windows_actions.rs:257-291] src/core/windows_actions.rs#L257-291
+    first: pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
+    last : }
+config/known-issues.md:136 [src/system/system_function.rs:119-159] src/system/system_function.rs#L119-159
+    first: fn toggle_caps_lock() {
+    last : }
+config/known-issues.md:137 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+config/known-issues.md:138 [src/engine/winner.rs:90-202] src/engine/winner.rs#L90-202
+    first: /// What a deferred winner and its group arm on a first key-down: the term
+    last : }
+config/known-issues.md:139 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+config/known-issues.md:140 [src/data/condition.rs:18-23] src/data/condition.rs#L18-23
+    first: /// Equality is structural, the condition as written: `AppEquals("Code.exe")`
+    last : pub enum Condition {
+config/known-issues.md:141 [src/engine/mod.rs:844-851] src/engine/mod.rs#L844-851
+    first: Trigger::Immediate => {
+    last : }
+config/known-issues.md:143 [src/engine/gestures.rs:268-287] src/engine/gestures.rs#L268-287
+    first: let tap = tap.filter(|(due, _)| now < *due).map(|(_, action)| action);
+    last : }
+config/known-issues.md:143 [src/engine/gestures.rs:291-349] src/engine/gestures.rs#L291-349
+    first: /// A first key-down of `vk` at `now`, for the presses of the other
+    last : }
+config/known-issues.md:144 [src/engine/keys.rs:204-211] src/engine/keys.rs#L204-211
+    first: /// Releases every key and keeps every record, without asking the OS:
+    last : }
+config/known-issues.md:145 [src/hook/main_thread.rs:336-344] src/hook/main_thread.rs#L336-344
+    first: /// Makes `bindings` the live list and resets the engine with it, on the
+    last : }
+config/known-issues.md:146 [src/engine/mod.rs:981-999] src/engine/mod.rs#L981-999
+    first: // A key-up whose key-down reached Windows always reaches it too, or
+    last : decision.suppress = swallow && !env.os_key_down(vk);
+config/known-issues.md:147 [src/hook/main_thread.rs:877-907] src/hook/main_thread.rs#L877-907
+    first: /// Step 1 of the loop, for the input signals noted since the last drain
+    last : }
+config/known-issues.md:147 [src/hook/control_window.rs:168-178] src/hook/control_window.rs#L168-178
+    first: // SAFETY: `hwnd` is the live window made above, on this thread.
+    last : };
+config/known-issues.md:148 [src/platform/foreground.rs:117-138] src/platform/foreground.rs#L117-138
+    first: /// `window` took the foreground. A handle that names no window, or no
+    last : }
+config/known-issues.md:149 [src/hook/watchdog/mod.rs:43-47] src/hook/watchdog/mod.rs#L43-47
+    first: //! That is the worst order. Whether a key's raw input reaches this thread
+    last : //! waits with no wake-up.
+config/known-issues.md:150 [src/hook/watchdog/decision.rs:64-66] src/hook/watchdog/decision.rs#L64-66
+    first: /// Roadmap item 2.4: keys arrive and the callback stays silent "for more
+    last : pub(crate) const SILENCE: Duration = Duration::from_secs(1);
+config/known-issues.md:151 [src/hook/watchdog/mod.rs:4-8] src/hook/watchdog/mod.rs#L4-8
+    first: //! Windows calls a low-level keyboard hook by sending a message to the
+    last : //! stops while `swch status` still says `running`.
+config/known-issues.md:152 [src/hook/watchdog/mod.rs:309-338] src/hook/watchdog/mod.rs#L309-338
+    first: /// Sends `request` if keyboard input is on this desktop, where the hook
+    last : }
+config/known-issues.md:153 [src/hook/watchdog/decision.rs:29-52] src/hook/watchdog/decision.rs#L29-52
+    first: //! # The anti-loop rule
+    last : //! Windows removed the hook. A reinstall that does not help is spaced out.
+config/known-issues.md:154 [src/hook/main_thread.rs:392-399] src/hook/main_thread.rs#L392-399
+    first: /// The keyboard hook was reinstalled (roadmap item 2.4): the engine is
+    last : }
+config/known-issues.md:155 [src/hook/watchdog/mod.rs:49-54] src/hook/watchdog/mod.rs#L49-54
+    first: //! # Raw input in this process
+    last : //! daemon (the tray of roadmap item 4.6) must share it.
+config/known-issues.md:157 [src/engine/mod.rs:556-567] src/engine/mod.rs#L556-567
+    first: let mut decision = match event.direction {
+    last : }
+config/known-issues.md:158 [src/hook/keyboard_hook_callback.rs:438-449] src/hook/keyboard_hook_callback.rs#L438-449
+    first: let ran = started.elapsed();
+    last : }
+config/known-issues.md:158 [src/hook/main_thread.rs:145-165] src/hook/main_thread.rs#L145-165
+    first: /// A keyboard callback that ends this long after its key event, or a main
+    last : }
+config/matching.md:8 [src/config/loader.rs:322-437] src/config/loader.rs#L322-437
+    first: /// Appends an auto-blocker for the Windows hotkey of every binding that
+    last : }
+config/matching.md:8 [src/engine/mod.rs:808-836] src/engine/mod.rs#L808-836
+    first: if let Some(mode) = binding.auto_blocker {
+    last : }
+config/matching.md:8 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+config/matching.md:13 [src/data/binding.rs:156-171] src/data/binding.rs#L156-171
+    first: /// An auto-blocker for the Windows hotkey `combination`, acting in
+    last : }
+config/matching.md:28 [src/engine/mod.rs:808-836] src/engine/mod.rs#L808-836
+    first: if let Some(mode) = binding.auto_blocker {
+    last : }
+config/matching.md:30 [src/engine/matching.rs:85-106] src/engine/matching.rs#L85-106
+    first: /// Whether the key-down of `pressed`, with `held` the keys held after it,
+    last : }
+config/matching.md:46 [src/system/registry.rs:17-114] src/system/registry.rs#L17-114
+    first: /// What a registry value says about a Windows hotkey (KS-17).
+    last : }
+config/matching.md:46 [src/system/registry.rs:223-231] src/system/registry.rs#L223-231
+    first: fn parse_language_hotkey(value: &str) -> HotkeySetting {
+    last : }
+config/matching.md:62 [src/config/loader.rs:373-381] src/config/loader.rs#L373-381
+    first: // Only `keys` bindings hold a set of keys the way a hotkey does;
+    last : }
+config/matching.md:81 [src/config/loader.rs:383-437] src/config/loader.rs#L383-437
+    first: let mut modes: Vec<BlockerMode> = Vec::new();
+    last : }
+config/matching.md:121 [src/engine/mod.rs:808-836] src/engine/mod.rs#L808-836
+    first: if let Some(mode) = binding.auto_blocker {
+    last : }
+config/matching.md:121 [src/engine/mod.rs:544-572] src/engine/mod.rs#L544-572
+    first: pub fn on_key(&mut self, event: KeyEvent, bindings: &[Binding], env: &dyn Env) -> Decision {
+    last : }
+config/matching.md:162 [src/hook/keyboard_hook.rs:75-91] src/hook/keyboard_hook.rs#L75-91
+    first: /// Atomically replace the binding list. Callable any number of times
+    last : }
+config/matching.md:162 [src/core/app.rs:213-215] src/core/app.rs#L213-215
+    first: let hook = keyboard_hook_callback::get_hook();
+    last : hook.update_bindings(bindings);
+config/matching.md:162 [src/engine/mod.rs:498-506] src/engine/mod.rs#L498-506
+    first: /// Sorts a binding list into the order the engine visits it: more keys
+    last : }
+config/matching.md:162 [src/data/binding.rs:34-47] src/data/binding.rs#L34-47
+    first: impl BindingKind {
+    last : }
+config/matching.md:172 [src/engine/mod.rs:765-959] src/engine/mod.rs#L765-959
+    first: fn on_key_down(&mut self, vk: VIRTUAL_KEY, bindings: &[Binding], env: &dyn Env) -> Decision {
+    last : }
+config/matching.md:172 [src/engine/winner.rs:44-88] src/engine/winner.rs#L44-88
+    first: /// The precedence of a `keys` binding: its key count, then whether it has a
+    last : }
+config/matching.md:177 [src/engine/winner.rs:90-202] src/engine/winner.rs#L90-202
+    first: /// What a deferred winner and its group arm on a first key-down: the term
+    last : }
+config/ron-syntax.md:6 [src/config/loader.rs:264-265] src/config/loader.rs#L264-265
+    first: let options =
+    last : ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+config/ron-syntax.md:6 [src/config/loader.rs:187-197] src/config/loader.rs#L187-197
+    first: fn read_config(path: &Path) -> Result<String, ConfigError> {
+    last : }
+config/ron-syntax.md:16 [src/config/loader.rs:255-258] src/config/loader.rs#L255-258
+    first: // Notepad's "UTF-8 with BOM" and Windows PowerShell 5.1's
+    last : let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+config/ron-syntax.md:140 [src/config/loader.rs:34-37] src/config/loader.rs#L34-37
+    first: /// Every timing value of a binding: the Tap, Hold and DoubleTap terms,
+    last : const TIMING_RANGE_MS: RangeInclusive<u64> = 1..=10_000;
+config/structure.md:13 [src/main.rs:68-86] src/main.rs#L68-86
+    first: fn run(_instance: InstanceGuard) -> Result<(), Box<dyn std::error::Error>> {
+    last : }
+config/structure.md:13 [src/config/loader.rs:120-136] src/config/loader.rs#L120-136
+    first: impl ConfigPath {
+    last : }
+config/structure.md:16 [src/config/loader.rs:98-108] src/config/loader.rs#L98-108
+    first: /// Path next to the running executable (`<exe_dir>/config.ron`).
+    last : }
+config/structure.md:18 [src/main.rs:80] src/main.rs#L80-80
+    first: let mut app = App::new().with_config_watcher(config.into_path());
+    last : let mut app = App::new().with_config_watcher(config.into_path());
+config/structure.md:26 [src/bin/swch.rs:96-103] src/bin/swch.rs#L96-103
+    first: // The daemon binary sits next to swch.exe.
+    last : }
+config/structure.md:26 [src/bin/swch.rs:122-131] src/bin/swch.rs#L122-131
+    first: let hinst = unsafe {
+    last : };
+config/structure.md:31 [src/config/loader.rs:151-173] src/config/loader.rs#L151-173
+    first: /// Loads the bindings at startup.
+    last : }
+config/structure.md:35 [src/config/loader.rs:439-464] src/config/loader.rs#L439-464
+    first: /// Writes the bundled template to `path`, creating its folder; only for
+    last : }
+config/structure.md:38 [src/config/loader.rs:30-32] src/config/loader.rs#L30-32
+    first: /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
+    last : const DEFAULT_CONFIG: &str = include_str!("default_config.ron");
+config/structure.md:42 [src/config/default_config.ron:236-246] src/config/default_config.ron#L236-246
+    first: (
+    last : ),
+config/structure.md:59 [src/config/default_config.ron:1-13] src/config/default_config.ron#L1-13
+    first: // key-switch-rs configuration
+    last : // Save as UTF-8, with or without a BOM.
+config/structure.md:62 [src/config/default_config.ron:278] src/config/default_config.ron#L278-278
+    first: // ( keys: "Ctrl+Pause",  action: Media(Next) ),
+    last : // ( keys: "Ctrl+Pause",  action: Media(Next) ),
+config/structure.md:63 [src/config/default_config.ron:318-329] src/config/default_config.ron#L318-329
+    first: // // Double-tap LShift to toggle CapsLock state. Made only of
+    last : // ),
+config/structure.md:72 [L147-L151] src/hook/config_watcher.rs#L147-151
+    first: // Watch the parent directory, not the file itself: editors that save by
+    last : watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+config/structure.md:73 [L92-L104] src/hook/config_watcher.rs#L92-104
+    first: /// A create, modify (data, metadata, rename) or remove of an entry whose
+    last : }
+config/structure.md:73 [L107-L120] src/hook/config_watcher.rs#L107-120
+    first: /// Whether two file names are equal for the file system: ordinal, case
+    last : }
+config/structure.md:74 [L64-L69] src/hook/config_watcher.rs#L64-69
+    first: /// Coalescing window: any save burst that completes within this many ms is
+    last : const DEBOUNCE_MS: u64 = 250;
+config/structure.md:74 [L163-L186] src/hook/config_watcher.rs#L163-186
+    first: fn debounce_loop(rx: Receiver<()>, config_path: PathBuf, sink: &dyn ApplyReload) {
+    last : }
+config/structure.md:75 [L188-L213] src/hook/config_watcher.rs#L188-213
+    first: /// Loads the config at `config_path` and hands it to `sink`, then logs one
+    last : }
+config/structure.md:75 [src/config/loader.rs:175-182] src/config/loader.rs#L175-182
+    first: /// Loads the bindings again after the file at `path` changed. Never writes:
+    last : }
+config/structure.md:91 [src/hook/config_watcher.rs:188-213] src/hook/config_watcher.rs#L188-213
+    first: /// Loads the config at `config_path` and hands it to `sink`, then logs one
+    last : }
+config/structure.md:98 [src/core/app.rs:268-292] src/core/app.rs#L268-292
+    first: // Spawn the file watcher AFTER the hook is live, and keep it alive
+    last : };
+config/structure.md:104 [src/main.rs:46-62] src/main.rs#L46-62
+    first: /// Logs `error` as fatal, waits for Enter and returns the failure code.
+    last : }
+config/structure.md:104 [src/config/loader.rs:272-284] src/config/loader.rs#L272-284
+    first: let mut user_bindings = Vec::with_capacity(raw.bindings.len());
+    last : }
+config/structure.md:105 [src/ipc.rs:157-171] src/ipc.rs#L157-171
+    first: /// Command sent by the CLI to the daemon.
+    last : }
+config/structure.md:108 [src/core/app.rs:139-156] src/core/app.rs#L139-156
+    first: /// Console only, never logged: a binding line can hold the text of a
+    last : }
+config/structure.md:113 [src/config/schema.rs:21-28] src/config/schema.rs#L21-28
+    first: #[derive(Debug, Deserialize)]
+    last : }
+config/structure.md:125 [src/config/loader.rs:287-289] src/config/loader.rs#L287-289
+    first: if user_bindings.is_empty() {
+    last : }
+config/structure.md:139 [src/config/schema.rs:30-85] src/config/schema.rs#L30-85
+    first: #[derive(Debug, Deserialize)]
+    last : }
+config/structure.md:172 [src/config/loader.rs:528-558] src/config/loader.rs#L528-558
+    first: fn raw_binding_to_kind(raw: &RawBinding) -> Result<BindingKind, String> {
+    last : }
+config/structure.md:191 [src/config/schema.rs:18-19] src/config/schema.rs#L18-19
+    first: // Every container with named fields denies unknown ones: a misspelled field
+    last : // would otherwise be skipped and its default used silently (KS-22).
+config/triggers-conditions.md:21 [src/config/loader.rs:478-487] src/config/loader.rs#L478-487
+    first: // Sequence/Chord have their own temporal semantics; pairing them with
+    last : }
+config/triggers-conditions.md:21 [src/config/loader.rs:625-649] src/config/loader.rs#L625-649
+    first: fn raw_trigger_to_trigger(raw: RawTrigger) -> Result<Trigger, String> {
+    last : }
+config/triggers-conditions.md:21 [src/config/schema.rs:108-118] src/config/schema.rs#L108-118
+    first: /// On-disk mirror of [`crate::data::trigger::Trigger`]. The tuple argument
+    last : }
+config/triggers-conditions.md:41 [src/engine/mod.rs:844-851] src/engine/mod.rs#L844-851
+    first: Trigger::Immediate => {
+    last : }
+config/triggers-conditions.md:60 [src/engine/mod.rs:777-803] src/engine/mod.rs#L777-803
+    first: if !was_repeat {
+    last : }
+config/triggers-conditions.md:119 [src/engine/winner.rs:179-202] src/engine/winner.rs#L179-202
+    first: /// The trigger kinds the winning group has used on this key-down.
+    last : }
+config/triggers-conditions.md:123 [src/engine/winner.rs:187-201] src/engine/winner.rs#L187-201
+    first: impl GroupArms {
+    last : }
+config/triggers-conditions.md:132 [README.md:440] README.md#L440-440
+    first: ( keys: "LShift",   action: ToggleCapsLock,   trigger: DoubleTap(250) ),
+    last : ( keys: "LShift",   action: ToggleCapsLock,   trigger: DoubleTap(250) ),
+config/triggers-conditions.md:132 [src/config/default_config.ron:318-329] src/config/default_config.ron#L318-329
+    first: // // Double-tap LShift to toggle CapsLock state. Made only of
+    last : // ),
+config/triggers-conditions.md:165 [src/data/condition.rs:55-86] src/data/condition.rs#L55-86
+    first: pub fn evaluate(&self, ctx: &dyn ForegroundInfo) -> bool {
+    last : }
+config/triggers-conditions.md:220 [src/engine/winner.rs:79-84] src/engine/winner.rs#L79-84
+    first: if !matching::combo_matches(combo, vk, held, binding.allow_extra_modifiers) {
+    last : }
+config/triggers-conditions.md:220 [src/engine/mod.rs:857-893] src/engine/mod.rs#L857-893
+    first: BindingKind::Sequence { steps, max_gap } => {
+    last : continue;

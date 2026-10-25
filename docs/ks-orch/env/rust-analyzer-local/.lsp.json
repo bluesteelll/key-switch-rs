@@ -1,0 +1,30 @@
+{
+  "rust-analyzer": {
+    "command": "C:/Users/<you>/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/rust-analyzer.exe",
+    "extensionToLanguage": {
+      ".rs": "rust"
+    },
+    "settings": {
+      "rust-analyzer": {
+        "linkedProjects": [
+          "D:/key-switch-rs/key-switch-rs/Cargo.toml"
+        ],
+        "checkOnSave": false,
+        "cachePriming": { "enable": false },
+        "procMacro": { "enable": true },
+        "cargo": {
+          "buildScripts": { "enable": true },
+          "allTargets": true,
+          "targetDir": "D:/wt/_targets/ra-msvc",
+          "extraEnv": {
+            "RUSTUP_TOOLCHAIN": "stable-x86_64-pc-windows-msvc",
+            "CARGO_BUILD_JOBS": "2"
+          }
+        },
+        "files": {
+          "excludeDirs": ["target", "book", "graphify-out", "assets", ".git"]
+        }
+      }
+    }
+  }
+}

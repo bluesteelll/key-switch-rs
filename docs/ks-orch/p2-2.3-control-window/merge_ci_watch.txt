@@ -1,0 +1,430 @@
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+* MSRV (Rust 1.88) (ID 117950300183)
+  ✓ Set up job
+  * Run actions/checkout@v7
+  * Run dtolnay/rust-toolchain@1.88
+  * Run Swatinem/rust-cache@v2
+  * cargo check
+  * Post Run actions/checkout@v7
+* release build (x86_64-pc-windows-gnu) (ID 117950300368)
+  ✓ Set up job
+  * Run actions/checkout@v7
+  * Run dtolnay/rust-toolchain@master
+  * Run Swatinem/rust-cache@v2
+  * KS-42: cargo build --release for windows-gnu
+  * Post Run actions/checkout@v7
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  * Run actions/checkout@v7
+  * Run dtolnay/rust-toolchain@stable
+  * Run Swatinem/rust-cache@v2
+  * cargo fmt --check
+  * cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+* MSRV (Rust 1.88) (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  * Run Swatinem/rust-cache@v2
+  * cargo check
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* release build (x86_64-pc-windows-gnu) (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  * Run Swatinem/rust-cache@v2
+  * KS-42: cargo build --release for windows-gnu
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  * Run dtolnay/rust-toolchain@stable
+  * Run Swatinem/rust-cache@v2
+  * cargo fmt --check
+  * cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+* MSRV (Rust 1.88) (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  * cargo check
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* release build (x86_64-pc-windows-gnu) (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  * KS-42: cargo build --release for windows-gnu
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  * Run Swatinem/rust-cache@v2
+  * cargo fmt --check
+  * cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+* MSRV (Rust 1.88) (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* release build (x86_64-pc-windows-gnu) (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  * KS-42: cargo build --release for windows-gnu
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  * cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* release build (x86_64-pc-windows-gnu) (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  * KS-42: cargo build --release for windows-gnu
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push less than a minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push about 1 minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  * cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push about 1 minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  ✓ cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push about 1 minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  ✓ cargo test
+  * cargo build --release
+  * UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push about 1 minute ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  ✓ cargo test
+  ✓ cargo build --release
+  ✓ UAC manifest in key-switch-rs.exe only
+  * KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 15 seconds. Press Ctrl+C to quit.
+
+* master CI · 39219217631
+Triggered via push about 2 minutes ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* fmt, clippy, test, release build (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  ✓ cargo test
+  ✓ cargo build --release
+  ✓ UAC manifest in key-switch-rs.exe only
+  ✓ KS-38: no test or bench harness for the daemon binary
+  * Post Run Swatinem/rust-cache@v2
+  * Post Run actions/checkout@v7
+✓ master CI · 39219217631
+Triggered via push about 2 minutes ago
+
+JOBS
+✓ MSRV (Rust 1.88) in 1m4s (ID 117950300183)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@1.88
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo check
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ release build (x86_64-pc-windows-gnu) in 1m32s (ID 117950300368)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@master
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ KS-42: cargo build --release for windows-gnu
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+✓ fmt, clippy, test, release build in 3m6s (ID 117950300796)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run dtolnay/rust-toolchain@stable
+  ✓ Run Swatinem/rust-cache@v2
+  ✓ cargo fmt --check
+  ✓ cargo clippy
+  ✓ cargo test
+  ✓ cargo build --release
+  ✓ UAC manifest in key-switch-rs.exe only
+  ✓ KS-38: no test or bench harness for the daemon binary
+  ✓ Post Run Swatinem/rust-cache@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
