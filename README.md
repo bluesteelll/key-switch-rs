@@ -881,7 +881,8 @@ again; roadmap item 2.5). It also records how long its longest callback ran. Whi
 is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
 gives all of them, ending with `longest_callback_us=<microseconds>`; the
-line is `[INFO]` when `hook_late` is its only count that is not 0.
+line is `[INFO]` when `hook_late` is its only count that is not 0 and no
+callback took 5 ms or more.
 
 At 1 MiB, `daemon.log` becomes `daemon.1.log`, the previous `daemon.1.log`
 becomes `daemon.2.log`, and the oldest file is deleted: three files, about
