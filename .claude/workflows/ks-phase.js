@@ -12,8 +12,8 @@ export const meta = {
 // (unless continueOnFailure), because later items usually build on it.
 const A = args || {}
 const PHASE = A.phase || 'PHASE-UNSET'
-const WT = 'D:/key-switch-rs/key-switch-rs'
-const SP = 'D:/tmp/ks-orch/' + PHASE + '/'
+const WT = 'E:/key-switch-rs/key-switch-rs'
+const SP = 'E:/tmp/ks-orch/' + PHASE + '/'
 
 phase('Lanes')
 const lanes = []

@@ -21,8 +21,8 @@ const BR = A.branch || 'BRANCH-UNSET'
 const TITLE = A.title || NAME
 const SPEC = A.spec || 'SPEC-UNSET'
 const BASE = A.base || 'master'
-const WT = A.wt || 'D:/key-switch-rs/key-switch-rs'
-const SP = 'D:/tmp/ks-orch/' + NAME + '/'
+const WT = A.wt || 'E:/key-switch-rs/key-switch-rs'
+const SP = 'E:/tmp/ks-orch/' + NAME + '/'
 
 // Model routing and reasoning effort per role (owner 2026-10-14, mirrors boyko-engine; docs/WORKFLOW.md#model-routing).
 // Every role on Opus except the tester (Sonnet); xhigh for the roles that think hardest, high for the rest, nothing below high.

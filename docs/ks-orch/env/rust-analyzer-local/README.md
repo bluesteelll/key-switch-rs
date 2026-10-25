@@ -55,7 +55,7 @@ MSVC in three places, none of which depends on `rustup default`:
 - **`settings["rust-analyzer"].cargo.extraEnv`** sets `RUSTUP_TOOLCHAIN` for every `cargo` and
   `rustc` the server runs, including build scripts and sysroot discovery. The tree's
   `rust-toolchain.toml` says only `channel = "stable"`, and that resolves through the default host.
-- **`cargo.targetDir`** is `D:/wt/_targets/ra-msvc`. The server's build-script and proc-macro build
+- **`cargo.targetDir`** is `E:/wt/_targets/ra-msvc`. The server's build-script and proc-macro build
   stays out of each tree's `target/` and off C:. Both linked projects share this directory; cargo's
   lock serialises their builds.
 
