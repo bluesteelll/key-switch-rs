@@ -7,7 +7,7 @@ Roadmap item 3.4 (book/src/roadmap.md 'Core consolidation', :708-725 at 252daef)
 operation: this lane is the safety net for the five engine-changing lanes after it, and it stops the flaky real-clock
 test from failing their gates (it failed 2.5's final gate run: p2-2.5-latency-trim/gate_test_final.log:421, :887,
 "861 passed; 1 failed"). Binding: lowest key-to-action latency; no key may ever stick. Scope report:
-D:/tmp/ks-orch/phase-3/scope/3.4-core.md (sections 2, 8, 9, lane C).
+<orch>/phase-3/scope/3.4-core.md (sections 2, 8, 9, lane C).
 
 1. One wait and one pump in a new `src/platform/message_loop.rs`, used by:
    - `MainThread::run`: the wait at `src/hook/main_thread.rs:812-819`, the pump at :1008-1027;

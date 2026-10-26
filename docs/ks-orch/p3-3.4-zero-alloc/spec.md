@@ -8,7 +8,7 @@ Roadmap item 3.4 (book/src/roadmap.md 'Core consolidation', :708-725 at 252daef)
 `when:` without a heap `String` (3.5 scope, lane B item 4). It comes last in Phase 3: after p3-3.4-compiled-bindings,
 whose `CompiledBindings` it extends, and after p3-3.1-held-modifiers and p3-3.3-launch-de-elevate, which change
 `Decision`, `FastAction` and the `Launch` payload. Binding: lowest key-to-action latency; no key may ever stick. Scope
-report: D:/tmp/ks-orch/phase-3/scope/3.4-core.md (sections 1.4, 4, 8 forks T1-T3, 9 lane B).
+report: <orch>/phase-3/scope/3.4-core.md (sections 1.4, 4, 8 forks T1-T3, 9 lane B).
 
 1. Shared action handles (scope fork T1): `CompiledBindings` holds `Arc<BindAction>`; `Decision::fire`
    (`src/engine/mod.rs:396`), `carry_out` and `dispatch` (`src/hook/keyboard_hook_callback.rs:303-334`),

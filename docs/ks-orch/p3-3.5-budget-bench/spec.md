@@ -7,7 +7,7 @@ Roadmap item 3.5 (book/src/roadmap.md 'Hot-path budget', :727-739 at 252daef), a
 `sequence`/`chord` moved to p3-3.2-seq-chord-matching (plan_draft.md section 2, C1); there is no second 3.5 lane.
 Binding owner decision: binds run with the lowest possible latency (CLAUDE.md). This lane is first in Phase 3 so that
 every later lane runs its parent and HEAD bench against the 50-binding rows. Scope report:
-D:/tmp/ks-orch/phase-3/scope/3.5-budget.md (sections 4, 8, 9).
+<orch>/phase-3/scope/3.5-budget.md (sections 4, 8, 9).
 
 1. New bench rows in `src/bench.rs` (header list :1-103, configs :229-252, adapter helpers :350-390, driver
    :1144-1299). Row ids are allocated by the phase plan (plan_draft.md section 4); do not reuse R20-R26.

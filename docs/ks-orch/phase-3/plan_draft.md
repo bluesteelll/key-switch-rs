@@ -8,8 +8,8 @@ first step of that lane.
   read on disk with Read/Grep). `book/`, `README.md` and `CHANGELOG.md` were read only with `git show 252daef:<path>`.
   No cargo command, no build, no edit in the repository. The owner's `daemon.log` was read, read-only, to check one
   claim (section 7).
-- **Inputs:** `D:/tmp/ks-orch/phase-3/scope/{3.1-input,3.2-seq-chord,3.3-launch,3.4-core,3.5-budget}.md`; roadmap,
-  audit, known-issues, gaps and architecture at 252daef; lane reports under `D:/tmp/ks-orch/*/` read with grep and
+- **Inputs:** `<orch>/phase-3/scope/{3.1-input,3.2-seq-chord,3.3-launch,3.4-core,3.5-budget}.md`; roadmap,
+  audit, known-issues, gaps and architecture at 252daef; lane reports under `<orch>/*/` read with grep and
   ranged reads.
 - **Rule of this draft:** the code wins. Every scope claim marked "verified" in section 7 was re-read on 252daef; claims
   not listed there are taken from the scope reports with their citations.
@@ -198,14 +198,14 @@ Checkpoint 3. Total about 16 days against the roadmap's 10-13 (:664): the scope 
 
 | # | Lane | Branch | Spec |
 |---|---|---|---|
-| 1 | p3-3.5-budget-bench | perf/budget-bench | `D:/tmp/ks-orch/p3-3.5-budget-bench/spec.md` |
-| 2 | p3-3.4-groundwork | refactor/core-groundwork | `D:/tmp/ks-orch/p3-3.4-groundwork/spec.md` |
-| 3 | p3-3.2-seq-chord-matching | fix/sequence-chord-matching | `D:/tmp/ks-orch/p3-3.2-seq-chord-matching/spec.md` |
-| 4 | p3-3.1-input-module | fix/input-module | `D:/tmp/ks-orch/p3-3.1-input-module/spec.md` |
-| 5 | p3-3.1-held-modifiers | fix/held-modifiers | `D:/tmp/ks-orch/p3-3.1-held-modifiers/spec.md` |
-| 6 | p3-3.3-launch-de-elevate | fix/launch-de-elevate | `D:/tmp/ks-orch/p3-3.3-launch-de-elevate/spec.md` |
-| 7 | p3-3.4-compiled-bindings | feat/compiled-bindings | `D:/tmp/ks-orch/p3-3.4-compiled-bindings/spec.md` |
-| 8 | p3-3.4-zero-alloc | perf/zero-alloc-engine | `D:/tmp/ks-orch/p3-3.4-zero-alloc/spec.md` |
+| 1 | p3-3.5-budget-bench | perf/budget-bench | `<orch>/p3-3.5-budget-bench/spec.md` |
+| 2 | p3-3.4-groundwork | refactor/core-groundwork | `<orch>/p3-3.4-groundwork/spec.md` |
+| 3 | p3-3.2-seq-chord-matching | fix/sequence-chord-matching | `<orch>/p3-3.2-seq-chord-matching/spec.md` |
+| 4 | p3-3.1-input-module | fix/input-module | `<orch>/p3-3.1-input-module/spec.md` |
+| 5 | p3-3.1-held-modifiers | fix/held-modifiers | `<orch>/p3-3.1-held-modifiers/spec.md` |
+| 6 | p3-3.3-launch-de-elevate | fix/launch-de-elevate | `<orch>/p3-3.3-launch-de-elevate/spec.md` |
+| 7 | p3-3.4-compiled-bindings | feat/compiled-bindings | `<orch>/p3-3.4-compiled-bindings/spec.md` |
+| 8 | p3-3.4-zero-alloc | perf/zero-alloc-engine | `<orch>/p3-3.4-zero-alloc/spec.md` |
 
 Bench rows (existing: R1-R18 with R12m, R12m2, R14c, R17a, R17t; `src/bench.rs`):
 

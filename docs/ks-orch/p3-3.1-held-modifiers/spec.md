@@ -7,7 +7,7 @@ issues 30, 35, 68 and 75 (`book/src/config/known-issues.md:74`, :79, :136, :143)
 on the mask per event (roadmap :961-963). It builds on p3-3.1-input-module. Binding: lowest key-to-action latency; no key
 may ever stick; never prefer a stuck key over a lost one. The owner's answers to plan_draft.md section 5 Q1 (which held
 modifiers are released), Q2 (`PressKey("Ctrl+S")`), Q3 (known issue 66) and Q9 (AltGr matching) are relayed in the
-brief; items marked with them apply only as answered. Scope report: D:/tmp/ks-orch/phase-3/scope/3.1-input.md
+brief; items marked with them apply only as answered. Scope report: <orch>/phase-3/scope/3.1-input.md
 (sections 2, 4, 5, 8, 9 lane B).
 
 1. The engine adds to `Decision` (`src/engine/mod.rs:391-406`) the sided modifiers Windows has down when the decision's

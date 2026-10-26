@@ -7,7 +7,7 @@ rule for `sequence` and `chord` that item 3.5 carried (:737, :739; moved here, p
 2.3 (:991) and known issue 19. Binding owner decisions: exact modifier matching with a per-binding
 `allow_extra_modifiers` (CLAUDE.md; applied here to sequence steps, plan_draft.md section 5 'Decided'); one binding wins
 each key press (item 1.6); the lowest key-to-action latency; no key may ever stick. Scope report:
-D:/tmp/ks-orch/phase-3/scope/3.2-seq-chord.md (sections 1.5, 8, 9). Do not confuse `src/engine/sequences.rs` (the
+<orch>/phase-3/scope/3.2-seq-chord.md (sections 1.5, 8, 9). Do not confuse `src/engine/sequences.rs` (the
 `sequence` binding kind, this lane) with `src/data/sequence.rs` (the `Sequence([...])` macro action, 3.1 and 3.3).
 
 1. KS-15, the trigger-key rule for steps (`src/engine/sequences.rs:71-136`, the tests at :91 and :114;

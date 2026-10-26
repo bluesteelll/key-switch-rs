@@ -6,7 +6,7 @@ Roadmap item 3.1 (book/src/roadmap.md 'Single input module', :674-684 at 252daef
 change which modifiers an output is sent with; that is p3-3.1-held-modifiers. Binding: lowest key-to-action latency; no
 key may ever stick; every synthesized event carries `injected_sentinel()` (CLAUDE.md principle 3; 2.5 D2 tracks the
 daemon's own modifiers through it, p2-2.5-latency-trim/results.md:264-266). Scope report:
-D:/tmp/ks-orch/phase-3/scope/3.1-input.md (sections 1-5, 8.2, 9 lane A).
+<orch>/phase-3/scope/3.1-input.md (sections 1-5, 8.2, 9 lane A).
 
 1. A new `src/platform/input.rs` is the only caller of `SendInput` in `src`. It holds key strokes (a vk with a direction,
    and a raw stroke with a given scan code and extended flag, for new feature 5's replay and feature 6's down-only and

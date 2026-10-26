@@ -7,9 +7,9 @@ Roadmap item 3.3 (book/src/roadmap.md '`Launch` and `OpenUrl` without elevation'
 section 5 Q4 (uiAccess, roadmap open question 3), Q5 (what `elevated: true` does), Q6 (`OpenUrl` and `elevated`) and Q7
 (the default working directory), relayed in the brief; the latency decision: no new per-event work on the key path, and a
 `Launch`/`OpenUrl` fire must not allocate more on the hook path than today. Scope report:
-D:/tmp/ks-orch/phase-3/scope/3.3-launch.md (sections 1-9).
+<orch>/phase-3/scope/3.3-launch.md (sections 1-9).
 
-Before the cut: the researcher writes D:/tmp/ks-orch/p3-3.3-launch-de-elevate/research.md (the scoping round's
+Before the cut: the researcher writes <orch>/p3-3.3-launch-de-elevate/research.md (the scoping round's
 research-3.3.md was never written). Questions, each with primary sources (Microsoft Learn, The Old New Thing, e.g.
 https://devblogs.microsoft.com/oldnewthing/20131118-00/?p=2643): how `IShellDispatch2::ShellExecute` reports a missing
 program and whether it returns before the child starts; the child's working directory and environment when `vDir` is
