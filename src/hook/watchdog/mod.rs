@@ -1302,13 +1302,16 @@ mod tests {
             &self,
             request: ReinstallRequest,
         ) -> Result<Receiver<ReinstallOutcome>, MainThreadError> {
-            if self
+            // Rust 1.99 renamed `fetch_update` to `try_update`, which the
+            // MSRV (1.88) lacks, so the old name stays until the MSRV moves.
+            #[allow(deprecated)]
+            let refused = self
                 .refusals
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                     left.checked_sub(1)
                 })
-                .is_ok()
-            {
+                .is_ok();
+            if refused {
                 return Err(MainThreadError::Busy);
             }
             let (reply, answer) = mpsc::sync_channel(1);
