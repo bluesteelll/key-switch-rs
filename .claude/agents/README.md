@@ -47,7 +47,7 @@ architect (cut) -> architecture-critic (critique; one revision if Critical)
 
 Run one item with `workflow('ks-lane', {name, branch, title, spec, base?, wt?, merge?, stopAfter?, testerModel?, resumeNote?})`.
 Run a phase with `workflow('ks-phase', {phase, items: [...], bookSync?, continueOnFailure?})`, which runs the lanes in order and then a
-`doc-writer` book sync. Reports go to `E:/tmp/ks-orch/<lane>/`.
+`doc-writer` book sync. Reports go to `<orch>/<lane>/`.
 
 Ad hoc use outside a lane works the same way. Pass the agent a brief with file paths and a report path, for example
 `project-analyst`: "where is the suppression decision made for chords?", or `researcher`:
