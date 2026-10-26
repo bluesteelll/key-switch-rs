@@ -13,7 +13,8 @@ reports up to the Phase 3 plan are archived in `docs/ks-orch/` and are restored 
 
 ## Paths
 
-Every live path in the repository is written with these names, and every workflow brief restates them in its header.
+Live paths in the repository are written with these names, and every workflow brief restates them in its header. The
+literal copies of the folder are listed below the table.
 
 | Name | Path | What |
 |---|---|---|
@@ -21,9 +22,12 @@ Every live path in the repository is written with these names, and every workflo
 | `<repo>` | `D:/projects/key-switch-rs/repo` | The working checkout |
 | `<orch>` | `D:/projects/key-switch-rs/tmp/ks-orch` | Lane and phase reports, one folder each |
 
-When the drive or the folder moves, change this table, the `ROOT` constant of `.claude/workflows/ks-lane.js`,
-`.claude/workflows/ks-phase.js` and `docs/ks-orch/phase-3/uiaccess-scope.workflow.js`, and the two paths of the plugin
-template `docs/ks-orch/env/rust-analyzer-local/.lsp.json`. The archived reports cite the paths of earlier machines:
+When the drive or the folder moves, change its literal copies: this table, the `ROOT` constant of
+`.claude/workflows/ks-lane.js`, `.claude/workflows/ks-phase.js` and `docs/ks-orch/phase-3/uiaccess-scope.workflow.js`,
+the two paths of the plugin template `docs/ks-orch/env/rust-analyzer-local/.lsp.json`, the restore commands of
+`docs/HANDOFF.md`, and `<root>/README-move.txt` outside git. When the drive letter changes, the sibling projects' paths
+change too: `docs/WORKFLOW.md` (the boyko-engine manual) and rule 1 of the template's `README.md`. Then
+`git grep -n -F "<the old folder>"` lists nothing. The archived reports cite the paths of earlier machines:
 read `D:/tmp/ks-orch` and `E:/tmp/ks-orch` as `<orch>`, and `D:/key-switch-rs/key-switch-rs` and
 `E:/key-switch-rs/key-switch-rs` as `<repo>`.
 

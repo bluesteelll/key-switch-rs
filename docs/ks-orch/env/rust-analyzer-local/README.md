@@ -65,16 +65,16 @@ MSVC in three places, none of which depends on `rustup default`:
 - **`settings["rust-analyzer"].cargo.extraEnv`** sets `RUSTUP_TOOLCHAIN` for every `cargo` and
   `rustc` the server runs, including build scripts and sysroot discovery. The tree's
   `rust-toolchain.toml` says only `channel = "stable"`, and that resolves through the default host.
-- **`cargo.targetDir`** is `D:/projects/key-switch-rs/wt/_targets/ra-msvc`. The server's build-script and proc-macro build
-  stays out of each tree's `target/` and off C:. Both linked projects share this directory; cargo's
-  lock serialises their builds.
+- **`cargo.targetDir`** is `wt/_targets/ra-msvc` under key-switch-rs's project folder (the value in
+  `.lsp.json`). The server's build-script and proc-macro build stays out of each tree's `target/` and
+  off C:. Every linked project shares this directory; cargo's lock serialises their builds.
 
 There is no top-level `env` key. The loader accepts one, but it is not established whether it
 extends or replaces the inherited environment, and a replaced `PATH` or `USERPROFILE` would hide
 `cargo` from the server.
 
-The first start after a toolchain change rebuilds every build script and proc macro of both
-projects in check mode, cold. Queries answer `has not finished indexing` until that is done.
+The first start after a toolchain change rebuilds every build script and proc macro of every
+linked project in check mode, cold. Queries answer `has not finished indexing` until that is done.
 
 ## Verifying a change
 

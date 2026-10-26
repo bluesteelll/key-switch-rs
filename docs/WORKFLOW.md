@@ -249,7 +249,7 @@ also saves turns.
 - The official plugin declares no settings, so rust-analyzer runs with its defaults: `checkOnSave` on and its builds in
   `<repo>/target`. A cargo command in `<repo>` can then print `Blocking waiting for file lock on build directory` and
   wait for it; the tester's scratch worktrees use their own `CARGO_TARGET_DIR` and are not affected. The local template
-  builds into its own target directory (`D:/projects/key-switch-rs/wt/_targets/ra-msvc`) with `checkOnSave` off, so it
+  builds into its own target directory (`<root>/wt/_targets/ra-msvc`) with `checkOnSave` off, so it
   never locks a lane's `target/` and never runs the gate.
 
 ## Safety

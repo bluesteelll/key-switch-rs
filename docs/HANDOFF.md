@@ -2,7 +2,7 @@
 
 The owner stopped all work on 2026-10-25 to move to another machine. On 2026-10-26 the working project moved to the
 external drive **E:** (KINGSTON, exFAT), and the owner works from that drive on the new machine. There the drive is
-**D:** (NTFS), and the project folder is `D:/projects/key-switch-rs`, `<root>` of [CLAUDE.md](../CLAUDE.md) "Paths".
+**D:** (NTFS), and the project folder is `<root>` of [CLAUDE.md](../CLAUDE.md) "Paths".
 This page is the state of the programme and the steps to resume it. CLAUDE.md stays authoritative for the rules;
 [WORKFLOW.md](WORKFLOW.md) for the lane pipeline.
 
@@ -24,7 +24,7 @@ This page is the state of the programme and the steps to resume it. CLAUDE.md st
 - **Stopped mid-run:** the uiAccess workflow (evidence plus plan revision) was stopped before it wrote anything.
   `D:/tmp/ks-orch/phase-3/uiaccess/` was empty.
 - **The owner's daily build** (`key-switch-rs-252daef/`) worked without problems in daily use (CapsLock = layout,
-  Shift+CapsLock = CapsLock). It is in `D:/projects/key-switch-rs/tmp/ks-release/` with the build before 2.5.
+  Shift+CapsLock = CapsLock). It is in `<root>/tmp/ks-release/` with the build before 2.5.
 - **No manual check has been run**: roadmap "Manual checks after Phase 1" 1-18 and "Manual checks after Phase 2" 1-59
   (49-59 are lane 2.5's M1-M11). The owner will run them later as a batch; do not ask again during Phase 3 unless a lane
   needs one decided.
@@ -40,9 +40,9 @@ Not archived (scratch, regenerable or large): cargo target directories, the test
 output, cfgcheck crates, `*.log` gate and mutation logs, `.rs` snapshots, and the post-A1 copies of the agent files.
 Reports cite some logs by path; those citations do not resolve in the archive.
 
-The repository's `docs/ks-orch/` is the source. `<orch>` (`D:/projects/key-switch-rs/tmp/ks-orch/`) is the working
-copy that the workflows, agent files and CLAUDE.md expect, and new lanes write there; on this machine it is restored.
-To restore it again from the repository, from `<repo>`:
+The repository's `docs/ks-orch/` is the source. `<orch>` is the working copy that the workflows, agent files and
+CLAUDE.md expect, and new lanes write there; on this machine it is restored. To restore it again from the repository,
+from `<repo>` (the paths are `<orch>` written out, as CLAUDE.md "Paths" lists):
 
 ```powershell
 New-Item -ItemType Directory -Force D:/projects/key-switch-rs/tmp/ks-orch | Out-Null
@@ -53,13 +53,13 @@ The archived reports cite the earlier machines' paths: read `D:/tmp/ks-orch/...`
 `<orch>/...`, and `D:/key-switch-rs/key-switch-rs` and `E:/key-switch-rs/key-switch-rs` as `<repo>`. The Phase 3 lane
 specs, `phase-3/plan_draft.md` and `phase-3/scope/` already say `<orch>` and `<repo>`.
 
-## Working from D:/projects/key-switch-rs
+## Working from the project folder
 
-The layout on the drive (CLAUDE.md "Paths" names the first three):
+The layout on the drive (CLAUDE.md "Paths" names the first three and gives their paths):
 
 | Path | What |
 |---|---|
-| `D:/projects/key-switch-rs/` (`<root>`) | The project folder on the owner's KINGSTON drive, D: (NTFS) on this machine |
+| `<root>/` | The project folder on the owner's KINGSTON drive, D: (NTFS) on this machine |
 | `<root>/repo/` (`<repo>`) | The working checkout, with `.git`, on `master`, the same commit as `origin/master` |
 | `<root>/tmp/ks-orch/` (`<orch>`) | Lane reports (restored from `docs/ks-orch/`); new lanes write here |
 | `<root>/tmp/ks-release/` | The owner's release builds (`key-switch-rs-252daef/`, `key-switch-rs-3cde1d0/`) |
@@ -68,11 +68,11 @@ The layout on the drive (CLAUDE.md "Paths" names the first three):
 | `<root>/claude/skills/rust-analyzer-local/` | The old machine's installed copy of the LSP plugin, with that machine's paths; install from `docs/ks-orch/env/rust-analyzer-local/` instead |
 | `<root>/README-move.txt` | The same steps, short, in Russian |
 
-Every live path in the repository is written with the names of CLAUDE.md "Paths". When the drive letter or the folder
-changes, edit the places that section lists and `README-move.txt`; then
-`git grep -n -i -E "\b[DE]:[/\\](tmp|wt|claude|key-switch-rs)"` lists only history: this page's history lines, the
-mapping sentence of CLAUDE.md, one scope note and the archived reports. `book/src/methodology.md` keeps the old
-machine's paths, because it records how the past runs were made.
+Live paths in the repository are written with the names of CLAUDE.md "Paths". When the drive letter or the folder
+changes, edit the literal copies that section lists; `git grep -n -F "<the old folder>"` must then list nothing. The
+earlier machines' paths are history: `git grep -n -i -E "\b[DE]:[/\\](tmp|wt|claude|key-switch-rs)"` lists this page's
+history lines, the mapping sentence of CLAUDE.md, one scope note, the archived reports, `book/src/methodology.md`
+(which records how the past runs were made) and an example value in `book/src/config/actions.md`.
 
 Steps on a new machine:
 
@@ -82,8 +82,9 @@ Steps on a new machine:
    ownership" until it is trusted, once per machine: `git config --global --add safe.directory <the checkout>`.
 3. Rust with the MSVC host (`stable-x86_64-pc-windows-msvc`; this machine has rustc 1.99.1, the old one 1.98.1;
    `rust-version` is 1.88), the Visual Studio Build Tools, `mdbook` 0.5.3 (CI's version) and `mdbook-mermaid` (0.17.0 on
-   the old machine), `git`, `gh`, ripgrep. Sign in to `gh`/Git for the push. On 2026-10-26 `gh`, `mdbook` and
-   `mdbook-mermaid` were not installed on this machine yet.
+   the old machine), `git`, `gh`, ripgrep. Sign in to `gh`/Git for the push. On 2026-10-26 `gh`, `mdbook`,
+   `mdbook-mermaid` and ripgrep were not installed on this machine yet (`rg` worked only inside Claude Code's Bash tool,
+   which brings its own).
 4. Claude Code: open sessions in `<repo>`, not in `<root>`. Only there are CLAUDE.md, `.claude/settings.json` (the deny
    rules and the clarify hook), the nine agents and the `ks-lane`/`ks-phase` workflows loaded, and the auto-memory
    belongs to that folder's key (`D--projects-key-switch-rs-repo`). The old machine's memory was moved there on
@@ -159,7 +160,7 @@ The auto-memory was moved to the key of `<repo>` (step 4 above). What it holds, 
 
 ## Next steps, in order
 
-1. Set up the machine ("Working from D:/projects/key-switch-rs" above). Confirm `git log -1` on master, the gate and CI.
+1. Set up the machine ("Working from the project folder" above). Confirm `git log -1` on master, the gate and CI.
 2. Re-run the uiAccess evidence and plan revision: `docs/ks-orch/phase-3/uiaccess-scope.workflow.js`, the repository's
    copy (a Workflow script, LF; it already carries every owner answer). It writes
    `<orch>/phase-3/uiaccess/{research,impact,plan_revision}.md` and rewrites the affected specs. If the researcher is
