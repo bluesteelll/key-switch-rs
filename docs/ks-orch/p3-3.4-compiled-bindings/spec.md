@@ -8,7 +8,7 @@ follow-up on unequal Tap and Hold terms (:986) and the gap '`block_default` is a
 `chord`' (book/src/gaps.md:169). It starts after p3-3.2-seq-chord-matching (it restructures the same loop,
 `src/engine/mod.rs:805-918`) and after p3-3.1-held-modifiers. The owner's answer to plan_draft.md section 5 Q8 decides
 item 5. Binding: lowest key-to-action latency; no key may ever stick; the 1.6 precedence (keys, `when:`, file order).
-Scope report: D:/tmp/ks-orch/phase-3/scope/3.4-core.md (sections 1-9, lane A).
+Scope report: <orch>/phase-3/scope/3.4-core.md (sections 1-9, lane A).
 
 1. `CompiledBindings` (new `src/engine/compiled.rs`, pure, under the engine's `forbid(unsafe_code)`), built once per
    load on the loading thread (startup or `config-watcher`), holding:

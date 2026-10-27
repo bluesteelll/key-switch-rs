@@ -1,7 +1,7 @@
 export const meta = {
   name: 'ks-lane',
   description: 'key-switch-rs feature lane: cut -> critique -> implement -> pack -> test || review -> triage -> fix -> delta re-verify -> results -> merge; one branch per feature, merged into master',
-  whenToUse: 'One roadmap item or feature end to end. args: {name, branch, title, spec, base?, wt?, merge?, stopAfter?, testerModel?, resumeNote?}',
+  whenToUse: 'One roadmap item or feature end to end. args: {name, branch, title, spec, base?, wt?, merge?, stopAfter?, testerModel?, resumeNote?, root?}',
   phases: [
     { title: 'Cut' },
     { title: 'Critique' },
@@ -14,15 +14,19 @@ export const meta = {
 }
 // args: name (lane id, also the reports dir), branch, title, spec (the item text: what, why, acceptance),
 // base (default 'master'), wt (default the main checkout), merge (default true), stopAfter ('cut'|'critique'|'results'),
-// testerModel (default 'sonnet'), resumeNote (implement only - keeps cut/critique cached on a resume).
+// testerModel (default 'sonnet'), resumeNote (implement only - keeps cut/critique cached on a resume),
+// root (default <root> of CLAUDE.md "Paths"; the main checkout is root/repo and the reports root/tmp/ks-orch).
 const A = args || {}
 const NAME = A.name || 'NAME-UNSET'
 const BR = A.branch || 'BRANCH-UNSET'
 const TITLE = A.title || NAME
 const SPEC = A.spec || 'SPEC-UNSET'
 const BASE = A.base || 'master'
-const WT = A.wt || 'E:/key-switch-rs/key-switch-rs'
-const SP = 'E:/tmp/ks-orch/' + NAME + '/'
+// The one place this script names the project folder; keep it equal to <root> in CLAUDE.md "Paths".
+const ROOT = (A.root || 'D:/projects/key-switch-rs').replace(/\\/g, '/').replace(/\/+$/, '')
+const ORCH = ROOT + '/tmp/ks-orch'
+const WT = A.wt || ROOT + '/repo'
+const SP = ORCH + '/' + NAME + '/'
 
 // Model routing and reasoning effort per role (owner 2026-10-14, mirrors boyko-engine; docs/WORKFLOW.md#model-routing).
 // Every role on Opus except the tester (Sonnet); xhigh for the roles that think hardest, high for the rest, nothing below high.
@@ -33,6 +37,7 @@ const EFFORT = { architect: 'xhigh', 'architecture-critic': 'xhigh', developer: 
 
 const HDR = `LANE ${NAME}: ${TITLE}
 Branch ${BR} (from ${BASE}) in the work tree ${WT}. Lane reports directory: ${SP} (create it if missing; every report of this lane is saved there, and briefs refer to reports by path).
+Paths (CLAUDE.md "Paths"; the role files use these names): <root> = ${ROOT}, <repo> = ${ROOT}/repo, <orch> = ${ORCH}.
 Binding rules: ${WT}/CLAUDE.md (quality gate, safety, git flow, conventions, owner decisions) and ${WT}/docs/WORKFLOW.md. Knowledge: book/src/audit.md (KS issues), book/src/roadmap.md (items and acceptance), book/src/architecture.md, book/src/config/*.md.
 SAFETY: the owner uses this machine. Never run key-switch-rs.exe or the daemon, never install a global hook, never call SendInput or inject input, never write the registry or system settings (reads are fine). A test that needs any of that is #[ignore = "manual: <what a human checks>"]. Never push, tag, release or change GitHub settings unless this brief is the lane's MERGE STEP.
 SPEC:

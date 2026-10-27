@@ -1,7 +1,7 @@
 export const meta = {
   name: 'ks-phase',
   description: 'key-switch-rs roadmap phase: run ks-lane items in order (each merged into master before the next starts), then sync the mdBook with the doc-writer',
-  whenToUse: 'A roadmap phase or a batch of features. args: {phase, items: [ks-lane args...], bookSync?: true, continueOnFailure?: false}',
+  whenToUse: 'A roadmap phase or a batch of features. args: {phase, items: [ks-lane args...], bookSync?: true, continueOnFailure?: false, root?}',
   phases: [
     { title: 'Lanes' },
     { title: 'Book' },
@@ -12,8 +12,12 @@ export const meta = {
 // (unless continueOnFailure), because later items usually build on it.
 const A = args || {}
 const PHASE = A.phase || 'PHASE-UNSET'
-const WT = 'E:/key-switch-rs/key-switch-rs'
-const SP = 'E:/tmp/ks-orch/' + PHASE + '/'
+// The one place this script names the project folder; keep it equal to <root> in CLAUDE.md "Paths".
+// Every lane gets it as its root unless the item names its own.
+const ROOT = (A.root || 'D:/projects/key-switch-rs').replace(/\\/g, '/').replace(/\/+$/, '')
+const ORCH = ROOT + '/tmp/ks-orch'
+const WT = ROOT + '/repo'
+const SP = ORCH + '/' + PHASE + '/'
 
 phase('Lanes')
 const lanes = []
@@ -22,7 +26,7 @@ for (const item of (A.items || [])) {
   let res = null
   try {
     // By path, so the phase works even in a session that started before ks-lane was registered by name.
-    res = await workflow({ scriptPath: WT + '/.claude/workflows/ks-lane.js' }, item)
+    res = await workflow({ scriptPath: WT + '/.claude/workflows/ks-lane.js' }, Object.assign({ root: ROOT }, item))
   } catch (e) {
     res = { name: item.name, stage: 'error', merged: false, error: String(e && e.message ? e.message : e) }
   }
@@ -36,6 +40,7 @@ let book = null
 if (A.bookSync !== false && merged.length) {
   phase('Book')
   const brief = `ROLE: doc-writer - BOOK SYNC after ${PHASE}. Lanes merged into master: ${JSON.stringify(merged.map(l => ({ name: l.name, branch: l.branch, head: l.head, reports: l.reports })))}.
+Paths (CLAUDE.md "Paths"; the role files use these names): <root> = ${ROOT}, <repo> = ${WT}, <orch> = ${ORCH}. Phase reports directory: ${SP}.
 Use git log and git diff on master to see exactly what changed, and the lanes' cut.md/results.md reports for intent.
 On a new branch docs/book-${PHASE} in ${WT}, update the English mdBook in book/src so it describes the CURRENT master accurately, keeping the historical audit (pinned to 7cb3521) intact:
 - audit.md: the status line of every KS issue these lanes fixed ("Fixed in <sha> (<branch>)"), plus the Status column;

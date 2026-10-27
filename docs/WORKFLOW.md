@@ -1,12 +1,12 @@
 # Workflow: the orchestrator's manual
 
 This file holds what the orchestrator needs to run agent work on `key-switch-rs`. The rules live in
-[CLAUDE.md](../CLAUDE.md), which is always loaded and kept small. This file has the roles, the lane pipeline, how
-to launch it, and the reasons behind the model, effort and token-economy rules. Where this file
-restates a rule, CLAUDE.md is authoritative.
+[CLAUDE.md](../CLAUDE.md), which is always loaded when the session is opened in `<repo>`, and kept small. This file
+has the roles, the lane pipeline, how to launch it, and the reasons behind the model, effort and token-economy rules.
+Where this file restates a rule, CLAUDE.md is authoritative.
 
 The setup mirrors the owner's sibling project **boyko-engine**. Its manual lives at the local path
-`D:/claude/BoykoEngine/docs/WORKFLOW.md`, which is not part of this repository.
+`D:/projects/boyko-engine/repo/docs/WORKFLOW.md`, which is not part of this repository.
 
 ## Roles
 
@@ -85,15 +85,16 @@ Two named workflows live in [.claude/workflows/](../.claude/workflows/).
 
 ```js
 workflow('ks-lane', {
-  name: 'p0-engine-core',        // lane id; also the reports dir E:/tmp/ks-orch/<name>/
+  name: 'p0-engine-core',        // lane id; also the reports dir <orch>/<name>/
   branch: 'feat/engine-core',    // the lane branch, cut from base
   title: 'Phase 0: pure decision core',
   spec: '<what, why, acceptance criteria; cite KS-xx / roadmap IDs>',
   base: 'master',                // optional, default 'master'
-  wt: 'E:/key-switch-rs/key-switch-rs', // optional work tree, default the main checkout
+  // wt: optional work tree, default the main checkout <repo>
   merge: true,                   // optional; false stops after results
   stopAfter: 'cut',              // optional: 'cut' | 'critique' | 'results'
   testerModel: 'sonnet',         // optional; default 'sonnet'
+  // root: optional project folder, default <root> of CLAUDE.md "Paths" (main checkout root/repo, reports root/tmp/ks-orch)
 })
 ```
 
@@ -112,6 +113,7 @@ workflow('ks-phase', {
   phase: 'phase-0',
   items: [ /* ks-lane args, one object per lane */ ],
   bookSync: true,                // optional, default true
+  // root: optional, default <root>; passed to every lane that does not name its own
 })
 ```
 
@@ -120,7 +122,7 @@ Use `merge: false` when the owner wants to look before the merge.
 
 ## Reports directory
 
-Each lane has its own `E:/tmp/ks-orch/<lane>/`. A phase's book sync writes `E:/tmp/ks-orch/<phase>/book.md`.
+Each lane has its own `<orch>/<lane>/`. A phase's book sync writes `<orch>/<phase>/book.md`.
 
 | File | Written by |
 |---|---|
@@ -153,7 +155,7 @@ override: `project-analyst` used as the context-pack scout runs `high`, because 
 facts and makes no judgement. The lane argument `testerModel` (default `sonnet`) can put the tester back
 on Opus for one lane, for example while its escape rate is under review. The orchestrator stays on the session model.
 
-**Why: boyko-engine's measurements.** These are in `D:/claude/BoykoEngine/docs/WORKFLOW.md#model-routing`, the owner's sibling project.
+**Why: boyko-engine's measurements.** These are in `D:/projects/boyko-engine/repo/docs/WORKFLOW.md#model-routing`, the owner's sibling project.
 
 - On **27 retrieval questions**, each with a ripgrep-verified ground truth and phrased without the target's own
   vocabulary, **Sonnet was confidently wrong 4 times and Opus 0 times** (Haiku 8). The task was the
@@ -214,8 +216,11 @@ the driver, and every modelled stage merge cost more.
 
 ## Code navigation
 
-Every role has the `LSP` tool, backed by rust-analyzer: the user-level `rust-analyzer-local` plugin, whose
-`linkedProjects` names `E:/key-switch-rs/key-switch-rs/Cargo.toml`. It answers what Grep can only approximate:
+Every role has the `LSP` tool, backed by rust-analyzer. On the machine in use since 2026-10-26 that is the official
+`rust-analyzer-lsp` plugin, which finds `<repo>/Cargo.toml` on its own (checked: `findReferences` answers across `src/`
+and `tests/`). The template `docs/ks-orch/env/rust-analyzer-local/` is the alternative with the settings below; it is
+one user-level file for every Rust project on the machine, so it is installed only together with those projects' paths.
+It answers what Grep can only approximate:
 same-named methods, trait impls, re-exports and `use` aliases. One query replaces a loop of searches and reads, so it
 also saves turns.
 
@@ -241,8 +246,11 @@ also saves turns.
 - **An empty answer is not evidence.** "No references found" also means "not indexed yet": the first query after a
   start can take minutes while rust-analyzer loads the `windows` crate. Before a report says that a symbol is unused or
   has no other caller, Grep confirms it, and the report names both tools.
-- rust-analyzer builds into its own target directory (`E:/wt/_targets/ra-msvc`) with `checkOnSave` off, so it never
-  locks a lane's `target/` and never runs the gate.
+- The official plugin declares no settings, so rust-analyzer runs with its defaults: `checkOnSave` on and its builds in
+  `<repo>/target`. A cargo command in `<repo>` can then print `Blocking waiting for file lock on build directory` and
+  wait for it; the tester's scratch worktrees use their own `CARGO_TARGET_DIR` and are not affected. The local template
+  builds into its own target directory (`<root>/wt/_targets/ra-msvc`) with `checkOnSave` off, so it
+  never locks a lane's `target/` and never runs the gate.
 
 ## Safety
 
