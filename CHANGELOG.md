@@ -1092,6 +1092,7 @@ minor version; such entries sit under **Changed** and start with
   `a_language_request_outside_a_dialog_goes_to_the_foreground`,
   `any_other_message_goes_to_the_foreground_and_nothing_is_asked`,
   `every_language_request_and_every_posted_message_goes_through_post_to_foreground`,
+  `a_language_request_carries_its_direction_and_an_lparam_of_zero`,
   `platform::focus::tests::a_window_of_the_dialog_class_reads_as_a_dialog`.
 
 ## [0.1.0] - 2026-05-20
