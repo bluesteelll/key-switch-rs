@@ -551,7 +551,7 @@ fn run_executor<R: Runner>(
     }))
     .unwrap_or_else(|_| {
         log::error!(
-            "the action executor panicked and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts"
+            "the action executor panicked and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
         );
         End::Died
     });
@@ -662,7 +662,7 @@ fn run_loop(
         }
         if woke == WAIT_FAILED {
             log::error!(
-                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts",
+                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts",
                 windows::core::Error::from_thread()
             );
             return End::Died;
@@ -686,7 +686,7 @@ fn pump(msg: &mut MSG) -> Option<End> {
             // Nothing of ours posts WM_QUIT; foreign code on this thread
             // asked it to end its loop.
             log::error!(
-                "the action executor received WM_QUIT and stopped; Launch, OpenUrl and Sequence do nothing until the daemon restarts"
+                "the action executor received WM_QUIT and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
             );
             return Some(End::Died);
         }

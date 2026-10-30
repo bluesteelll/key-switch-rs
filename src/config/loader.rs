@@ -720,6 +720,16 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
 
         RawAction::OpenUrl(url) => BindAction::OpenUrl(url.clone()),
 
+        // An action that types nothing is a mistake in the config; the
+        // macro step `Text("")` stays a no-op (ruling 2). Built once here,
+        // so a firing shares the text and never copies it.
+        RawAction::Text(text) => {
+            if text.is_empty() {
+                return Err("Text: empty".to_owned());
+            }
+            BindAction::Text(Arc::from(text.as_str()))
+        }
+
         RawAction::Media(key) => BindAction::Media(media_key_ref_to_key(*key)),
     })
 }

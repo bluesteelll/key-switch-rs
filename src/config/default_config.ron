@@ -101,6 +101,9 @@
 //     args: ["D:\\proj"], //   optional, default []
 // )
 // OpenUrl("https://...")  — ShellExecute "open": URL, mailto:, file path, exe
+// Text("...")             — type the text at once (one batch, layout-
+//                            independent); runs on the action executor;
+//                            Text("") is an error
 // Media(<key>)            — synthesize media/volume key. <key> is one of:
 //                            PlayPause, Stop, Next, Previous,
 //                            VolumeUp, VolumeDown, VolumeMute
@@ -272,6 +275,10 @@
         // // Open a URL / file via the OS default handler
         // ( keys: "Win+Alt+G", action: OpenUrl("https://github.com") ),
         // ( keys: "Win+Alt+M", action: OpenUrl("mailto:me@example.com") ),
+        //
+        // // Type a phrase in one go. A trigger without modifiers: until roadmap
+        // // item 3.1, held modifiers combine with the typed characters.
+        // ( keys: "ScrollLock", action: Text("Kind regards,") ),
         //
         // // Media / volume controls. VolumeUp/VolumeDown keep changing the
         // // volume while held; the others fire once per press unless

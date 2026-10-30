@@ -199,6 +199,9 @@ pub(crate) enum RawAction {
     /// `OpenUrl("https://...")` / `OpenUrl("mailto:foo@bar")` /
     /// `OpenUrl("C:\\path\\to\\file.txt")` — anything `ShellExecuteW` knows.
     OpenUrl(String),
+    /// `Text("Kind regards,")` - types the text in one batch; see
+    /// `BindAction::Text`.
+    Text(String),
     /// `Media(PlayPause)` / `Media(VolumeUp)` / ...
     Media(MediaKeyRef),
     DoNothing,
