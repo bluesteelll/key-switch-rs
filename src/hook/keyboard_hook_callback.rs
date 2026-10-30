@@ -35,8 +35,9 @@
 //!    ([`FastAction`](crate::core::windows_actions::FastAction): `PressKey`, `Media`, `ToggleCapsLock`,
 //!    `SwitchLanguage*`, `PostMessage`) runs here, before the hook returns,
 //!    so that its output stays in order with the keys typed after it;
-//!    `Launch`, `OpenUrl` and `Sequence` are queued for the action executor
-//!    (`crate::core::executor`, roadmap item 2.1, KS-08) without waiting;
+//!    `Launch`, `OpenUrl`, `Text` and `Sequence` are queued for the action
+//!    executor (`crate::core::executor`, roadmap item 2.1, KS-08) without
+//!    waiting;
 //! 8. notes a late event for the main thread (roadmap item 2.5): one that
 //!    reaches its exit 17 ms or more after its time stamp, or that ran that
 //!    long, may have let Windows time out the calls of the key events
@@ -71,9 +72,9 @@
 //! window, asks for a timer, and so does a pending chord or sequence for its
 //! expiry; the main loop takes the timer once it is due by `Instant::now()`
 //! and carries out its decision with `carry_out` on the main thread too,
-//! with the same split: a fast action runs there, and `Launch`, `OpenUrl`
-//! and `Sequence` go to the action executor. No thread is started on the
-//! gesture path (KS-33).
+//! with the same split: a fast action runs there, and `Launch`, `OpenUrl`,
+//! `Text` and `Sequence` go to the action executor. No thread is started on
+//! the gesture path (KS-33).
 //!
 //! `swch on` and `swch off` are requests that the main loop serves between
 //! callbacks (`MainState::set_enabled`): the switch flips and the engine is
@@ -558,7 +559,7 @@ mod tests {
     use crate::core::constants::injected_sentinel;
     use crate::core::executor::testing::{FakeRunner, Record, leaked_counters, next_record};
     use crate::core::executor::{Executor, QUEUE_CAPACITY, Stopped};
-    use crate::core::windows_actions::BindAction;
+    use crate::core::windows_actions::{BindAction, FastAction, fast_actions_run};
     use crate::data::binding::Binding;
     use crate::data::condition::Condition;
     use crate::data::key_combination::KeyCombination;
@@ -1145,6 +1146,34 @@ mod tests {
         hook.attach_executor(None);
         assert_eq!(executor.stop(), Stopped::Joined);
         assert!(records.try_recv().is_err(), "DoNothing never reaches it");
+    }
+
+    #[test]
+    fn carry_out_queues_a_text_and_types_nothing_on_the_firing_thread() {
+        let (tx, records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let _ = fast_actions_run();
+
+        carry_out(
+            &hook,
+            Decision {
+                fire: vec![BindAction::Text(Arc::from("abc")), BindAction::DoNothing],
+                ..Decision::default()
+            },
+        );
+
+        let typed = next_record(&records);
+        assert_eq!(typed.text(), "text (3 chars)");
+        assert_eq!(typed.thread, executor.thread().id());
+        assert_ne!(typed.thread, thread::current().id());
+        assert_eq!(
+            fast_actions_run(),
+            [FastAction::DoNothing],
+            "only DoNothing ran on the firing thread"
+        );
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "the Text reached it once");
     }
 
     /// How long each of 20 `carry_out` calls with one `OpenUrl` took, on

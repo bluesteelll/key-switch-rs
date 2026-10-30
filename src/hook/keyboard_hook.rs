@@ -47,8 +47,8 @@ pub struct KeyboardHook {
     /// status` on an IPC worker. The flag publishes no other data: the
     /// engine state belongs to the main thread.
     enabled: AtomicBool,
-    /// The action executor that `Launch`, `OpenUrl` and `Sequence` go to
-    /// (roadmap item 2.1). Stored only by the main thread, around the hooks'
+    /// The action executor that `Launch`, `OpenUrl`, `Text` and `Sequence`
+    /// go to (roadmap item 2.1). Stored only by the main thread, around the hooks'
     /// lifetime ([`attach_executor`](Self::attach_executor)); read with one
     /// lock-free load per slow action, like `bindings`.
     executor: ArcSwapOption<ExecutorHandle>,

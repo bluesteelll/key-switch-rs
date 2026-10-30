@@ -34,11 +34,11 @@ pub enum Counter {
     HoldTimerNotStarted,
     /// A log line was dropped because the log writer's queue was full.
     LogLinesDropped,
-    /// A `Launch`, `OpenUrl` or `Sequence` was dropped because the action
-    /// executor's queue was full.
+    /// A `Launch`, `OpenUrl`, `Text` or `Sequence` was dropped because the
+    /// action executor's queue was full.
     ExecutorJobsDropped,
-    /// A `Launch`, `OpenUrl` or `Sequence` fired after the action executor
-    /// had stopped on its own, so it did nothing.
+    /// A `Launch`, `OpenUrl`, `Text` or `Sequence` fired after the action
+    /// executor had stopped on its own, so it did nothing.
     ExecutorUnavailable,
     /// The `PostMessageW` of a `SwitchLanguage`, `SwitchLanguageBackward` or
     /// `PostMessage` action failed.

@@ -1,6 +1,6 @@
 //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
-//! thread that runs the slow actions, `Launch`, `OpenUrl` and `Sequence`,
-//! so that the keyboard hook never waits for them.
+//! thread that runs the slow actions, `Launch`, `OpenUrl`, `Text` and
+//! `Sequence`, so that the keyboard hook never waits for them.
 //!
 //! The thread that fires such an action (the hook callback, or the main
 //! loop's timer drain for a Hold or a waiting Tap, both on the daemon's main
@@ -74,8 +74,8 @@ const WAKE: u32 = WM_APP;
 pub struct TargetWindow(isize);
 
 impl TargetWindow {
-    /// No window. What a `Launch` or an `OpenUrl` carries, which never
-    /// reads it; a `Window(...)` step skips it.
+    /// No window. What a `Launch`, an `OpenUrl` or a `Text` carries, which
+    /// never reads it; a `Window(...)` step skips it.
     pub const NONE: Self = Self(0);
 
     /// The foreground window now, or `NONE` if there is none.
@@ -88,8 +88,8 @@ impl TargetWindow {
 
     /// The target to queue with `action`: the foreground window for a
     /// `Sequence`, the only action with `Window(...)` steps, and `NONE`
-    /// otherwise, so that a `Launch` or an `OpenUrl` adds no Win32 call to
-    /// the thread that fires it.
+    /// otherwise, so that a `Launch`, an `OpenUrl` or a `Text` adds no Win32
+    /// call to the thread that fires it.
     pub fn for_action(action: &BindAction) -> Self {
         if let BindAction::Sequence(_) = action {
             Self::foreground()
@@ -113,7 +113,8 @@ impl TargetWindow {
 /// itself. Every call is made under `catch_unwind`, so an implementation
 /// must stay usable after one of its calls panicked.
 pub trait Runner: Send + 'static {
-    /// Runs a job that is not a `Sequence`: a `Launch` or an `OpenUrl`.
+    /// Runs a job that is not a `Sequence`: a `Launch`, an `OpenUrl` or a
+    /// `Text`.
     fn action(&mut self, action: &BindAction);
     /// Runs one step of a macro: any step but a `Delay`.
     fn step(&mut self, step: &SequenceStep, target: TargetWindow);
@@ -130,6 +131,8 @@ impl Runner for Win32Runner {
         match action {
             BindAction::Launch { exe, args } => launch_process(exe, args),
             BindAction::OpenUrl(url) => shell_open(url),
+            // One `SendInput` for the whole text, the macro step's builder.
+            BindAction::Text(text) => sequence::type_text(text),
             // The executor walks a macro step by step and never hands one
             // to `action`.
             BindAction::Sequence(_) => {}
@@ -739,6 +742,10 @@ mod tests {
         BindAction::OpenUrl(url.to_owned())
     }
 
+    fn text(text: &str) -> BindAction {
+        BindAction::Text(Arc::from(text))
+    }
+
     /// A real executor thread with `runner` and counters of its own.
     fn start(runner: FakeRunner, capacity: usize) -> (Executor, &'static Counters) {
         let counters = leaked_counters();
@@ -1185,6 +1192,74 @@ mod tests {
     }
 
     #[test]
+    fn a_text_queued_before_an_epoch_change_is_never_typed() {
+        // `swch off`, a reload or exit drops a phrase that waits.
+        let (tx, records) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_gate(started_tx, release_rx),
+            QUEUE_CAPACITY,
+        );
+        let handle = executor.handle();
+
+        handle.submit(open("A"), TargetWindow::NONE);
+        started.recv_timeout(WAIT).expect("A runs");
+        handle.submit(text("abc"), TargetWindow::NONE);
+        handle.cancel_pending();
+        drop(release);
+        handle.submit(open("C"), TargetWindow::NONE);
+
+        assert_eq!(next(&records).text(), "open A");
+        assert_eq!(next(&records).text(), "open C", "the Text is never typed");
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_text_job_reaches_runner_action_in_order_with_the_other_slow_actions() {
+        let (tx, records) = mpsc::channel();
+        let (executor, _) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        let target = TargetWindow::from_raw(0x1234);
+
+        let jobs = [
+            (
+                BindAction::Launch {
+                    exe: "no-such.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                TargetWindow::NONE,
+            ),
+            (text("abc"), TargetWindow::NONE),
+            (open("https://example.com"), TargetWindow::NONE),
+            (sequence(vec![key(VK_F13)]), target),
+            (text("de"), TargetWindow::NONE),
+        ];
+        for (action, window) in jobs {
+            assert_eq!(handle.submit(action, window), Submitted::Queued);
+        }
+
+        let ran: Vec<Record> = (0..5).map(|_| next(&records)).collect();
+        assert_eq!(
+            ran.iter()
+                .map(|record| record.ran.clone())
+                .collect::<Vec<_>>(),
+            [
+                Ran::Action("launch no-such.exe".to_owned()),
+                Ran::Action("text (3 chars)".to_owned()),
+                Ran::Action("open https://example.com".to_owned()),
+                Ran::Step("key F13".to_owned(), target),
+                Ran::Action("text (2 chars)".to_owned()),
+            ]
+        );
+        for record in &ran {
+            assert_eq!(record.thread, executor.thread().id());
+            assert_eq!(record.name.as_deref(), Some("action-executor"));
+        }
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
     fn jobs_run_in_the_order_they_were_queued_with_their_target() {
         let (tx, records) = mpsc::channel();
         let (executor, _) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
@@ -1369,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_and_open_url_carry_no_window_and_ask_for_none() {
+    fn launch_open_url_and_text_carry_no_window_and_ask_for_none() {
         // Only a Sequence reads the foreground window; for the others the
         // hook thread makes no Win32 call and queues NONE. Where no window
         // has the foreground at all, NONE and the foreground are the same
@@ -1387,6 +1462,11 @@ mod tests {
             TargetWindow::for_action(&open("https://example.com")),
             TargetWindow::NONE,
             "an OpenUrl never reads its window"
+        );
+        assert_eq!(
+            TargetWindow::for_action(&text("Kind regards,")),
+            TargetWindow::NONE,
+            "a Text never reads its window"
         );
     }
 
@@ -1534,6 +1614,22 @@ mod tests {
             Submitted::Queued
         );
         thread::sleep(Duration::from_secs(3));
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    #[ignore = "manual: start it, then within 3 s focus an empty Notepad; it types 'key-switch-rs Text check' through Win32Runner on a real executor thread; check that the whole phrase appears at once and the test passes"]
+    fn the_win32_runner_types_a_text() {
+        let executor = Executor::start(Win32Runner, QUEUE_CAPACITY, leaked_counters())
+            .expect("the executor starts");
+        thread::sleep(Duration::from_secs(3));
+        assert_eq!(
+            executor
+                .handle()
+                .submit(text("key-switch-rs Text check"), TargetWindow::NONE),
+            Submitted::Queued
+        );
+        thread::sleep(Duration::from_secs(1));
         assert_eq!(executor.stop(), Stopped::Joined);
     }
 }
