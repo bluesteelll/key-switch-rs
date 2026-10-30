@@ -9,11 +9,11 @@
 
 | Variant | Syntax | What it does |
 |---|---|---|
-| `SwitchLanguage` | `SwitchLanguage` | Posts `WM_INPUTLANGCHANGEREQUEST` with a "forward" switch to the foreground window |
+| `SwitchLanguage` | `SwitchLanguage` | Posts `WM_INPUTLANGCHANGEREQUEST` with a "forward" switch to the foreground window, or in a dialog box to its focused control |
 | `SwitchLanguageBackward` | `SwitchLanguageBackward` | The same with a "backward" switch |
 | `ToggleCapsLock` | `ToggleCapsLock` | Synthesizes a CapsLock press |
 | `PressKey` | `PressKey("Esc")` | Synthesizes one press of one key |
-| `PostMessage` | `PostMessage(msg: "WM_CLOSE", wparam: 0, lparam: 0)` | Calls `PostMessageW` on the foreground window |
+| `PostMessage` | `PostMessage(msg: "WM_CLOSE", wparam: 0, lparam: 0)` | Calls `PostMessageW` on the foreground window (`WM_INPUTLANGCHANGEREQUEST` in a dialog box: on its focused control) |
 | `Launch` | `Launch(exe: "code.exe", args: ["D:\\proj"])` | Starts a process |
 | `OpenUrl` | `OpenUrl("https://github.com")` | Calls `ShellExecuteW` with the `"open"` verb |
 | `Media` | `Media(PlayPause)` | Synthesizes a media key or a volume key |
@@ -80,12 +80,16 @@ Two further rules apply to every action:
 No arguments. Code: [src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81).
 
 - The window is obtained with `GetForegroundWindow()`. If there is no window, nothing happens.
+- If that window is a dialog box (the system dialog class `#32770`: Save As, Open, a message box, the Run dialog), the request goes to the window that has the keyboard focus in the dialog's thread (`GetGUIThreadInfo`), such as the File name box, the file list or the address bar; if there is none, or it cannot be read, it goes to the dialog. Every other window gets the request itself (`src/system/system_function.rs`, `src/platform/focus.rs`).
 - Call: `PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST (0x0050), wParam, lParam = 0)`, where `wParam = INPUTLANGCHANGE_FORWARD (0x0002)` for `SwitchLanguage` and `INPUTLANGCHANGE_BACKWARD (0x0004)` for `SwitchLanguageBackward`.
 - Posting is asynchronous. The action runs on the hook thread, so a posting error is only counted in `post_message_failed`, which the log writer reports in its counters line ([§18.6](errors.md#s18-6), [Log file](../build-and-run.md#log-file)); the error text is not shown (since `feat/action-executor`, roadmap item 2.1).
-- The recipient is the top-level window, not the focused child control. Whether to switch the layout is up to the window itself; usually `DefWindowProc` accepts the request.
+- Outside a dialog box the recipient is the top-level window, not the focused child control. Whether to switch the layout is up to the window that gets the request; usually `DefWindowProc` accepts it.
 - No OS hotkey is pressed, so the action does not depend on what is configured in Windows (Alt+Shift and so on).
 - Equivalent: `PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2)` (forward) or `wparam: 4` (backward).
 - `block_original_combo: true` works only with these two actions ([§15](matching.md#s15)).
+
+> [!NOTE]
+> **Fixed on `fix/dialog-layout-switch` (owner report 2026-10-30).** A dialog box ignores the request posted to the dialog itself, so before this fix `SwitchLanguage` did nothing while Save As or Open was in front. The check costs one read of the window's class per firing, and two more reads in a dialog. Pickers that are not `#32770` dialogs keep the old target.
 
 <a id="s13-3"></a>
 ### 13.3 `ToggleCapsLock`
@@ -141,7 +145,7 @@ The values are passed as is: on x64, `wparam` becomes `usize` and `lparam` becom
 
 **Where the message goes** ([src/core/windows_actions.rs:298-310](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/windows_actions.rs#L298-L310)):
 
-- The recipient is `PostMessageW(GetForegroundWindow(), ...)` at the moment the binding fires: the top-level window of the active application, not the focused child control and not the window under the cursor.
+- The recipient is `PostMessageW(GetForegroundWindow(), ...)` at the moment the binding fires: the top-level window of the active application, not the focused child control and not the window under the cursor. The one exception is `WM_INPUTLANGCHANGEREQUEST` (0x0050) in a dialog box: it goes where `SwitchLanguage` sends it ([§13.2](#s13-2)).
 - If there is no foreground window, nothing happens.
 - Posting is asynchronous, and the result of the processing is unknown. Only an error of the posting itself is noticed, for example when UIPI blocks it in a debug build: it is counted in `post_message_failed` ([§18.6](errors.md#s18-6)), without the error text, because the action runs on the hook thread.
 

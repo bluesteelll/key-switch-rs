@@ -37,7 +37,7 @@ The embedded default config ([src/config/default_config.ron:236-246](https://git
 
 | Keys | Action | Origin | Effect |
 |---|---|---|---|
-| `CapsLock` | `SwitchLanguage` | config, with `block_original_combo: true` | Posts `WM_INPUTLANGCHANGEREQUEST` (forward) to the foreground window. Fires only with no modifier held, once per press. |
+| `CapsLock` | `SwitchLanguage` | config, with `block_original_combo: true` | Posts `WM_INPUTLANGCHANGEREQUEST` (forward) to the foreground window, or to the focused control of a dialog box. Fires only with no modifier held, once per press. |
 | `Shift+CapsLock` | `ToggleCapsLock` | config | Synthesizes a CapsLock press, so the CapsLock toggle stays reachable. Fires with either Shift and no other modifier. |
 | `Alt+Shift` (or `Ctrl+Shift`, or the grave-accent key) | suppress only | auto-blocker appended by the loader | Silences the Windows language hotkey when it is pressed on its own. The combo comes from the registry value `Hotkey`, then `Language Hotkey`: `"1"` gives Alt+Shift, `"2"` gives Ctrl+Shift and `"4"` gives the grave accent. `"3"`, "Not assigned", gives no hotkey and no auto-blocker ([KS-17](audit.md#ks-17), fixed; [src/system/registry.rs:223-231](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/registry.rs#L223-L231)). Only when neither value decides is the built-in default Alt+Shift used. |
 

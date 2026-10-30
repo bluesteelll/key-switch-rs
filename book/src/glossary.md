@@ -214,7 +214,7 @@ The reduced access token that UAC gives an administrator's ordinary processes: m
 
 ### Foreground window
 
-The top-level window the user is working in, returned by `GetForegroundWindow`; keyboard input goes to its thread. key-switch-rs posts the messages of the `SwitchLanguage` and `PostMessage` actions to it, evaluates `when:` conditions against it through the [foreground cache](#foreground-cache), and captures it once when a macro is queued, so that `Window(...)` steps act on that window ([src/core/executor/mod.rs:71-109](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/executor/mod.rs#L71-L109)). A change of foreground window fires the [WinEvent hook](#winevent-hook).
+The top-level window the user is working in, returned by `GetForegroundWindow`; keyboard input goes to its thread. key-switch-rs posts the messages of the `SwitchLanguage` and `PostMessage` actions to it (a language request in a dialog box goes to the dialog's focused control instead, see [`WM_INPUTLANGCHANGEREQUEST`](#wm_inputlangchangerequest)), evaluates `when:` conditions against it through the [foreground cache](#foreground-cache), and captures it once when a macro is queued, so that `Window(...)` steps act on that window ([src/core/executor/mod.rs:71-109](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/executor/mod.rs#L71-L109)). A change of foreground window fires the [WinEvent hook](#winevent-hook).
 
 ## G
 
@@ -246,7 +246,7 @@ The engine's count of the things that can hide a key event from the hook: the da
 
 ### HKL and keyboard layout
 
-A keyboard layout maps physical keys to virtual-key codes and characters. An HKL, also called an input locale identifier, names one installed language and layout, and Windows keeps the active HKL per thread. key-switch-rs never handles HKLs directly: `SwitchLanguage` and `SwitchLanguageBackward` post [`WM_INPUTLANGCHANGEREQUEST`](#wm_inputlangchangerequest) to the foreground window and leave the switch to it ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)); since the layout decides which VK a physical key produces, a binding on a letter key can follow a different physical key in another layout, for example AZERTY instead of QWERTY.
+A keyboard layout maps physical keys to virtual-key codes and characters. An HKL, also called an input locale identifier, names one installed language and layout, and Windows keeps the active HKL per thread. key-switch-rs never handles HKLs directly: `SwitchLanguage` and `SwitchLanguageBackward` post [`WM_INPUTLANGCHANGEREQUEST`](#wm_inputlangchangerequest) to the foreground window, or in a dialog box to its focused control, and leave the switch to that window ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)); since the layout decides which VK a physical key produces, a binding on a letter key can follow a different physical key in another layout, for example AZERTY instead of QWERTY.
 
 ### Hold
 
@@ -582,7 +582,7 @@ The check of roadmap item 2.3 at a key-up the engine would swallow: if Windows h
 
 ### `WM_INPUTLANGCHANGEREQUEST`
 
-The window message that asks a window to change the input language; `INPUTLANGCHANGE_FORWARD` or `INPUTLANGCHANGE_BACKWARD` in `wParam` asks for the next or previous installed layout. `SwitchLanguage` and `SwitchLanguageBackward` post it to the foreground window with `lParam` set to 0 ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)). The window accepts the change by passing the message to `DefWindowProc` and can refuse it by not doing so.
+The window message that asks a window to change the input language; `INPUTLANGCHANGE_FORWARD` or `INPUTLANGCHANGE_BACKWARD` in `wParam` asks for the next or previous installed layout. `SwitchLanguage` and `SwitchLanguageBackward` post it to the foreground window, or in a dialog box (`#32770`) to the window with the keyboard focus in the dialog's thread, with `lParam` set to 0 ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)). The window accepts the change by passing the message to `DefWindowProc` and can refuse it by not doing so.
 
 ### `WM_KEYDOWN` and `WM_SYSKEYDOWN`
 
