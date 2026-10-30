@@ -43,7 +43,9 @@ One package with a library, two binaries, a build script and the book:
   `testing.rs` the `FakeRunner`).
 - `src/platform/`: `timers.rs` (`WaitableTimer`, a high-resolution waitable timer for threads that wait on deadlines),
   `priority.rs` (`RaisedPriority`: the main thread runs at `THREAD_PRIORITY_HIGHEST`), `foreground.rs`
-  (`ForegroundCache`: the executable per (HWND, pid), the title read live), `desktop.rs` (`UOI_IO`).
+  (`ForegroundCache`: the executable per (HWND, pid), the title read live), `desktop.rs` (`UOI_IO`), `focus.rs`
+  (`is_dialog`, the `#32770` class atom by `GetClassWord(GCW_ATOM)`; `focus_window_of`, the focus window of a window's
+  thread by `GetGUIThreadInfo`: where a language request goes in a dialog).
 - `src/data/`: `binding.rs`, `key_combination.rs`, `trigger.rs`, `condition.rs`, `sequence.rs`, `vk_name.rs`.
 - `src/hook/`: `keyboard_hook.rs` (`KeyboardHook`), `keyboard_hook_callback.rs` (the Win32 adapter),
   `main_thread.rs` (`MainState` with the engine, the gesture timers and the foreground cache, `with_main`, the
