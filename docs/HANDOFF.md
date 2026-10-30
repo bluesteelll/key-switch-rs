@@ -8,8 +8,10 @@ This page is the state of the programme and the steps to resume it. CLAUDE.md st
 
 ## State
 
-- **master** at the merges of `fix/clippy-rust-1-99` and `chore/work-from-d` (this page). Before them: `9c3b5f4`, the
-  move to drive E:, and `1c1f3a0`, the book sync after roadmap 2.5. Roadmap Workstreams A and B and Phases 0, 1 and 2
+- **master** at the merge of `chore/after-dialog-lang` (the lane's manual checks below). Before it: `6d67816`, lane
+  `fix-dialog-lang` (owner report 2026-10-30, outside the roadmap: `SwitchLanguage` in a dialog box such as Save As),
+  whose CI and book runs passed; then the merges of `fix/clippy-rust-1-99` and `chore/work-from-d`, `9c3b5f4`, the move
+  to drive E:, and `1c1f3a0`, the book sync after roadmap 2.5. Roadmap Workstreams A and B and Phases 0, 1 and 2
   (items 2.1 to 2.5) are merged, and the book is synced.
 - **The gate** is green on the new machine (rustc 1.99.1) on `fix/clippy-rust-1-99`: 862 library tests passed, 7
   ignored manual and bench tests, 7 `ipc_roundtrip` tests.
@@ -26,8 +28,49 @@ This page is the state of the programme and the steps to resume it. CLAUDE.md st
 - **The owner's daily build** (`key-switch-rs-252daef/`) worked without problems in daily use (CapsLock = layout,
   Shift+CapsLock = CapsLock). It is in `<root>/tmp/ks-release/` with the build before 2.5.
 - **No manual check has been run**: roadmap "Manual checks after Phase 1" 1-18 and "Manual checks after Phase 2" 1-59
-  (49-59 are lane 2.5's M1-M11). The owner will run them later as a batch; do not ask again during Phase 3 unless a lane
-  needs one decided.
+  (49-59 are lane 2.5's M1-M11), nor lane `fix-dialog-lang`'s MC1-MC9 (next section). The owner will run them later as
+  a batch; do not ask again during Phase 3 unless a lane needs one decided.
+
+## Manual checks of lane `fix-dialog-lang` (not yet run)
+
+Since `6d67816` a language request (`SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` of
+`WM_INPUTLANGCHANGEREQUEST`) whose foreground window is a dialog box (`#32770`) goes to the focus window of the dialog's
+thread instead of the dialog, which drops it. The tests pin the choice of target; only a live daemon shows that the
+layout switches. The lane's reports are in `<orch>/fix-dialog-lang/` (`cut.md` "Manual checks", `results.md`), not in
+the `docs/ks-orch/` archive.
+
+Setup for every check: a release daemon of `master` at `6d67816` or later with the owner's config (CapsLock ->
+`SwitchLanguage`, Shift+CapsLock -> `ToggleCapsLock`) and two layouts (EN, RU).
+
+| # | Steps | Expected |
+|---|---|---|
+| MC1 | Claude desktop app: open its Save dialog, click into File name, press CapsLock once, type a letter; press CapsLock again, type a letter | The first press switches the layout (taskbar indicator, the letter in the other layout), the second switches back: one press, one request |
+| MC2 | Notepad, Ctrl+Shift+S, click into File name, CapsLock, type | Switches |
+| MC3 | As MC2, then click a file or the empty area of the file list, CapsLock, then F2 or a click into File name, type | Switches (unverified: whether the file list accepts the request) |
+| MC4 | As MC2, then click the address bar (or Alt+D), CapsLock, type | Switches (unverified, as MC3) |
+| MC5 | CapsLock, then type, in Notepad's main window, Windows Terminal, an Explorer window, a browser's address bar and page | Switches in each, as before the lane |
+| MC6 | Shift+CapsLock in the Save As dialog and in Notepad | Caps Lock toggles; the layout does not change |
+| MC7 | Only if MC1-MC4 fail; no daemon needed. `cargo test --lib platform::focus::tests::a_save_as_dialog_reads_as_a_dialog_with_a_focused_control -- --ignored --exact`, then within 5 s click into a Save As File name box | Passes. If `is_dialog` fails, the class atom read does not tell the dialog (cut D1: read the class name instead); if the focus is missing, see cut D2 |
+| MC8 (optional) | Add `( keys: "F9", action: PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2) )`, press F9 in the Save As File name box | Switches |
+| MC9 (required) | Win+R (the Run dialog), CapsLock, type; Notepad with unsaved text, close it, at the "Save changes?" box press CapsLock, then Esc and type | Switches in both (`#32770` dialogs too). The cut listed it as optional; the critique (M5) made it required, as the one place where the lane changes behaviour without evidence |
+
+How to rule a failure (orchestrator, 2026-10-30, from `results.md` N2):
+
+- **MC3 or MC4 failing is a known issue, not a regression.** Before `6d67816` a dialog dropped the request whatever had
+  the focus, so a dropped request in the file list or the address bar behaves as before. Record it as a known issue
+  and a follow-up; the lane stays merged.
+- **MC5 or MC6 failing is a regression**, and so is MC9 failing where that dialog switched before `6d67816`. These go
+  back to the architect (cut D1/D3).
+- MC1 or MC2 failing means the fix does not work: run MC7 first.
+
+Follow-ups of the lane, not scheduled:
+
+- **F1.** A counter (`language_focus_unread`) for a dialog whose focus could not be read: such a request goes to the
+  dialog and is dropped without a trace.
+- **F3.** Pickers that are not `#32770` dialogs (`PickerHost.exe`, Office's backstage, custom-class dialogs) keep the
+  old target; the book's NOTE in `config/actions.md` §13.2 says so.
+- F2, `lParam` 0 with three or more layouts, belongs to roadmap new feature 3, which can reuse
+  `platform::focus::focus_window_of` and `system::system_function::post_to_foreground`.
 
 ## The archive: `docs/ks-orch/`
 
