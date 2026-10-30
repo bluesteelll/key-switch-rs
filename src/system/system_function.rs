@@ -193,6 +193,7 @@ fn system32_path(exe_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::windows_actions::{BindAction, FastAction};
 
     #[test]
     fn test_hardcoded_combinations() {
@@ -300,6 +301,43 @@ mod tests {
             },
         );
         assert_eq!(target, Some(window(1)));
+    }
+
+    #[test]
+    fn a_language_request_in_a_dialog_goes_to_its_focused_control() {
+        // Owner report 2026-10-30: a Save As dialog drops the request posted
+        // to the dialog itself, and the File name box that has the focus in
+        // the dialog's thread switches the layout.
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            window(1),
+            |asked| {
+                assert_eq!(asked, window(1));
+                true
+            },
+            |asked| {
+                assert_eq!(asked, window(1));
+                Ok(Some(window(2)))
+            },
+        );
+        assert_eq!(target, Some(window(2)));
+    }
+
+    #[test]
+    fn the_post_message_form_of_switch_language_follows_it_into_the_dialog() {
+        // `PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2)` is the
+        // documented equivalent of `SwitchLanguage` (the config name parses
+        // to the same constant, `config::parsing::tests::parse_wm_known`).
+        let action = BindAction::PostMessage {
+            msg: WM_INPUTLANGCHANGEREQUEST,
+            wparam: INPUTLANGCHANGE_FORWARD as usize,
+            lparam: 0,
+        };
+        let Some(FastAction::PostMessage { msg, .. }) = action.as_fast() else {
+            panic!("PostMessage does not run as a fast PostMessage");
+        };
+        let target = post_target(msg, window(1), |_| true, |_| Ok(Some(window(2))));
+        assert_eq!(target, Some(window(2)));
     }
 
     /// The non-test lines of `file`, before its `#[cfg(test)] mod tests {`.
