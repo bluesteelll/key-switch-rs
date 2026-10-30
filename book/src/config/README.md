@@ -51,6 +51,7 @@ ACTION := SwitchLanguage | SwitchLanguageBackward | ToggleCapsLock | DoNothing
         | PostMessage(msg: "WM_NAME" | u32, wparam: u64 = 0, lparam: i64 = 0)
         | Launch(exe: "name or path", args: ["arg", …] = [])
         | OpenUrl("URL, file, folder or program")
+        | Text("any text")                        // typed at once on the action executor (§13.10)
         | Media(PlayPause | Stop | Next | Previous | VolumeUp | VolumeDown | VolumeMute)
         | Sequence([STEP, …])                     // macro on the action executor (§14)
 

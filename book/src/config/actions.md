@@ -1,11 +1,11 @@
 # Actions and macro steps
 
-`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5, except where a language request goes ([§13.2](#s13-2), [§13.4](#s13-4)): that describes, and links to, `6d67816`, the dialog-box fix (owner report 2026-10-30) and the last change of the program's behaviour on `master`. How actions behave in Windows is inferred from the code and was not observed on a live daemon.
+`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5, except where a language request goes ([§13.2](#s13-2), [§13.4](#s13-4)): that describes, and links to, `6d67816`, the dialog-box fix (owner report 2026-10-30) and the last change of the program's behaviour on `master`; the `Text` action ([§13.10](#s13-10)) describes branch `feat/text-action`. How actions behave in Windows is inferred from the code and was not observed on a live daemon.
 
 <a id="s13"></a>
 ## 13. Actions (`action`)
 
-`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 10 variants of `RawAction` ([src/config/schema.rs:171-205](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/schema.rs#L171-L205)). The loader turns it into a `BindAction` ([src/config/loader.rs:667-725](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L667-L725)), and the hook adapter runs it where it fires or hands it to the action executor ([§13.1](#s13-1)).
+`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 11 variants of `RawAction` ([src/config/schema.rs:171-205](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/schema.rs#L171-L205)). The loader turns it into a `BindAction` ([src/config/loader.rs:667-725](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L667-L725)), and the hook adapter runs it where it fires or hands it to the action executor ([§13.1](#s13-1)).
 
 | Variant | Syntax | What it does |
 |---|---|---|
@@ -16,18 +16,19 @@
 | `PostMessage` | `PostMessage(msg: "WM_CLOSE", wparam: 0, lparam: 0)` | Calls `PostMessageW` on the foreground window (`WM_INPUTLANGCHANGEREQUEST` in a dialog box: on its focused control) |
 | `Launch` | `Launch(exe: "code.exe", args: ["D:\\proj"])` | Starts a process |
 | `OpenUrl` | `OpenUrl("https://github.com")` | Calls `ShellExecuteW` with the `"open"` verb |
+| `Text` | `Text("Kind regards,")` | Types the text at once, as the macro step `Text` does; runs on the action executor ([§13.10](#s13-10)) |
 | `Media` | `Media(PlayPause)` | Synthesizes a media key or a volume key |
 | `Sequence` | `Sequence([Text("hi"), Key("Enter")])` | A macro; runs on the action executor ([§14](#s14)) |
 | `DoNothing` | `DoNothing` | Does nothing (needed only to suppress a key) |
 
-The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/system/system_function.rs:18-25](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L18-L25)), but `RawAction` has no variants for them, so they are not available from the config: `action: LockWorkstation` gives ``Unexpected variant named `LockWorkstation` in enum `RawAction`, expected one of `SwitchLanguage`, ... or `DoNothing` instead``. Macro steps do not work outside `Sequence` either: `action: Text("hi")` and `action: Window(Minimize)` give an error of the same form.
+The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/system/system_function.rs:18-25](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L18-L25)), but `RawAction` has no variants for them, so they are not available from the config: `action: LockWorkstation` gives ``Unexpected variant named `LockWorkstation` in enum `RawAction`, expected one of `SwitchLanguage`, ... or `DoNothing` instead``. Other macro steps do not work outside `Sequence`: `action: Window(Minimize)` and `action: Key("A")` give an error of the same form. `Text` is both an action and a step.
 
 **Variant forms** (names are case-sensitive, including the arguments of `Media(...)` and `Window(...)`):
 
 | Form | Variants | Correct | Incorrect |
 |---|---|---|---|
 | No arguments | `SwitchLanguage`, `SwitchLanguageBackward`, `ToggleCapsLock`, `DoNothing` | `SwitchLanguage` | `SwitchLanguage()` or `DoNothing(1)` → `Expected comma`; `"SwitchLanguage"` → `Expected identifier` |
-| One positional argument | `PressKey`, `OpenUrl`, `Media`, `Sequence` | `PressKey("A")` | without parentheses → ``Expected opening `(` ``; `PressKey()` → `Expected string`; `Media()` → `Expected identifier`; `Sequence()` → ``Expected opening `[` ``; `PressKey("A", "B")` → ``Expected closing `)` `` |
+| One positional argument | `PressKey`, `OpenUrl`, `Text`, `Media`, `Sequence` | `PressKey("A")` | without parentheses → ``Expected opening `(` ``; `PressKey()` → `Expected string`; `Media()` → `Expected identifier`; `Sequence()` → ``Expected opening `[` ``; `PressKey("A", "B")` → ``Expected closing `)` `` |
 | Named fields | `PostMessage`, `Launch` | `Launch(exe: "x", args: [])` | `Launch("x")` → `Expected identifier`; `Launch { exe: "x" }` → ``Expected opening `(` ``; `Launch()` → ``Unexpected missing field named `exe` in `Launch` `` |
 
 Named fields are written inside parentheses, in any order; a trailing comma is allowed, and a repeated field is an error. An unknown field is an error that lists the valid ones ([§5.3](structure.md#s5-3)): `Launch(exe: "notepad.exe", cwd: "C:/temp")` gives ``Unexpected field named `cwd` in `Launch`, expected either `exe` or `args` instead``.
@@ -46,9 +47,9 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 | `chord` | hook thread | the last key of the chord is pressed | [src/engine/mod.rs:908-914](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L908-L914) |
 | `sequence` | hook thread | last step | [src/engine/mod.rs:879-888](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L879-L888) |
 
-The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` and the gesture timers (`src/hook/main_thread.rs`, roadmap item 2.2); no action runs on a thread of its own. While it runs an action, keyboard input stalls system-wide, a `Hold` action included. Since roadmap [item 2.1](../roadmap.md#21-action-executor) (fixed on `feat/action-executor`, [KS-08](../audit.md#ks-08)) the thread that fires runs only the fast actions itself, before the hook returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` and `DoNothing`. Each of them only posts a message or sends one key press, and running it there keeps its output in order with the keys typed after it. `Launch`, `OpenUrl` and `Sequence` are queued for the `action-executor` thread, and the hook returns at once. When one key-down fires several actions, the fast ones run in order before the hook returns, and the others run in order on the executor after it.
+The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` and the gesture timers (`src/hook/main_thread.rs`, roadmap item 2.2); no action runs on a thread of its own. While it runs an action, keyboard input stalls system-wide, a `Hold` action included. Since roadmap [item 2.1](../roadmap.md#21-action-executor) (fixed on `feat/action-executor`, [KS-08](../audit.md#ks-08)) the thread that fires runs only the fast actions itself, before the hook returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` and `DoNothing`. Each of them only posts a message or sends one key press, and running it there keeps its output in order with the keys typed after it. `Launch`, `OpenUrl`, `Text` and `Sequence` are queued for the `action-executor` thread, and the hook returns at once. When one key-down fires several actions, the fast ones run in order before the hook returns, and the others run in order on the executor after it.
 
-**The action executor** (`src/core/executor/`) is one thread with its own message loop, and it initialises COM as a single-threaded apartment, as `ShellExecuteW` asks. Up to 32 actions wait for it; a further one is dropped and counted in `executor_jobs_dropped` ([§18.6](errors.md#s18-6)). Macros run side by side on it ([§14.1](#s14-1)): a `Delay` holds up no other action. A `Launch` or `OpenUrl`, as an action or a macro step, holds up the other queued actions and macros while it runs inside Windows (a cold browser, a dialog that `ShellExecuteW` shows). `swch off`, `swch on` when remapping was off, a reload (a saved `config.ron` that loads) and `swch exit` drop the actions still queued and stop the running macros; a step already running finishes first. A save that does not load keeps them, as it keeps the bindings. If the executor stops on its own, it logs one `[ERROR]` line, and every later `Launch`, `OpenUrl` and `Sequence` does nothing and counts in `executor_unavailable` until the daemon restarts.
+**The action executor** (`src/core/executor/`) is one thread with its own message loop, and it initialises COM as a single-threaded apartment, as `ShellExecuteW` asks. Up to 32 actions wait for it; a further one is dropped and counted in `executor_jobs_dropped` ([§18.6](errors.md#s18-6)). Macros run side by side on it ([§14.1](#s14-1)): a `Delay` holds up no other action. A `Launch` or `OpenUrl`, as an action or a macro step, holds up the other queued actions and macros while it runs inside Windows (a cold browser, a dialog that `ShellExecuteW` shows). `swch off`, `swch on` when remapping was off, a reload (a saved `config.ron` that loads) and `swch exit` drop the actions still queued and stop the running macros; a step already running finishes first. A save that does not load keeps them, as it keeps the bindings. If the executor stops on its own, it logs one `[ERROR]` line, and every later `Launch`, `OpenUrl`, `Text` and `Sequence` does nothing and counts in `executor_unavailable` until the daemon restarts.
 
 > [!NOTE]
 > **Auto-repeat ([KS-10](../audit.md#ks-10), fixed in `feat/repeat-flag`).** While the trigger of a `keys` + `Immediate` binding is held, the keyboard repeats its key-down, about 30 times per second after the initial delay. By default only `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` fire again on each repeat (owner decision); every other action fires once per press, so `trigger: Tap(…)` is no longer needed to make an action one-shot. `repeat: true` on a binding makes it fire on every repeat, and `repeat: false` once per press ([§11.3](triggers-conditions.md#s11-3)). Each repeat of a `PressKey` sends a new press and release: for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`, or a held trigger toggles the key at the repeat rate or taps the modifier ([§13.5](#s13-5)).
@@ -171,7 +172,7 @@ In practice:
 - Combinations are not accepted: `PressKey("Ctrl+C")` → `PressKey: unknown key "Ctrl+C"`. A combination is sent like this: `Sequence([Combo("Ctrl+C")])`.
 - Code: [src/core/windows_actions.rs:257-291](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/windows_actions.rs#L257-L291). One `SendInput` call with two events: the press and the release of the VK; `wScan = 0`, and neither `KEYEVENTF_EXTENDEDKEY` nor `KEYEVENTF_SCANCODE` is set ([§6.8](keys.md#s6-8), [KS-36](../audit.md#ks-36)). If some of the events are lost, the press is counted in `key_press_short`, which the `[WARN] counters since the last report: ...` line reports; no line names the key.
 - It is a **tap**, not a hold. With `Immediate`, a held trigger produces a series of taps at the auto-repeat rate, unless the binding sets `repeat: false`. `PressKey("LShift")` is one short Shift press, not a held Shift, and a held trigger of `PressKey("CapsLock")` toggles CapsLock on every repeat: write `repeat: false` for a toggle key or a modifier.
-- Output goes by VK, so the character depends on the current layout and on the held modifiers. `PressKey("Q")` in the Russian layout types "й". For layout-independent text use `Sequence([Text("...")])`.
+- Output goes by VK, so the character depends on the current layout and on the held modifiers. `PressKey("Q")` in the Russian layout types "й". For layout-independent text use `Text("...")` ([§13.10](#s13-10)).
 - Names with a side (`LShift`, `RAlt`, `RWin` …) are allowed here and send their own VK.
 
 <a id="s13-6"></a>
@@ -265,6 +266,27 @@ It executes nothing ([src/core/windows_actions.rs:163](https://github.com/bluest
 > [!NOTE]
 > Fixed on `feat/one-winner` ([KS-13](../audit.md#ks-13)): a losing binding with `block_default: true`, whatever its trigger, no longer swallows the key of a winner with `block_default: false` ([§10](kinds.md#s10)).
 
+<a id="s13-10"></a>
+### 13.10 `Text("...")`
+
+```ron
+( keys: "ScrollLock", action: Text("Kind regards,") ),
+```
+
+Types the text at once, as the macro step `Text` does ([§14.4](#s14-4)), without a `Sequence` around it (owner request 2026-10-30, roadmap [new feature 9](../roadmap.md#new-features-after-stabilisation); branch `feat/text-action`).
+
+- The argument is one RON string, raw strings and escapes included ([§3.9](ron-syntax.md#s3-9)). `Text("")` is an error, `binding #0 [ScrollLock]: Text: empty`, while the macro step `Text("")` loads and does nothing. `Text(123)` and `Text()` → `Expected string`; `Text("a", "b")` → ``Expected closing `)` ``.
+- It types exactly as the step (`type_text` in `src/data/sequence.rs`): the whole string goes out in one `SendInput` call, two `KEYEVENTF_UNICODE` events per UTF-16 code unit, so it does not depend on the layout, emoji go out as surrogate pairs, and no key you type lands inside it.
+- It runs on the action executor, like `Launch` ([§13.1](#s13-1)). The hook only queues it and, unlike `Sequence([Text("...")])`, reads no window for it, so it is the cheaper of the two on the key path (bench rows R27 and R27l). The text goes to the window that has the keyboard focus when Windows inserts the batch, a fraction of a millisecond after the trigger.
+- It fires once per press; `repeat: true` types it again on each auto-repeat, up to 32 waiting. `swch off`, a reload and `swch exit` drop a `Text` that still waits; one that Windows is inserting finishes.
+- The startup list shows it as `text (N chars)`, N the number of characters, and no log line contains the text.
+- **Order with the keys after it.** The hook only queues the text, so a key that goes down in the same moment reaches the application first. With `Immediate` that takes a key typed within that fraction of a millisecond. A `Text` that another key's key-down fires always comes after that key: a `Tap` that waits for its `DoubleTap` window fires when the next key goes down ([§11.6](triggers-conditions.md#s11-6)), and so does a `Hold` whose term has just passed ([§11.4](triggers-conditions.md#s11-4)). With `( keys: "F13", action: Text("Kind regards,"), trigger: Tap(200) )` next to a `DoubleTap` on F13, a tap of F13 and then Enter within the window sends a chat message first and types the phrase into the next one ([§19](known-issues.md#s19) row 92). Give a `Text` binding no `DoubleTap` on the same keys, or use `Immediate`. The same holds for `Launch`, `OpenUrl` and `Sequence`; a fast action runs before that key.
+- `\n`, `\t` and `\r` are characters, not Enter or Tab ([§14.4](#s14-4); [§19](known-issues.md#s19) row 34).
+- **A long text.** The batch has two events per UTF-16 code unit. While Windows inserts it, the keys you type and the daemon's due `Hold` timers wait behind it, and the daemon's own hook sees each of its events and passes it; a very long one may make the daemon count `hook_late` ([§18.6](errors.md#s18-6)). Some applications lose characters of a very long batch ([§19](known-issues.md#s19) row 91). Several `Text` steps of a `Sequence` with a `Delay` between them avoid that, but your keys can then land between the parts.
+
+> [!WARNING]
+> **Known issue ([KS-19](../audit.md#ks-19)).** The trigger's held modifiers stay down in Windows while the text arrives, as for the macro step: with Alt held an application may take the characters as menu shortcuts, with Ctrl as its own shortcuts. `Text` sends no modifier event, so nothing stays stuck. Use a trigger without modifiers (`ScrollLock`, `Pause`, `F13`–`F24`), or `Sequence([Delay(200), Text("...")])` to give yourself time to release them. Roadmap item 3.1 releases them.
+
 <a id="s14"></a>
 ## 14. The `Sequence([...])` macro and its steps
 
@@ -330,7 +352,7 @@ action: Sequence([ <step>, <step>, ... ])
 <a id="s14-4"></a>
 ### 14.4 `Text("...")`
 
-`Text("Привет, мир")`. It accepts any RON string, including raw strings and escapes ([§3.9](ron-syntax.md#s3-9)). `Text(123)`, `Text('a')` and `Text()` → `Expected string`. `Text("")` is a no-op.
+`Text("Привет, мир")`. It accepts any RON string, including raw strings and escapes ([§3.9](ron-syntax.md#s3-9)). `Text(123)`, `Text('a')` and `Text()` → `Expected string`. `Text("")` is a no-op. As an action, `Text("")` is a load error ([§13.10](#s13-10)).
 
 Code: [src/data/sequence.rs:123-161](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L123-L161).
 
