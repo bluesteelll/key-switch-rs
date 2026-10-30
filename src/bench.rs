@@ -97,6 +97,19 @@
 //!   the main thread, each after an untimed note of hidden input that makes
 //!   it due: the eight sided modifiers from the live key state, which only
 //!   reads.
+//! - R17c: one `GetClassWord(GCW_ATOM)` of the bench machine's foreground
+//!   window, read once before the row, the mean of 1000 calls per sample:
+//!   what a `SwitchLanguage` firing reads to tell a dialog (owner report
+//!   2026-10-30). Provisional bound: p50 at most 1.0 us.
+//! - R17g: `platform::focus::focus_window_of` of the same window
+//!   (`GetWindowThreadProcessId`, then `GetGUIThreadInfo` of its thread),
+//!   the mean of 1000 calls per sample: what the firing reads in a dialog.
+//!   Provisional bound: p50 at most 5.0 us.
+//!
+//!   Both only read. With no foreground window (a locked session), or one
+//!   that went away during the row, they would time the failure path, so an
+//!   untimed read before and after the samples checks that both succeed;
+//!   if one does not, the row's text starts with "NOT MEASURED".
 //!
 //! Every event the callback rows hand the callback carries the tick count
 //! as its time stamp, as Windows' events do, and an injected one the
@@ -146,6 +159,7 @@ use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
 use crate::hook::main_thread::{MainThread, MainThreadError, note_hidden_input, with_main};
 use crate::hook::watchdog::{HookWatchdog, RequestReinstall, SYNTHETIC_RAW};
+use crate::platform::focus;
 
 /// One row of the table: its label, what it measures and its samples.
 struct Row {
@@ -534,6 +548,30 @@ fn r17a_async_key_state(count: usize) -> Vec<Duration> {
         // memory of ours and may be called from any thread.
         std::hint::black_box(unsafe { GetAsyncKeyState(i32::from(VK_F13.0)) });
     })
+}
+
+/// R17c: one read of the class atom of `foreground`, as a language request
+/// makes it to tell a dialog. The flag says whether an untimed read before
+/// the samples and one after them both read a class, that is, whether the
+/// row timed the read and not its failure.
+fn r17c_class_atom(foreground: HWND, count: usize) -> (Vec<Duration>, bool) {
+    let reads = || focus::class_atom(foreground) != 0;
+    let before = reads();
+    let samples = per_call(count, 1000, || {
+        std::hint::black_box(focus::class_atom(foreground));
+    });
+    (samples, before && reads())
+}
+
+/// R17g: one read of the focus window of `foreground`'s thread, as a
+/// language request makes it in a dialog; the flag as for R17c.
+fn r17g_focus_window(foreground: HWND, count: usize) -> (Vec<Duration>, bool) {
+    let reads = || focus::focus_window_of(foreground).is_ok();
+    let before = reads();
+    let samples = per_call(count, 1000, || {
+        let _ = std::hint::black_box(focus::focus_window_of(foreground));
+    });
+    (samples, before && reads())
 }
 
 /// R18: the main thread's read of the modifiers between key events
@@ -1273,6 +1311,32 @@ fn latency_bench() {
             id: "R18",
             what: "the main thread's read of the modifiers between key events (MainState::resync_if_due)",
             samples: r18_main_thread_read(2_000),
+        },
+    ]);
+    // SAFETY: GetForegroundWindow takes no arguments and reads no memory of
+    // ours; with no foreground window it returns a null handle, which the
+    // rows' checks report.
+    let foreground = unsafe { GetForegroundWindow() };
+    let (r17c, r17c_read) = r17c_class_atom(foreground, 2_000);
+    let (r17g, r17g_read) = r17g_focus_window(foreground, 2_000);
+    rows.extend([
+        Row {
+            id: "R17c",
+            what: if r17c_read {
+                "GetClassWord(GCW_ATOM) of the foreground window, per call (mean of 1000 per sample)"
+            } else {
+                "NOT MEASURED, the class read failed (no foreground window, or it went away): GetClassWord(GCW_ATOM), per call"
+            },
+            samples: r17c,
+        },
+        Row {
+            id: "R17g",
+            what: if r17g_read {
+                "focus_window_of(the foreground window): GetWindowThreadProcessId + GetGUIThreadInfo, per call (mean of 1000 per sample)"
+            } else {
+                "NOT MEASURED, the focus read failed (no foreground window, or it went away): focus_window_of, per call"
+            },
+            samples: r17g,
         },
     ]);
     get_hook().update_bindings(Vec::new());

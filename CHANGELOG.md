@@ -267,6 +267,12 @@ minor version; such entries sit under **Changed** and start with
   `hook::keyboard_hook_callback::tests::a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late`,
   `an_injected_events_own_stamp_is_not_its_age`,
   `hook::main_thread::tests::an_awake_stretch_of_17_ms_notes_hidden_input`.
+- Bench rows R17c, one read of the foreground window's class, and R17g,
+  the focus window of its thread: what a `SwitchLanguage` firing reads to
+  find a dialog's focused control (owner report 2026-10-30). Each checks
+  with an untimed read before and after its samples that the read
+  succeeded, and its text starts with "NOT MEASURED" if it did not (no
+  foreground window, or one that went away during the row).
 
 ### Changed
 
