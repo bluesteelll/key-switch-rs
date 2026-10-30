@@ -42,7 +42,8 @@ impl SystemFunction {
     }
 
     /// Posts a "forward" `WM_INPUTLANGCHANGEREQUEST` with lParam 0 through
-    /// [`post_to_foreground`]. Runs on the hook thread, so a failed post is
+    /// [`post_to_foreground`]: to the foreground window, or in a dialog box
+    /// to its focused control. Runs on the hook thread, so a failed post is
     /// only counted (`post_message_failed`), never logged.
     fn switch_language_forward() {
         post_to_foreground(
@@ -142,9 +143,19 @@ impl SystemFunction {
 }
 
 /// The window that a message posted to the foreground window goes to, or
-/// `None` if there is no foreground window. Every message goes to
-/// `foreground` itself. `is_dialog` and `focus_of` are the reads a choice
-/// may need, asked only when it needs them.
+/// `None` if there is no foreground window (owner report 2026-10-30).
+///
+/// A `WM_INPUTLANGCHANGEREQUEST` to a dialog box (`#32770`, `is_dialog`)
+/// goes to the window with the keyboard focus in the dialog's thread
+/// (`focus_of`), such as the File name box of Save As: the dialog itself
+/// drops it. If that thread has no focus window, or it cannot be read, the
+/// dialog gets the request, as before. Every other window, and every other
+/// message, goes to `foreground` itself, as before.
+///
+/// The reads are asked only when the choice needs them: none with no
+/// foreground window or for another message, the class for a language
+/// request, the focus only in a dialog. That is the whole cost a firing
+/// adds on the hook path.
 pub(crate) fn post_target(
     msg: u32,
     foreground: HWND,
@@ -154,13 +165,20 @@ pub(crate) fn post_target(
     if foreground.is_invalid() {
         return None;
     }
-    let _ = (msg, is_dialog, focus_of);
-    Some(foreground)
+    if msg != WM_INPUTLANGCHANGEREQUEST || !is_dialog(foreground) {
+        return Some(foreground);
+    }
+    match focus_of(foreground) {
+        Ok(Some(focus)) => Some(focus),
+        Ok(None) | Err(_) => Some(foreground),
+    }
 }
 
 /// Posts `msg` once to the window [`post_target`] picks from the foreground
 /// window, or nothing if there is none: the one post of `SwitchLanguage`,
-/// `SwitchLanguageBackward` and `PostMessage`. It runs on the hook thread,
+/// `SwitchLanguageBackward` and `PostMessage`. In a dialog box a language
+/// request goes to its focused control; one post only, since a second
+/// request would switch back with two layouts. It runs on the hook thread,
 /// so a failed post is only counted (`post_message_failed`), never logged.
 pub(crate) fn post_to_foreground(msg: u32, wparam: usize, lparam: isize) {
     // SAFETY: GetForegroundWindow takes no arguments and reads no memory of

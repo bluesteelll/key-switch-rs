@@ -366,7 +366,7 @@ binding that duplicates one above it (see [Errors](#errors)).
 | `SwitchLanguageBackward`             | Switch to the previous layout                                            |
 | `ToggleCapsLock`                     | Toggle CapsLock state                                                    |
 | `PressKey("<name>")`                 | Synthesize a key press via `SendInput`                                   |
-| `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window                      |
+| `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window; `WM_INPUTLANGCHANGEREQUEST` in a dialog box goes to its focused control, as `SwitchLanguage` does |
 | `Launch(exe: "<path>", args: [...])` | Spawn a process. `args` defaults to `[]`. Until roadmap item 3.3 the program gets the daemon's administrator rights (release build) and, for a console program, its console (KS-09, KS-34). |
 | `OpenUrl("<url-or-path>")`           | Hand to OS default handler via `ShellExecuteW`. Works for URLs, `mailto:`, file paths, even .exe. |
 | `Media(<key>)`                       | Synthesize a media/volume key. `<key>` is one of `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute`. |

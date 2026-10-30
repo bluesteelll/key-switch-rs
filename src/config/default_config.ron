@@ -92,6 +92,8 @@
 //     wparam: 0,          //   optional, default 0
 //     lparam: 0,          //   optional, default 0
 // )
+//                            WM_INPUTLANGCHANGEREQUEST in a dialog goes to
+//                            its focused control, as SwitchLanguage does
 // Launch(                 — spawn a process. Until roadmap item 3.3 it
 //                            gets the daemon's administrator rights and,
 //                            for a console program, its console.
