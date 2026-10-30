@@ -1,6 +1,6 @@
 # Actions and macro steps
 
-`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5 and the last change of the program's behaviour on `master`; how actions behave in Windows is inferred from the code and was not observed on a live daemon.
+`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5, except where a language request goes ([§13.2](#s13-2), [§13.4](#s13-4)): that describes, and links to, `6d67816`, the dialog-box fix (owner report 2026-10-30) and the last change of the program's behaviour on `master`. How actions behave in Windows is inferred from the code and was not observed on a live daemon.
 
 <a id="s13"></a>
 ## 13. Actions (`action`)
@@ -77,7 +77,7 @@ Two further rules apply to every action:
 ( keys: "Shift+CapsLock", action: SwitchLanguageBackward ),
 ```
 
-No arguments. Code: [src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81).
+No arguments. Code: [src/system/system_function.rs:44-64](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L44-L64), [src/system/system_function.rs:145-197](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L145-L197).
 
 - The window is obtained with `GetForegroundWindow()`. If there is no window, nothing happens.
 - If that window is a dialog box (the system dialog class `#32770`: Save As, Open, a message box, the Run dialog), the request goes to the window that has the keyboard focus in the dialog's thread (`GetGUIThreadInfo`), such as the File name box, the file list or the address bar; if there is none, or it cannot be read, it goes to the dialog. Every other window gets the request itself (`src/system/system_function.rs`, `src/platform/focus.rs`).
@@ -143,7 +143,7 @@ Because of the parsing "by content", `msg` also accepts a byte string: `msg: b"W
 
 The values are passed as is: on x64, `wparam` becomes `usize` and `lparam` becomes `isize` without loss ([src/config/loader.rs:697-701](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L697-L701)). To pass the bit pattern `0xFFFFFFFFFFFFFFFF` in `lparam`, write `-1`: the literal `0xFFFF...` does not fit in `i64` (`Integer is out of bounds`).
 
-**Where the message goes** ([src/core/windows_actions.rs:298-310](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/windows_actions.rs#L298-L310)):
+**Where the message goes** ([src/core/windows_actions.rs:154-158](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/core/windows_actions.rs#L154-L158), [src/system/system_function.rs:145-197](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L145-L197)):
 
 - The recipient is `PostMessageW(GetForegroundWindow(), ...)` at the moment the binding fires: the top-level window of the active application, not the focused child control and not the window under the cursor. The one exception is `WM_INPUTLANGCHANGEREQUEST` (0x0050) in a dialog box: it goes where `SwitchLanguage` sends it ([§13.2](#s13-2)).
 - If there is no foreground window, nothing happens.

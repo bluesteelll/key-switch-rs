@@ -138,7 +138,7 @@ book sync (doc-writer). Roadmap lines are `book/src/roadmap.md` at 252daef.
 | gaps: replay buffer, `HoldModifier`, unreachable system actions, `Layout Hotkey`, key names (gaps.md:37, :43, :95, :119, :166) | Deferred: new features 5, 6, 1, 7, 2 |
 | gaps: no IPC reload/check/list (gaps.md:134) | Deferred: 4.3 |
 | gaps: no longest match (gaps.md:165) | seq takes the identical-shape half (known issue 19); the prefix half stays new feature 8 |
-| gaps: "What no test exercises" item 4 (gaps.md:285) | input (builders), launch (pure launch parts); `post_message_to_foreground` stays untested (R17p is cost evidence only) |
+| gaps: "What no test exercises" item 4 (gaps.md:285) | input (builders), launch (pure launch parts); the post of `system_function::post_to_foreground` (until `6d67816` `windows_actions::post_message_to_foreground`) stays untested (R17p is cost evidence only), while its choice of recipient, the pure `system_function::post_target`, has tests since lane fix-dialog-lang |
 | gaps: versioning, release packaging (gaps.md:233, :240); the config-reference RON test (roadmap :856) | Deferred: project infrastructure, before the first release / after 4.4 |
 
 ### 1.6 Open points no scope report assigned
@@ -207,12 +207,13 @@ Checkpoint 3. Total about 16 days against the roadmap's 10-13 (:664): the scope 
 | 7 | p3-3.4-compiled-bindings | feat/compiled-bindings | `<orch>/p3-3.4-compiled-bindings/spec.md` |
 | 8 | p3-3.4-zero-alloc | perf/zero-alloc-engine | `<orch>/p3-3.4-zero-alloc/spec.md` |
 
-Bench rows (existing: R1-R18 with R12m, R12m2, R14c, R17a, R17t; `src/bench.rs`):
+Bench rows (existing: R1-R18 with R12m, R12m2, R14c, R17a, R17t, and since `6d67816` R17c, R17g; `src/bench.rs`):
 
 | Row | Lane | What | Role |
 |---|---|---|---|
 | R19, R19b, R19c, R19w, R19e | bench | 50 bindings: unbound key, bound key with `when:`, chord key, title `when:` on chords/sequences, batch-timed engine | p99 <= 100 us (3.5 c); later lanes gate p50 by D10's R4 rule; seq gates R19w <= R19 + 0.1 us |
 | R17f, R17p | bench | `GetForegroundWindow`; `PostMessageW` to an own window | evidence |
+| R17c, R17g | fix-dialog-lang (merged `6d67816`; taken) | `platform::focus::is_dialog` of the foreground (`GetClassWord(GCW_ATOM)`); `platform::focus::focus_window_of` of the same window (`GetWindowThreadProcessId` + `GetGUIThreadInfo`) | evidence; that lane's HEAD p50 <= 1.0 us and <= 5.0 us (measured 0.012 and 0.39 us) |
 | R20 | seq | `on_key` of a sequence start and completion | optional evidence |
 | R21, R21v, R22 | input | batch build; one `MapVirtualKeyW` (probe); `carry_out` of a masked `PressKey` through the recorder | evidence, probe, gate |
 | R22m, R23 | held | R22 with held {LAlt}; one daemon-injected modifier event | gate, evidence |
