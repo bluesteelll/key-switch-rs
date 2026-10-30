@@ -16,6 +16,10 @@ report: <orch>/phase-3/scope/3.4-core.md (sections 1.4, 4, 8 forks T1-T3, 9 lane
    (`src/core/executor/mod.rs:217-238`) move them; `BindAction::as_fast` (`src/core/windows_actions.rs:187-206`) works
    on the handle. The cut decides whether the inner `Arc` that p3-3.3 put on the `Launch` payload stays or is subsumed.
    No `ArcSwap` guard is held across `carry_out` (keyboard_hook_callback.rs:258-259).
+
+   Note (lane feat-text-action): `BindAction::Text` carries an `Arc<str>`; a firing only bumps its refcount
+   (`engine::scenarios::a_text_firing_shares_the_text_of_its_loaded_binding` pins it). The cut decides whether it stays
+   inside `Arc<BindAction>`, as for the `Launch` payload.
 2. `Decision` without per-event heap growth (scope fork T2: inline fixed capacity sized from a worst case computed at
    compile, or recycled buffers, the cut's choice with its copy cost stated): the pushes at `src/engine/mod.rs:796-798`,
    :846, :875-877, :904-906, :974, :976-978; `Engine::start_timers` takes the new shape (:608-624). A `Decision` that
@@ -42,7 +46,7 @@ report: <orch>/phase-3/scope/3.4-core.md (sections 1.4, 4, 8 forks T1-T3, 9 lane
 Acceptance:
 - Unit (counting allocator), red first on the parent with counts above 0 on firing and arming events: `Engine::on_key`
   and `Engine::on_timer` allocate nothing, after compile and one warm-up press per key, over the property scripts of
-  every config of p3-3.4-groundwork and over firing configs with `Launch`, `OpenUrl`, `Sequence`, Tap+Hold+DoubleTap
+  every config of p3-3.4-groundwork and over firing configs with `Launch`, `OpenUrl`, `Text`, `Sequence`, Tap+Hold+DoubleTap
   groups, chords, sequences, and `TitleContains`/`TitleEquals` with a non-ASCII title from a fake `Env`.
 - Unit: the adapter's key-down with a title condition allocates nothing (the counting allocator around
   `decide_event` with a fake foreground), or the cut shows why the title read stays one allocation and declares it.
@@ -53,7 +57,8 @@ Acceptance:
 - Bench (counted apart): R2, R3, R4, R5 and R6 H <= P within the rule; R1, R9-R12, R12m and the R19 family within the
   CLAUDE.md rules; new row R26, `Engine::on_key` of a key-down that fires `Launch` and of one that arms a
   Tap+Hold+DoubleTap group, H < P. The change in `Decision` size and copy cost is stated.
-- Manual (owner, later batch) M-B1: a `Launch`, an `OpenUrl` and a `Sequence` bound to keys still run once each.
+- Manual (owner, later batch) M-B1: a `Launch`, an `OpenUrl`, a `Text` and a `Sequence` bound to keys still run once
+  each.
 - Gate green.
 
 Latency: removes the heap allocations of arming and firing events, and with them the waits they can take on the process

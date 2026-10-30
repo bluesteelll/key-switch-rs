@@ -176,12 +176,12 @@ impl App {
     /// A pipe that cannot be created, an executor that cannot be started or
     /// a gesture timer that cannot be made is an error before any hook is
     /// installed, so no hook ever runs without `swch` control (KS-20), with
-    /// nowhere to send `Launch`, `OpenUrl` and `Sequence` (roadmap item 2.1)
-    /// or without its timers (roadmap item 2.2). If the IPC server thread
-    /// cannot be started, the hooks are removed again before the error is
-    /// returned, and so they are if the main loop fails. On every return the
-    /// executor is stopped after the hooks are removed, waiting at most 2 s
-    /// for a step that still runs.
+    /// nowhere to send `Launch`, `OpenUrl`, `Text` and `Sequence` (roadmap
+    /// item 2.1) or without its timers (roadmap item 2.2). If the IPC server
+    /// thread cannot be started, the hooks are removed again before the
+    /// error is returned, and so they are if the main loop fails. On every
+    /// return the executor is stopped after the hooks are removed, waiting
+    /// at most 2 s for a step that still runs.
     pub fn run(mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
         // SAFETY: GetCurrentThreadId takes no arguments, touches no memory
         // of ours and cannot fail.

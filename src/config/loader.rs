@@ -720,6 +720,16 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
 
         RawAction::OpenUrl(url) => BindAction::OpenUrl(url.clone()),
 
+        // An action that types nothing is a mistake in the config; the
+        // macro step `Text("")` stays a no-op (ruling 2). Built once here,
+        // so a firing shares the text and never copies it.
+        RawAction::Text(text) => {
+            if text.is_empty() {
+                return Err("Text: empty".to_owned());
+            }
+            BindAction::Text(Arc::from(text.as_str()))
+        }
+
         RawAction::Media(key) => BindAction::Media(media_key_ref_to_key(*key)),
     })
 }
@@ -2634,5 +2644,143 @@ mod tests {
         } else {
             panic!("expected single TypeText");
         }
+    }
+
+    // ---- the Text action (owner request 2026-10-30) ----
+
+    /// The one binding of `text`, which must load.
+    fn only_binding(text: &str) -> Binding {
+        let mut bindings = from_ron_str(text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(bindings.len(), 1, "{text}");
+        bindings.remove(0)
+    }
+
+    /// The text of the parse error that `text` gives.
+    fn parse_error_of(text: &str) -> String {
+        match from_ron_str(text) {
+            Err(error @ ConfigError::Parse { .. }) => error.to_string(),
+            Err(other) => panic!("expected a parse error, got {other}"),
+            Ok(bindings) => panic!("expected a parse error, loaded {} bindings", bindings.len()),
+        }
+    }
+
+    #[test]
+    fn an_action_text_loads_as_a_text_action_that_does_not_repeat() {
+        let binding =
+            only_binding(r#"( bindings: [ (keys: "F13", action: Text("Kind regards,")) ] )"#);
+        assert!(
+            matches!(&binding.action, BindAction::Text(t) if &**t == "Kind regards,"),
+            "{}",
+            binding.action
+        );
+        assert!(!binding.repeat, "a Text types once per press by default");
+    }
+
+    #[test]
+    fn an_empty_action_text_is_an_error_that_names_the_binding() {
+        match from_ron_str(r#"( bindings: [ (keys: "F13", action: Text("")) ] )"#) {
+            Err(ConfigError::Bindings(errs)) => {
+                assert_eq!(errs, ["binding #0 [F13]: Text: empty"]);
+            }
+            Err(other) => panic!("expected Bindings error, got {other}"),
+            Ok(bindings) => panic!("Text(\"\") loaded {} bindings", bindings.len()),
+        }
+    }
+
+    #[test]
+    fn an_action_text_keeps_emoji_and_cyrillic() {
+        // Two characters outside the BMP, each a surrogate pair in UTF-16.
+        let phrase = "\u{1F680}\u{1F30D} \u{451}\u{436}";
+        let binding = only_binding(&format!(
+            r#"( bindings: [ (keys: "F13", action: Text("{phrase}")) ] )"#
+        ));
+        let BindAction::Text(text) = &binding.action else {
+            panic!("expected a Text action, got {}", binding.action);
+        };
+        assert_eq!(&**text, phrase);
+        assert_eq!(text.encode_utf16().count(), 7);
+        assert_eq!(binding.action.to_string(), "text (5 chars)");
+    }
+
+    #[test]
+    fn every_action_form_loads_with_its_display() {
+        let text = r#"( bindings: [
+            (keys: "F13", action: SwitchLanguage),
+            (keys: "F14", action: SwitchLanguageBackward),
+            (keys: "F15", action: ToggleCapsLock),
+            (keys: "F16", action: PressKey("A")),
+            (keys: "F17", action: PostMessage(msg: "WM_CLOSE")),
+            (keys: "F18", action: PostMessage(msg: 0x10, wparam: 1, lparam: -1)),
+            (keys: "F19", action: Sequence([Window(Restore), Delay(1), Text("a"), Key("Enter"),
+                Combo("Ctrl+S"), Launch(exe: "x"), OpenUrl("y"), Media(Stop)])),
+            (keys: "F20", action: Launch(exe: "x")),
+            (keys: "F21", action: Launch(exe: "x", args: ["a"])),
+            (keys: "F22", action: OpenUrl("u")),
+            (keys: "F23", action: Media(PlayPause)),
+            (keys: "F24", action: DoNothing),
+            (keys: "Ctrl+F13", action: Text("t")),
+            (keys: "Ctrl+F14", action: Text(r"C:\t")),
+        ] )"#;
+        let bindings = from_ron_str(text).unwrap_or_else(|e| panic!("{e}"));
+        let shown: Vec<String> = bindings.iter().map(|b| b.action.to_string()).collect();
+        assert_eq!(
+            shown,
+            [
+                "switch language",
+                "switch language backward",
+                "toggle CapsLock",
+                "press key A",
+                "post message 0x10",
+                "post message 0x10",
+                "sequence (8 steps)",
+                "launch x",
+                "launch x a",
+                "open u",
+                "media PlayPause",
+                "do nothing",
+                "text (1 chars)",
+                "text (4 chars)",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_action_lists_text_among_the_valid_ones() {
+        let message = parse_error_of(r#"( bindings: [ (keys: "F13", action: FlyToMars) ] )"#);
+        assert!(message.contains("`OpenUrl`, `Text`, `Media`"), "{message}");
+    }
+
+    #[test]
+    fn an_action_text_takes_exactly_one_string() {
+        for (action, expected) in [
+            ("Text(123)", "Expected string"),
+            ("Text()", "Expected string"),
+            (r#"Text("a", "b")"#, "Expected closing `)`"),
+        ] {
+            let message = parse_error_of(&format!(
+                r#"( bindings: [ (keys: "F13", action: {action}) ] )"#
+            ));
+            assert!(message.contains(expected), "{action}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_macro_step_text_is_unchanged_by_the_action() {
+        // Ruling 2: only the action rejects an empty text; the step stays a
+        // no-op.
+        let binding = only_binding(
+            r#"( bindings: [ (keys: "F13", action: Sequence([Text("x"), Text("")])) ] )"#,
+        );
+        let BindAction::Sequence(steps) = &binding.action else {
+            panic!("expected a Sequence, got {}", binding.action);
+        };
+        assert!(
+            matches!(
+                steps.as_slice(),
+                [SequenceStep::TypeText(x), SequenceStep::TypeText(empty)]
+                    if x == "x" && empty.is_empty()
+            ),
+            "{steps:?}"
+        );
     }
 }

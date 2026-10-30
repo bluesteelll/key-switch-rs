@@ -36,7 +36,7 @@ key-switch-rs/
     ├── core/
     │   ├── app.rs              - main application with binding management
     │   ├── constants.rs        - shared constants and per-process injected-event sentinel
-    │   ├── executor/           - the action-executor thread: Launch, OpenUrl and Sequence off the hook
+    │   ├── executor/           - the action-executor thread: Launch, OpenUrl, Text and Sequence off the hook
     │   │   ├── mod.rs          - queue, STA COM, message loop, Delay timer, epochs, Runner
     │   │   ├── runs.rs         - running macros: steps up to each Delay, deadlines, cancellation
     │   │   └── testing.rs      - test-only recording runner
@@ -118,6 +118,7 @@ key-switch-rs/
 - `Sequence(Arc<Vec<SequenceStep>>)` - macro steps, run on the action executor
 - `Launch { exe, args }` - start a process
 - `OpenUrl(String)` - open a URL, file or program with its default handler
+- `Text(Arc<str>)` - type a phrase in one `SendInput` batch, on the action executor
 - `Media(MediaKey)` - emulate a media or volume key press
 - `DoNothing` - no action (for auto-blockers)
 
@@ -142,12 +143,12 @@ Windows API wrapper:
 - Installs the low-level keyboard hook (`WH_KEYBOARD_LL`), the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) and the desktop-switch hook (`EVENT_SYSTEM_DESKTOPSWITCH`) once, on the main thread, and removes them at shutdown
 - Bindings list in `ArcSwap<Vec<Binding>>` — lock-free reads on the hot path, atomic swap for hot-reload
 - Holds the remapping switch that `swch on` / `swch off` flip (`is_enabled`); only the main thread flips it, together with a reset of the decision core (see `main_thread.rs`)
-- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
+- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl`, `Text` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
 
 #### `keyboard_hook_callback.rs`
 
 - The adapter between Win32 and the decision core in `src/engine`: translates each `WH_KEYBOARD_LL` event into an `engine::KeyEvent`, asks `Engine::on_key` for a `Decision` on the main thread's state, hands the timers it asks for to the main thread's gesture timers, and carries it out (sends the menu mask key if asked, runs the fast actions and queues the slow ones, then swallows or passes the event). It decides nothing itself
-- Runs only the fast actions itself, before it returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage`, so their output stays in order with the keys typed after them. `Launch`, `OpenUrl` and `Sequence` go to the action executor without waiting (KS-08)
+- Runs only the fast actions itself, before it returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage`, so their output stays in order with the keys typed after them. `Launch`, `OpenUrl`, `Text` and `Sequence` go to the action executor without waiting (KS-08)
 - Sends the menu mask key, virtual-key code 0xE8 down and up with the sentinel, before it returns when the decision asks for it: the event is swallowed while Windows has Win or Alt down, so the Win or Alt release opens neither Start nor the menu bar (KS-12)
 - While remapping is off (`swch off`), passes every event straight to `CallNextHookEx` without reading it
 - Answers the engine's `Env`: `GetAsyncKeyState` for the main thread's read of the modifiers between key events (roadmap item 2.5), which repairs state lost while a higher-integrity window (Task Manager, UAC consent, lock screen, etc.) had focus, at a key event for each modifier held for the daemon, and for the key of a key-up it would swallow; the foreground window's executable for `when:` from the main thread's per-window cache, with no Win32 call; its title read live, only when a title condition asks, and never for a window of the daemon's own process
@@ -162,7 +163,7 @@ The daemon's main thread (roadmap item 2.2):
 - Owns the decision core (`engine::Engine`: held and blocked keys, pending gestures) and its gesture timers in a thread-local reached only through `with_main`; the hook callbacks run on this thread, so no lock guards the engine, and a callback re-entered while the state is borrowed passes its event instead of panicking or hanging
 - Runs the main loop: it waits for its gesture timer and its messages at once (`MsgWaitForMultipleObjectsEx`), pumps with `PeekMessageW`, in which the hook callbacks run, and fires every gesture timer that is due. The timer is one high-resolution waitable timer, so a `Hold` fires within about 1 ms of its term; no thread is started per press (KS-33)
 - A gesture timer fires on this thread: a fast `Hold` action runs here, and a slow one goes to the action executor
-- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl` on the action executor
+- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl`/`Text` on the action executor
 - Serves config reloads the same way: the watcher thread hands over the new list, and the main thread swaps it in and drops the pending gestures in one step (roadmap item 2.3)
 - Answers the input signals that the control window (a lock, an unlock) and the desktop-switch hook (Ctrl+Alt+Del, a UAC prompt on the secure desktop, and back) note: when keyboard input leaves the desktop it drops the pending gestures, stops the running macros and releases every held key, so the next press of each key is a press; a signal that input came back only reads the foreground window again. Each signal is logged (roadmap item 2.3, KS-29)
 
@@ -183,11 +184,11 @@ Main application:
 
 The `action-executor` thread (roadmap item 2.1, KS-08):
 
-- Runs `Launch`, `OpenUrl` and `Sequence`, which the main thread queues without waiting, from the hook callback or, for a `Hold`, from its main loop; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
+- Runs `Launch`, `OpenUrl`, `Text` and `Sequence`, which the main thread queues without waiting, from the hook callback or, for a `Hold`, from its main loop; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
 - Initialises COM as a single-threaded apartment, as `ShellExecuteW` asks, and pumps its own messages, waiting for them and for its `Delay` timer at once
 - Runs macros side by side on its one thread: a macro goes up to its next `Delay`, which waits on one high-resolution timer, within about 1 ms as `thread::sleep` did, and holds up no other action or macro. A step that blocks inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it runs
 - `swch off`, `swch on` (a real change), a reload and exit stop every running macro within 100 ms, also inside a `Delay`, and drop the actions still queued; a step already running finishes first
-- An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl` and `Sequence` count in `executor_unavailable` until the daemon restarts
+- An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl`, `Text` and `Sequence` count in `executor_unavailable` until the daemon restarts
 
 ## Configuration
 
@@ -369,6 +370,7 @@ binding that duplicates one above it (see [Errors](#errors)).
 | `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window; `WM_INPUTLANGCHANGEREQUEST` in a dialog box goes to its focused control, as `SwitchLanguage` does |
 | `Launch(exe: "<path>", args: [...])` | Spawn a process. `args` defaults to `[]`. Until roadmap item 3.3 the program gets the daemon's administrator rights (release build) and, for a console program, its console (KS-09, KS-34). |
 | `OpenUrl("<url-or-path>")`           | Hand to OS default handler via `ShellExecuteW`. Works for URLs, `mailto:`, file paths, even .exe. |
+| `Text("<string>")`                   | Type the string at once, as the `Text` macro step does: one `SendInput` batch with `KEYEVENTF_UNICODE`, layout-independent, on the action executor. Once per press unless `repeat: true`. `Text("")` is a load error. Held modifiers combine with it until roadmap item 3.1 (KS-19); very long texts can lose characters in some applications. |
 | `Media(<key>)`                       | Synthesize a media/volume key. `<key>` is one of `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute`. |
 | `Sequence([...])`                    | Chain multiple steps (text, key presses, delays, window ops) — see below |
 | `DoNothing`                          | Match the combo and drop it (no side effects)                            |
@@ -475,8 +477,8 @@ the `T` types two capitals and leaves CapsLock alone. Write
 - For `Hold`: arming asks the daemon's main thread for a timer that fires
   the action after `<ms>`, within about 1 ms (a high-resolution waitable
   timer, not the 15.6 ms system tick); no thread is started. A fast action
-  runs on the main thread, and `Launch`, `OpenUrl` and `Sequence` go to
-  the action executor. A key-up before `<ms>` cancels it; a key-up at or
+  runs on the main thread, and `Launch`, `OpenUrl`, `Text` and `Sequence`
+  go to the action executor. A key-up before `<ms>` cancels it; a key-up at or
   after `<ms>` leaves it to the timer, so a key held for the whole term
   fires its Hold even if the timer runs late. Each timer carries the
   number of the press that started it, so a timer from an earlier press
@@ -608,7 +610,7 @@ Eight step variants:
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `Delay(<ms>)`         | Wait `<ms>` milliseconds on the action executor's high-resolution timer, which ends the wait within about 1 ms of its time and never before. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
-| `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work. |
+| `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work (also an action: `Text("...")`). |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |
 | `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`. It does not wait for the window (`ShowWindowAsync`, a posted `WM_CLOSE`): put a `Delay` after it when the next step depends on the change. |
@@ -872,9 +874,9 @@ keys you press or the text you type; lines about the config quote the
 config, key names included. What the keyboard hook must not log at every
 key press, a `SendInput` that Windows cut short, a `PostMessage` or
 language switch that Windows refused, a Hold whose timer could not be set,
-a `Launch`, `OpenUrl` or `Sequence` that the action executor's full
-queue dropped or that found the executor stopped, or a key event that found
-the daemon's decision state in use and passed undecided
+a `Launch`, `OpenUrl`, `Text` or `Sequence` that the action executor's
+full queue dropped or that found the executor stopped, or a key event that
+found the daemon's decision state in use and passed undecided
 (`main_state_refused`), it counts, and so does a callback that ended 17 ms
 or more after its key event or a main thread 17 ms or more away from its
 messages (`hook_late`, after which the main thread reads the modifiers

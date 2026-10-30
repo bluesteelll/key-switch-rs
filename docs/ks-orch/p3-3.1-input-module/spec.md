@@ -29,6 +29,13 @@ daemon's own modifiers through it, p2-2.5-latency-trim/results.md:264-266). Scop
    design). Residual to declare: `MapVirtualKeyW` follows the calling thread's layout.
 4. `Text`: `\n`, `\r` and `\r\n` each press Enter once, `\t` presses Tab, everything else stays `KEYEVENTF_UNICODE`
    (known issue 34, `book/src/config/known-issues.md:78`).
+
+   Note (lane feat-text-action, merged before Phase 3): `BindAction::Text(Arc<str>)` is a slow action that
+   `Win32Runner::action` types through `sequence::type_text`, the macro step's builder. Port it with the step. `Text`, as
+   the action and as the step, stays ONE `SendInput` for the whole text whatever its length: item 1's fixed-capacity
+   array must not split it into several calls, which would let the user's keys land between the chunks (feat-paste
+   critique M5). The fixed capacity is the hook path's; the executor's `Text` may use a heap buffer of any length.
+   Item 4 applies to the action too.
 5. `carry_out` (`src/hook/keyboard_hook_callback.rs:303-320`) sends the decision's mask in the same `SendInput` as its
    first key-injecting fast action, and keeps the order: mask, then the actions in order. An action that is not input
    ends a batch.
@@ -51,6 +58,8 @@ Acceptance:
 - Unit: the mask is vk 0xE8 down then up with the table's scan code (expected 0), no extended flag, the sentinel.
 - Unit: `Text("a\nb\tc\r\nd")` builds unicode `a`, one Enter press, unicode `b`, one Tab press, unicode `c`, one Enter
   press, unicode `d`.
+- Unit (lane feat-text-action's note to item 4): a 2,000-character `Text`, through the action's entry and as the step,
+  records one batch of 4,000 records and one `SendInput` through the recorder.
 - Unit (test seam): `carry_out` of `Decision { mask: true, fire: [PressKey(Left), PostMessage(WM_NULL), PressKey(Home)] }`
   records `[E8 down, E8 up, Left down, Left up]`, then the PostMessage, then `[Home down, Home up]` (closes the 1.2
   tester gap M14, p1-1.2-mask-key/results.md:79). Nothing reaches Windows under test.

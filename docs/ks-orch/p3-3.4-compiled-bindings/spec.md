@@ -20,6 +20,9 @@ Scope report: <orch>/phase-3/scope/3.4-core.md (sections 1-9, lane A).
    - `by_vk[256]`, built with `matching::is_trigger_key` (`src/engine/matching.rs:62-67`), so `Shift` indexes LShift,
      RShift and the generic code (KS-07, R8);
    - the precomputed gesture groups (today scanned at `src/engine/winner.rs:110-145`).
+
+   Note (lane feat-text-action): `BindAction::Text(Arc<str>)` is one more slow action; `CompiledBindings` treats it like
+   `Launch` and `OpenUrl`. Pre-encoding its UTF-16 once at compile, for the input module's builder, is optional.
    `KeyboardHook` holds `ArcSwap<CompiledBindings>` (`src/hook/keyboard_hook.rs:34`); `update_bindings` (:85-91) stores
    it with one atomic store and no longer sorts; `MainState::reload` (`src/hook/main_thread.rs:341-344`) swaps and
    resets. On a generation mismatch without a reset (bench, tests) `on_key` treats it as a reload, with a

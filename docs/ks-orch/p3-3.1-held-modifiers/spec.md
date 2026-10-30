@@ -34,6 +34,12 @@ brief; items marked with them apply only as answered. Scope report: <orch>/phase
 4. Macro key steps on the executor (`src/core/executor/mod.rs:126-153`, `src/data/sequence.rs:105-117`) take the held
    set from `GetAsyncKeyState` of the 8 sided modifiers right before each step, through a pure function with a key
    reader (a snapshot at submit goes stale after a `Delay`).
+
+   Note (lane feat-text-action): the top-level `Text` action follows the macro rule (Q1 (b): release every held
+   modifier), but it is not a macro step: its entry is `Win32Runner::action` (the `BindAction::Text` arm), which calls
+   `sequence::type_text` directly, not `run_step`. The held-set read of this item must run on that path too, best
+   inside the one Text builder both entries call. Until this lane `Text` behaves as the macro step does today (KS-19;
+   actions.md section 13.10).
 5. The restore guard (scope T9, the key risk): a restore of a modifier whose physical key-up the engine has already
    decided must not leave that modifier down in Windows, on every path (callback, drain, executor). The cut chooses the
    mechanism. A second marker next to the sentinel is allowed only if it is derived in `src/core/constants.rs`,
@@ -75,6 +81,9 @@ Acceptance:
 - Scenario: the AltGr fake LCtrl (scan 0x21D) with RAlt held and a `PressKey` fired leaves the modelled Windows with
   the same modifiers after the batch (item 6); with Q9 yes, the feature 2 line above.
 - Unit: the executor's held-set function, with a fake key reader.
+- Unit (lane feat-text-action's note to item 4): through the `Text` action's entry with a fake key reader holding
+  {LCtrl, LAlt}, the batch is what item 2's builder makes of that release set and the Unicode records (the E8 before the
+  Alt release and after its restore included), in one `SendInput`, and Windows has the same modifiers down after it.
 - Scenario: a held Win with three swallowed repeats asks for one mask (item 8). With Q3 yes: the `LWin` `Tap` and
   `LAlt` `Hold` cases ask for the mask; a `DoubleTap`'s first tap does not.
 - Unit (Q2 yes): `PressKey("Ctrl+S")` loads and builds its batch; `PressKey("Ctrl+Bogus")` fails with the loader's text.

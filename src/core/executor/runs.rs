@@ -545,4 +545,19 @@ mod tests {
         assert_eq!(opened, Calls { made: 1, panics: 0 });
         assert_eq!(fixture.runs.len(), 0);
     }
+
+    #[test]
+    fn a_text_runs_when_its_job_starts_and_makes_no_run() {
+        let mut fixture = Fixture::new();
+        let typed = fixture.start(BindAction::Text(Arc::from("abc")));
+
+        assert_eq!(typed, Calls { made: 1, panics: 0 });
+        assert_eq!(fixture.taken(), ["text (3 chars)"]);
+        assert_eq!(fixture.runs.len(), 0, "a Text is not walked as a macro");
+
+        fixture.epoch.set(1);
+        let stale = fixture.start_in(BindAction::Text(Arc::from("abc")), 0);
+        assert_eq!(stale, Calls::default());
+        assert_eq!(fixture.taken(), Vec::<String>::new());
+    }
 }

@@ -4,9 +4,12 @@
 //! every binding kind and trigger. Known defects (see the audit) are not
 //! pinned here; the items that fix them add their own scenarios.
 
+use std::sync::Arc;
+
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-use super::testing::Scenario;
+use super::testing::{FakeEnv, Scenario};
+use super::{Engine, KeyEvent};
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BlockerMode};
 use crate::data::key_combination::KeyCombination;
@@ -889,6 +892,37 @@ fn another_key_fires_a_tap_that_waits_for_the_double_tap_window() {
         .advance_ms(1)
         .expect_fired(&[BindAction::SwitchLanguage])
         .expect_total_fired(&[BindAction::SwitchLanguage, BindAction::SwitchLanguage]);
+}
+
+#[test]
+fn another_key_fires_a_waiting_tap_text_in_its_own_decision_and_passes() {
+    // Critique I1 of lane feat-text-action: the waiting Tap's Text fires in
+    // the decision of Enter's key-down, and Enter passes in that same
+    // callback. A slow action is only queued there, so Enter reaches the
+    // application before the text is typed (known issue 92), where a fast
+    // action would have run ahead of it.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: Text("Kind regards,"), trigger: Tap(200)),
+            (keys: "F13", action: Text("Best wishes,"), trigger: DoubleTap(250)),
+        ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(80)
+    .up("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(40)
+    .down("Enter")
+    .expect_passed()
+    .expect_fired(&[BindAction::Text(Arc::from("Kind regards,"))])
+    .up("Enter")
+    .expect_passed()
+    .expect_nothing_fired();
 }
 
 #[test]
@@ -2848,6 +2882,7 @@ fn only_press_key_volume_up_and_volume_down_fire_again_on_auto_repeat_by_default
         (r#"Sequence([Text("x")])"#, None),
         (r#"Launch(exe: "wt.exe")"#, None),
         (r#"OpenUrl("https://example.com")"#, None),
+        (r#"Text("x")"#, None),
         ("Media(PlayPause)", None),
         ("Media(Stop)", None),
         ("Media(Next)", None),
@@ -2917,6 +2952,59 @@ fn held_launch_and_sequence_hotkeys_fire_once_per_press() {
     .down("LAlt")
     .expect_passed();
     hold_with_repeats(scenario, "N", 5, &[]);
+}
+
+#[test]
+fn a_held_text_hotkey_types_once_per_press_and_with_repeat_true_on_every_repeat() {
+    // A held key would otherwise type the phrase about 30 times a second.
+    // `Text` compares by its text, so the firings are checked whole.
+    let note = || BindAction::Text(Arc::from("note"));
+    for (config, on_repeat, total) in [
+        (
+            r#"( bindings: [ (keys: "Ctrl+Alt+T", action: Text("note")) ] )"#,
+            Vec::new(),
+            1,
+        ),
+        (
+            r#"( bindings: [ (keys: "Ctrl+Alt+T", action: Text("note"), repeat: true) ] )"#,
+            vec![note()],
+            6,
+        ),
+    ] {
+        let scenario = Scenario::from_ron(config)
+            .with_context(config)
+            .check_press_symmetry()
+            .check_nothing_stuck()
+            .down("LCtrl")
+            .expect_passed()
+            .down("LAlt")
+            .expect_passed();
+        hold_with_repeats(scenario, "T", 5, &on_repeat).expect_total_fired(&vec![note(); total]);
+    }
+}
+
+#[test]
+fn a_text_firing_shares_the_text_of_its_loaded_binding() {
+    // The engine clones the action at each firing: for a `Text` that is
+    // one count more on the `Arc` the loader built, never a copy of the
+    // text (cut D2). Later lanes that change how bindings are held keep
+    // this.
+    let bindings = crate::config::from_ron_str(
+        r#"( bindings: [ (keys: "F13", action: Text("Kind regards,")) ] )"#,
+    )
+    .unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
+    let BindAction::Text(loaded) = &bindings[0].action else {
+        panic!("expected a Text binding, got {}", bindings[0].action);
+    };
+    let mut engine = Engine::new();
+    let decision = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FakeEnv::new());
+    let [BindAction::Text(fired)] = decision.fire.as_slice() else {
+        panic!("expected one Text to fire, fired {:?}", decision.fire);
+    };
+    assert!(
+        Arc::ptr_eq(loaded, fired),
+        "the firing copied the text instead of sharing it"
+    );
 }
 
 #[test]

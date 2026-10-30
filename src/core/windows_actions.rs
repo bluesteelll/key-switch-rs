@@ -11,7 +11,9 @@ use crate::data::sequence::SequenceStep;
 use crate::logging::counters::{self, Counter};
 use crate::system::system_function::SystemFunction;
 
-#[derive(Debug, Clone)]
+// `Debug` is written out below, so that the text of a `Text` never reaches
+// a `{:?}`, an `expect` or a panic message.
+#[derive(Clone)]
 pub enum BindAction {
     SwitchLanguage,
     SwitchLanguageBackward,
@@ -41,10 +43,52 @@ pub enum BindAction {
     /// `ShellExecuteW`. Works for `https://...`, `mailto:...`, document files,
     /// even plain executables (equivalent to "open" verb).
     OpenUrl(String),
+    /// Type the text at once, in one `SendInput` batch of `KEYEVENTF_UNICODE`
+    /// events, as the macro step `Text` does (`sequence::type_text`), on the
+    /// action executor. The `Arc` is built once at load, so a firing only
+    /// bumps its count. `Display` and `Debug` show its length only.
+    Text(Arc<str>),
     /// Synthesize a media / volume / playback key. Maps to one of the
     /// `VK_MEDIA_*` / `VK_VOLUME_*` virtual keys via `SendInput`.
     Media(MediaKey),
     DoNothing,
+}
+
+impl std::fmt::Debug for BindAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Every arm but `Text` writes what `#[derive(Debug)]` wrote. Every
+        // arm is spelled out, so a new action does not compile until its
+        // form is decided here too.
+        match self {
+            BindAction::SwitchLanguage => f.write_str("SwitchLanguage"),
+            BindAction::SwitchLanguageBackward => f.write_str("SwitchLanguageBackward"),
+            BindAction::ToggleCapsLock => f.write_str("ToggleCapsLock"),
+            BindAction::PressKey(vk) => f.debug_tuple("PressKey").field(vk).finish(),
+            BindAction::PostMessage {
+                msg,
+                wparam,
+                lparam,
+            } => f
+                .debug_struct("PostMessage")
+                .field("msg", msg)
+                .field("wparam", wparam)
+                .field("lparam", lparam)
+                .finish(),
+            BindAction::Sequence(steps) => f.debug_tuple("Sequence").field(steps).finish(),
+            BindAction::Launch { exe, args } => f
+                .debug_struct("Launch")
+                .field("exe", exe)
+                .field("args", args)
+                .finish(),
+            BindAction::OpenUrl(url) => f.debug_tuple("OpenUrl").field(url).finish(),
+            BindAction::Text(text) => f
+                .debug_tuple("Text")
+                .field(&format_args!("<{} chars>", text.chars().count()))
+                .finish(),
+            BindAction::Media(key) => f.debug_tuple("Media").field(key).finish(),
+            BindAction::DoNothing => f.write_str("DoNothing"),
+        }
+    }
 }
 
 /// Media-control keys synthesized via `SendInput`. These map 1:1 to the
@@ -104,6 +148,7 @@ impl PartialEq for BindAction {
             (Sequence(a), Sequence(b)) => Arc::ptr_eq(a, b),
             (Launch { exe: e1, args: a1 }, Launch { exe: e2, args: a2 }) => e1 == e2 && a1 == a2,
             (OpenUrl(a), OpenUrl(b)) => a == b,
+            (Text(a), Text(b)) => a == b,
             (Media(a), Media(b)) => a == b,
             _ => false,
         }
@@ -178,9 +223,9 @@ pub(crate) fn fast_actions_run() -> Vec<FastAction> {
 
 impl BindAction {
     /// The action as a [`FastAction`], to run where it fires, or `None`
-    /// for `Launch`, `OpenUrl` and `Sequence`, which go to the action
-    /// executor. Every arm is spelled out, so a new action does not compile
-    /// until its place is decided.
+    /// for `Launch`, `OpenUrl`, `Text` and `Sequence`, which go to the
+    /// action executor. Every arm is spelled out, so a new action does not
+    /// compile until its place is decided.
     pub fn as_fast(&self) -> Option<FastAction> {
         match self {
             BindAction::SwitchLanguage => Some(FastAction::SwitchLanguage),
@@ -198,7 +243,10 @@ impl BindAction {
             }),
             BindAction::Media(key) => Some(FastAction::Media(*key)),
             BindAction::DoNothing => Some(FastAction::DoNothing),
-            BindAction::Sequence(_) | BindAction::Launch { .. } | BindAction::OpenUrl(_) => None,
+            BindAction::Sequence(_)
+            | BindAction::Launch { .. }
+            | BindAction::OpenUrl(_)
+            | BindAction::Text(_) => None,
         }
     }
 
@@ -241,6 +289,7 @@ impl BindAction {
             | BindAction::Sequence(_)
             | BindAction::Launch { .. }
             | BindAction::OpenUrl(_)
+            | BindAction::Text(_)
             | BindAction::DoNothing => false,
         }
     }
@@ -347,6 +396,8 @@ impl std::fmt::Display for BindAction {
                 }
             }
             BindAction::OpenUrl(url) => write!(f, "open {}", url),
+            // The length only: the startup list must not show the phrase.
+            BindAction::Text(text) => write!(f, "text ({} chars)", text.chars().count()),
             BindAction::Media(key) => write!(f, "media {:?}", key),
             BindAction::DoNothing => write!(f, "do nothing"),
         }
@@ -383,6 +434,7 @@ mod tests {
                 false,
             ),
             (BindAction::OpenUrl("https://example.com".to_owned()), false),
+            (BindAction::Text(Arc::from("x")), false),
             (BindAction::Media(MediaKey::PlayPause), false),
             (BindAction::Media(MediaKey::Stop), false),
             (BindAction::Media(MediaKey::Next), false),
@@ -415,10 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn only_launch_open_url_and_sequence_leave_the_firing_thread() {
+    fn only_launch_open_url_text_and_sequence_leave_the_firing_thread() {
         // Roadmap item 2.1: the fast actions stay where they fire, so their
         // output keeps its order with the keys typed after them; the
-        // others go to the action executor. Nothing here runs an action.
+        // others, `Text` among them, whose batch grows with its text, go to
+        // the action executor. Nothing here runs an action.
         let mut actions = vec![
             (BindAction::SwitchLanguage, Some(FastAction::SwitchLanguage)),
             (
@@ -452,6 +505,7 @@ mod tests {
                 None,
             ),
             (BindAction::OpenUrl("https://example.com".to_owned()), None),
+            (BindAction::Text(Arc::from("x")), None),
         ];
         for key in [
             MediaKey::PlayPause,
@@ -466,6 +520,121 @@ mod tests {
         }
         for (action, expected) in actions {
             assert_eq!(action.as_fast(), expected, "{action:?}");
+        }
+    }
+
+    /// Whether `rendered` holds no 3-character run of `secret`.
+    fn shows_no_part_of(rendered: &str, secret: &str) -> bool {
+        let chars: Vec<char> = secret.chars().collect();
+        chars.windows(3).all(|window| {
+            let part: String = window.iter().collect();
+            !rendered.contains(&part)
+        })
+    }
+
+    #[test]
+    fn a_text_action_shows_its_length_and_never_its_text() {
+        // The startup list, a log line, an `expect` or a panic message must
+        // not carry a phrase that can be a password.
+        let secret = "P4ssw0rd-QZX";
+        let action = BindAction::Text(Arc::from(secret));
+
+        assert_eq!(action.to_string(), "text (12 chars)");
+        assert_eq!(format!("{action:?}"), "Text(<12 chars>)");
+        for rendered in [
+            action.to_string(),
+            format!("{action:?}"),
+            format!("{action:#?}"),
+            format!("{:?}", Some(action.clone())),
+            format!("{:?}", vec![action.clone()]),
+        ] {
+            assert!(
+                shows_no_part_of(&rendered, secret),
+                "a part of the text shows in {rendered}"
+            );
+        }
+
+        let emoji = BindAction::Text(Arc::from("\u{1F680}\u{1F30D} \u{451}\u{436}"));
+        assert_eq!(emoji.to_string(), "text (5 chars)", "characters, not bytes");
+    }
+
+    #[test]
+    fn a_cloned_text_action_shares_its_text() {
+        let action = BindAction::Text(Arc::from("Kind regards,"));
+        let cloned = action.clone();
+        let (BindAction::Text(original), BindAction::Text(copy)) = (&action, &cloned) else {
+            panic!("a clone of a Text is a Text");
+        };
+        assert!(Arc::ptr_eq(original, copy), "the clone copied the text");
+    }
+
+    #[test]
+    fn text_actions_are_equal_when_their_texts_are() {
+        let a = Arc::<str>::from("a");
+        let another_a = Arc::<str>::from("a");
+        assert!(!Arc::ptr_eq(&a, &another_a));
+        assert_eq!(BindAction::Text(a), BindAction::Text(another_a));
+        assert_ne!(
+            BindAction::Text(Arc::from("a")),
+            BindAction::Text(Arc::from("b"))
+        );
+        assert_ne!(
+            BindAction::Text(Arc::from("a")),
+            BindAction::OpenUrl("a".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_text_action_has_no_system_function_or_hotkey() {
+        let action = BindAction::Text(Arc::from("x"));
+        assert!(action.to_system_function().is_none());
+        assert_eq!(action.get_system_combination(), None);
+    }
+
+    #[test]
+    fn every_other_action_debugs_as_the_derive_did() {
+        let cases = [
+            (BindAction::SwitchLanguage, "SwitchLanguage".to_owned()),
+            (
+                BindAction::SwitchLanguageBackward,
+                "SwitchLanguageBackward".to_owned(),
+            ),
+            (BindAction::ToggleCapsLock, "ToggleCapsLock".to_owned()),
+            (BindAction::DoNothing, "DoNothing".to_owned()),
+            (
+                BindAction::PressKey(VK_BACK),
+                format!("PressKey({VK_BACK:?})"),
+            ),
+            (
+                BindAction::PostMessage {
+                    msg: WM_CLOSE,
+                    wparam: 7,
+                    lparam: -3,
+                },
+                "PostMessage { msg: 16, wparam: 7, lparam: -3 }".to_owned(),
+            ),
+            (
+                BindAction::Sequence(Arc::new(Vec::new())),
+                "Sequence([])".to_owned(),
+            ),
+            (
+                BindAction::Launch {
+                    exe: "wt.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                r#"Launch { exe: "wt.exe", args: [] }"#.to_owned(),
+            ),
+            (
+                BindAction::OpenUrl("u".to_owned()),
+                r#"OpenUrl("u")"#.to_owned(),
+            ),
+            (
+                BindAction::Media(MediaKey::PlayPause),
+                format!("Media({:?})", MediaKey::PlayPause),
+            ),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(format!("{action:?}"), expected);
         }
     }
 }

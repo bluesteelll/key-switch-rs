@@ -273,6 +273,29 @@ minor version; such entries sit under **Changed** and start with
   with an untimed read before and after its samples that the read
   succeeded, and its text starts with "NOT MEASURED" if it did not (no
   foreground window, or one that went away during the row).
+- Bench rows R27 and R27l: the key-down callback of a key bound to `Text`
+  and, as its twin, to `Launch`, each queued for a recording executor
+  (lane feat-text-action).
+- `action: Text("...")` (owner request 2026-10-30, roadmap new feature 9):
+  types a phrase written in `config.ron` at once, as the macro step
+  `Sequence([Text("...")])` does: one `SendInput` batch with
+  `KEYEVENTF_UNICODE`, layout-independent. It runs on the action executor
+  with `Launch` and `OpenUrl`; the hook only queues it and reads no window
+  for it. It fires once per press unless `repeat: true`. `Text("")` is a
+  load error (`Text: empty`); the macro step `Text("")` stays a no-op. The
+  startup list shows it as `text (N chars)`, and no log line or debug
+  output contains the text. Held modifiers combine with the typed
+  characters as for the macro step until roadmap item 3.1 (KS-19); very
+  long texts can lose characters in some applications (known issue 91);
+  and a `Text` that another key's key-down fires, such as a `Tap` waiting
+  for its `DoubleTap` window, is typed after that key (known issue 92).
+  The action executor's `[ERROR]` lines name `Text` among the actions that
+  stop working. Tests:
+  `config::loader::tests::an_action_text_loads_as_a_text_action_that_does_not_repeat`,
+  `an_empty_action_text_is_an_error_that_names_the_binding`,
+  `core::executor::tests::a_text_job_reaches_runner_action_in_order_with_the_other_slow_actions`,
+  `core::windows_actions::tests::a_text_action_shows_its_length_and_never_its_text`,
+  `engine::scenarios::another_key_fires_a_waiting_tap_text_in_its_own_decision_and_passes`.
 
 ### Changed
 

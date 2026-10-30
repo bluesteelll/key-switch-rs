@@ -120,7 +120,11 @@ pub(crate) fn run_step(step: &SequenceStep, target: HWND) {
 /// pairs (anything outside the BMP — most emoji, less common CJK) are sent
 /// as two separate code units; Windows recombines them into a single
 /// character when delivering to the target application.
-fn type_text(s: &str) {
+///
+/// The one builder of both the macro step `Text` and the `Text` action
+/// (`Win32Runner::action`): the whole text goes out in one `SendInput`, so
+/// no other input lands inside it.
+pub(crate) fn type_text(s: &str) {
     // Two INPUTs per code unit (down + up). UTF-16 length is the right
     // capacity bound because that's the unit SendInput's wScan field takes.
     let cap = s.encode_utf16().count().saturating_mul(2);
