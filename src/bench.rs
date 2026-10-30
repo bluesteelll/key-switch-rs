@@ -13,9 +13,9 @@
 //! It appends one Markdown table to `KS_BENCH_OUT`, headed by
 //! `KS_BENCH_LABEL`. No test installs a hook here or injects input: the
 //! adapter rows call the extern callback the way the dispatcher would, with
-//! no hook installed, on bindings whose action is `DoNothing` or a macro that
-//! a recording runner takes; the loop rows send `WM_NULL` to a message-only
-//! window of this process.
+//! no hook installed, on bindings whose action is `DoNothing` or a slow
+//! action that a recording runner takes; the loop rows send `WM_NULL` to a
+//! message-only window of this process.
 //!
 //! Rows (n samples each):
 //!
@@ -110,6 +110,14 @@
 //!   that went away during the row, they would time the failure path, so an
 //!   untimed read before and after the samples checks that both succeed;
 //!   if one does not, the row's text starts with "NOT MEASURED".
+//! - R27: the key-down callback of F13 bound to `Text("Kind regards,
+//!   Ivan")`, which the callback queues for an executor whose runner only
+//!   records, attached as for R6 (lane feat-text-action). Each key-up is
+//!   called and the record awaited, both untimed, so the queue never fills
+//!   and every sample times a queued submit. Evidence; a `Text` must not
+//!   cost more on the hook path than a `Launch`.
+//! - R27l: R27 with `Launch(exe: "no-such.exe")`, its twin, which also
+//!   copies its `String` at the firing.
 //!
 //! Every event the callback rows hand the callback carries the tick count
 //! as its time stamp, as Windows' events do, and an injected one the
@@ -917,6 +925,33 @@ fn r6_lateness(main: &MainThread, ms: u64, count: usize) -> Vec<Duration> {
     samples
 }
 
+/// R27 and R27l: the key-down callback of F13 bound to `action`, a slow
+/// action, `count` times, with an executor whose runner only records
+/// attached to the process-wide hook. Each key-up is called and the record
+/// awaited, both untimed, so every sample times a queued submit.
+fn r27_slow_action_key_down(action: BindAction, count: usize) -> Vec<Duration> {
+    let (tx, records) = mpsc::channel();
+    let executor = Executor::start(FakeRunner::new(tx), QUEUE_CAPACITY, leaked_counters())
+        .expect("invariant: the bench's executor starts");
+    get_hook().attach_executor(Some(executor.handle()));
+    get_hook().update_bindings(vec![
+        Binding::new(KeyCombination::new(VK_F13), action).with_allow_extra_modifiers(true),
+    ]);
+    let mut samples = Vec::with_capacity(count);
+    for _ in 0..count {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_F13, WM_KEYUP);
+        records
+            .recv_timeout(Duration::from_secs(2))
+            .expect("invariant: the recording runner takes each queued action within 2 s");
+    }
+    get_hook().attach_executor(None);
+    let _ = executor.stop();
+    samples
+}
+
 /// A message-only `STATIC` window of the calling thread, as an integer,
 /// since an `HWND` is not `Send`.
 fn message_only_window() -> isize {
@@ -1337,6 +1372,22 @@ fn latency_bench() {
                 "NOT MEASURED, the focus read failed (no foreground window, or it went away): focus_window_of, per call"
             },
             samples: r17g,
+        },
+        Row {
+            id: "R27",
+            what: "keyboard_hook_callback, F13 key-down bound to Text, queued for a recording executor",
+            samples: r27_slow_action_key_down(BindAction::Text(Arc::from("Kind regards, Ivan")), 2_000),
+        },
+        Row {
+            id: "R27l",
+            what: "R27 with Launch(exe: \"no-such.exe\"), its twin",
+            samples: r27_slow_action_key_down(
+                BindAction::Launch {
+                    exe: "no-such.exe".to_owned(),
+                    args: Vec::new(),
+                },
+                2_000,
+            ),
         },
     ]);
     get_hook().update_bindings(Vec::new());

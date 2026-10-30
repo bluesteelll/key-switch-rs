@@ -273,6 +273,9 @@ minor version; such entries sit under **Changed** and start with
   with an untimed read before and after its samples that the read
   succeeded, and its text starts with "NOT MEASURED" if it did not (no
   foreground window, or one that went away during the row).
+- Bench rows R27 and R27l: the key-down callback of a key bound to `Text`
+  and, as its twin, to `Launch`, each queued for a recording executor
+  (lane feat-text-action).
 
 ### Changed
 
