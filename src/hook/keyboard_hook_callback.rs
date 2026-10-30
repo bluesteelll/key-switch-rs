@@ -1609,6 +1609,7 @@ mod tests {
             "src/platform/timers.rs",
             "src/platform/foreground.rs",
             "src/platform/desktop.rs",
+            "src/platform/focus.rs",
         ] {
             files.push(root.join(file));
         }

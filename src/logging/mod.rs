@@ -456,6 +456,9 @@ mod tests {
             ("src/platform/foreground.rs", Some("fn window_title(")),
             // What the desktop-switch callback asks (roadmap item 2.3).
             ("src/platform/desktop.rs", None),
+            // What a language request reads in a dialog (owner report
+            // 2026-10-30).
+            ("src/platform/focus.rs", None),
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),
