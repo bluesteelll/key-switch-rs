@@ -895,6 +895,37 @@ fn another_key_fires_a_tap_that_waits_for_the_double_tap_window() {
 }
 
 #[test]
+fn another_key_fires_a_waiting_tap_text_in_its_own_decision_and_passes() {
+    // Critique I1 of lane feat-text-action: the waiting Tap's Text fires in
+    // the decision of Enter's key-down, and Enter passes in that same
+    // callback. A slow action is only queued there, so Enter reaches the
+    // application before the text is typed (known issue 92), where a fast
+    // action would have run ahead of it.
+    Scenario::from_ron(
+        r#"( bindings: [
+            (keys: "F13", action: Text("Kind regards,"), trigger: Tap(200)),
+            (keys: "F13", action: Text("Best wishes,"), trigger: DoubleTap(250)),
+        ] )"#,
+    )
+    .check_press_symmetry()
+    .check_nothing_stuck()
+    .down("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(80)
+    .up("F13")
+    .expect_suppressed()
+    .expect_nothing_fired()
+    .advance_ms(40)
+    .down("Enter")
+    .expect_passed()
+    .expect_fired(&[BindAction::Text(Arc::from("Kind regards,"))])
+    .up("Enter")
+    .expect_passed()
+    .expect_nothing_fired();
+}
+
+#[test]
 fn a_stale_hold_timer_does_not_fire_a_tap_waiting_for_the_double_tap_window() {
     // The key-up at 50 ms cancels the Hold, and the waiting press takes a
     // new number: the Hold's timer at 200 ms finds nothing, and the Tap
