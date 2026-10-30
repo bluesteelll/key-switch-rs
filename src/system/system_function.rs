@@ -11,6 +11,7 @@ use windows::{
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
 use crate::logging::counters::{self, Counter};
+use crate::platform::focus;
 use crate::system::registry;
 
 #[allow(dead_code)] // Variants are part of the public surface; not every binary uses them all.
@@ -40,44 +41,26 @@ impl SystemFunction {
         registry::get_system_hotkey(self)
     }
 
-    /// Runs on the hook thread, so a failed post is only counted
-    /// (`post_message_failed`), never logged.
+    /// Posts a "forward" `WM_INPUTLANGCHANGEREQUEST` with lParam 0 through
+    /// [`post_to_foreground`]: to the foreground window, or in a dialog box
+    /// to its focused control. Runs on the hook thread, so a failed post is
+    /// only counted (`post_message_failed`), never logged.
     fn switch_language_forward() {
-        // SAFETY: GetForegroundWindow + PostMessageW require only a valid HWND,
-        // which we validate.
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_invalid() {
-                return;
-            }
-
-            let posted = PostMessageW(
-                Some(hwnd),
-                WM_INPUTLANGCHANGEREQUEST,
-                WPARAM(INPUTLANGCHANGE_FORWARD as usize),
-                LPARAM(0),
-            );
-            counters::bump_if_err(Counter::PostMessageFailed, &posted);
-        }
+        post_to_foreground(
+            WM_INPUTLANGCHANGEREQUEST,
+            INPUTLANGCHANGE_FORWARD as usize,
+            0,
+        );
     }
 
-    /// As [`switch_language_forward`](Self::switch_language_forward).
+    /// As [`switch_language_forward`](Self::switch_language_forward), with
+    /// a "backward" request.
     fn switch_language_backward() {
-        // SAFETY: same as switch_language_forward.
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_invalid() {
-                return;
-            }
-
-            let posted = PostMessageW(
-                Some(hwnd),
-                WM_INPUTLANGCHANGEREQUEST,
-                WPARAM(INPUTLANGCHANGE_BACKWARD as usize),
-                LPARAM(0),
-            );
-            counters::bump_if_err(Counter::PostMessageFailed, &posted);
-        }
+        post_to_foreground(
+            WM_INPUTLANGCHANGEREQUEST,
+            INPUTLANGCHANGE_BACKWARD as usize,
+            0,
+        );
     }
 
     fn lock_workstation() {
@@ -159,6 +142,60 @@ impl SystemFunction {
     }
 }
 
+/// The window that a message posted to the foreground window goes to, or
+/// `None` if there is no foreground window (owner report 2026-10-30).
+///
+/// A `WM_INPUTLANGCHANGEREQUEST` to a dialog box (`#32770`, `is_dialog`)
+/// goes to the window with the keyboard focus in the dialog's thread
+/// (`focus_of`), such as the File name box of Save As: the dialog itself
+/// drops it. If that thread has no focus window, or it cannot be read, the
+/// dialog gets the request, as before. Every other window, and every other
+/// message, goes to `foreground` itself, as before.
+///
+/// The reads are asked only when the choice needs them: none with no
+/// foreground window or for another message, the class for a language
+/// request, the focus only in a dialog. That is the whole cost a firing
+/// adds on the hook path.
+pub(crate) fn post_target(
+    msg: u32,
+    foreground: HWND,
+    is_dialog: impl FnOnce(HWND) -> bool,
+    focus_of: impl FnOnce(HWND) -> Result<Option<HWND>>,
+) -> Option<HWND> {
+    if foreground.is_invalid() {
+        return None;
+    }
+    if msg != WM_INPUTLANGCHANGEREQUEST || !is_dialog(foreground) {
+        return Some(foreground);
+    }
+    match focus_of(foreground) {
+        Ok(Some(focus)) => Some(focus),
+        Ok(None) | Err(_) => Some(foreground),
+    }
+}
+
+/// Posts `msg` once to the window [`post_target`] picks from the foreground
+/// window, or nothing if there is none: the one post of `SwitchLanguage`,
+/// `SwitchLanguageBackward` and `PostMessage`. In a dialog box a language
+/// request goes to its focused control; one post only, since a second
+/// request would switch back with two layouts. It runs on the hook thread,
+/// so a failed post is only counted (`post_message_failed`), never logged.
+pub(crate) fn post_to_foreground(msg: u32, wparam: usize, lparam: isize) {
+    // SAFETY: GetForegroundWindow takes no arguments and reads no memory of
+    // ours; with no foreground window it returns a null handle.
+    let foreground = unsafe { GetForegroundWindow() };
+    let Some(target) = post_target(msg, foreground, focus::is_dialog, focus::focus_window_of)
+    else {
+        return;
+    };
+    // SAFETY: PostMessageW takes the window, the message and its parameters
+    // by value and reads no memory of ours; a handle that names no window,
+    // or one that went away since it was read, makes it fail, which is
+    // counted.
+    let posted = unsafe { PostMessageW(Some(target), msg, WPARAM(wparam), LPARAM(lparam)) };
+    counters::bump_if_err(Counter::PostMessageFailed, &posted);
+}
+
 /// Resolve a path under `%SystemRoot%\System32`, falling back to `C:\Windows\System32`
 /// when the environment variable is missing. Path-qualifying these launches
 /// prevents PATH-hijack attacks where an attacker plants a same-named binary
@@ -174,6 +211,7 @@ fn system32_path(exe_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::windows_actions::{BindAction, FastAction};
 
     #[test]
     fn test_hardcoded_combinations() {
@@ -208,5 +246,230 @@ mod tests {
         let p = system32_path("Taskmgr.exe");
         let s = p.to_string_lossy().to_lowercase();
         assert!(s.ends_with("system32\\taskmgr.exe") || s.ends_with("system32/taskmgr.exe"));
+    }
+
+    /// A window handle for the selection tests. No Win32 call ever sees it.
+    fn window(raw: usize) -> HWND {
+        HWND(raw as *mut std::ffi::c_void)
+    }
+
+    #[test]
+    fn no_foreground_window_gets_nothing_and_nothing_is_asked() {
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            HWND::default(),
+            |_| panic!("the class was asked with no foreground window"),
+            |_| panic!("the focus was asked with no foreground window"),
+        );
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn any_other_message_goes_to_the_foreground_and_nothing_is_asked() {
+        for msg in [WM_CLOSE, WM_SYSCOMMAND] {
+            let target = post_target(
+                msg,
+                window(1),
+                |_| panic!("the class was asked for message {msg:#06x}"),
+                |_| panic!("the focus was asked for message {msg:#06x}"),
+            );
+            assert_eq!(target, Some(window(1)), "message {msg:#06x}");
+        }
+    }
+
+    #[test]
+    fn a_language_request_outside_a_dialog_goes_to_the_foreground() {
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            window(1),
+            |asked| {
+                assert_eq!(asked, window(1));
+                false
+            },
+            |_| panic!("the focus was asked outside a dialog"),
+        );
+        assert_eq!(target, Some(window(1)));
+    }
+
+    #[test]
+    fn a_dialog_with_no_focus_window_gets_the_request_itself() {
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            window(1),
+            |_| true,
+            |asked| {
+                assert_eq!(asked, window(1));
+                Ok(None)
+            },
+        );
+        assert_eq!(target, Some(window(1)));
+    }
+
+    #[test]
+    fn a_dialog_whose_focus_cannot_be_read_gets_the_request_itself() {
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            window(1),
+            |_| true,
+            |asked| {
+                assert_eq!(asked, window(1));
+                Err(Error::from_hresult(HRESULT::from_win32(
+                    ERROR_INVALID_THREAD_ID.0,
+                )))
+            },
+        );
+        assert_eq!(target, Some(window(1)));
+    }
+
+    #[test]
+    fn a_language_request_in_a_dialog_goes_to_its_focused_control() {
+        // Owner report 2026-10-30: a Save As dialog drops the request posted
+        // to the dialog itself, and the File name box that has the focus in
+        // the dialog's thread switches the layout.
+        let target = post_target(
+            WM_INPUTLANGCHANGEREQUEST,
+            window(1),
+            |asked| {
+                assert_eq!(asked, window(1));
+                true
+            },
+            |asked| {
+                assert_eq!(asked, window(1));
+                Ok(Some(window(2)))
+            },
+        );
+        assert_eq!(target, Some(window(2)));
+    }
+
+    #[test]
+    fn the_post_message_form_of_switch_language_follows_it_into_the_dialog() {
+        // `PostMessage(msg: "WM_INPUTLANGCHANGEREQUEST", wparam: 2)` is the
+        // documented equivalent of `SwitchLanguage` (the config name parses
+        // to the same constant, `config::parsing::tests::parse_wm_known`).
+        let action = BindAction::PostMessage {
+            msg: WM_INPUTLANGCHANGEREQUEST,
+            wparam: INPUTLANGCHANGE_FORWARD as usize,
+            lparam: 0,
+        };
+        let Some(FastAction::PostMessage { msg, .. }) = action.as_fast() else {
+            panic!("PostMessage does not run as a fast PostMessage");
+        };
+        let target = post_target(msg, window(1), |_| true, |_| Ok(Some(window(2))));
+        assert_eq!(target, Some(window(2)));
+    }
+
+    /// The non-test lines of `file`, before its `#[cfg(test)] mod tests {`.
+    fn non_test_lines(file: &str) -> Vec<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
+        let lines: Vec<&str> = text.lines().collect();
+        let end = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+            .unwrap_or(lines.len());
+        lines[..end].iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    /// The text of the first function of `file` whose line contains
+    /// `signature`, from that line until its braces balance, outside the
+    /// tests module. Panics if there is none, so that a renamed function
+    /// fails the scan instead of passing it.
+    fn function_text(file: &str, signature: &str) -> String {
+        let lines = non_test_lines(file);
+        let start = lines
+            .iter()
+            .position(|line| line.contains(signature))
+            .unwrap_or_else(|| panic!("no `{signature}` in {file}"));
+        let mut depth = 0_i64;
+        for (index, line) in lines[start..].iter().enumerate() {
+            depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            if depth == 0 && line.contains('}') {
+                return lines[start..=start + index].join("\n");
+            }
+        }
+        panic!("`{signature}` in {file} does not end before the tests module");
+    }
+
+    /// The wiring of the fix (owner report 2026-10-30), which the selection
+    /// tests do not see: both language actions and the `PostMessage` action
+    /// post through `post_to_foreground`, which hands `post_target` the
+    /// real reads and posts once. The `PostMessage` arm of `FastAction::run`
+    /// is compiled out under test, so only its source can be checked.
+    #[test]
+    fn every_language_request_and_every_posted_message_goes_through_post_to_foreground() {
+        let post = concat!("PostMessage", "W(");
+        let this = "src/system/system_function.rs";
+        for (signature, direction) in [
+            ("fn switch_language_forward(", "INPUTLANGCHANGE_FORWARD"),
+            ("fn switch_language_backward(", "INPUTLANGCHANGE_BACKWARD"),
+        ] {
+            let body = function_text(this, signature);
+            for wired in [
+                "post_to_foreground(",
+                "WM_INPUTLANGCHANGEREQUEST",
+                direction,
+            ] {
+                assert!(body.contains(wired), "{signature} has no {wired}:\n{body}");
+            }
+            assert!(!body.contains(post), "{signature} posts by itself:\n{body}");
+        }
+
+        let body = function_text(this, "fn post_to_foreground(");
+        for wired in ["post_target(", "focus::is_dialog", "focus::focus_window_of"] {
+            assert!(
+                body.contains(wired),
+                "post_to_foreground has no {wired}:\n{body}"
+            );
+        }
+        assert_eq!(
+            body.matches(post).count(),
+            1,
+            "post_to_foreground posts exactly once:\n{body}"
+        );
+
+        let actions = "src/core/windows_actions.rs";
+        let body = function_text(actions, "fn run(");
+        assert!(
+            body.contains("system_function::post_to_foreground(msg, wparam, lparam)"),
+            "the PostMessage arm of FastAction::run does not post through post_to_foreground:\n{body}"
+        );
+        let posts: Vec<String> = non_test_lines(actions)
+            .into_iter()
+            .filter(|line| line.contains(post))
+            .collect();
+        assert!(posts.is_empty(), "{actions} posts by itself: {posts:?}");
+    }
+
+    /// What the request carries (owner report 2026-10-30: "same wParam,
+    /// lParam 0"): each language action passes its own direction and an
+    /// lParam of 0, and `post_to_foreground` hands the posted message the
+    /// parameters it was given. The selection tests never see the post, so
+    /// only the source can pin this; whitespace is ignored.
+    #[test]
+    fn a_language_request_carries_its_direction_and_an_lparam_of_zero() {
+        let squeeze = |text: String| -> String { text.split_whitespace().collect() };
+        let this = "src/system/system_function.rs";
+        for (signature, direction) in [
+            ("fn switch_language_forward(", "INPUTLANGCHANGE_FORWARD"),
+            ("fn switch_language_backward(", "INPUTLANGCHANGE_BACKWARD"),
+        ] {
+            let body = squeeze(function_text(this, signature));
+            let call =
+                format!("post_to_foreground(WM_INPUTLANGCHANGEREQUEST,{direction}asusize,0,);");
+            assert!(
+                body.contains(&call),
+                "{signature} does not post `{call}` (direction, then lParam 0):\n{body}"
+            );
+        }
+
+        let body = squeeze(function_text(this, "fn post_to_foreground("));
+        let post = concat!(
+            "PostMessage",
+            "W(Some(target),msg,WPARAM(wparam),LPARAM(lparam))"
+        );
+        assert!(
+            body.contains(post),
+            "post_to_foreground does not post the message, wParam and lParam it was given:\n{body}"
+        );
     }
 }

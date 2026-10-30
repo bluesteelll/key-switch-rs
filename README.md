@@ -84,6 +84,7 @@ key-switch-rs/
     │   └── testing.rs          - test-only capture of log lines
     ├── platform/
     │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
+    │   ├── focus.rs            - the dialog class and a thread's focus window: where SwitchLanguage posts in a dialog
     │   ├── foreground.rs       - the foreground window for when: executable cached per window, title read live
     │   ├── priority.rs         - THREAD_PRIORITY_HIGHEST for the main thread while it runs its loop
     │   └── timers.rs           - high-resolution waitable timer: the executor's Delay and the gesture timers
@@ -365,7 +366,7 @@ binding that duplicates one above it (see [Errors](#errors)).
 | `SwitchLanguageBackward`             | Switch to the previous layout                                            |
 | `ToggleCapsLock`                     | Toggle CapsLock state                                                    |
 | `PressKey("<name>")`                 | Synthesize a key press via `SendInput`                                   |
-| `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window                      |
+| `PostMessage(msg: ..., wparam: ..., lparam: ...)` | `PostMessage` to the foreground window; `WM_INPUTLANGCHANGEREQUEST` in a dialog box goes to its focused control, as `SwitchLanguage` does |
 | `Launch(exe: "<path>", args: [...])` | Spawn a process. `args` defaults to `[]`. Until roadmap item 3.3 the program gets the daemon's administrator rights (release build) and, for a console program, its console (KS-09, KS-34). |
 | `OpenUrl("<url-or-path>")`           | Hand to OS default handler via `ShellExecuteW`. Works for URLs, `mailto:`, file paths, even .exe. |
 | `Media(<key>)`                       | Synthesize a media/volume key. `<key>` is one of `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute`. |

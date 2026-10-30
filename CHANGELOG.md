@@ -267,6 +267,12 @@ minor version; such entries sit under **Changed** and start with
   `hook::keyboard_hook_callback::tests::a_callback_for_an_event_a_second_old_notes_hidden_input_and_counts_hook_late`,
   `an_injected_events_own_stamp_is_not_its_age`,
   `hook::main_thread::tests::an_awake_stretch_of_17_ms_notes_hidden_input`.
+- Bench rows R17c, one read of the foreground window's class, and R17g,
+  the focus window of its thread: what a `SwitchLanguage` firing reads to
+  find a dialog's focused control (owner report 2026-10-30). Each checks
+  with an untimed read before and after its samples that the read
+  succeeded, and its text starts with "NOT MEASURED" if it did not (no
+  foreground window, or one that went away during the row).
 
 ### Changed
 
@@ -1067,6 +1073,26 @@ minor version; such entries sit under **Changed** and start with
   could get a key-up without its key-down (roadmap item 2.5). Tests:
   `engine::scenarios::a_swallowed_repeat_of_a_modifier_with_no_record_keeps_its_release_from_windows`,
   `engine::tests::a_repeat_with_no_record_that_passes_after_a_swallowed_one_is_recorded_as_passed`.
+- `SwitchLanguage` and `SwitchLanguageBackward` switch the layout while a
+  dialog box such as Save As or Open is the foreground window (owner
+  report 2026-10-30). The request was posted to the dialog itself, which
+  ignores it. When the foreground window is of the system dialog class
+  (`#32770`), the request now goes to the window with the keyboard focus
+  in the dialog's thread, such as the File name box, and to the dialog
+  only when there is no such window or it cannot be read; every other
+  window gets it as before. `PostMessage(msg:
+  "WM_INPUTLANGCHANGEREQUEST", ...)` follows the same rule; every other
+  message still goes to the foreground window. A firing reads the
+  foreground window's class once more, and in a dialog its thread's focus
+  (bench rows R17c, R17g). Tests:
+  `system::system_function::tests::a_language_request_in_a_dialog_goes_to_its_focused_control`,
+  `the_post_message_form_of_switch_language_follows_it_into_the_dialog`,
+  `a_dialog_with_no_focus_window_gets_the_request_itself`,
+  `a_dialog_whose_focus_cannot_be_read_gets_the_request_itself`,
+  `a_language_request_outside_a_dialog_goes_to_the_foreground`,
+  `any_other_message_goes_to_the_foreground_and_nothing_is_asked`,
+  `every_language_request_and_every_posted_message_goes_through_post_to_foreground`,
+  `platform::focus::tests::a_window_of_the_dialog_class_reads_as_a_dialog`.
 
 ## [0.1.0] - 2026-05-20
 

@@ -408,13 +408,16 @@ mod tests {
             ("src/core/windows_actions.rs", Some("fn as_fast(")),
             // `FastAction::run`: runs the fast actions where they fire.
             ("src/core/windows_actions.rs", Some("fn run(")),
-            // What `run` calls for `PressKey` and `Media`, and for
-            // `PostMessage`.
+            // What `run` calls for `PressKey` and `Media`.
             ("src/core/windows_actions.rs", Some("fn press_vk(")),
+            // What `run` reaches for `PostMessage`, `SwitchLanguage` and
+            // `SwitchLanguageBackward`: the one post to the foreground
+            // window and the choice of its target.
             (
-                "src/core/windows_actions.rs",
-                Some("fn post_message_to_foreground("),
+                "src/system/system_function.rs",
+                Some("fn post_to_foreground("),
             ),
+            ("src/system/system_function.rs", Some("fn post_target(")),
             // What `run` reaches for `SwitchLanguage`,
             // `SwitchLanguageBackward` and `ToggleCapsLock`.
             ("src/system/system_function.rs", Some("fn execute(")),
@@ -456,6 +459,9 @@ mod tests {
             ("src/platform/foreground.rs", Some("fn window_title(")),
             // What the desktop-switch callback asks (roadmap item 2.3).
             ("src/platform/desktop.rs", None),
+            // What a language request reads in a dialog (owner report
+            // 2026-10-30).
+            ("src/platform/focus.rs", None),
             // `bump` and `record_callback` run on the hook thread for every
             // event that needs them.
             ("src/logging/counters.rs", None),

@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use windows::{
-    Win32::{
-        Foundation::*,
-        UI::{Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
-    },
+    Win32::UI::{Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
     core::*,
 };
 
@@ -158,7 +155,7 @@ impl FastAction {
                 msg,
                 wparam,
                 lparam,
-            } => post_message_to_foreground(msg, wparam, lparam),
+            } => crate::system::system_function::post_to_foreground(msg, wparam, lparam),
             FastAction::Media(key) => press_vk(key.as_vk()),
             FastAction::DoNothing => {}
         }
@@ -287,25 +284,6 @@ pub(crate) fn press_vk(vk: VIRTUAL_KEY) {
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
         counters::bump(Counter::KeyPressShort);
-    }
-}
-
-/// Posts `msg` to the foreground window, for `PostMessage`. It runs on the
-/// hook thread, so a failed post is only counted (`post_message_failed`),
-/// never logged.
-// Under test `FastAction::run`, its only caller, only records.
-#[cfg_attr(test, allow(dead_code))]
-fn post_message_to_foreground(msg: u32, wparam: usize, lparam: isize) {
-    // SAFETY: GetForegroundWindow / PostMessageW have no preconditions on
-    // their inputs beyond what we already validate (HWND non-invalid).
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_invalid() {
-            return;
-        }
-
-        let posted = PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam));
-        counters::bump_if_err(Counter::PostMessageFailed, &posted);
     }
 }
 
