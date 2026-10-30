@@ -3,7 +3,7 @@
 This glossary defines the Windows input, security and project terms that the other chapters use without explanation. Entries are in alphabetical order, and each one says what the term means for key-switch-rs and links to the chapter or issue where it matters.
 
 > [!NOTE]
-> Facts describe commit [`f4c1fb6`](https://github.com/bluesteelll/key-switch-rs/tree/f4c1fb6) (2026-10-20), the merge of roadmap item 2.5 and the last change of the program's behaviour on `master`, and code links are permalinks to it. A few entries name structures of the audit commit `7cb3521` that no longer exist, such as the active-keys table; they say so and point to what replaced them, because the [audit](audit.md) uses those names.
+> Facts describe commit [`f4c1fb6`](https://github.com/bluesteelll/key-switch-rs/tree/f4c1fb6) (2026-10-20), the merge of roadmap item 2.5, and code links are permalinks to it. Where a language request goes (the entries Foreground window, HKL and keyboard layout, and `WM_INPUTLANGCHANGEREQUEST`) describes [`6d67816`](https://github.com/bluesteelll/key-switch-rs/tree/6d67816) (2026-10-30), the dialog-box fix and the last change of the program's behaviour on `master`; the code links of the last two entries point at it. A few entries name structures of the audit commit `7cb3521` that no longer exist, such as the active-keys table; they say so and point to what replaced them, because the [audit](audit.md) uses those names.
 
 [A](#a) · [B](#b) · [C](#c) · [D](#d) · [E](#e) · [F](#f) · [G](#g) · [H](#h) · [I](#i) · [K](#k) · [L](#l) · [M](#m) · [N](#n) · [P](#p) · [R](#r) · [S](#s) · [T](#t) · [U](#u) · [V](#v) · [W](#w)
 
@@ -246,7 +246,7 @@ The engine's count of the things that can hide a key event from the hook: the da
 
 ### HKL and keyboard layout
 
-A keyboard layout maps physical keys to virtual-key codes and characters. An HKL, also called an input locale identifier, names one installed language and layout, and Windows keeps the active HKL per thread. key-switch-rs never handles HKLs directly: `SwitchLanguage` and `SwitchLanguageBackward` post [`WM_INPUTLANGCHANGEREQUEST`](#wm_inputlangchangerequest) to the foreground window, or in a dialog box to its focused control, and leave the switch to that window ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)); since the layout decides which VK a physical key produces, a binding on a letter key can follow a different physical key in another layout, for example AZERTY instead of QWERTY.
+A keyboard layout maps physical keys to virtual-key codes and characters. An HKL, also called an input locale identifier, names one installed language and layout, and Windows keeps the active HKL per thread. key-switch-rs never handles HKLs directly: `SwitchLanguage` and `SwitchLanguageBackward` post [`WM_INPUTLANGCHANGEREQUEST`](#wm_inputlangchangerequest) to the foreground window, or in a dialog box to its focused control, and leave the switch to that window ([src/system/system_function.rs:44-64](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L44-L64), [src/system/system_function.rs:145-197](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L145-L197)); since the layout decides which VK a physical key produces, a binding on a letter key can follow a different physical key in another layout, for example AZERTY instead of QWERTY.
 
 ### Hold
 
@@ -582,7 +582,7 @@ The check of roadmap item 2.3 at a key-up the engine would swallow: if Windows h
 
 ### `WM_INPUTLANGCHANGEREQUEST`
 
-The window message that asks a window to change the input language; `INPUTLANGCHANGE_FORWARD` or `INPUTLANGCHANGE_BACKWARD` in `wParam` asks for the next or previous installed layout. `SwitchLanguage` and `SwitchLanguageBackward` post it to the foreground window, or in a dialog box (`#32770`) to the window with the keyboard focus in the dialog's thread, with `lParam` set to 0 ([src/system/system_function.rs:45-81](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L45-L81)). The window accepts the change by passing the message to `DefWindowProc` and can refuse it by not doing so.
+The window message that asks a window to change the input language; `INPUTLANGCHANGE_FORWARD` or `INPUTLANGCHANGE_BACKWARD` in `wParam` asks for the next or previous installed layout. `SwitchLanguage` and `SwitchLanguageBackward` post it to the foreground window, or in a dialog box (`#32770`) to the window with the keyboard focus in the dialog's thread, with `lParam` set to 0 ([src/system/system_function.rs:44-64](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L44-L64), [src/system/system_function.rs:145-197](https://github.com/bluesteelll/key-switch-rs/blob/6d67816/src/system/system_function.rs#L145-L197)). The window accepts the change by passing the message to `DefWindowProc` and can refuse it by not doing so.
 
 ### `WM_KEYDOWN` and `WM_SYSKEYDOWN`
 
