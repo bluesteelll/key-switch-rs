@@ -439,4 +439,37 @@ mod tests {
             .collect();
         assert!(posts.is_empty(), "{actions} posts by itself: {posts:?}");
     }
+
+    /// What the request carries (owner report 2026-10-30: "same wParam,
+    /// lParam 0"): each language action passes its own direction and an
+    /// lParam of 0, and `post_to_foreground` hands the posted message the
+    /// parameters it was given. The selection tests never see the post, so
+    /// only the source can pin this; whitespace is ignored.
+    #[test]
+    fn a_language_request_carries_its_direction_and_an_lparam_of_zero() {
+        let squeeze = |text: String| -> String { text.split_whitespace().collect() };
+        let this = "src/system/system_function.rs";
+        for (signature, direction) in [
+            ("fn switch_language_forward(", "INPUTLANGCHANGE_FORWARD"),
+            ("fn switch_language_backward(", "INPUTLANGCHANGE_BACKWARD"),
+        ] {
+            let body = squeeze(function_text(this, signature));
+            let call =
+                format!("post_to_foreground(WM_INPUTLANGCHANGEREQUEST,{direction}asusize,0,);");
+            assert!(
+                body.contains(&call),
+                "{signature} does not post `{call}` (direction, then lParam 0):\n{body}"
+            );
+        }
+
+        let body = squeeze(function_text(this, "fn post_to_foreground("));
+        let post = concat!(
+            "PostMessage",
+            "W(Some(target),msg,WPARAM(wparam),LPARAM(lparam))"
+        );
+        assert!(
+            body.contains(post),
+            "post_to_foreground does not post the message, wParam and lParam it was given:\n{body}"
+        );
+    }
 }
