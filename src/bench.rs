@@ -118,6 +118,12 @@
 //!   cost more on the hook path than a `Launch`.
 //! - R27l: R27 with `Launch(exe: "no-such.exe")`, its twin, which also
 //!   copies its `String` at the firing.
+//! - R28: R27 with `Paste("Kind regards, Ivan")` and a restore delay of
+//!   50 ms, queued for an executor whose clipboard and keys are fakes
+//!   (lane feat-clipboard-paste); the awaited record is the fake keystroke
+//!   `keys Ctrl+V`, and each later press waits about 50 ms, untimed, for
+//!   the restore of the one before. Bound: p50 at most R27's p50 plus
+//!   1.0 us, and at most 20 us.
 //!
 //! Every event the callback rows hand the callback carries the tick count
 //! as its time stamp, as Windows' events do, and an injected one the
@@ -157,6 +163,7 @@ use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
 use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
+use crate::data::paste::PasteSpec;
 use crate::data::sequence::SequenceStep;
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
@@ -925,7 +932,7 @@ fn r6_lateness(main: &MainThread, ms: u64, count: usize) -> Vec<Duration> {
     samples
 }
 
-/// R27 and R27l: the key-down callback of F13 bound to `action`, a slow
+/// R27, R27l and R28: the key-down callback of F13 bound to `action`, a slow
 /// action, `count` times, with an executor whose runner only records
 /// attached to the process-wide hook. Each key-up is called and the record
 /// awaited, both untimed, so every sample times a queued submit.
@@ -1387,6 +1394,17 @@ fn latency_bench() {
                     args: Vec::new(),
                 },
                 2_000,
+            ),
+        },
+        Row {
+            id: "R28",
+            what: "keyboard_hook_callback, F13 key-down bound to Paste, queued for a recording executor whose clipboard and desk are fakes",
+            samples: r27_slow_action_key_down(
+                BindAction::Paste(Arc::new(
+                    PasteSpec::new("Kind regards, Ivan", vec![VK_CONTROL, VK_V], 50)
+                        .expect("invariant: the bench's spec is valid"),
+                )),
+                200,
             ),
         },
     ]);
