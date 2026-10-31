@@ -1204,6 +1204,25 @@ mod tests {
         );
     }
 
+    /// The source pin above must not be satisfied by a call that a comment
+    /// switched off: the call is a statement of its own, not a commented line.
+    #[test]
+    fn the_wipe_in_the_drop_is_a_statement_not_a_comment() {
+        let source = include_str!("clipboard.rs");
+        let header = ["impl Drop for ", "Zeroed {"].concat();
+        let start = source
+            .find(&header)
+            .expect("invariant: the buffer type has a Drop impl");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n}")
+            .expect("invariant: the Drop impl ends with a closing brace")];
+        assert!(
+            body.lines().any(|line| line.trim() == "self.wipe();"),
+            "Drop for Zeroed must run wipe as a statement, not in a comment: {body}"
+        );
+    }
+
     #[test]
     fn a_saved_buffer_is_wiped_in_place() {
         let mut saved = Zeroed::new(vec![0xAB; 64]);
