@@ -51,7 +51,7 @@ const CF_DSPBITMAP: u32 = 0x82;
 const CF_DSPMETAFILEPICT: u32 = 0x83;
 const CF_DSPENHMETAFILE: u32 = 0x8E;
 /// The ids `RegisterClipboardFormatW` hands out.
-const REGISTERED: std::ops::RangeInclusive<u32> = 0xC000..=0xFFFF;
+pub const REGISTERED: std::ops::RangeInclusive<u32> = 0xC000..=0xFFFF;
 
 /// The registered formats whose data is not a copy of the content: the
 /// OLE object and link formats, which name a live object of their owner

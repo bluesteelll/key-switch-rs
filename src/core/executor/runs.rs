@@ -499,6 +499,23 @@ mod tests {
             runs.poll(&mut ctx)
         }
 
+        /// Polls at each next deadline, as the executor's timer wakes it,
+        /// until no run and no restore waits, or the next deadline is past
+        /// `until_ms`.
+        fn run_until_idle(&mut self, until_ms: u64) {
+            for _ in 0..100_000 {
+                let Next::At(at) = self.poll().next else {
+                    return;
+                };
+                if at > self.ms(until_ms) {
+                    return;
+                }
+                let mut offset = self.offset.lock().unwrap_or_else(PoisonError::into_inner);
+                *offset = (*offset).max(at - self.base);
+            }
+            panic!("the runs did not settle");
+        }
+
         /// The calls recorded since the last `taken`.
         fn taken(&mut self) -> Vec<String> {
             std::mem::take(
@@ -543,22 +560,13 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.start(paste("ab"));
         fixture.start(sequence(vec![paste_step("cd")]));
-        fixture.poll();
-        let taken: Vec<String> = fixture
-            .taken()
-            .into_iter()
-            .filter(|text| !text.starts_with("keys "))
-            .collect();
-        assert_eq!(taken, Vec::<String>::new());
+        fixture.run_until_idle(10_000);
+        let taken = fixture.taken();
+        assert_eq!(taken, ["keys Ctrl+V", "keys Ctrl+V"], "both pasted");
 
         fixture.start(sequence(vec![key(VK_F13), paste_step("ef"), key(VK_F14)]));
-        fixture.poll();
-        let taken: Vec<String> = fixture
-            .taken()
-            .into_iter()
-            .filter(|text| !text.starts_with("keys "))
-            .collect();
-        assert_eq!(taken, ["key F13", "key F14"]);
+        fixture.run_until_idle(20_000);
+        assert_eq!(fixture.taken(), ["key F13", "keys Ctrl+V", "key F14"]);
     }
 
     #[test]

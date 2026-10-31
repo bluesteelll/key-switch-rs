@@ -15,8 +15,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use super::TargetWindow;
 use crate::data::paste::PasteSpec;
-use crate::data::sequence::ComboSent;
-use crate::platform::clipboard::{Clipboard, OwnerWindow};
+use crate::data::sequence::{self, ComboSent};
+use crate::platform::clipboard::{
+    self, CF_UNICODETEXT, Clipboard, Marker, OwnerWindow, Payload, Read, Zeroed,
+};
 
 /// What a paste reads from and sends to the desktop, besides the
 /// clipboard. Every method runs on the action executor.
@@ -238,22 +240,62 @@ pub const CLOSING_RETRY: Duration = Duration::from_millis(10);
 /// How long the executor's stop waits for a busy clipboard.
 pub const CLOSING_LIMIT: Duration = Duration::from_millis(250);
 
+/// The most bytes read of a `CanIncludeInClipboardHistory` marker: a DWORD.
+const MARKER_READ_LIMIT: usize = 64;
+/// The data of every marker the daemon writes: a DWORD 0. A NULL handle
+/// would ask for delayed rendering instead.
+const MARKER_DATA: [u8; 4] = [0; 4];
+
 /// What a Paste that waits keeps between its tries, in its run.
-// The seam is inert until the session's bodies land; this allow goes with
-// them.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct Attempt {
+    /// The foreground window when the paste started: the keystroke goes to
+    /// it or nowhere.
     foreground: TargetWindow,
+    /// When it began to wait for the restore of the paste before it.
     chain_since: Option<Instant>,
+    /// Whether it went ahead at that wait's limit, so that L20 is logged
+    /// once.
+    went_ahead: bool,
+    /// When it began to wait for the modifiers' release.
     modifiers_since: Option<Instant>,
+    /// Whether the clipboard's owner was probed.
     prechecked: bool,
+    /// How many opens failed, and when the first one did.
     open_tries: u8,
     open_since: Option<Instant>,
 }
 
+impl Attempt {
+    fn new(foreground: TargetWindow) -> Self {
+        Self {
+            foreground,
+            chain_since: None,
+            went_ahead: false,
+            modifiers_since: None,
+            prechecked: false,
+            open_tries: 0,
+            open_since: None,
+        }
+    }
+
+    /// The wait after an open that failed at `now`, until the retries of
+    /// `OPEN_BACKOFF` are spent.
+    fn open_failed(&mut self, now: Instant) -> Step {
+        let since = *self.open_since.get_or_insert(now);
+        if let Some(wait) = OPEN_BACKOFF.get(usize::from(self.open_tries)) {
+            self.open_tries += 1;
+            return Step::WaitUntil(now + *wait);
+        }
+        log::warn!(
+            "paste: another program kept the clipboard open for {} ms; the paste was skipped",
+            now.duration_since(since).as_millis()
+        );
+        Step::Done
+    }
+}
+
 /// What became of a try of a Paste.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
     /// The paste is over: sent, or skipped and logged.
@@ -263,6 +305,7 @@ pub(crate) enum Step {
 }
 
 /// What the restore at the executor's stop did.
+// Only the restore at the stop makes `RetryAt`; this allow goes with it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Closing {
@@ -272,14 +315,170 @@ pub(crate) enum Closing {
     RetryAt(Instant),
 }
 
+/// The ids of the marker formats, in the order of `Marker::ALL`, registered
+/// once per daemon; `None` for one whose registration failed, which is left
+/// out.
+#[derive(Debug, Clone, Copy)]
+struct Markers([Option<u32>; 5]);
+
+impl Markers {
+    fn register(clipboard: &dyn Clipboard) -> Self {
+        Self(Marker::ALL.map(|marker| {
+            let id = clipboard.register(marker);
+            if id.is_none() {
+                log::warn!(
+                    "paste: could not register the clipboard format {}; the text may appear in the clipboard history",
+                    marker.name()
+                );
+            }
+            id
+        }))
+    }
+
+    /// The ids a phrase carries: every marker but the daemon's own.
+    fn phrase(&self) -> impl Iterator<Item = u32> {
+        Marker::ALL
+            .into_iter()
+            .zip(self.0)
+            .filter(|(marker, _)| *marker != Marker::Restored)
+            .filter_map(|(_, id)| id)
+    }
+
+    /// The ids a restored copy carries: every marker.
+    fn restored(&self) -> impl Iterator<Item = u32> {
+        self.0.into_iter().flatten()
+    }
+}
+
+/// A format of the clipboard as the save copied it.
+#[derive(Debug)]
+struct SavedFormat {
+    format: u32,
+    /// Its data, whose `Debug` shows the length only.
+    bytes: Zeroed,
+}
+
+/// What the restore puts back.
+#[derive(Debug)]
+enum Original {
+    /// The formats the save copied, in enumeration order.
+    Saved(Vec<SavedFormat>),
+    /// Content marked private (owner answer): the restore empties the
+    /// clipboard.
+    Private,
+    /// An empty clipboard, or one of which nothing could be copied: the
+    /// restore empties it.
+    Empty,
+}
+
+/// The restore that waits, from the daemon's `EmptyClipboard` on: whatever
+/// fails or unwinds after that point, the original goes back (research
+/// critique M1).
+#[derive(Debug)]
+struct Pending {
+    /// The window that emptied the clipboard, and owns it while it holds
+    /// the daemon's phrase.
+    window: OwnerWindow,
+    original: Original,
+    /// The formats of the daemon's phrase: the text and the markers.
+    written: Vec<u32>,
+    /// When the restore is decided.
+    restore_at: Instant,
+    /// When it is due whatever the target does.
+    hard_limit: Instant,
+    /// The window the keystroke went to; `None` until the keystroke went
+    /// out, and then the restore is due at `restore_at`.
+    target: Option<isize>,
+    /// Whether a probe found the target busy.
+    seen_busy: bool,
+    /// Whether the wait after a busy target answered was given.
+    settled: bool,
+    /// What the last probe of the target found.
+    last_probe: Option<Probe>,
+    /// Whether the restore is due.
+    due: bool,
+    /// When the restore first found the clipboard busy, and when it tries
+    /// again.
+    retry_since: Option<Instant>,
+    next_try: Option<Instant>,
+    /// The clipboard's sequence number after the phrase was set.
+    sequence: u32,
+}
+
+impl Pending {
+    fn new(window: OwnerWindow, original: Original, written: Vec<u32>, now: Instant) -> Self {
+        Self {
+            window,
+            original,
+            written,
+            restore_at: now,
+            hard_limit: now,
+            target: None,
+            seen_busy: false,
+            settled: false,
+            last_probe: None,
+            due: false,
+            retry_since: None,
+            next_try: None,
+            sequence: 0,
+        }
+    }
+
+    /// Starts over for a phrase set at `now`: the restore is due at the
+    /// next poll unless a keystroke sets its deadline.
+    fn renew(&mut self, now: Instant) {
+        self.restore_at = now;
+        self.hard_limit = now;
+        self.target = None;
+        self.seen_busy = false;
+        self.settled = false;
+        self.last_probe = None;
+        self.due = false;
+        self.retry_since = None;
+        self.next_try = None;
+    }
+}
+
+/// What a try at the restore found.
+enum Restore {
+    /// The original is back, or the clipboard emptied for it.
+    PutBack,
+    /// Another program changed the clipboard: nothing was emptied.
+    Changed,
+    /// Another program held the clipboard open.
+    Busy,
+}
+
+/// The clipboard, open by the session: dropping it closes the clipboard on
+/// every path, unwinding included.
+struct Opened<'a>(&'a dyn Clipboard);
+
+impl<'a> Opened<'a> {
+    fn open(clipboard: &'a dyn Clipboard, window: OwnerWindow) -> Option<Self> {
+        clipboard.open(window).ok().map(|()| Self(clipboard))
+    }
+}
+
+impl Drop for Opened<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.close() {
+            log::warn!("paste: could not close the clipboard ({error})");
+        }
+    }
+}
+
 /// The executor's one paste session: the clipboard window and the restore
 /// that waits, if any. It lives in the runs, outside the calls that can
 /// unwind, on the executor thread.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct PasteSession {
+    /// The window the next fresh paste empties the clipboard with.
     window: Option<OwnerWindow>,
+    /// The window of the session that ended last, which may still own the
+    /// clipboard.
     last_window: Option<OwnerWindow>,
+    pending: Option<Pending>,
+    markers: Option<Markers>,
 }
 
 impl PasteSession {
@@ -287,41 +486,388 @@ impl PasteSession {
         Self::default()
     }
 
-    /// Tries the Paste of `spec`, whose state between tries is `attempt`.
+    /// Tries the Paste of `spec`, whose state between tries is `attempt`
+    /// (D6): it goes as far as it can, and returns when it must wait or is
+    /// over.
     pub(crate) fn attempt(
         &mut self,
-        _attempt: &mut Option<Attempt>,
-        _spec: &PasteSpec,
-        _ports: &Ports<'_>,
-        _now: &dyn Fn() -> Instant,
-        _live: &dyn Fn() -> bool,
+        attempt: &mut Option<Attempt>,
+        spec: &PasteSpec,
+        ports: &Ports<'_>,
+        now: &dyn Fn() -> Instant,
+        live: &dyn Fn() -> bool,
     ) -> Step {
+        let step = self.advance(attempt, spec, ports, now, live);
+        if step == Step::Done {
+            *attempt = None;
+        }
+        step
+    }
+
+    fn advance(
+        &mut self,
+        attempt: &mut Option<Attempt>,
+        spec: &PasteSpec,
+        ports: &Ports<'_>,
+        now: &dyn Fn() -> Instant,
+        live: &dyn Fn() -> bool,
+    ) -> Step {
+        let state = match attempt {
+            Some(state) => state,
+            None => {
+                let foreground = ports.desk.foreground();
+                if foreground == TargetWindow::NONE {
+                    log::warn!("paste: no foreground window; the paste was skipped");
+                    return Step::Done;
+                }
+                attempt.insert(Attempt::new(foreground))
+            }
+        };
+        if let Some(pending) = &self.pending
+            && !pending.due
+            && !state.went_ahead
+        {
+            let at = now();
+            let limit = *state.chain_since.get_or_insert(at) + CHAIN_WAIT_LIMIT;
+            if at < limit {
+                return Step::WaitUntil(pending.restore_at.min(limit));
+            }
+            log::info!(
+                "paste: a paste went ahead after waiting 1 s for the previous one's restore"
+            );
+            state.went_ahead = true;
+        }
+        if ports.desk.modifier_down() {
+            let at = now();
+            let since = *state.modifiers_since.get_or_insert(at);
+            if at.duration_since(since) >= MODIFIER_LIMIT {
+                log::warn!("paste: a modifier key was still held after 3 s; the paste was skipped");
+                return Step::Done;
+            }
+            return Step::WaitUntil(at + MODIFIER_POLL);
+        }
+        if !live() {
+            return Step::Done;
+        }
+        if ports.desk.foreground() != state.foreground {
+            log::warn!(
+                "paste: the foreground window changed before the paste; the paste was skipped"
+            );
+            return Step::Done;
+        }
+        let clipboard = ports.clipboard;
+        let markers = *self
+            .markers
+            .get_or_insert_with(|| Markers::register(clipboard));
+        loop {
+            let window = match &self.pending {
+                Some(pending) => pending.window,
+                None => {
+                    let Some(window) = self.idle_window(clipboard) else {
+                        return Step::Done;
+                    };
+                    if !state.prechecked {
+                        state.prechecked = true;
+                        if self.owner_hangs(ports) {
+                            log::warn!(
+                                "paste: the program that owns the clipboard did not answer within 100 ms; the paste was skipped"
+                            );
+                            return Step::Done;
+                        }
+                    }
+                    window
+                }
+            };
+            let Some(opened) = Opened::open(clipboard, window) else {
+                return state.open_failed(now());
+            };
+            if let Some(pending) = &self.pending {
+                // A chained paste takes over the phrase of the one before
+                // it only while the clipboard still holds that phrase.
+                if !still_ours(clipboard, pending) {
+                    log::info!(
+                        "paste: the clipboard changed after the paste; the previous content was not put back"
+                    );
+                    drop(opened);
+                    self.end_session(clipboard);
+                    continue;
+                }
+                if let Err(error) = clipboard.empty() {
+                    log::warn!(
+                        "paste: could not empty the clipboard ({error}); the paste was skipped"
+                    );
+                    return Step::Done;
+                }
+            } else {
+                let original = save(clipboard, now);
+                if let Err(error) = clipboard.empty() {
+                    log::warn!(
+                        "paste: could not empty the clipboard ({error}); the paste was skipped"
+                    );
+                    return Step::Done;
+                }
+                let written = std::iter::once(CF_UNICODETEXT)
+                    .chain(markers.phrase())
+                    .collect();
+                self.window = None;
+                self.pending = Some(Pending::new(window, original, written, now()));
+            }
+            return self.set_phrase(opened, state, spec, ports, now, live);
+        }
+    }
+
+    /// Puts the phrase and its markers on the clipboard this session has
+    /// open and just emptied, closes it, and sends the keystroke if nothing
+    /// changed meanwhile (D6 rows 9 to 13).
+    fn set_phrase(
+        &mut self,
+        opened: Opened<'_>,
+        state: &Attempt,
+        spec: &PasteSpec,
+        ports: &Ports<'_>,
+        now: &dyn Fn() -> Instant,
+        live: &dyn Fn() -> bool,
+    ) -> Step {
+        let clipboard = ports.clipboard;
+        let markers = self
+            .markers
+            .expect("invariant: the markers are registered before the open");
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("invariant: the clipboard was emptied for this paste");
+        pending.renew(now());
+        if let Err(error) = clipboard.write(CF_UNICODETEXT, Payload::Units(spec.units())) {
+            put_back(clipboard, pending, Some(&markers));
+            drop(opened);
+            self.end_session(clipboard);
+            log::warn!(
+                "paste: could not put the text on the clipboard ({error}); the clipboard was put back and the paste skipped"
+            );
+            return Step::Done;
+        }
+        let mut marked = true;
+        for id in markers.phrase() {
+            if let Err(error) = clipboard.write(id, Payload::Bytes(&MARKER_DATA))
+                && marked
+            {
+                marked = false;
+                log::warn!(
+                    "paste: could not mark the text as private ({error}); it may appear in the clipboard history"
+                );
+            }
+        }
+        drop(opened);
+        pending.sequence = clipboard.sequence_number();
+        if !live() || ports.desk.foreground() != state.foreground || ports.desk.modifier_down() {
+            log::info!(
+                "paste: the foreground window, the modifiers or the remapping switch changed after the clipboard was set; it was put back and the paste skipped"
+            );
+            return Step::Done;
+        }
+        let keys = spec.keys();
+        let ComboSent { sent, of } = ports.desk.press(keys);
+        let keystroke = now();
+        if sent == 0 {
+            log::warn!("paste: the paste keystroke was not sent; the clipboard is put back");
+            return Step::Done;
+        }
+        if sent < of {
+            ports.desk.release_after(keys, sent);
+            log::warn!(
+                "paste: the paste keystroke was cut short ({sent} of {of} events); the missing key releases were sent"
+            );
+            // The batch sends the modifiers' key-downs first: if no other
+            // key went down, nothing was pasted and nothing will read the
+            // phrase.
+            let modifiers = keys
+                .iter()
+                .filter(|&&key| sequence::is_modifier(key))
+                .count();
+            if usize::try_from(sent).is_ok_and(|sent| sent <= modifiers) {
+                return Step::Done;
+            }
+        }
+        pending.restore_at = keystroke + spec.restore_delay();
+        pending.hard_limit = keystroke + spec.restore_delay().max(HUNG_LIMIT);
+        pending.target = Some(state.foreground.0);
         Step::Done
     }
 
-    /// Decides whether the restore is due; `true` if it asked a port.
-    pub(crate) fn tick(&mut self, _ports: &Ports<'_>, _now: Instant) -> bool {
-        false
+    /// The idle window, made if there is none; `None`, logged, if it
+    /// cannot be.
+    fn idle_window(&mut self, clipboard: &dyn Clipboard) -> Option<OwnerWindow> {
+        if self.window.is_none() {
+            match clipboard.create_window() {
+                Ok(window) => self.window = Some(window),
+                Err(error) => log::error!(
+                    "paste: could not create the clipboard window ({error}); the paste was skipped"
+                ),
+            }
+        }
+        self.window
     }
 
-    /// Puts the clipboard back if the restore is due; `true` if it asked a
-    /// port.
-    pub(crate) fn restore_if_due(&mut self, _ports: &Ports<'_>, _now: Instant) -> bool {
-        false
+    /// Whether the program that owns the clipboard does not answer: an
+    /// `OpenClipboard` would wait for its delayed renderings. The daemon's
+    /// own windows are not asked.
+    fn owner_hangs(&self, ports: &Ports<'_>) -> bool {
+        let Some(owner) = ports.clipboard.owner() else {
+            return false;
+        };
+        let ours = |window: Option<OwnerWindow>| window.is_some_and(|window| window.raw() == owner);
+        !ours(self.window)
+            && !ours(self.last_window)
+            && ports.desk.responds(owner, OWNER_PROBE) == Probe::NoAnswer
+    }
+
+    /// Decides whether the restore is due (D10): at its deadline, once the
+    /// target answers, at once if it is gone, at the hard limit whatever it
+    /// does. `true` if it asked a port.
+    pub(crate) fn tick(&mut self, ports: &Ports<'_>, now: Instant) -> bool {
+        let Some(pending) = &mut self.pending else {
+            return false;
+        };
+        if pending.due || now < pending.restore_at {
+            return false;
+        }
+        let Some(target) = pending.target else {
+            pending.due = true;
+            return false;
+        };
+        if now >= pending.hard_limit {
+            if pending.last_probe == Some(Probe::NoAnswer) {
+                log::warn!(
+                    "paste: the target window did not answer for 5 s; the clipboard was put back anyway"
+                );
+            }
+            pending.due = true;
+            return false;
+        }
+        let probe = ports.desk.responds(target, TARGET_PROBE);
+        pending.last_probe = Some(probe);
+        match probe {
+            Probe::Gone => pending.due = true,
+            Probe::NoAnswer => {
+                pending.seen_busy = true;
+                pending.restore_at = (now + TARGET_RETRY).min(pending.hard_limit);
+            }
+            Probe::Answered | Probe::Late => {
+                pending.seen_busy |= probe == Probe::Late;
+                // A thread answers a sent message before it handles the
+                // input queued for it, so a busy target may not have read
+                // the phrase yet.
+                if pending.seen_busy && !pending.settled {
+                    pending.settled = true;
+                    pending.restore_at = (now + SETTLE).min(pending.hard_limit);
+                } else {
+                    pending.due = true;
+                }
+            }
+        }
+        true
+    }
+
+    /// Puts the clipboard back if the restore is due, and retries a busy
+    /// clipboard every `RESTORE_RETRY` for `RESTORE_RETRY_LIMIT`. `true` if
+    /// it asked a port.
+    pub(crate) fn restore_if_due(&mut self, ports: &Ports<'_>, now: Instant) -> bool {
+        let Some(pending) = &mut self.pending else {
+            return false;
+        };
+        if !pending.due {
+            if pending.target.is_some() || now < pending.restore_at {
+                return false;
+            }
+            pending.due = true;
+        }
+        if pending.next_try.is_some_and(|at| now < at) {
+            return false;
+        }
+        if let Restore::Busy = self.try_restore(ports.clipboard) {
+            let pending = self
+                .pending
+                .as_mut()
+                .expect("invariant: a busy restore keeps its session");
+            let since = *pending.retry_since.get_or_insert(now);
+            if now.duration_since(since) >= RESTORE_RETRY_LIMIT {
+                log::warn!(
+                    "paste: another program kept the clipboard open for 1 s; the previous content was not put back"
+                );
+                self.end_session(ports.clipboard);
+            } else {
+                pending.next_try = Some(now + RESTORE_RETRY);
+            }
+        }
+        true
+    }
+
+    /// One try at the restore: under the session's own open, the original
+    /// goes back if the clipboard still holds the phrase. The session ends
+    /// unless the clipboard was busy.
+    fn try_restore(&mut self, clipboard: &dyn Clipboard) -> Restore {
+        let Some(pending) = &self.pending else {
+            return Restore::PutBack;
+        };
+        let sequence = clipboard.sequence_number();
+        let Some(opened) = Opened::open(clipboard, pending.window) else {
+            return Restore::Busy;
+        };
+        // Checked while the clipboard is open, so that nobody can change it
+        // between the check and the `EmptyClipboard` (research critique I1).
+        let restore = if still_ours(clipboard, pending) {
+            if sequence != pending.sequence {
+                log::debug!(
+                    "paste: the clipboard sequence number moved by {} while the daemon owned it",
+                    sequence.wrapping_sub(pending.sequence)
+                );
+            }
+            put_back(clipboard, pending, self.markers.as_ref());
+            Restore::PutBack
+        } else {
+            log::info!(
+                "paste: the clipboard changed after the paste; the previous content was not put back"
+            );
+            Restore::Changed
+        };
+        drop(opened);
+        self.end_session(clipboard);
+        restore
+    }
+
+    /// Ends the session: its saved copy is dropped, which wipes it, its
+    /// window destroyed, and the idle window for the next paste made. A
+    /// window that cannot be made is tried again, and logged, by the next
+    /// paste.
+    fn end_session(&mut self, clipboard: &dyn Clipboard) {
+        if let Some(pending) = self.pending.take() {
+            clipboard.destroy_window(pending.window);
+            self.last_window = Some(pending.window);
+        }
+        if self.window.is_none() {
+            self.window = clipboard.create_window().ok();
+        }
     }
 
     /// When the session must be polled again, if a restore waits.
     pub(crate) fn next(&self) -> Option<Instant> {
-        None
+        let pending = self.pending.as_ref()?;
+        Some(match pending.next_try {
+            Some(at) if pending.due => at,
+            _ => pending.restore_at,
+        })
     }
 
     /// Whether a restore waits.
     pub(crate) fn is_pending(&self) -> bool {
-        false
+        self.pending.is_some()
     }
 
-    /// Ends the session after one of its calls panicked.
-    pub(crate) fn give_up(&mut self, _ports: &Ports<'_>) {}
+    /// Ends the session after one of its calls panicked, so that no later
+    /// poll panics on it again.
+    pub(crate) fn give_up(&mut self, ports: &Ports<'_>) {
+        self.end_session(ports.clipboard);
+    }
 
     /// The restore at the executor's stop, tried until `until`.
     pub(crate) fn close(&mut self, _ports: &Ports<'_>, _now: Instant, _until: Instant) -> Closing {
@@ -334,6 +880,143 @@ impl PasteSession {
     /// The last try at the restore, and the windows' end, as the executor
     /// thread ends.
     pub(crate) fn abandon(&mut self, _ports: &Ports<'_>) {}
+}
+
+/// Whether the clipboard, open by the session, still holds the daemon's
+/// phrase: owned by the session's window, with no format that another
+/// program added without emptying it (research critique M2).
+fn still_ours(clipboard: &dyn Clipboard, pending: &Pending) -> bool {
+    if clipboard.owner() != Some(pending.window.raw()) {
+        return false;
+    }
+    let mut formats = Vec::new();
+    clipboard.formats(&mut formats);
+    !clipboard::foreign_format_present(&formats, &pending.written)
+}
+
+/// Puts the original of `pending` back on the clipboard, which the session
+/// has open and which still holds the phrase: empty it, then the saved
+/// formats in order and every marker.
+fn put_back(clipboard: &dyn Clipboard, pending: &Pending, markers: Option<&Markers>) {
+    if let Err(error) = clipboard.empty() {
+        log::warn!(
+            "paste: could not empty the clipboard ({error}); the previous content was not put back"
+        );
+        return;
+    }
+    let Original::Saved(saved) = &pending.original else {
+        return;
+    };
+    let writes = saved
+        .iter()
+        .map(|format| (format.format, format.bytes.bytes()))
+        .chain(
+            markers
+                .into_iter()
+                .flat_map(Markers::restored)
+                .map(|id| (id, &MARKER_DATA[..])),
+        );
+    let (mut total, mut failed) = (0_usize, 0_usize);
+    for (format, bytes) in writes {
+        total += 1;
+        if clipboard.write(format, Payload::Bytes(bytes)).is_err() {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        log::warn!("paste: {failed} of {total} clipboard formats could not be put back");
+    }
+}
+
+/// Saves what the clipboard, open by the session, holds (D7): nothing of a
+/// private original; else the text first, then the other formats kept in
+/// enumeration order while the save is within `SAVE_BUDGET` and
+/// `SAVE_CAP`.
+fn save(clipboard: &dyn Clipboard, now: &dyn Fn() -> Instant) -> Original {
+    let started = now();
+    let mut formats = Vec::new();
+    clipboard.formats(&mut formats);
+    if formats.is_empty() {
+        return Original::Empty;
+    }
+    let names: Vec<Option<String>> = formats
+        .iter()
+        .map(|&format| registered_name(clipboard, format))
+        .collect();
+    let marker = |wanted: Marker| {
+        formats
+            .iter()
+            .zip(&names)
+            .find(|(_, name)| name.as_deref().and_then(Marker::named) == Some(wanted))
+            .map(|(&format, _)| format)
+    };
+    // A copy this daemon put back carries the markers too.
+    let private = marker(Marker::Restored).is_none()
+        && (marker(Marker::ExcludeFromMonitoring).is_some()
+            || marker(Marker::CanIncludeInHistory)
+                .is_some_and(|id| !allows_history(clipboard.read(id, MARKER_READ_LIMIT))));
+    if private {
+        log::info!("paste: the clipboard held private content; it will be cleared, not put back");
+        return Original::Private;
+    }
+    let kept = clipboard::kept_formats(
+        formats
+            .iter()
+            .copied()
+            .zip(names.iter().map(Option::as_deref)),
+    );
+    let text = kept.iter().position(|&format| format == CF_UNICODETEXT);
+    let order = text
+        .into_iter()
+        .chain((0..kept.len()).filter(|&index| Some(index) != text));
+    let mut saved: Vec<(usize, SavedFormat)> = Vec::with_capacity(kept.len());
+    let mut total = 0;
+    for index in order {
+        // The text is read whatever the time: it is what the user pastes
+        // most.
+        if Some(index) != text && now().duration_since(started) >= SAVE_BUDGET {
+            continue;
+        }
+        let format = kept[index];
+        if let Read::Bytes(bytes) = clipboard.read(format, SAVE_CAP.saturating_sub(total)) {
+            total += bytes.len();
+            saved.push((index, SavedFormat { format, bytes }));
+        }
+    }
+    let lost = kept.len() - saved.len();
+    if lost > 0 {
+        log::warn!(
+            "paste: {lost} of {} clipboard formats will not be restored (too large, too slow or unreadable)",
+            kept.len()
+        );
+    }
+    if saved.is_empty() {
+        return Original::Empty;
+    }
+    // A program pastes the first format it knows (cut critique M3).
+    saved.sort_by_key(|(index, _)| *index);
+    Original::Saved(saved.into_iter().map(|(_, format)| format).collect())
+}
+
+/// The name of `format` if it is a registered one whose name can be read.
+fn registered_name(clipboard: &dyn Clipboard, format: u32) -> Option<String> {
+    if !clipboard::REGISTERED.contains(&format) {
+        return None;
+    }
+    let mut name = String::new();
+    clipboard.format_name(format, &mut name).then_some(name)
+}
+
+/// Whether a `CanIncludeInClipboardHistory` marker lets the content into
+/// the history: a DWORD that is not 0. Shorter or unreadable data does not.
+fn allows_history(read: Read) -> bool {
+    match read {
+        Read::Bytes(bytes) => bytes
+            .bytes()
+            .get(..4)
+            .is_some_and(|dword| dword.iter().any(|&byte| byte != 0)),
+        Read::TooBig(_) | Read::NoMemory | Read::Failed => false,
+    }
 }
 
 #[cfg(test)]
