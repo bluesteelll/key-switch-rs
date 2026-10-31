@@ -671,9 +671,11 @@ struct FakeState {
 
 #[cfg(test)]
 impl FakeState {
+    /// Records `call`, and panics once if it is the call to panic at.
     fn record(&mut self, call: Call) {
         self.calls.push(call);
         if self.panic_at == Some(call) {
+            self.panic_at = None;
             panic!("the fake clipboard panics at {call:?}");
         }
     }
@@ -802,6 +804,11 @@ impl FakeClipboard {
     /// The next `count` opens fail.
     pub(crate) fn busy_opens(&self, count: u32) {
         self.state().busy_opens = count;
+    }
+
+    /// `fail` no longer happens.
+    pub(crate) fn clear_failure(&self, fail: Fail) {
+        self.state().failures.retain(|each| *each != fail);
     }
 
     /// Another program copies `formats`: it empties the clipboard and owns
@@ -1012,7 +1019,15 @@ impl Clipboard for FakeClipboard {
         if let Some((_, id)) = state.registered.iter().find(|(each, _)| *each == marker) {
             return Some(*id);
         }
-        let id = 0xC100 + state.registered.len() as u32;
+        // "If a registered format with the specified name already exists, a
+        // new format is not registered and the return value identifies the
+        // existing format" (RegisterClipboardFormatW).
+        let named = state
+            .names
+            .iter()
+            .find(|(_, name)| name.eq_ignore_ascii_case(marker.name()))
+            .map(|(id, _)| *id);
+        let id = named.unwrap_or(0xC100 + state.registered.len() as u32);
         state.registered.push((marker, id));
         Some(id)
     }

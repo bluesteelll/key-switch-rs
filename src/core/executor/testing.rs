@@ -220,6 +220,8 @@ struct DeskState {
     press_result: Option<ComboSent>,
     calls: Vec<DeskCall>,
     sink: Option<Sink>,
+    /// Runs at every probe, before it answers.
+    on_probe: Option<Box<dyn Fn() + Send>>,
 }
 
 /// A desk that records every call and sends nothing, for the tests of
@@ -250,6 +252,7 @@ impl FakeDesk {
             press_result: None,
             calls: Vec::new(),
             sink: None,
+            on_probe: None,
         })))
     }
 
@@ -292,6 +295,13 @@ impl FakeDesk {
     /// The foreground window is `raw` from now on.
     pub(crate) fn set_foreground(&self, raw: isize) {
         self.state().foregrounds = VecDeque::from([TargetWindow::from_raw(raw)]);
+    }
+
+    /// `hook` runs at every probe, before it answers, so that a test can
+    /// see what the clipboard was asked by then.
+    pub(crate) fn with_probe_hook(self, hook: impl Fn() + Send + 'static) -> Self {
+        self.state().on_probe = Some(Box::new(hook));
+        self
     }
 
     /// Each keystroke is also reported to `sink`.
@@ -360,6 +370,9 @@ impl Desk for FakeDesk {
     fn responds(&self, window: isize, within: Duration) -> Probe {
         let mut state = self.state();
         state.calls.push(DeskCall::Probe(window, within));
+        if let Some(on_probe) = &state.on_probe {
+            on_probe();
+        }
         state.answers.pop_front().unwrap_or(Probe::Answered)
     }
 
