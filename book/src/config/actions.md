@@ -1,11 +1,11 @@
 # Actions and macro steps
 
-`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5, except where a language request goes ([§13.2](#s13-2), [§13.4](#s13-4)): that describes, and links to, `6d67816`, the dialog-box fix (owner report 2026-10-30) and the last change of the program's behaviour on `master`; the `Text` action ([§13.10](#s13-10)) describes branch `feat/text-action`. How actions behave in Windows is inferred from the code and was not observed on a live daemon.
+`action` says what a binding does when it fires: switch the layout, press a key, post a window message, start a program, open a URL, press a media key, run a macro, or nothing. Facts describe commit `f4c1fb6`, the merge of roadmap item 2.5, except where a language request goes ([§13.2](#s13-2), [§13.4](#s13-4)): that describes, and links to, `6d67816`, the dialog-box fix (owner report 2026-10-30) and the last change of the program's behaviour on `master`; the `Text` action ([§13.10](#s13-10)) describes branch `feat/text-action`, and the `Paste` action and step ([§13.11](#s13-11), [§14.5](#s14-5)) describe branch `feat/clipboard-paste`. How actions behave in Windows is inferred from the code and was not observed on a live daemon.
 
 <a id="s13"></a>
 ## 13. Actions (`action`)
 
-`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 11 variants of `RawAction` ([src/config/schema.rs:171-205](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/schema.rs#L171-L205)). The loader turns it into a `BindAction` ([src/config/loader.rs:667-725](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L667-L725)), and the hook adapter runs it where it fires or hands it to the action executor ([§13.1](#s13-1)).
+`action` is a required binding field; without it the loader reports ``Unexpected missing field named `action` in `RawBinding` ``. The value is one of the 12 variants of `RawAction` (`src/config/schema.rs`). The loader turns it into a `BindAction` ([src/config/loader.rs:667-725](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L667-L725)), and the hook adapter runs it where it fires or hands it to the action executor ([§13.1](#s13-1)).
 
 | Variant | Syntax | What it does |
 |---|---|---|
@@ -17,11 +17,12 @@
 | `Launch` | `Launch(exe: "code.exe", args: ["D:\\proj"])` | Starts a process |
 | `OpenUrl` | `OpenUrl("https://github.com")` | Calls `ShellExecuteW` with the `"open"` verb |
 | `Text` | `Text("Kind regards,")` | Types the text at once, as the macro step `Text` does; runs on the action executor ([§13.10](#s13-10)) |
+| `Paste` | `Paste("Kind regards,")` | Puts the text on the clipboard, sends `Ctrl+V` and puts the previous clipboard content back; runs on the action executor ([§13.11](#s13-11)) |
 | `Media` | `Media(PlayPause)` | Synthesizes a media key or a volume key |
 | `Sequence` | `Sequence([Text("hi"), Key("Enter")])` | A macro; runs on the action executor ([§14](#s14)) |
 | `DoNothing` | `DoNothing` | Does nothing (needed only to suppress a key) |
 
-The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/system/system_function.rs:18-25](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L18-L25)), but `RawAction` has no variants for them, so they are not available from the config: `action: LockWorkstation` gives ``Unexpected variant named `LockWorkstation` in enum `RawAction`, expected one of `SwitchLanguage`, ... or `DoNothing` instead``. Other macro steps do not work outside `Sequence`: `action: Window(Minimize)` and `action: Key("A")` give an error of the same form. `Text` is both an action and a step.
+The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/system/system_function.rs:18-25](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/system/system_function.rs#L18-L25)), but `RawAction` has no variants for them, so they are not available from the config: `action: LockWorkstation` gives ``Unexpected variant named `LockWorkstation` in enum `RawAction`, expected one of `SwitchLanguage`, ... or `DoNothing` instead``. Other macro steps do not work outside `Sequence`: `action: Window(Minimize)` and `action: Key("A")` give an error of the same form. `Text` and `Paste` are both actions and steps.
 
 **Variant forms** (names are case-sensitive, including the arguments of `Media(...)` and `Window(...)`):
 
@@ -29,6 +30,7 @@ The code also has `LockWorkstation`, `ShowDesktop` and `TaskManager` ([src/syste
 |---|---|---|---|
 | No arguments | `SwitchLanguage`, `SwitchLanguageBackward`, `ToggleCapsLock`, `DoNothing` | `SwitchLanguage` | `SwitchLanguage()` or `DoNothing(1)` → `Expected comma`; `"SwitchLanguage"` → `Expected identifier` |
 | One positional argument | `PressKey`, `OpenUrl`, `Text`, `Media`, `Sequence` | `PressKey("A")` | without parentheses → ``Expected opening `(` ``; `PressKey()` → `Expected string`; `Media()` → `Expected identifier`; `Sequence()` → ``Expected opening `[` ``; `PressKey("A", "B")` → ``Expected closing `)` `` |
+| A string or named fields | `Paste` | `Paste("x")`, `Paste(text: "x", keys: "Shift+Insert")` | `Paste()` → ``Expected a string, or (text: "...", keys: "...", restore_delay: ...) but found a unit value instead``; `Paste(text: "x", delay: 5)` → ``Unexpected field named `delay` in `Paste`, expected one of `text`, `keys`, or `restore_delay` instead`` |
 | Named fields | `PostMessage`, `Launch` | `Launch(exe: "x", args: [])` | `Launch("x")` → `Expected identifier`; `Launch { exe: "x" }` → ``Expected opening `(` ``; `Launch()` → ``Unexpected missing field named `exe` in `Launch` `` |
 
 Named fields are written inside parentheses, in any order; a trailing comma is allowed, and a repeated field is an error. An unknown field is an error that lists the valid ones ([§5.3](structure.md#s5-3)): `Launch(exe: "notepad.exe", cwd: "C:/temp")` gives ``Unexpected field named `cwd` in `Launch`, expected either `exe` or `args` instead``.
@@ -47,9 +49,9 @@ Named fields are written inside parentheses, in any order; a trailing comma is a
 | `chord` | hook thread | the last key of the chord is pressed | [src/engine/mod.rs:908-914](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L908-L914) |
 | `sequence` | hook thread | last step | [src/engine/mod.rs:879-888](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L879-L888) |
 
-The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` and the gesture timers (`src/hook/main_thread.rs`, roadmap item 2.2); no action runs on a thread of its own. While it runs an action, keyboard input stalls system-wide, a `Hold` action included. Since roadmap [item 2.1](../roadmap.md#21-action-executor) (fixed on `feat/action-executor`, [KS-08](../audit.md#ks-08)) the thread that fires runs only the fast actions itself, before the hook returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` and `DoNothing`. Each of them only posts a message or sends one key press, and running it there keeps its output in order with the keys typed after it. `Launch`, `OpenUrl`, `Text` and `Sequence` are queued for the `action-executor` thread, and the hook returns at once. When one key-down fires several actions, the fast ones run in order before the hook returns, and the others run in order on the executor after it.
+The "hook thread" is the main thread with the message loop that services `WH_KEYBOARD_LL` and the gesture timers (`src/hook/main_thread.rs`, roadmap item 2.2); no action runs on a thread of its own. While it runs an action, keyboard input stalls system-wide, a `Hold` action included. Since roadmap [item 2.1](../roadmap.md#21-action-executor) (fixed on `feat/action-executor`, [KS-08](../audit.md#ks-08)) the thread that fires runs only the fast actions itself, before the hook returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage` and `DoNothing`. Each of them only posts a message or sends one key press, and running it there keeps its output in order with the keys typed after it. `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` are queued for the `action-executor` thread, and the hook returns at once. When one key-down fires several actions, the fast ones run in order before the hook returns, and the others run in order on the executor after it.
 
-**The action executor** (`src/core/executor/`) is one thread with its own message loop, and it initialises COM as a single-threaded apartment, as `ShellExecuteW` asks. Up to 32 actions wait for it; a further one is dropped and counted in `executor_jobs_dropped` ([§18.6](errors.md#s18-6)). Macros run side by side on it ([§14.1](#s14-1)): a `Delay` holds up no other action. A `Launch` or `OpenUrl`, as an action or a macro step, holds up the other queued actions and macros while it runs inside Windows (a cold browser, a dialog that `ShellExecuteW` shows). `swch off`, `swch on` when remapping was off, a reload (a saved `config.ron` that loads) and `swch exit` drop the actions still queued and stop the running macros; a step already running finishes first. A save that does not load keeps them, as it keeps the bindings. If the executor stops on its own, it logs one `[ERROR]` line, and every later `Launch`, `OpenUrl`, `Text` and `Sequence` does nothing and counts in `executor_unavailable` until the daemon restarts.
+**The action executor** (`src/core/executor/`) is one thread with its own message loop, and it initialises COM as a single-threaded apartment, as `ShellExecuteW` asks. Up to 32 actions wait for it; a further one is dropped and counted in `executor_jobs_dropped` ([§18.6](errors.md#s18-6)). Macros run side by side on it ([§14.1](#s14-1)): a `Delay` holds up no other action. A `Launch` or `OpenUrl`, as an action or a macro step, holds up the other queued actions and macros while it runs inside Windows (a cold browser, a dialog that `ShellExecuteW` shows). `swch off`, `swch on` when remapping was off, a reload (a saved `config.ron` that loads) and `swch exit` drop the actions still queued and stop the running macros; a step already running finishes first. A save that does not load keeps them, as it keeps the bindings. If the executor stops on its own, it logs one `[ERROR]` line, and every later `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` does nothing and counts in `executor_unavailable` until the daemon restarts. A `Paste` holds up the jobs fired after it while it waits ([§13.11](#s13-11)).
 
 > [!NOTE]
 > **Auto-repeat ([KS-10](../audit.md#ks-10), fixed in `feat/repeat-flag`).** While the trigger of a `keys` + `Immediate` binding is held, the keyboard repeats its key-down, about 30 times per second after the initial delay. By default only `PressKey`, `Media(VolumeUp)` and `Media(VolumeDown)` fire again on each repeat (owner decision); every other action fires once per press, so `trigger: Tap(…)` is no longer needed to make an action one-shot. `repeat: true` on a binding makes it fire on every repeat, and `repeat: false` once per press ([§11.3](triggers-conditions.md#s11-3)). Each repeat of a `PressKey` sends a new press and release: for a toggle key (`CapsLock`, `NumLock`, `ScrollLock`) or a modifier write `repeat: false`, or a held trigger toggles the key at the repeat rate or taps the modifier ([§13.5](#s13-5)).
@@ -60,7 +62,7 @@ One known issue and two fixes cut across several actions:
 > **Fixed on `feat/action-executor` ([KS-08](../audit.md#ks-08), roadmap [item 2.1](../roadmap.md#21-action-executor)).** `Launch` and `OpenUrl` no longer run inside the hook callback. `CreateProcessW` and `ShellExecuteW` can take hundreds of milliseconds, and a callback that runs longer than `LowLevelHooksTimeout` (at most 1000 ms on Windows 10 1709 and later) gets the hook silently removed; they now run on the action executor, and the hook returns at once. `Sequence([Launch(...)])` and `Sequence([OpenUrl(...)])` are no longer needed as a workaround. The fast actions still run in the callback, by design; noticing a hook that Windows removed is roadmap [item 2.4](../roadmap.md#24-hook-watchdog).
 
 > [!WARNING]
-> **Known issue ([KS-19](../audit.md#ks-19)).** Synthesized keys combine with physically held modifiers ([src/core/windows_actions.rs:257](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/windows_actions.rs#L257), [src/data/sequence.rs:179](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L179)). The trigger's modifier presses have already reached the OS; only the key that completed the combination is suppressed. Example: with `keys: "Ctrl+J", action: PressKey("Down")` the application receives Ctrl+Down. Workaround: triggers without modifiers (`F13`–`F24`, `CapsLock`, `Pause`), and in a macro a first step `Delay(150…300)` so that the user has time to release the keys.
+> **Known issue ([KS-19](../audit.md#ks-19)).** Synthesized keys combine with physically held modifiers ([src/core/windows_actions.rs:257](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/core/windows_actions.rs#L257), [src/data/sequence.rs:179](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L179)). The trigger's modifier presses have already reached the OS; only the key that completed the combination is suppressed. Example: with `keys: "Ctrl+J", action: PressKey("Down")` the application receives Ctrl+Down. Workaround: triggers without modifiers (`F13`–`F24`, `CapsLock`, `Pause`), and in a macro a first step `Delay(150…300)` so that the user has time to release the keys. A `Paste` waits until the modifiers are released instead ([§13.11](#s13-11)).
 
 > [!NOTE]
 > **The menu mask key** (fixed on `feat/mask-key`, [KS-12](../audit.md#ks-12)). When the hook swallows a key event (a key-down, an auto-repeat or a key-up) while Windows has a Win or Alt key down whose key-down it saw, it first sends virtual-key code 0xE8 down and up, tagged as the daemon's own input ([src/engine/mod.rs:1011-1019](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/engine/mod.rs#L1011-L1019), [src/hook/keyboard_hook_callback.rs:298-378](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/hook/keyboard_hook_callback.rs#L298-L378)). Windows then sees a key between the Win or Alt press and its release, so `Win+X` or `Alt+X` with any action, `SwitchLanguage*`, `PostMessage`, `Launch`, `OpenUrl` and `DoNothing` included, no longer opens the Start menu or activates the menu bar on release. This is the technique of AutoHotkey's `#MenuMaskKey`. 0xE8 is unassigned by Microsoft and types nothing, but applications, games, key-logging tools and other keyboard hooks see it as injected input. An Alt or Win whose own key-down a binding swallowed is not masked for: Windows never saw it. A `Tap`, `Hold` or `DoubleTap` on `Win` or `Alt` alone that lets the key through is not covered: nothing is swallowed there ([§11.8](triggers-conditions.md#s11-8)).
@@ -287,6 +289,74 @@ Types the text at once, as the macro step `Text` does ([§14.4](#s14-4)), withou
 > [!WARNING]
 > **Known issue ([KS-19](../audit.md#ks-19)).** The trigger's held modifiers stay down in Windows while the text arrives, as for the macro step: with Alt held an application may take the characters as menu shortcuts, with Ctrl as its own shortcuts. `Text` sends no modifier event, so nothing stays stuck. Use a trigger without modifiers (`ScrollLock`, `Pause`, `F13`–`F24`), or `Sequence([Delay(200), Text("...")])` to give yourself time to release them. Roadmap item 3.1 releases them.
 
+<a id="s13-11"></a>
+### 13.11 `Paste("...")`
+
+```ron
+( keys: "F15", action: Paste("Kind regards,\nIvan") ),
+( keys: "F16", action: Paste(text: "git status", keys: "Shift+Insert", restore_delay: 800) ),
+```
+
+Puts the text on the clipboard, sends the paste keystroke and then puts the previous clipboard content back (owner request 2026-10-30, roadmap [new feature 9](../roadmap.md#new-features-after-stabilisation); branch `feat/clipboard-paste`). Where `Text` types the phrase key by key, `Paste` hands it over in one paste, as Ctrl+V does: an editor's auto-indent and auto-close treat it as pasted text, a long phrase loses no characters, and no key you type lands inside it.
+
+| Field | Type | Default | Allowed values |
+|---|---|---|---|
+| `text` | string | required (``Unexpected missing field named `text` in `Paste` ``) | not empty, no U+0000 |
+| `keys` | a combination string ([§6.2](keys.md#s6-2)) | `"Ctrl+V"` | at least one key that is not a modifier |
+| `restore_delay` | integer, ms | `500` | `50` to `5000` |
+
+- `Paste("...")` is the text with both defaults. `Paste(text: "...", keys: "...", restore_delay: N)` names the fields, in any order; `text` is required, a trailing comma is allowed, and a repeated or unknown field is an error. `keys` and `restore_delay` take a plain value: `keys: Some("Shift+Insert")` gives `Expected string`.
+- Load errors ([§18.5](errors.md#s18-5) rules 20 to 24): `Paste: empty`; `Paste: the text contains the character U+0000, which ends a text on the clipboard`; `Paste: keys "Ctrl+Foo": unknown key "Foo" in combo "Ctrl+Foo"`; `Paste: keys "Ctrl+Shift" has no key besides modifiers`; `Paste: restore_delay: 10000 is out of range: 50 to 5000 ms`. No message quotes the text. The parse errors are in [§18.3](errors.md#s18-3).
+- The text is converted once, at load: to UTF-16, every line break (`\n`, `\r` or `\r\n`) as CR-LF, one NUL at the end, the form `CF_UNICODETEXT` asks for. A `\n` is a line break of the pasted text, not an Enter key: what a pasted line break does is up to the application (a chat box may send on it or insert it).
+- The startup list shows `paste (N chars, Ctrl+V)`, N the number of characters. No log line, debug output or error message contains the text or the clipboard content.
+- It fires once per press; `repeat: true` fires it on each auto-repeat, but at most one `Paste` action waits at a time (below), so a held key pastes about once per restore.
+
+**What happens.** The hook only queues the `Paste` for the action executor, as it queues a `Text` (bench row R28); everything else runs on the executor thread:
+
+1. It reads the foreground window, the target.
+2. If the restore of an earlier paste is pending, it waits for it, at most 1 s, and then goes ahead (`[INFO] paste: a paste went ahead after waiting 1 s for the previous one's restore`).
+3. It waits until none of the eight Shift, Ctrl, Alt and Win keys is down, checking every 5 ms on its timer; after 3 s the paste is skipped (`[WARN] paste: a modifier key was still held after 3 s; the paste was skipped`). See the warning below.
+4. It checks that remapping is still on and that the foreground window is the same; otherwise the paste is skipped.
+5. If another program's window owns the clipboard, it sends that window `WM_NULL` and waits at most 100 ms for the answer, so that a hung owner cannot hold up the executor; without an answer the paste is skipped.
+6. It opens the clipboard with a message-only window of its own. If another program has the clipboard open, it tries again after 5, 10, 20, 40 and 80 ms, 155 ms in all, and then skips the paste. Up to here nothing was changed.
+7. While it has the clipboard open, it saves the previous content (below), empties the clipboard, puts the phrase on it with four markers, and closes it.
+8. It checks remapping, the foreground window and the modifiers again: if one of them changed, it puts the previous content back at once and sends no keystroke.
+9. It sends the keystroke in one `SendInput` batch, as a `Combo` step sends it (the modifiers down, the key down and up, the modifiers up), tagged as the daemon's own input. If Windows inserted none of it, the previous content goes back at once; if it cut the batch short, the missing key releases are sent, so no key stays down.
+10. `restore_delay` after the keystroke it sends the target window `WM_NULL` and waits at most 20 ms. An answer puts the previous content back. No answer, or one that took 5 ms or more, means the window's thread is busy and may not have read the clipboard yet: it asks again every 250 ms, and once the window answers after that, it waits 100 ms more. 5 s after the keystroke the content goes back anyway (`[WARN] paste: the target window did not answer for 5 s; the clipboard was put back anyway`). A window that no longer exists counts as one that answered.
+11. The restore opens the clipboard and checks, while it has it open, that its window still owns the clipboard and that no other program added a format to it. If another program copied something, or added a format, the clipboard stays as that program left it (`[INFO] paste: the clipboard changed after the paste; the previous content was not put back`). Otherwise it empties the clipboard and puts the saved formats back in their order, the four markers and the daemon's own marker `KeySwitchRsRestored`. A clipboard another program holds open is tried every 25 ms for 1 s.
+
+| Path | Time |
+|---|---|
+| Hook callback of the key that fires it | as for `Text`: one queued job, no Win32 call (bench rows R27, R28) |
+| Key to keystroke, usual case (no earlier paste pending, no modifier held, an owner that answers, a small clipboard) | the executor's wake-up plus one `WM_NULL` round trip, the save, five writes and the keystroke: a few milliseconds (from code, not measured) |
+| Key to keystroke, worst case | about 4.3 s once this `Paste` is the first one waiting: 1 s for an earlier paste's restore, 3 s of held modifiers, 100 ms owner check, 155 ms of open retries, 50 ms of save budget; then it is sent or skipped. A `Paste` step of a macro that waits behind another waiting `Paste` adds that one's wait ([§19](known-issues.md#s19) row 95) |
+| A format being rendered when the save budget ends | as long as the owner takes, up to Windows' own limit of 30 s per format, with the clipboard open ([§19](known-issues.md#s19) row 95) |
+| Keystroke to restore | `restore_delay`; while the target does not answer, up to 5 s |
+| Memory | up to 64 MiB of saved formats, wiped when dropped, and as much again for the copies at the restore |
+
+**What is saved and put back.** Everything that can be copied back (owner decision): the text first, then the other formats in the order the clipboard lists them, until 64 MiB in all or 50 ms after the save began; one read already running when the budget ends finishes. The formats Windows makes from others (`CF_TEXT`, `CF_OEMTEXT`, `CF_BITMAP`, the second of `CF_DIB`/`CF_DIBV5`) are not saved, since Windows makes them again from the restored ones. Metafiles, GDI-only formats, owner-drawn ones, the private and the GDI object ranges, the OLE link formats and a format whose name cannot be read are never saved ([§19](known-issues.md#s19) row 94); a warning counts what is lost: `[WARN] paste: 1 of 4 clipboard formats will not be restored (too large, too slow or unreadable)`.
+
+**Privacy.**
+
+- The phrase carries the markers `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory` (0), `CanUploadToCloudClipboard` (0) and `Clipboard Viewer Ignore`, so neither the Windows clipboard history (Win+V), nor the cloud clipboard, nor a clipboard manager that honours them records it ([§19](known-issues.md#s19) rows 101 and 102). The restored copy carries the same markers, so the history does not record the previous content a second time.
+- Content that its program marked private (`ExcludeClipboardContentFromMonitorProcessing`, or `CanIncludeInClipboardHistory` set to 0, as password managers mark a copied password) is not saved: at the restore the clipboard is emptied instead (`[INFO] paste: the clipboard held private content; it will be cleared, not put back`; owner decision; row 100).
+- A copy made between the paste and the restore is kept: the restore checks, with the clipboard open, that the daemon's window still owns it. The clipboard sequence number is only logged at debug level.
+
+**One paste at a time.**
+
+- The executor jobs fired after a `Paste` that waits (for a released modifier, for an earlier restore, for a busy clipboard) run after it, in firing order; a macro that started before it goes on meanwhile. The keys you type, and the fast actions their bindings fire, are not held: they can reach the application before the keystroke ([§19](known-issues.md#s19) row 97).
+- A second `Paste` within the restore delay waits for the first one's restore, at most 1 s, then takes the clipboard over and keeps the first one's saved content, which its own restore puts back. With a `restore_delay` over 1 s the first window can paste the second phrase (row 99).
+- A `Paste` action fired while another one waits is dropped and counted in `paste_dropped` ([§18.6](errors.md#s18-6)); a `Paste` step of a macro is never dropped.
+- `swch off`, `swch on` when remapping was off, a reload and a lock drop a `Paste` that waits; a restore that is pending still runs at its time. `swch exit`, and an executor that stops, put a pending clipboard back at once, for at most 250 ms more ([§19](known-issues.md#s19) row 93).
+
+> [!WARNING]
+> **Held modifiers ([KS-19](../audit.md#ks-19)), until roadmap item 3.1.** A `Paste` waits until no Shift, Ctrl, Alt or Win key is held, so that the keystroke goes out with exactly its own modifiers and no modifier changes state: with `keys: "Ctrl+Shift+V"` it pastes once both keys are released, and a modifier held for 3 s skips it. A modifier that the binding itself swallows is not seen as held ([KS-14](../audit.md#ks-14)). Roadmap item 3.1 replaces the wait with a release of the held modifiers around the keystroke ([§19](known-issues.md#s19) row 98).
+
+> [!WARNING]
+> **A busy browser or Electron page.** The check of step 10 asks the target window's own thread. In Chrome, Edge and Electron or WebView2 applications (Slack, Discord, VS Code, Teams) that thread answers at once while the page, which handles the Ctrl+V, can still be busy: the restore then comes after `restore_delay` and a page busy for longer pastes the previous content, a copied password for example. Give such windows a longer delay with a `when:`, such as `( keys: "F15", action: Paste(text: "Thanks!", restore_delay: 1500), when: AppEquals("slack.exe") )` ([§19](known-issues.md#s19) row 105). Remote Desktop and virtual machine windows read the clipboard late too (row 96).
+
+Further limits: [§19](known-issues.md#s19) rows 93 to 106 (a killed daemon, formats that are not put back, a slow owner, the order with typed keys, the scan code of the keystroke, `CF_TEXT` readers, a clipboard owner that never answers).
+
 <a id="s14"></a>
 ## 14. The `Sequence([...])` macro and its steps
 
@@ -298,7 +368,7 @@ action: Sequence([ <step>, <step>, ... ])
 
 - The argument is a list in square brackets. `Sequence(Text("x"))` and `Sequence()` → ``Expected opening `[` ``.
 - An empty list `Sequence([])` is allowed: it is queued and does nothing. A trailing comma and comments inside the list are allowed.
-- The steps are the 8 variants of `RawStep` ([src/config/schema.rs:231-249](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/schema.rs#L231-L249)). An unknown step gives ``Unexpected variant named `Fly` in enum `RawStep`, expected one of `Window`, `Delay`, `Text`, `Key`, `Combo`, `Launch`, `OpenUrl`, or `Media` instead``. Actions that are not among the steps give the same error: `PressKey("A")` inside a macro (write `Key("A")`) and a nested `Sequence([...])`.
+- The steps are the 9 variants of `RawStep` (`src/config/schema.rs`): `Window`, `Delay`, `Text`, `Paste`, `Key`, `Combo`, `Launch`, `OpenUrl` and `Media`. An unknown step gives ``Unexpected variant named `Fly` in enum `RawStep`, expected one of `Window`, `Delay`, `Text`, `Paste`, `Key`, `Combo`, `Launch`, `OpenUrl`, or `Media` instead``. Actions that are not among the steps give the same error: `PressKey("A")` inside a macro (write `Key("A")`) and a nested `Sequence([...])`.
 - All steps are validated at load time ([src/config/loader.rs:704-714](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L704-L714), [src/config/loader.rs:739-774](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/config/loader.rs#L739-L774)). The error gives the number of the first invalid step, counting from 0: `binding #0 [F13]: step #2: Combo "Ctrl+Foo": unknown key "Foo" in combo "Ctrl+Foo"`.
 - `Sequence` as an action works with any trigger on `keys`, including `Tap`, `Hold` and `DoubleTap`, and also with the `sequence` and `chord` kinds (their trigger is always `Immediate`).
 
@@ -314,6 +384,7 @@ action: Sequence([ <step>, <step>, ... ])
 - `Window(...)` steps always act on the remembered HWND, even if the focus has already moved.
 - `Text`, `Key` and `Combo` go to the window that has the keyboard focus **at the time of the step**: `SendInput` is not addressed to a window.
 - `Launch`, `OpenUrl` and `Media` do not depend on a window.
+- A `Paste` step pastes through the clipboard and waits until its keystroke is sent; the restore of the clipboard does not hold up the next step ([§14.5](#s14-5)).
 - A step error does not abort the macro: it is only logged, to the console and to `daemon.log`.
 - `Launch` and `OpenUrl` inside `Sequence` run on the action executor, as the actions of the same name do. While one of them runs inside Windows (a cold browser, a dialog), the other macros and actions wait.
 - Several macros run side by side on the one executor, as they did on a thread each before: they interleave at their `Delay` steps, oldest first, and the steps between two `Delay`s of one macro run without a break. A held `Immediate` macro starts once per press; with `repeat: true` it starts once per auto-repeat ([KS-10](../audit.md#ks-10)), up to 32 waiting to start, a further one dropped and counted.
@@ -370,12 +441,26 @@ Code: [src/data/sequence.rs:123-161](https://github.com/bluesteelll/key-switch-r
 - A real line break inside the literal also becomes part of the text. In a file with CRLF line endings (the default for editors on Windows) that is `"\r\n"`, that is, two characters.
 
 <a id="s14-5"></a>
-### 14.5 `Key("...")`
+### 14.5 `Paste("...")`
+
+`Paste("Kind regards,")` and `Paste(text: "Kind regards,", keys: "Shift+Insert", restore_delay: 800)`: the same two forms, defaults, bounds and load errors as the action ([§13.11](#s13-11)), with the step number in the message: `binding #0 [F13]: step #1: Paste: empty`. Unlike the step `Text("")`, the step `Paste("")` is an error: an empty paste would still swap the clipboard.
+
+```ron
+( keys: "F13", action: Sequence([Key("Tab"), Paste("first field"), Key("Tab"), Paste("second field"), Key("Enter")]) ),
+```
+
+- The macro waits at the step until its paste is over: from the keystroke on, the next step runs at once, while the restore of the clipboard waits for its delay. The keystroke goes to the window that has the keyboard focus when it is sent, as a `Key` step does; the target whose answer the restore waits for is the foreground window when the step starts.
+- A second `Paste` step within the delay waits for the first one's restore, at most 1 s ([§13.11](#s13-11)). A `Paste` step is never dropped, even while a `Paste` action waits.
+- While the step waits (for a released modifier, for an earlier restore, for a busy clipboard), the jobs fired after the macro wait behind it, and the other macros go on.
+- `swch off`, a reload and `swch exit` stop the macro at the step as at a `Delay`; a clipboard the step already changed is still put back.
+
+<a id="s14-6"></a>
+### 14.6 `Key("...")`
 
 `Key("Enter")` is a single key name, as in `PressKey`. `Key("Ctrl+S")` → `step #0: Key: unknown key "Ctrl+S"`, `Key("Bogus")` → `Key: unknown key "Bogus"`, `Key()` → `Expected string`. The behaviour is the same as for `PressKey` ([src/data/sequence.rs:163-174](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L163-L174)): a VK tap, no modifiers are added, the result depends on the layout, and physically held modifiers combine with it ([KS-19](../audit.md#ks-19)). Lost events are printed as `[WARN] press_key: SendInput sent N of 2 ...`.
 
-<a id="s14-6"></a>
-### 14.6 `Combo("...")`
+<a id="s14-7"></a>
+### 14.7 `Combo("...")`
 
 `Combo("Ctrl+Shift+T")` is a combination string following the rules of [§6.2](keys.md#s6-2): `+` is the separator, spaces are allowed, case does not matter, duplicates are removed, the written order is kept, and names with a side (`LCtrl` and so on) are allowed and send their own VK.
 
@@ -401,7 +486,7 @@ Examples:
 
 - Held modifiers that are not in the combination are added to it: with Shift held, `Combo("Ctrl+S")` turns into Ctrl+Shift+S ([src/data/sequence.rs:179](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L179); [§13.1](#s13-1), [KS-19](../audit.md#ks-19)).
 
-<a id="s14-7"></a>
-### 14.7 `Launch(...)`, `OpenUrl("...")` and `Media(...)` as steps
+<a id="s14-8"></a>
+### 14.8 `Launch(...)`, `OpenUrl("...")` and `Media(...)` as steps
 
 The syntax and semantics are the same as for the actions of the same name ([§13.6](#s13-6)–[§13.8](#s13-8), [src/data/sequence.rs:113-115](https://github.com/bluesteelll/key-switch-rs/blob/f4c1fb6/src/data/sequence.rs#L113-L115)), including the elevated rights and the console for `Launch` ([KS-09](../audit.md#ks-09)). They run on the action executor, as those actions do. `Launch` waits neither for the process to start nor for its window to appear, so put a `Delay(...)` before typing into a new window.

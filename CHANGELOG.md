@@ -329,7 +329,7 @@ minor version; such entries sit under **Changed** and start with
   `Paste: keys "...": ...`, `Paste: keys "..." has no key besides
   modifiers`, `Paste: restore_delay: N is out of range: 50 to 5000 ms`, and
   the parse errors of an unknown, missing or duplicate field. Known issues
-  93 to 105. The `windows` crate gains the features
+  93 to 106. The `windows` crate gains the features
   `Win32_System_DataExchange` and `Win32_System_Memory`; no crate is added.
   Every clipboard call is in `platform/clipboard.rs`, compiled only outside
   the tests, which run on a fake clipboard and a fake desk. Tests:
@@ -345,7 +345,7 @@ minor version; such entries sit under **Changed** and start with
 
 ### Changed
 
-- The config loader enables ron's `unwrap_variant_newtypes` extension,
+- **Breaking:** the config loader enables ron's `unwrap_variant_newtypes` extension,
   which `Paste(text: ..., keys: ...)` needs (lane feat-clipboard-paste). An
   explicit `Some(...)` around the struct of `sequence:` or `chord:`
   (`sequence: Some((steps: [...]))`) no longer loads: it gives `Expected

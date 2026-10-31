@@ -1025,7 +1025,7 @@ The hook watchdog (roadmap item 2.4) has limits of its own:
 - Raw keyboard input in the daemon's process belongs to the watchdog:
   Windows allows one registration per device class and process.
 
-`Paste` has limits of its own (known issues 93 to 105 in the book):
+`Paste` has limits of its own (known issues 93 to 106 in the book):
 
 - A daemon killed or crashed between the paste and the restore leaves the
   phrase on the clipboard, and the previous content is lost.
