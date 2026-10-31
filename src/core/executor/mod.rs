@@ -788,13 +788,14 @@ mod tests {
 
     use super::runs::{Ctx, Job, Next, Runs};
     use super::testing::{
-        FakeRunner, Ran, Record, WAIT, leaked_counters, next_record as next, wait_until,
+        FakeDesk, FakeRunner, Ran, Record, WAIT, leaked_counters, next_record as next, wait_until,
     };
     use super::*;
     use crate::core::windows_actions::BindAction;
     use crate::data::paste::PasteSpec;
     use crate::data::sequence::SequenceStep;
     use crate::logging::counters::{Counter, Counters};
+    use crate::platform::clipboard::{CF_UNICODETEXT, FakeClipboard};
     use crate::platform::timers::{LONGEST, due_time};
 
     fn sequence(steps: Vec<SequenceStep>) -> BindAction {
@@ -1564,6 +1565,198 @@ mod tests {
         assert_eq!(next(&records).text(), "open next");
         assert!(!executor.is_finished());
         assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    /// The spec of a `Paste` of `text` with `Ctrl+V` and `restore_delay`.
+    fn paste_of(text: &str, restore_delay: u64) -> Arc<PasteSpec> {
+        Arc::new(PasteSpec::new(text, vec![VK_CONTROL, VK_V], restore_delay).expect("a valid spec"))
+    }
+
+    fn paste(text: &str, restore_delay: u64) -> BindAction {
+        BindAction::Paste(paste_of(text, restore_delay))
+    }
+
+    /// `text` as `CF_UNICODETEXT` bytes, its NUL included.
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// A fake clipboard that holds "ORIG", put there by another program.
+    fn original() -> FakeClipboard {
+        FakeClipboard::new().with_content(0x77, &[(CF_UNICODETEXT, &utf16("ORIG"))])
+    }
+
+    /// Whether `clipboard` holds "ORIG" again.
+    fn holds_the_original(clipboard: &FakeClipboard) -> bool {
+        clipboard
+            .content()
+            .first()
+            .is_some_and(|first| *first == (CF_UNICODETEXT, utf16("ORIG")))
+    }
+
+    #[test]
+    fn a_paste_step_types_in_order_with_the_key_steps_around_it() {
+        let (tx, records) = mpsc::channel();
+        let (executor, _) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        executor.handle().submit(
+            sequence(vec![
+                key(VK_TAB),
+                SequenceStep::Paste(paste_of("x", 50)),
+                key(VK_RETURN),
+            ]),
+            TargetWindow::NONE,
+        );
+
+        let ran: Vec<Record> = (0..3).map(|_| next(&records)).collect();
+        let texts: Vec<&str> = ran.iter().map(Record::text).collect();
+        assert_eq!(texts, ["key Tab", "keys Ctrl+V", "key Enter"]);
+        assert_eq!(ran[1].ran, Ran::Keys("keys Ctrl+V".to_owned()));
+        for record in &ran {
+            assert_eq!(record.thread, executor.thread().id());
+            assert_eq!(record.name.as_deref(), Some("action-executor"));
+        }
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_text_after_a_waiting_paste_runs_after_its_keystroke() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, _) = start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(paste("ab", 50), TargetWindow::NONE);
+        wait_until("the Paste waits for the modifiers", || {
+            handle.active_runs() == 1
+        });
+
+        handle.submit(text("cd"), TargetWindow::NONE);
+        desk.hold_modifiers(false);
+
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(next(&records).text(), "text (2 chars)");
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_delay_macro_is_not_held_up_by_a_waiting_paste() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, _) = start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(
+            sequence(vec![key(VK_F13), delay(50), key(VK_F14)]),
+            TargetWindow::NONE,
+        );
+        assert_eq!(next(&records).text(), "key F13");
+        handle.submit(paste("ab", 50), TargetWindow::NONE);
+        wait_until("the Paste waits beside the macro", || {
+            handle.active_runs() == 2
+        });
+
+        assert_eq!(next(&records).text(), "key F14", "the Paste still waits");
+        desk.hold_modifiers(false);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn swch_off_cancels_a_waiting_paste_but_keeps_its_restore() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let desk = FakeDesk::new();
+        let (executor, _) = start(
+            FakeRunner::new(tx)
+                .with_clipboard(clipboard.clone())
+                .with_desk(desk.clone()),
+            QUEUE_CAPACITY,
+        );
+        let handle = executor.handle();
+        handle.submit(paste("A", 100), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        desk.hold_modifiers(true);
+        handle.submit(paste("B", 100), TargetWindow::NONE);
+        wait_until("B waits", || handle.active_runs() == 1);
+
+        handle.cancel_pending();
+        wait_until("B is cancelled", || handle.active_runs() == 0);
+        wait_until("A's original is back", || holds_the_original(&clipboard));
+
+        desk.hold_modifiers(false);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "B never pasted");
+    }
+
+    #[test]
+    fn stop_restores_the_clipboard_before_it_returns_joined() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+
+        let begun = Instant::now();
+        assert_eq!(executor.stop(), Stopped::Joined);
+        let took = begun.elapsed();
+
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+    }
+
+    #[test]
+    fn wm_quit_restores_the_clipboard_before_the_executor_ends() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx)
+                .with_clipboard(clipboard.clone())
+                .with_quit_on("key F13"),
+            QUEUE_CAPACITY,
+        );
+        executor.handle().submit(
+            sequence(vec![SequenceStep::Paste(paste_of("x", 5_000)), key(VK_F13)]),
+            TargetWindow::NONE,
+        );
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(next(&records).text(), "key F13");
+
+        wait_until("the executor ends on WM_QUIT", || executor.is_finished());
+
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_dropped_paste_is_counted_in_paste_dropped() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, counters) =
+            start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(paste("a", 50), TargetWindow::NONE);
+        wait_until("the Paste waits for the modifiers", || {
+            handle.active_runs() == 1
+        });
+
+        handle.submit(paste("b", 50), TargetWindow::NONE);
+        wait_until("the second Paste is counted as dropped", || {
+            counters.get(Counter::PasteDropped) == 1
+        });
+
+        desk.hold_modifiers(false);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "one keystroke");
     }
 
     /// The apartment of the calling thread, or `None` without COM.

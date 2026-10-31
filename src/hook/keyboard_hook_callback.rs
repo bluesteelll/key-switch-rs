@@ -1176,6 +1176,36 @@ mod tests {
         assert!(records.try_recv().is_err(), "the Text reached it once");
     }
 
+    #[test]
+    fn carry_out_queues_a_paste_and_sends_nothing_on_the_firing_thread() {
+        let (tx, records) = mpsc::channel();
+        let (hook, executor) = hook_with_executor(FakeRunner::new(tx), QUEUE_CAPACITY);
+        let _ = fast_actions_run();
+        let spec = crate::data::paste::PasteSpec::new("abc", vec![VK_CONTROL, VK_V], 50)
+            .expect("a valid spec");
+
+        carry_out(
+            &hook,
+            Decision {
+                fire: vec![BindAction::Paste(Arc::new(spec)), BindAction::DoNothing],
+                ..Decision::default()
+            },
+        );
+
+        let pasted = next_record(&records);
+        assert_eq!(pasted.text(), "keys Ctrl+V");
+        assert_eq!(pasted.thread, executor.thread().id());
+        assert_ne!(pasted.thread, thread::current().id());
+        assert_eq!(
+            fast_actions_run(),
+            [FastAction::DoNothing],
+            "only DoNothing ran on the firing thread"
+        );
+        hook.attach_executor(None);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "the Paste reached it once");
+    }
+
     /// How long each of 20 `carry_out` calls with one `OpenUrl` took, on
     /// a fresh executor whose runner blocks 500 ms per call.
     fn twenty_carry_out_times() -> Vec<Duration> {

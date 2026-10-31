@@ -353,7 +353,7 @@ mod tests {
     use crate::core::executor::{Runner, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::sequence::SequenceStep;
-    use crate::platform::clipboard::FakeClipboard;
+    use crate::platform::clipboard::{CF_UNICODETEXT, Call, FakeClipboard};
 
     /// A fake clock: the base instant plus an offset that the test, or the
     /// runner inside a call, moves forward.
@@ -567,6 +567,230 @@ mod tests {
         fixture.start(sequence(vec![key(VK_F13), paste_step("ef"), key(VK_F14)]));
         fixture.run_until_idle(20_000);
         assert_eq!(fixture.taken(), ["key F13", "keys Ctrl+V", "key F14"]);
+    }
+
+    fn text(text: &str) -> BindAction {
+        BindAction::Text(Arc::from(text))
+    }
+
+    /// `text` as `CF_UNICODETEXT` bytes, its NUL included.
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// A clipboard that holds "ORIG", put there by another program.
+    fn original() -> FakeClipboard {
+        FakeClipboard::new().with_content(0x77, &[(CF_UNICODETEXT, &utf16("ORIG"))])
+    }
+
+    /// Whether `clipboard` holds "ORIG" again.
+    fn holds_the_original(clipboard: &FakeClipboard) -> bool {
+        clipboard
+            .content()
+            .first()
+            .is_some_and(|first| *first == (CF_UNICODETEXT, utf16("ORIG")))
+    }
+
+    impl Fixture {
+        /// A fixture whose runner pastes through `clipboard`.
+        fn with_clipboard(clipboard: &FakeClipboard) -> Self {
+            let mut fixture = Self::new();
+            fixture.runner.clipboard = clipboard.clone();
+            fixture
+        }
+
+        /// Starts `action` and polls once, as the drain does.
+        fn submit(&mut self, action: BindAction) -> Calls {
+            let mut calls = self.start(action);
+            calls += self.poll().calls;
+            calls
+        }
+
+        fn drop_timed(&mut self) -> usize {
+            let Fixture {
+                runs,
+                runner,
+                base,
+                offset,
+                epoch,
+            } = self;
+            let live = |job_epoch: u64| job_epoch == epoch.get();
+            let now = || *base + *offset.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut ctx = Ctx {
+                runner,
+                live: &live,
+                now: &now,
+            };
+            runs.drop_timed(&mut ctx)
+        }
+    }
+
+    #[test]
+    fn jobs_after_a_waiting_paste_run_after_it() {
+        // Ruling 7: firing order, even behind a Paste that waits.
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("ab"));
+        fixture.submit(text("cd"));
+
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.poll();
+
+        assert_eq!(fixture.taken(), ["keys Ctrl+V", "text (2 chars)"]);
+    }
+
+    #[test]
+    fn a_run_started_before_a_waiting_paste_goes_on() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(sequence(vec![key(VK_F13), delay(10), key(VK_F14)]));
+        fixture.submit(paste("ab"));
+        assert_eq!(fixture.taken(), ["key F13"]);
+
+        fixture.at(10);
+        fixture.poll();
+
+        assert_eq!(fixture.taken(), ["key F14"], "the Paste still waits");
+    }
+
+    #[test]
+    fn extra_standalone_pastes_while_one_waits_are_dropped_and_counted() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        for phrase in ["a", "b", "c"] {
+            calls += fixture.submit(paste(phrase));
+        }
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        calls += fixture.poll().calls;
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 2);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+    }
+
+    #[test]
+    fn a_repeat_burst_of_pastes_leaves_no_backlog() {
+        // A held key repeats every 33 ms; each repeat that fires a Paste
+        // while one waits adds nothing.
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        for repeat in 0..30 {
+            fixture.at(repeat * 33);
+            calls += fixture.submit(paste("x"));
+        }
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(30 * 33);
+        calls += fixture.poll().calls;
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 29);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+    }
+
+    #[test]
+    fn a_macro_paste_step_is_never_dropped() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        calls += fixture.submit(paste("a"));
+        calls += fixture.submit(sequence(vec![paste_step("b")]));
+        calls += fixture.submit(sequence(vec![paste_step("c")]));
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 0);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"; 3]);
+    }
+
+    #[test]
+    fn an_epoch_change_drops_waiting_pastes_and_held_jobs_but_keeps_the_restore() {
+        let clipboard = original();
+        let mut fixture = Fixture::with_clipboard(&clipboard);
+        fixture.submit(paste("A"));
+        fixture.at(10);
+        fixture.submit(paste("B"));
+        fixture.submit(text("cd"));
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"], "B waits for A's restore");
+
+        fixture.epoch.set(1);
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(
+            fixture.taken(),
+            Vec::<String>::new(),
+            "B and the Text never run"
+        );
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+    }
+
+    #[test]
+    fn held_jobs_stop_at_the_queue_capacity() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("a"));
+        for _ in 0..QUEUE_CAPACITY {
+            fixture.submit(text("t"));
+        }
+        assert!(!fixture.runs.can_take());
+
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.poll();
+
+        assert!(fixture.runs.can_take());
+        assert_eq!(fixture.taken().len(), 1 + QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn paste_attempts_go_in_firing_order() {
+        // Only the oldest run at a Paste step tries; a younger one waits
+        // for it, even when the clipboard would open for the younger one.
+        let mut fixture = Fixture::new();
+        fixture.runner.clipboard.busy_opens(1);
+        let shift_insert =
+            Arc::new(PasteSpec::new("b", vec![VK_SHIFT, VK_INSERT], 50).expect("a valid spec"));
+        fixture.start(sequence(vec![paste_step("a")]));
+        fixture.start(sequence(vec![SequenceStep::Paste(shift_insert)]));
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(fixture.taken(), ["keys Ctrl+V", "keys Shift+Insert"]);
+    }
+
+    #[test]
+    fn a_failed_timer_drops_the_waiting_pastes_and_restores_once() {
+        let clipboard = original();
+        let mut fixture = Fixture::with_clipboard(&clipboard);
+        fixture.submit(paste("A"));
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("B"));
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+
+        let (dropped, lines) = crate::logging::testing::capture(|| fixture.drop_timed());
+
+        assert_eq!(dropped, 1, "B waited");
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert!(
+            lines.iter().any(|line| line.contains(
+                "paste: the executor's timer failed; the clipboard was put back at once"
+            )),
+            "{lines:?}"
+        );
+        fixture.runs.abandon(&mut fixture.runner);
+        let empties = clipboard
+            .calls()
+            .into_iter()
+            .filter(|call| *call == Call::Empty)
+            .count();
+        assert_eq!(empties, 2, "the paste's and the one restore");
+        assert_eq!(fixture.taken(), Vec::<String>::new());
     }
 
     #[test]
