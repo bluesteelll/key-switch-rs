@@ -23,6 +23,9 @@ Scope report: <orch>/phase-3/scope/3.4-core.md (sections 1-9, lane A).
 
    Note (lane feat-text-action): `BindAction::Text(Arc<str>)` is one more slow action; `CompiledBindings` treats it like
    `Launch` and `OpenUrl`. Pre-encoding its UTF-16 once at compile, for the input module's builder, is optional.
+
+   Note (lane feat-clipboard-paste): `BindAction::Paste(Arc<PasteSpec>)` is one more slow action, treated like `Text`;
+   its clipboard text is already encoded once at load (`src/data/paste.rs`), so compiling adds nothing for it.
    `KeyboardHook` holds `ArcSwap<CompiledBindings>` (`src/hook/keyboard_hook.rs:34`); `update_bindings` (:85-91) stores
    it with one atomic store and no longer sorts; `MainState::reload` (`src/hook/main_thread.rs:341-344`) swaps and
    resets. On a generation mismatch without a reset (bench, tests) `on_key` treats it as a reload, with a

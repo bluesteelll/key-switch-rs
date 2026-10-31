@@ -41,6 +41,14 @@ alternative (handles, errors, PID); the uiAccess flag and child tokens; prior ar
 5. Follow-up 'a step that blocks inside Windows holds up the executor' (roadmap :980): measure how long one launch holds
    the executor (row R25, manual M6) and state it in the CHANGELOG and actions.md section 13.1 (:51). A separate
    launcher thread is the architect's fork; if the cut does not take it, it names the row's new home.
+
+   Note (lane feat-clipboard-paste, merged before Phase 3): the executor runs jobs in firing order behind a `Paste`
+   that waits (for released modifiers, a busy clipboard or the restore of the paste before it): the jobs fired after
+   it are held (`Runs::held` and the head rule, `src/core/executor/runs.rs`; known issue 97). A launcher thread keeps
+   that order: a `Launch` fired after a waiting `Paste` starts after it, never before, or its window can take the
+   foreground the paste checks before its keystroke, and the paste is skipped. A `Launch` that blocks the executor
+   while the paste session's window owns the clipboard can also hold up another program's copy (known issue 95,
+   not verified); a launcher thread would take that wait off the executor.
 6. Docs of the trust boundary (scope F-i): after this lane a plain `Launch` runs at medium integrity, but whoever can
    write `config.ron` still reaches elevated code through `elevated: true` (if Q5 is silent) and through `Sequence`
    input typed into elevated windows (from code reading). Say that the risk narrows and does not close

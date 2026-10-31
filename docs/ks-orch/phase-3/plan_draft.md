@@ -156,6 +156,11 @@ book sync (doc-writer). Roadmap lines are `book/src/roadmap.md` at 252daef.
 7. **Lane feat-text-action** (owner request 2026-10-30), merged before Phase 3: `action: Text("...")`. Its notes are in
    the input, held, compiled and zero specs. The clipboard Paste lane follows; its placement relative to held is the
    orchestrator's (`<orch>/feat-paste/synthesis.md` F15).
+8. **Lane feat-clipboard-paste** (owner request 2026-10-30), merged before Phase 3 and so before held: `action:
+   Paste("...")` and the `Paste` step put the text on the clipboard, send `Ctrl+V` and put the previous content back.
+   Its notes are in the input, held, ground, launch, compiled and zero specs: held replaces its wait for released
+   modifiers (known issue 98), input ports its keystroke (known issue 103) and replaces its injection pin with the
+   `SendInput(` scan. Its known issues 93-106 are declared in `book/src/config/known-issues.md`.
 
 ## 2. Overlaps and contradictions between the scope reports
 
@@ -223,6 +228,7 @@ Bench rows (existing: R1-R18 with R12m, R12m2, R14c, R17a, R17t, and since `6d67
 | R24, R25 | launch | `Launch` key-down with a FakeRunner executor; Explorer lookup chain | gate (H <= P), evidence |
 | R26 | zero | `on_key` firing `Launch`; arming a Tap+Hold+DoubleTap group | gate (H < P) |
 | R27, R27l | feat-text-action (taken) | key-down callback of F13 bound to `Text` / to `Launch`, with a FakeRunner executor | evidence |
+| R28 | feat-clipboard-paste (taken) | key-down callback of F13 bound to `Paste`, queued for a FakeRunner executor that drops it behind a waiting `Paste` (fake clipboard and desk) | that lane's gate (p50 <= R27 p50 + 1.0 us and <= 20 us, one session); evidence after |
 
 ## 5. Owner questions (values and scope only, deduplicated)
 
@@ -351,17 +357,18 @@ says otherwise. Automated items are proved by the gate and the bench on the fina
 | 1 | bench | After a week of use, read the counters lines for the over-budget counter(s) next to `longest_callback_us` |
 | 2 | ground | M-C1: typing, `swch off`/`on`, a `Sequence` with `Delay`, `Launch`, `OpenUrl`: nothing hangs |
 | 3-5 | seq | M1-M3 of its spec (ScrollLock then Ctrl+S; ScrollLock rollover; Ctrl+Shift+S after ScrollLock opens Save As) |
-| 6-9 | input | `PressKey("Up")` in RDP/Hyper-V with NumLock on; `PressKey("RAlt")` as AltGr on the Russian layout; `Text("a\nb")` as the action and the step in Notepad; the moved mask test by hand |
-| 10-18 | held | The nine checks of its spec: Alt+J; Ctrl+Alt+L; LCtrl Hold -> Escape opens no Start; Phase 1 check 10 (if Q3); Shift+CapsLock under both Caps Lock settings; Ctrl+J held 2 s; RAlt+J with AltGr on the Russian layout; a `Ctrl+Alt+N` macro released mid-way; `longest_callback_us` before and after. With them: a `Text` action on Ctrl+Alt+T types without Ctrl or Alt (lane feat-text-action) |
+| 6-9 | input | `PressKey("Up")` in RDP/Hyper-V with NumLock on; `PressKey("RAlt")` as AltGr on the Russian layout; `Text("a\nb")` as the action and the step in Notepad; the moved mask test by hand. With them: `Paste(text: "...", keys: "Shift+Insert")` in Windows Terminal once the keystroke has its extended flag (lane feat-clipboard-paste MC6) |
+| 10-18 | held | The nine checks of its spec: Alt+J; Ctrl+Alt+L; LCtrl Hold -> Escape opens no Start; Phase 1 check 10 (if Q3); Shift+CapsLock under both Caps Lock settings; Ctrl+J held 2 s; RAlt+J with AltGr on the Russian layout; a `Ctrl+Alt+N` macro released mid-way; `longest_callback_us` before and after. With them: a `Text` action on Ctrl+Alt+T types without Ctrl or Alt (lane feat-text-action); a `Ctrl+Shift+V -> Paste(..)` binding pastes once while Ctrl and Shift are held, no modifier stuck (lane feat-clipboard-paste MC14 and MC15, after the wait is replaced) |
 | 19-26 | launch | M1-M8 of its spec (Medium level; browser not elevated; `elevated: true`; `cwd`; Explorer stopped; executor block; `regedit.exe` prompts; debug daemon) |
 | 27 | compiled | M-A1, only if Q8 locks |
-| 28 | zero | M-B1: `Launch`, `OpenUrl`, `Text` and `Sequence` bound to keys run once each |
+| 28 | zero | M-B1: `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` bound to keys run once each |
 | 29 | F3 (D4) | AutoHotkey `WinActivate ahk_exe notepad.exe` then `Send {F13}` against `( keys: "F13", action: ToggleCapsLock, when: AppEquals("notepad.exe") )`, 50 times from another window; count the misses for known issue 80 |
 
 Still unrun and owed before the tag (owner, 2026-10-25: none was run): Phase 1 checks 1-18 (roadmap :394-413), Phase 2
 checks 1-48 (:609-658), 2.5's M1-M11 (`p2-2.5-latency-trim/impl.md:334-353`; M8 clock base, M9 StickyKeys, M10
-AutoHotkey, M11 PowerToys), lane feat-text-action's MC1-MC11 (`<orch>/feat-text-action/cut.md` and its addendum).
-Checks 43, 44 and 47 decide FU-4 and the watchdog's fallback; checks 4 and 5 of Phase 1 decide open question 6.
+AutoHotkey, M11 PowerToys), lane feat-text-action's MC1-MC11 (`<orch>/feat-text-action/cut.md` and its addendum),
+lane feat-clipboard-paste's MC1-MC32 (`<orch>/feat-clipboard-paste/cut.md` and its addendum). Checks 43, 44 and 47
+decide FU-4 and the watchdog's fallback; checks 4 and 5 of Phase 1 decide open question 6.
 
 ## 7. Claims checked against 252daef
 
