@@ -13,7 +13,10 @@
 //! understands `Variant`, `Variant(arg)`, and `Variant { field: ... }`,
 //! which is the whole point of choosing it over TOML.
 
+use std::fmt;
+
 use serde::Deserialize;
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 
 // Every container with named fields denies unknown ones: a misspelled field
 // would otherwise be skipped and its default used silently (KS-22).
@@ -202,9 +205,136 @@ pub(crate) enum RawAction {
     /// `Text("Kind regards,")` - types the text in one batch; see
     /// `BindAction::Text`.
     Text(String),
+    /// `Paste("Kind regards,")` or `Paste(text: "...", keys: "Shift+Insert",
+    /// restore_delay: 800)` - pastes the text through the clipboard; see
+    /// [`RawPaste`].
+    Paste(RawPaste),
     /// `Media(PlayPause)` / `Media(VolumeUp)` / ...
     Media(MediaKeyRef),
     DoNothing,
+}
+
+/// The payload of `Paste(...)`, the action and the macro step: a string,
+/// or a struct whose fields are `text` (required), `keys` and
+/// `restore_delay`. The loader's `unwrap_variant_newtypes` lets the struct
+/// go straight inside `Paste(...)`, so both forms reach this type through
+/// one newtype variant; `deserialize_any` tells them apart. `keys` and
+/// `restore_delay` take a plain value: `Some(...)` and `None` are not
+/// allowed there. The phrase may be a secret, so `Debug` shows only its
+/// length and no error text quotes it.
+pub(crate) struct RawPaste {
+    pub text: String,
+    pub keys: Option<String>,
+    pub restore_delay: Option<u64>,
+}
+
+/// The fields of the named form of `Paste`, in the order ron lists them.
+const PASTE_FIELDS: &[&str] = &["text", "keys", "restore_delay"];
+
+impl<'de> Deserialize<'de> for RawPaste {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(PasteVisitor)
+    }
+}
+
+struct PasteVisitor;
+
+impl<'de> Visitor<'de> for PasteVisitor {
+    type Value = RawPaste;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(r#"a string, or (text: "...", keys: "...", restore_delay: ...)"#)
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<RawPaste, E> {
+        self.visit_string(text.to_owned())
+    }
+
+    fn visit_string<E: de::Error>(self, text: String) -> Result<RawPaste, E> {
+        Ok(RawPaste {
+            text,
+            keys: None,
+            restore_delay: None,
+        })
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<RawPaste, A::Error> {
+        let mut text = None;
+        let mut keys = None;
+        let mut restore_delay = None;
+        while let Some(field) = map.next_key::<PasteField>()? {
+            match field {
+                PasteField::Text => {
+                    if text.is_some() {
+                        return Err(de::Error::duplicate_field("text"));
+                    }
+                    text = Some(map.next_value::<String>()?);
+                }
+                PasteField::Keys => {
+                    if keys.is_some() {
+                        return Err(de::Error::duplicate_field("keys"));
+                    }
+                    keys = Some(map.next_value::<String>()?);
+                }
+                PasteField::RestoreDelay => {
+                    if restore_delay.is_some() {
+                        return Err(de::Error::duplicate_field("restore_delay"));
+                    }
+                    restore_delay = Some(map.next_value::<u64>()?);
+                }
+            }
+        }
+        Ok(RawPaste {
+            text: text.ok_or_else(|| de::Error::missing_field("text"))?,
+            keys,
+            restore_delay,
+        })
+    }
+}
+
+/// A field name of the named form of `Paste`.
+enum PasteField {
+    Text,
+    Keys,
+    RestoreDelay,
+}
+
+impl<'de> Deserialize<'de> for PasteField {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_identifier(PasteFieldVisitor)
+    }
+}
+
+struct PasteFieldVisitor;
+
+impl Visitor<'_> for PasteFieldVisitor {
+    type Value = PasteField;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("`text`, `keys` or `restore_delay`")
+    }
+
+    fn visit_str<E: de::Error>(self, name: &str) -> Result<PasteField, E> {
+        match name {
+            "text" => Ok(PasteField::Text),
+            "keys" => Ok(PasteField::Keys),
+            "restore_delay" => Ok(PasteField::RestoreDelay),
+            _ => Err(de::Error::unknown_field(name, PASTE_FIELDS)),
+        }
+    }
+}
+
+impl fmt::Debug for RawPaste {
+    /// Written out so that the phrase never reaches a `{:?}`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "RawPaste {{ text: <{} chars>, keys: {:?}, restore_delay: {:?} }}",
+            self.text.chars().count(),
+            self.keys,
+            self.restore_delay
+        )
+    }
 }
 
 /// On-disk representation of the runtime `MediaKey` enum. Same variants;
@@ -232,14 +362,17 @@ pub(crate) enum MessageRef {
 }
 
 /// One step inside a `Sequence(...)`. Direct enum-variant syntax in RON:
-/// `Window(Restore)`, `Delay(100)`, `Text("hi")`, `Key("Enter")`,
-/// `Combo("Ctrl+S")`, `Launch(...)`, `OpenUrl("...")`, `Media(PlayPause)`.
+/// `Window(Restore)`, `Delay(100)`, `Text("hi")`, `Paste("hi")`,
+/// `Key("Enter")`, `Combo("Ctrl+S")`, `Launch(...)`, `OpenUrl("...")`,
+/// `Media(PlayPause)`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum RawStep {
     Window(RawWindowKind),
     Delay(u64),
     Text(String),
+    /// The same two forms as the action; see [`RawPaste`].
+    Paste(RawPaste),
     Key(String),
     Combo(String),
     Launch {

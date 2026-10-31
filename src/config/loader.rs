@@ -17,6 +17,7 @@ use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
 use crate::data::key_spec::KeySpec;
+use crate::data::paste::{self, PasteSpec};
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
@@ -24,7 +25,7 @@ use crate::data::vk_name::parse_vk;
 use super::parsing::{parse_combo, parse_key_list, parse_wm_name};
 use super::schema::{
     ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawBlockOriginalCombo, RawCondition,
-    RawConfig, RawStep, RawTrigger, RawWindowKind, SequenceSpec,
+    RawConfig, RawPaste, RawStep, RawTrigger, RawWindowKind, SequenceSpec,
 };
 
 /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
@@ -261,8 +262,14 @@ fn parse_ron_str(
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
     // human-edited config — no one expects to type `Some(...)` everywhere.
-    let options =
-        ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+    // `UNWRAP_VARIANT_NEWTYPES` lets the struct of `Paste(text: ..., keys:
+    // ...)` go straight inside the newtype variant, next to the short form
+    // `Paste("...")`. Strings, numbers, enums and lists ignore it; only an
+    // explicit `Some((...))` around a struct stops loading (CHANGELOG).
+    let options = ron::Options::default().with_default_extension(
+        ron::extensions::Extensions::IMPLICIT_SOME
+            | ron::extensions::Extensions::UNWRAP_VARIANT_NEWTYPES,
+    );
 
     let raw: RawConfig = options.from_str(text).map_err(|e| ConfigError::Parse {
         path: PathBuf::from("<in-memory>"),
@@ -730,8 +737,23 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
             BindAction::Text(Arc::from(text.as_str()))
         }
 
+        RawAction::Paste(raw) => BindAction::Paste(raw_paste_to_spec(raw)?),
+
         RawAction::Media(key) => BindAction::Media(media_key_ref_to_key(*key)),
     })
+}
+
+/// The spec of a `Paste`, the action or the macro step, built once here so
+/// that a firing shares it. Keys default to `Ctrl+V` and the delay to
+/// 500 ms; no message quotes the text.
+fn raw_paste_to_spec(raw: &RawPaste) -> Result<Arc<PasteSpec>, String> {
+    let keys_text = raw.keys.as_deref().unwrap_or(paste::DEFAULT_KEYS);
+    let keys =
+        parse_key_list(keys_text).map_err(|e| format!("Paste: keys {:?}: {}", keys_text, e))?;
+    let restore_delay = raw.restore_delay.unwrap_or(paste::DEFAULT_RESTORE_DELAY_MS);
+    PasteSpec::new(&raw.text, keys, restore_delay)
+        .map(Arc::new)
+        .map_err(|tail| format!("Paste: {tail}"))
 }
 
 fn media_key_ref_to_key(raw: MediaKeyRef) -> MediaKey {
@@ -751,6 +773,8 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         RawStep::Delay(ms) => SequenceStep::Delay(*ms),
 
         RawStep::Text(text) => SequenceStep::TypeText(text.clone()),
+
+        RawStep::Paste(raw) => SequenceStep::Paste(raw_paste_to_spec(raw)?),
 
         RawStep::Key(name) => {
             let vk = parse_vk(name).ok_or_else(|| format!("Key: unknown key {:?}", name))?;
@@ -3147,5 +3171,29 @@ mod tests {
         assert_eq!(spec.units(), [0xD83D, 0xDE80, 0x0451, 0x0D, 0x0A, 0]);
         assert_eq!(spec.chars(), 3);
         assert_eq!(binding.action.to_string(), "paste (3 chars, Ctrl+V)");
+    }
+
+    #[test]
+    fn a_raw_paste_debugs_no_part_of_its_text() {
+        let raw = || RawPaste {
+            text: "Zq9-SECRET".to_owned(),
+            keys: Some("Shift+Insert".to_owned()),
+            restore_delay: Some(800),
+        };
+        assert_eq!(
+            format!("{:?}", RawAction::Paste(raw())),
+            r#"Paste(RawPaste { text: <10 chars>, keys: Some("Shift+Insert"), restore_delay: Some(800) })"#
+        );
+        for rendered in [
+            format!("{:?}", RawAction::Paste(raw())),
+            format!("{:#?}", RawAction::Paste(raw())),
+            format!("{:?}", RawStep::Paste(raw())),
+            format!("{:#?}", RawAction::Sequence(vec![RawStep::Paste(raw())])),
+        ] {
+            assert!(
+                !rendered.contains("Zq9") && !rendered.contains("SECRET"),
+                "the text shows in {rendered}"
+            );
+        }
     }
 }
