@@ -1747,6 +1747,35 @@ mod tests {
     }
 
     #[test]
+    fn the_idle_paste_window_is_destroyed_as_the_executor_ends() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor.handle().submit(paste("x", 50), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        // The restore ends the session and makes the idle window of the next
+        // paste; nothing pends when the stop comes.
+        wait_until("the original is back", || holds_the_original(&clipboard));
+
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        let mut windows = clipboard.windows();
+        assert!(
+            windows.created.len() >= 2,
+            "the session's window and the idle one: {windows:?}"
+        );
+        windows.created.sort_unstable();
+        windows.destroyed.sort_unstable();
+        assert_eq!(
+            windows.destroyed, windows.created,
+            "the epilogue destroys, on the executor's thread, every window the paste made"
+        );
+    }
+
+    #[test]
     fn a_dropped_paste_is_counted_in_paste_dropped() {
         let (tx, records) = mpsc::channel();
         let desk = FakeDesk::new();
