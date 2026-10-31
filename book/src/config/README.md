@@ -52,11 +52,14 @@ ACTION := SwitchLanguage | SwitchLanguageBackward | ToggleCapsLock | DoNothing
         | Launch(exe: "name or path", args: ["arg", …] = [])
         | OpenUrl("URL, file, folder or program")
         | Text("any text")                        // typed at once on the action executor (§13.10)
+        | Paste("any text")                       // pasted through the clipboard, then put back (§13.11)
+        | Paste(text: "…", keys: "combo" = "Ctrl+V", restore_delay: 50…5000 = 500)
         | Media(PlayPause | Stop | Next | Previous | VolumeUp | VolumeDown | VolumeMute)
         | Sequence([STEP, …])                     // macro on the action executor (§14)
 
 STEP   := Window(Minimize | Maximize | Restore | Close) | Delay(ms)
-        | Text("any text") | Key("key") | Combo("combo")
+        | Text("any text") | Paste("any text" | text: …, keys: …, restore_delay: …)
+        | Key("key") | Combo("combo")
         | Launch(exe: …, args: […]) | OpenUrl("…") | Media(…)
 
 COND   := Always | TitleContains("…") | TitleEquals("…") | AppEquals("x.exe")

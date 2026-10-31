@@ -21,6 +21,15 @@ daemon's own modifiers through it, p2-2.5-latency-trim/results.md:264-266). Scop
      `src/data/sequence.rs:119-244` (:139, :169, :205); `is_modifier` duplicates `ModifierSet::ALL`
      (`src/engine/modifiers.rs:15-60`);
    - `menu_mask_inputs`, `inject_menu_mask`, `send_menu_mask`, `src/hook/keyboard_hook_callback.rs:336-392` (:364).
+
+   Note (lane feat-clipboard-paste, merged before Phase 3): `press_combo` returns a `ComboSent` and sends through the
+   private `send`, which `release_unreleased` (with `unreleased_keys` and `combo_events`) also uses for the key-ups a
+   cut-short keystroke still owes (`src/data/sequence.rs`). Port all of them with the other builders of that file.
+   The `Paste` keystroke reaches them only through `Win32Desk::press` and `Win32Desk::release_after`
+   (`src/core/executor/paste.rs`), which keep their `Desk` signatures, so the paste session and its fakes do not
+   change. The pin `data::sequence::tests::the_paste_adds_no_injection_site`, which counts the code lines with
+   `SendInput(`, `KEYBDINPUT {` and `injected_sentinel()` per file, is replaced by this lane's scan (acceptance):
+   delete it with the move.
 3. `wScan` from `MapVirtualKeyW(MAPVK_VK_TO_VSC_EX)`, read once on the main thread at startup into a table (probe the
    per-call cost with row R21v first; the cut names where the table is built). `KEYEVENTF_EXTENDEDKEY` is set when the
    high byte is `0xE0`, not from a hand list (Microsoft's list is longer than the roadmap's: Print Screen, Break,
@@ -36,6 +45,11 @@ daemon's own modifiers through it, p2-2.5-latency-trim/results.md:264-266). Scop
    array must not split it into several calls, which would let the user's keys land between the chunks (feat-paste
    critique M5). The fixed capacity is the hook path's; the executor's `Text` may use a heap buffer of any length.
    Item 4 applies to the action too.
+
+   Note (lane feat-clipboard-paste): item 4 does not apply to `Paste`. Its text goes on the clipboard as
+   `CF_UNICODETEXT`, where every `\n`, lone `\r` and `\r\n` is one CR-LF (`data::paste::clipboard_text`, pinned by its
+   tests); no Enter is pressed for a line break. Its only batch is the keystroke (`Ctrl+V` by default), which item 3
+   gives its scan codes and extended flags (`Shift+Insert`: known issue 103, that lane's manual check MC6).
 5. `carry_out` (`src/hook/keyboard_hook_callback.rs:303-320`) sends the decision's mask in the same `SendInput` as its
    first key-injecting fast action, and keeps the order: mask, then the actions in order. An action that is not input
    ends a batch.

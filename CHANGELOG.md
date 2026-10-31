@@ -276,6 +276,9 @@ minor version; such entries sit under **Changed** and start with
 - Bench rows R27 and R27l: the key-down callback of a key bound to `Text`
   and, as its twin, to `Launch`, each queued for a recording executor
   (lane feat-text-action).
+- Bench row R28: the key-down callback of a key bound to `Paste`, queued for
+  a recording executor that drops it behind a waiting `Paste`, whose
+  clipboard and keys are fakes (lane feat-clipboard-paste).
 - `action: Text("...")` (owner request 2026-10-30, roadmap new feature 9):
   types a phrase written in `config.ron` at once, as the macro step
   `Sequence([Text("...")])` does: one `SendInput` batch with
@@ -296,8 +299,61 @@ minor version; such entries sit under **Changed** and start with
   `core::executor::tests::a_text_job_reaches_runner_action_in_order_with_the_other_slow_actions`,
   `core::windows_actions::tests::a_text_action_shows_its_length_and_never_its_text`,
   `engine::scenarios::another_key_fires_a_waiting_tap_text_in_its_own_decision_and_passes`.
+- `action: Paste("...")` and the macro step `Paste("...")` (owner request
+  2026-10-30, roadmap new feature 9): put a phrase from `config.ron` on the
+  clipboard, send the paste keystroke (`Ctrl+V`, or `keys: "Shift+Insert"`)
+  and put the previous clipboard content back `restore_delay` ms after the
+  keystroke (default 500, 50 to 5000), later while the target window's
+  thread does not answer a message, at most 5 s after the keystroke. That
+  check sees the window's own thread only: a busy browser or Electron page,
+  whose renderer reads the clipboard later, is not seen, so such a window
+  wants a longer `restore_delay` with `when:` (known issue 105). The named
+  form is `Paste(text: "...", keys: "...", restore_delay: 800)`. The phrase
+  and the restored copy carry the markers that keep them out of the Windows
+  clipboard history, the cloud clipboard and the clipboard managers that
+  honour them. The previous content is put back only while the daemon
+  still owns the clipboard and nothing was added to it, checked after the
+  daemon opens it, so a copy made meanwhile is kept; content a password
+  manager marked private is not put back, the clipboard is emptied
+  instead. A Paste waits until no Shift, Ctrl, Alt or Win key is held (at
+  most 3 s, then it is skipped and logged). One paste at a time: actions
+  fired after a waiting Paste run after it, a second Paste within the delay
+  waits for the restore (at most 1 s), and more `Paste` actions fired while
+  one waits are dropped and counted (`paste_dropped`). It runs on the action
+  executor, whose message-only window owns the clipboard while the phrase
+  is on it; the hook only queues it, as it queues a `Text`. A stop or the
+  executor's end puts a pending clipboard back first. The startup list
+  shows `paste (N chars, Ctrl+V)`; no log line or debug output contains the
+  phrase or the clipboard content. Load errors: `Paste: empty`, `Paste: the
+  text contains the character U+0000, which ends a text on the clipboard`,
+  `Paste: keys "...": ...`, `Paste: keys "..." has no key besides
+  modifiers`, `Paste: restore_delay: N is out of range: 50 to 5000 ms`, and
+  the parse errors of an unknown, missing or duplicate field. Known issues
+  93 to 106. The `windows` crate gains the features
+  `Win32_System_DataExchange` and `Win32_System_Memory`; no crate is added.
+  Every clipboard call is in `platform/clipboard.rs`, compiled only outside
+  the tests, which run on a fake clipboard and a fake desk. Tests:
+  `core::executor::paste::tests` (the paste session on a fake clock),
+  `core::executor::runs::tests::jobs_after_a_waiting_paste_run_after_it`,
+  `extra_standalone_pastes_while_one_waits_are_dropped_and_counted`,
+  `core::executor::tests::stop_restores_the_clipboard_before_it_returns_joined`,
+  `platform::clipboard::tests::the_clipboard_calls_are_compiled_out_of_the_tests`,
+  `config::loader::tests::a_paste_loads_with_ctrl_v_and_500_ms_and_does_not_repeat`,
+  `paste_load_errors_name_the_binding_and_never_the_text`,
+  `paste_parse_errors_name_the_field`,
+  `engine::scenarios::a_held_paste_hotkey_pastes_once_per_press_and_with_repeat_true_on_every_repeat`.
 
 ### Changed
+
+- **Breaking:** the config loader enables ron's `unwrap_variant_newtypes` extension,
+  which `Paste(text: ..., keys: ...)` needs (lane feat-clipboard-paste). An
+  explicit `Some(...)` around the struct of `sequence:` or `chord:`
+  (`sequence: Some((steps: [...]))`) no longer loads: it gives `Expected
+  identifier`; write `sequence: (steps: [...])` as documented. Every other
+  form loads as before. Tests:
+  `config::loader::tests::an_explicit_some_around_a_sequence_struct_no_longer_loads`,
+  `the_option_fields_keep_their_forms`,
+  `the_documented_parse_errors_keep_their_text`.
 
 - The line of a second start in the same session (roadmap item 1.7) is
   ``[ERROR] already running in this session; use `swch status`, `swch off` or `swch exit` to control it``;

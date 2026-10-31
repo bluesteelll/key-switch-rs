@@ -104,6 +104,11 @@
 // Text("...")             — type the text at once (one batch, layout-
 //                            independent); runs on the action executor;
 //                            Text("") is an error
+// Paste("...")            - put the text on the clipboard, press Ctrl+V and put the
+//                            previous clipboard content back 500 ms later; Paste(text:
+//                            "...", keys: "Shift+Insert", restore_delay: 800) sets the
+//                            keystroke and the delay (50 to 5000 ms). Waits until no
+//                            modifier is held (at most 3 s). Paste("") is an error
 // Media(<key>)            — synthesize media/volume key. <key> is one of:
 //                            PlayPause, Stop, Next, Previous,
 //                            VolumeUp, VolumeDown, VolumeMute
@@ -162,6 +167,7 @@
 //                            and swch off, a reload or exit cut it short
 // Text("Hello 🚀")        — type Unicode (layout-independent, supports
 //                            emoji via UTF-16 surrogate pairs)
+// Paste("...")           - paste the text through the clipboard (same as the action)
 // Key("Enter")            — synthesize one key press
 // Combo("Ctrl+S")         — synthesize a chord (modifiers held during press)
 // Launch(exe: "...", args: [...])
@@ -279,6 +285,12 @@
         // // Type a phrase in one go. A trigger without modifiers: until roadmap
         // // item 3.1, held modifiers combine with the typed characters.
         // ( keys: "ScrollLock", action: Text("Kind regards,") ),
+        //
+        // // Paste a phrase through the clipboard and put the clipboard back; the
+        // // phrase stays out of the clipboard history.
+        // ( keys: "F15", action: Paste("Kind regards,\nIvan") ),
+        // // A terminal pastes with Shift+Insert; give a slow window more time.
+        // ( keys: "F16", action: Paste(text: "git status", keys: "Shift+Insert", restore_delay: 800) ),
         //
         // // Media / volume controls. VolumeUp/VolumeDown keep changing the
         // // volume while held; the others fire once per press unless

@@ -17,6 +17,7 @@ use crate::data::binding::{Binding, BindingKind, BlockerMode};
 use crate::data::condition::Condition;
 use crate::data::key_combination::KeyCombination;
 use crate::data::key_spec::KeySpec;
+use crate::data::paste::{self, PasteSpec};
 use crate::data::sequence::{SequenceStep, WindowOp};
 use crate::data::trigger::Trigger;
 use crate::data::vk_name::parse_vk;
@@ -24,7 +25,7 @@ use crate::data::vk_name::parse_vk;
 use super::parsing::{parse_combo, parse_key_list, parse_wm_name};
 use super::schema::{
     ChordSpec, MediaKeyRef, MessageRef, RawAction, RawBinding, RawBlockOriginalCombo, RawCondition,
-    RawConfig, RawStep, RawTrigger, RawWindowKind, SequenceSpec,
+    RawConfig, RawPaste, RawStep, RawTrigger, RawWindowKind, SequenceSpec,
 };
 
 /// Bundled default `config.ron`. Written to `<exe_dir>\config.ron` when the
@@ -261,8 +262,14 @@ fn parse_ron_str(
     // `keys: Some("CapsLock")` for the `Option<String>` fields on
     // `RawBinding`. Standard ergonomic move when an Option is exposed in a
     // human-edited config — no one expects to type `Some(...)` everywhere.
-    let options =
-        ron::Options::default().with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME);
+    // `UNWRAP_VARIANT_NEWTYPES` lets the struct of `Paste(text: ..., keys:
+    // ...)` go straight inside the newtype variant, next to the short form
+    // `Paste("...")`. Strings, numbers, enums and lists ignore it; only an
+    // explicit `Some((...))` around a struct stops loading (CHANGELOG).
+    let options = ron::Options::default().with_default_extension(
+        ron::extensions::Extensions::IMPLICIT_SOME
+            | ron::extensions::Extensions::UNWRAP_VARIANT_NEWTYPES,
+    );
 
     let raw: RawConfig = options.from_str(text).map_err(|e| ConfigError::Parse {
         path: PathBuf::from("<in-memory>"),
@@ -730,8 +737,23 @@ fn raw_action_to_bind_action(raw: &RawAction) -> Result<BindAction, String> {
             BindAction::Text(Arc::from(text.as_str()))
         }
 
+        RawAction::Paste(raw) => BindAction::Paste(raw_paste_to_spec(raw)?),
+
         RawAction::Media(key) => BindAction::Media(media_key_ref_to_key(*key)),
     })
+}
+
+/// The spec of a `Paste`, the action or the macro step, built once here so
+/// that a firing shares it. Keys default to `Ctrl+V` and the delay to
+/// 500 ms; no message quotes the text.
+fn raw_paste_to_spec(raw: &RawPaste) -> Result<Arc<PasteSpec>, String> {
+    let keys_text = raw.keys.as_deref().unwrap_or(paste::DEFAULT_KEYS);
+    let keys =
+        parse_key_list(keys_text).map_err(|e| format!("Paste: keys {:?}: {}", keys_text, e))?;
+    let restore_delay = raw.restore_delay.unwrap_or(paste::DEFAULT_RESTORE_DELAY_MS);
+    PasteSpec::new(&raw.text, keys, restore_delay)
+        .map(Arc::new)
+        .map_err(|tail| format!("Paste: {tail}"))
 }
 
 fn media_key_ref_to_key(raw: MediaKeyRef) -> MediaKey {
@@ -751,6 +773,8 @@ fn raw_step_to_step(raw: &RawStep) -> Result<SequenceStep, String> {
         RawStep::Delay(ms) => SequenceStep::Delay(*ms),
 
         RawStep::Text(text) => SequenceStep::TypeText(text.clone()),
+
+        RawStep::Paste(raw) => SequenceStep::Paste(raw_paste_to_spec(raw)?),
 
         RawStep::Key(name) => {
             let vk = parse_vk(name).ok_or_else(|| format!("Key: unknown key {:?}", name))?;
@@ -788,6 +812,7 @@ mod tests {
     use super::*;
     use crate::config::testing::{ONE, TempDir};
     use crate::data::key_spec::Modifier;
+    use crate::data::paste::{PasteSpec, clipboard_text};
     use crate::logging::testing::capture;
     use crate::system::registry::hotkey_from_values;
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -2720,6 +2745,9 @@ mod tests {
             (keys: "F24", action: DoNothing),
             (keys: "Ctrl+F13", action: Text("t")),
             (keys: "Ctrl+F14", action: Text(r"C:\t")),
+            (keys: "Ctrl+F15", action: Paste("p")),
+            (keys: "Ctrl+F16", action: Paste(text: "q", keys: "Shift+Insert", restore_delay: 800)),
+            (keys: "Ctrl+F17", action: Paste(r"C:\t")),
         ] )"#;
         let bindings = from_ron_str(text).unwrap_or_else(|e| panic!("{e}"));
         let shown: Vec<String> = bindings.iter().map(|b| b.action.to_string()).collect();
@@ -2740,6 +2768,9 @@ mod tests {
                 "do nothing",
                 "text (1 chars)",
                 "text (4 chars)",
+                "paste (1 chars, Ctrl+V)",
+                "paste (1 chars, Shift+Insert)",
+                "paste (4 chars, Ctrl+V)",
             ]
         );
     }
@@ -2747,7 +2778,17 @@ mod tests {
     #[test]
     fn an_unknown_action_lists_text_among_the_valid_ones() {
         let message = parse_error_of(r#"( bindings: [ (keys: "F13", action: FlyToMars) ] )"#);
-        assert!(message.contains("`OpenUrl`, `Text`, `Media`"), "{message}");
+        assert!(
+            message.contains("`OpenUrl`, `Text`, `Paste`, `Media`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_step_lists_paste_among_the_valid_ones() {
+        let message =
+            parse_error_of(r#"( bindings: [ (keys: "F13", action: Sequence([FlyToMars])) ] )"#);
+        assert!(message.contains("`Text`, `Paste`, `Key`"), "{message}");
     }
 
     #[test]
@@ -2782,5 +2823,377 @@ mod tests {
             ),
             "{steps:?}"
         );
+    }
+
+    // ---- the Paste action and step (owner request 2026-10-30) ----
+
+    /// The spec of the `Paste` action of the one binding of `text`.
+    fn only_paste(text: &str) -> (Binding, Arc<PasteSpec>) {
+        let binding = only_binding(text);
+        let BindAction::Paste(spec) = &binding.action else {
+            panic!("expected a Paste action, got {}", binding.action);
+        };
+        let spec = Arc::clone(spec);
+        (binding, spec)
+    }
+
+    /// The per-binding errors that `text` gives.
+    fn binding_errors_of(text: &str) -> Vec<String> {
+        match from_ron_str(text) {
+            Err(ConfigError::Bindings(errs)) => errs,
+            Err(other) => panic!("expected Bindings errors, got {other}"),
+            Ok(bindings) => panic!(
+                "expected Bindings errors, loaded {} bindings",
+                bindings.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn a_paste_loads_with_ctrl_v_and_500_ms_and_does_not_repeat() {
+        let (binding, spec) =
+            only_paste(r#"( bindings: [ (keys: "F13", action: Paste("Kind regards,\nIvan")) ] )"#);
+        assert_eq!(spec.units(), &*clipboard_text("Kind regards,\nIvan"));
+        assert_eq!(spec.keys(), [VK_CONTROL, VK_V]);
+        assert_eq!(spec.restore_delay(), Duration::from_millis(500));
+        assert!(!binding.repeat, "a Paste pastes once per press by default");
+    }
+
+    #[test]
+    fn a_paste_with_named_fields_loads_its_keys_and_delay() {
+        let (_, spec) = only_paste(
+            r#"( bindings: [ (keys: "F13",
+                action: Paste(text: "x", keys: "Shift+Insert", restore_delay: 800)) ] )"#,
+        );
+        assert_eq!(spec.units(), &*clipboard_text("x"));
+        assert_eq!(spec.keys(), [VK_SHIFT, VK_INSERT]);
+        assert_eq!(spec.restore_delay(), Duration::from_millis(800));
+    }
+
+    #[test]
+    fn a_paste_with_only_its_text_named_takes_the_defaults() {
+        for (action, delay) in [
+            (r#"Paste(text: "x")"#, 500),
+            (r#"Paste(text: "x",)"#, 500),
+            (r#"Paste(restore_delay: 50, text: "x")"#, 50),
+        ] {
+            let (_, spec) = only_paste(&format!(
+                r#"( bindings: [ (keys: "F13", action: {action}) ] )"#
+            ));
+            assert_eq!(spec.units(), &*clipboard_text("x"), "{action}");
+            assert_eq!(spec.keys(), [VK_CONTROL, VK_V], "{action}");
+            assert_eq!(
+                spec.restore_delay(),
+                Duration::from_millis(delay),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paste_step_loads_in_both_forms() {
+        let binding = only_binding(
+            r#"( bindings: [ (keys: "F13", action: Sequence([Key("Tab"), Paste("a"),
+                Paste(text: "b", keys: "Shift+Insert")])) ] )"#,
+        );
+        let BindAction::Sequence(steps) = &binding.action else {
+            panic!("expected a Sequence, got {}", binding.action);
+        };
+        let [
+            SequenceStep::PressKey(VK_TAB),
+            SequenceStep::Paste(a),
+            SequenceStep::Paste(b),
+        ] = steps.as_slice()
+        else {
+            panic!("expected Key, Paste, Paste: {steps:?}");
+        };
+        assert_eq!(a.units(), &*clipboard_text("a"));
+        assert_eq!(a.keys(), [VK_CONTROL, VK_V]);
+        assert_eq!(a.restore_delay(), Duration::from_millis(500));
+        assert_eq!(b.units(), &*clipboard_text("b"));
+        assert_eq!(b.keys(), [VK_SHIFT, VK_INSERT]);
+        let shown: Vec<String> = steps.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            [
+                "key Tab",
+                "paste (1 chars, Ctrl+V)",
+                "paste (1 chars, Shift+Insert)"
+            ]
+        );
+    }
+
+    #[test]
+    fn paste_load_errors_name_the_binding_and_never_the_text() {
+        let raw_nul = format!(r#"Paste("Zq9-SECRET{}x")"#, '\u{0}');
+        for (paste, tail) in [
+            (r#"Paste("")"#.to_owned(), "Paste: empty".to_owned()),
+            (r#"Paste(text: "")"#.to_owned(), "Paste: empty".to_owned()),
+            (
+                r#"Paste("Zq9-SECRET\0x")"#.to_owned(),
+                "Paste: the text contains the character U+0000, which ends a text on the clipboard"
+                    .to_owned(),
+            ),
+            (
+                raw_nul,
+                "Paste: the text contains the character U+0000, which ends a text on the clipboard"
+                    .to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", keys: "Ctrl+Foo")"#.to_owned(),
+                r#"Paste: keys "Ctrl+Foo": unknown key "Foo" in combo "Ctrl+Foo""#.to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", keys: "")"#.to_owned(),
+                r#"Paste: keys "": combo is empty"#.to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", keys: "Ctrl+Shift")"#.to_owned(),
+                r#"Paste: keys "Ctrl+Shift" has no key besides modifiers"#.to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", restore_delay: 49)"#.to_owned(),
+                "Paste: restore_delay: 49 is out of range: 50 to 5000 ms".to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", restore_delay: 5001)"#.to_owned(),
+                "Paste: restore_delay: 5001 is out of range: 50 to 5000 ms".to_owned(),
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", restore_delay: 0)"#.to_owned(),
+                "Paste: restore_delay: 0 is out of range: 50 to 5000 ms".to_owned(),
+            ),
+        ] {
+            let action = binding_errors_of(&format!(
+                r#"( bindings: [ (keys: "F13", action: {paste}) ] )"#
+            ));
+            assert_eq!(action, [format!("binding #0 [F13]: {tail}")], "{paste}");
+            let step = binding_errors_of(&format!(
+                r#"( bindings: [ (keys: "F13", action: Sequence([Key("Tab"), {paste}])) ] )"#
+            ));
+            assert_eq!(
+                step,
+                [format!("binding #0 [F13]: step #1: {tail}")],
+                "{paste}"
+            );
+            for message in action.iter().chain(&step) {
+                assert!(!message.contains("Zq9"), "the text shows in {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn paste_parse_errors_name_the_field() {
+        for (paste, expected) in [
+            (
+                r#"Paste(text: "Zq9-SECRET", bogus: 1)"#,
+                "Unexpected field named `bogus` in `Paste`, expected one of `text`, `keys`, or `restore_delay` instead",
+            ),
+            (
+                r#"Paste(keys: "Ctrl+V")"#,
+                "Unexpected missing field named `text` in `Paste`",
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", keys: "Ctrl+V", keys: "Ctrl+V")"#,
+                "Unexpected duplicate field named `keys` in `Paste`",
+            ),
+            (
+                r#"Paste(text: "Zq9-SECRET", text: "Zq9-SECRET")"#,
+                "Unexpected duplicate field named `text` in `Paste`",
+            ),
+            ("Paste()", "a string, or (text:"),
+            ("Paste(42)", "a string, or (text:"),
+            (
+                r#"Paste("Zq9-SECRET", "Zq9-SECRET")"#,
+                "a string, or (text:",
+            ),
+        ] {
+            for config in [
+                format!(r#"( bindings: [ (keys: "F13", action: {paste}) ] )"#),
+                format!(r#"( bindings: [ (keys: "F13", action: Sequence([{paste}])) ] )"#),
+            ] {
+                let message = parse_error_of(&config);
+                assert!(message.contains(expected), "{config}: {message}");
+                assert!(!message.contains("Zq9"), "the text shows in {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_step_form_loads_unchanged() {
+        let binding = only_binding(
+            r#"( bindings: [ (keys: "F13", action: Sequence([Window(Restore), Delay(1), Text("a"),
+                Key("Enter"), Combo("Ctrl+S"), Launch(exe: "x", args: ["a"]), OpenUrl("y"),
+                Media(Stop)])) ] )"#,
+        );
+        let BindAction::Sequence(steps) = &binding.action else {
+            panic!("expected a Sequence, got {}", binding.action);
+        };
+        let shown: Vec<String> = steps.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            [
+                "window Restore",
+                "delay 1ms",
+                r#"text "a""#,
+                "key Enter",
+                "combo Ctrl+S",
+                "launch x a",
+                "open y",
+                "media Stop",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_option_fields_keep_their_forms() {
+        // `unwrap_variant_newtypes` must leave every documented form of the
+        // `Option` fields and of the enums around them as it was.
+        let bindings = from_ron_str(
+            r#"( bindings: [
+                (keys: Some("F14"), action: DoNothing),
+                (keys: "F15", action: DoNothing, block_default: Some(false)),
+                (keys: "F16", action: PressKey("A"), repeat: Some(true)),
+                (keys: None, sequence: (steps: ["F17", "F17"]), action: DoNothing),
+                (sequence: SequenceSpec(steps: ["F18", "F18"]), action: DoNothing),
+                (chord: (keys: ["F19", "F20"]), action: DoNothing),
+                (chord: ChordSpec(keys: ["F21", "F22"]), action: DoNothing),
+                (keys: "F23", action: DoNothing, when: Not(AppEquals("x"))),
+                (keys: "F24", action: DoNothing,
+                    when: And([AppEquals("x"), Not(TitleContains("y"))])),
+                (keys: "Ctrl+F13", action: DoNothing, trigger: Tap(200)),
+            ] )"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(bindings.len(), 10);
+        assert_eq!(bindings.iter().filter(|b| b.repeat).count(), 1);
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|b| matches!(b.kind, BindingKind::Sequence { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|b| matches!(b.kind, BindingKind::Chord { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn the_documented_parse_errors_keep_their_text() {
+        let binding = |fields: &str| format!(r#"( bindings: [ ({fields}) ] )"#);
+        for (config, expected) in [
+            (
+                binding(r#"keys: "F13", action: Sequence(Text("x"))"#),
+                "Expected opening `[`",
+            ),
+            (
+                binding(r#"keys: "F13", action: Sequence()"#),
+                "Expected opening `[`",
+            ),
+            (
+                binding(r#"keys: "F13", action: Text(123)"#),
+                "Expected string",
+            ),
+            (binding(r#"keys: "F13", action: Text()"#), "Expected string"),
+            (
+                binding(r#"keys: "F13", action: PressKey()"#),
+                "Expected string",
+            ),
+            (
+                binding(r#"keys: "F13", action: Media()"#),
+                "Expected identifier",
+            ),
+            (
+                binding(r#"keys: "F13", action: PressKey("A", "B")"#),
+                "Expected closing `)`",
+            ),
+            (
+                binding(r#"keys: "F13", action: Text("a", "b")"#),
+                "Expected closing `)`",
+            ),
+            ("( bindings: None )".to_owned(), "Expected opening `[`"),
+            (
+                binding(r#"keys: "F13", action: DoNothing, block_original_combo: Some(true)"#),
+                "Unexpected variant named `Some` in enum `RawBlockOriginalCombo`",
+            ),
+            (
+                binding(
+                    r#"sequence: (steps: ["F15", "F15"], max_gap_ms: Some(300)), action: DoNothing"#,
+                ),
+                "Expected integer",
+            ),
+            (
+                binding(r#"keys: "F13", action: DoNothing, when: None"#),
+                "Unexpected variant named `None` in enum `RawCondition`",
+            ),
+            (
+                binding(r#"keys: "F13", action: DoNothing, trigger: Some(Tap(200))"#),
+                "Unexpected variant named `Some` in enum `RawTrigger`",
+            ),
+            (
+                binding(r#"Keys: "F13", action: DoNothing"#),
+                "Unexpected field named `Keys` in `RawBinding`",
+            ),
+        ] {
+            let message = parse_error_of(&config);
+            assert!(message.contains(expected), "{config}: {message}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_some_around_a_sequence_struct_no_longer_loads() {
+        // `unwrap_variant_newtypes`, which the named form of `Paste` needs,
+        // also applies after an explicit `Some(`: the struct inside must then
+        // be written without its own parentheses (declared in the CHANGELOG).
+        for fields in [
+            r#"sequence: Some((steps: ["F15", "F15"])), action: DoNothing"#,
+            r#"chord: Some((keys: ["F15", "F16"])), action: DoNothing"#,
+        ] {
+            let message = parse_error_of(&format!(r#"( bindings: [ ({fields}) ] )"#));
+            assert!(
+                message.contains("Expected identifier"),
+                "{fields}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_paste_keeps_emoji_and_cyrillic_in_its_clipboard_text() {
+        let phrase = "\u{1F680}\u{451}";
+        let (binding, spec) = only_paste(&format!(
+            r#"( bindings: [ (keys: "F13", action: Paste("{phrase}\n")) ] )"#
+        ));
+        assert_eq!(spec.units(), [0xD83D, 0xDE80, 0x0451, 0x0D, 0x0A, 0]);
+        assert_eq!(spec.chars(), 3);
+        assert_eq!(binding.action.to_string(), "paste (3 chars, Ctrl+V)");
+    }
+
+    #[test]
+    fn a_raw_paste_debugs_no_part_of_its_text() {
+        let raw = || RawPaste {
+            text: "Zq9-SECRET".to_owned(),
+            keys: Some("Shift+Insert".to_owned()),
+            restore_delay: Some(800),
+        };
+        assert_eq!(
+            format!("{:?}", RawAction::Paste(raw())),
+            r#"Paste(RawPaste { text: <10 chars>, keys: Some("Shift+Insert"), restore_delay: Some(800) })"#
+        );
+        for rendered in [
+            format!("{:?}", RawAction::Paste(raw())),
+            format!("{:#?}", RawAction::Paste(raw())),
+            format!("{:?}", RawStep::Paste(raw())),
+            format!("{:#?}", RawAction::Sequence(vec![RawStep::Paste(raw())])),
+        ] {
+            assert!(
+                !rendered.contains("Zq9") && !rendered.contains("SECRET"),
+                "the text shows in {rendered}"
+            );
+        }
     }
 }

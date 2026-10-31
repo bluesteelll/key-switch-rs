@@ -13,6 +13,7 @@ use super::{Engine, KeyEvent};
 use crate::core::windows_actions::{BindAction, MediaKey};
 use crate::data::binding::{Binding, BlockerMode};
 use crate::data::key_combination::KeyCombination;
+use crate::data::paste::PasteSpec;
 
 fn launch(exe: &str) -> BindAction {
     BindAction::Launch {
@@ -2883,6 +2884,7 @@ fn only_press_key_volume_up_and_volume_down_fire_again_on_auto_repeat_by_default
         (r#"Launch(exe: "wt.exe")"#, None),
         (r#"OpenUrl("https://example.com")"#, None),
         (r#"Text("x")"#, None),
+        (r#"Paste("x")"#, None),
         ("Media(PlayPause)", None),
         ("Media(Stop)", None),
         ("Media(Next)", None),
@@ -3004,6 +3006,62 @@ fn a_text_firing_shares_the_text_of_its_loaded_binding() {
     assert!(
         Arc::ptr_eq(loaded, fired),
         "the firing copied the text instead of sharing it"
+    );
+}
+
+#[test]
+fn a_held_paste_hotkey_pastes_once_per_press_and_with_repeat_true_on_every_repeat() {
+    // A held key would otherwise paste the phrase about 30 times a second.
+    // `Paste` compares by its spec, so the firings are checked whole.
+    let note = || {
+        BindAction::Paste(Arc::new(
+            PasteSpec::new("note", vec![VK_CONTROL, VK_V], 500).expect("a valid spec"),
+        ))
+    };
+    for (config, on_repeat, total) in [
+        (
+            r#"( bindings: [ (keys: "Ctrl+Alt+P", action: Paste("note")) ] )"#,
+            Vec::new(),
+            1,
+        ),
+        (
+            r#"( bindings: [ (keys: "Ctrl+Alt+P", action: Paste("note"), repeat: true) ] )"#,
+            vec![note()],
+            6,
+        ),
+    ] {
+        let scenario = Scenario::from_ron(config)
+            .with_context(config)
+            .check_press_symmetry()
+            .check_nothing_stuck()
+            .down("LCtrl")
+            .expect_passed()
+            .down("LAlt")
+            .expect_passed();
+        hold_with_repeats(scenario, "P", 5, &on_repeat).expect_total_fired(&vec![note(); total]);
+    }
+}
+
+#[test]
+fn a_paste_firing_shares_the_spec_of_its_loaded_binding() {
+    // The engine clones the action at each firing: for a `Paste` that is
+    // one count more on the `Arc` the loader built, never a copy of the
+    // clipboard text (cut D2).
+    let bindings = crate::config::from_ron_str(
+        r#"( bindings: [ (keys: "F13", action: Paste("Kind regards,")) ] )"#,
+    )
+    .unwrap_or_else(|e| panic!("scenario: config does not load: {e}"));
+    let BindAction::Paste(loaded) = &bindings[0].action else {
+        panic!("expected a Paste binding, got {}", bindings[0].action);
+    };
+    let mut engine = Engine::new();
+    let decision = engine.on_key(KeyEvent::down(VK_F13), &bindings, &FakeEnv::new());
+    let [BindAction::Paste(fired)] = decision.fire.as_slice() else {
+        panic!("expected one Paste to fire, fired {:?}", decision.fire);
+    };
+    assert!(
+        Arc::ptr_eq(loaded, fired),
+        "the firing copied the spec instead of sharing it"
     );
 }
 

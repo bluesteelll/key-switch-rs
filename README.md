@@ -36,8 +36,9 @@ key-switch-rs/
     ├── core/
     │   ├── app.rs              - main application with binding management
     │   ├── constants.rs        - shared constants and per-process injected-event sentinel
-    │   ├── executor/           - the action-executor thread: Launch, OpenUrl, Text and Sequence off the hook
+    │   ├── executor/           - the action-executor thread: Launch, OpenUrl, Text, Paste and Sequence off the hook
     │   │   ├── mod.rs          - queue, STA COM, message loop, Delay timer, epochs, Runner
+    │   │   ├── paste.rs        - the paste session: its clipboard window, the save, the keystroke, the restore
     │   │   ├── runs.rs         - running macros: steps up to each Delay, deadlines, cancellation
     │   │   └── testing.rs      - test-only recording runner
     │   └── windows_actions.rs  - BindAction enum, FastAction (what runs on the hook thread)
@@ -46,6 +47,7 @@ key-switch-rs/
     │   ├── condition.rs        - when: conditions, evaluated against a ForegroundInfo
     │   ├── key_combination.rs  - key combinations (key + modifiers)
     │   ├── key_spec.rs         - trigger keys: one key on its side, or a modifier on either side
+    │   ├── paste.rs            - PasteSpec: a Paste's clipboard text, keystroke and restore delay
     │   ├── sequence.rs         - macro engine: SequenceStep, type_text, press_combo, window ops
     │   ├── trigger.rs          - Immediate, Tap, Hold, DoubleTap
     │   └── vk_name.rs          - VIRTUAL_KEY <-> human-readable name (both directions)
@@ -83,6 +85,7 @@ key-switch-rs/
     │   ├── panic.rs            - the panic hook: the message through the writer, with a bounded wait
     │   └── testing.rs          - test-only capture of log lines
     ├── platform/
+    │   ├── clipboard.rs        - the clipboard port: every clipboard and Global* call, compiled only outside tests
     │   ├── desktop.rs          - whether this desktop has keyboard input (UOI_IO)
     │   ├── focus.rs            - the dialog class and a thread's focus window: where SwitchLanguage posts in a dialog
     │   ├── foreground.rs       - the foreground window for when: executable cached per window, title read live
@@ -119,6 +122,7 @@ key-switch-rs/
 - `Launch { exe, args }` - start a process
 - `OpenUrl(String)` - open a URL, file or program with its default handler
 - `Text(Arc<str>)` - type a phrase in one `SendInput` batch, on the action executor
+- `Paste(Arc<PasteSpec>)` - paste a phrase through the clipboard and put the clipboard back, on the action executor
 - `Media(MediaKey)` - emulate a media or volume key press
 - `DoNothing` - no action (for auto-blockers)
 
@@ -143,12 +147,12 @@ Windows API wrapper:
 - Installs the low-level keyboard hook (`WH_KEYBOARD_LL`), the foreground-change hook (`SetWinEventHook` / `EVENT_SYSTEM_FOREGROUND`) and the desktop-switch hook (`EVENT_SYSTEM_DESKTOPSWITCH`) once, on the main thread, and removes them at shutdown
 - Bindings list in `ArcSwap<Vec<Binding>>` — lock-free reads on the hot path, atomic swap for hot-reload
 - Holds the remapping switch that `swch on` / `swch off` flip (`is_enabled`); only the main thread flips it, together with a reset of the decision core (see `main_thread.rs`)
-- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl`, `Text` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
+- Holds the action executor's handle while the hooks are installed (`attach_executor`) and hands it `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` (`submit`); a reload stops every running macro too. The daemon swaps the list on its main thread, together with a reset of the decision core (see `main_thread.rs`)
 
 #### `keyboard_hook_callback.rs`
 
 - The adapter between Win32 and the decision core in `src/engine`: translates each `WH_KEYBOARD_LL` event into an `engine::KeyEvent`, asks `Engine::on_key` for a `Decision` on the main thread's state, hands the timers it asks for to the main thread's gesture timers, and carries it out (sends the menu mask key if asked, runs the fast actions and queues the slow ones, then swallows or passes the event). It decides nothing itself
-- Runs only the fast actions itself, before it returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage`, so their output stays in order with the keys typed after them. `Launch`, `OpenUrl`, `Text` and `Sequence` go to the action executor without waiting (KS-08)
+- Runs only the fast actions itself, before it returns: `PressKey`, `Media`, `ToggleCapsLock`, `SwitchLanguage`, `SwitchLanguageBackward`, `PostMessage`, so their output stays in order with the keys typed after them. `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` go to the action executor without waiting (KS-08)
 - Sends the menu mask key, virtual-key code 0xE8 down and up with the sentinel, before it returns when the decision asks for it: the event is swallowed while Windows has Win or Alt down, so the Win or Alt release opens neither Start nor the menu bar (KS-12)
 - While remapping is off (`swch off`), passes every event straight to `CallNextHookEx` without reading it
 - Answers the engine's `Env`: `GetAsyncKeyState` for the main thread's read of the modifiers between key events (roadmap item 2.5), which repairs state lost while a higher-integrity window (Task Manager, UAC consent, lock screen, etc.) had focus, at a key event for each modifier held for the daemon, and for the key of a key-up it would swallow; the foreground window's executable for `when:` from the main thread's per-window cache, with no Win32 call; its title read live, only when a title condition asks, and never for a window of the daemon's own process
@@ -163,7 +167,7 @@ The daemon's main thread (roadmap item 2.2):
 - Owns the decision core (`engine::Engine`: held and blocked keys, pending gestures) and its gesture timers in a thread-local reached only through `with_main`; the hook callbacks run on this thread, so no lock guards the engine, and a callback re-entered while the state is borrowed passes its event instead of panicking or hanging
 - Runs the main loop: it waits for its gesture timer and its messages at once (`MsgWaitForMultipleObjectsEx`), pumps with `PeekMessageW`, in which the hook callbacks run, and fires every gesture timer that is due. The timer is one high-resolution waitable timer, so a `Hold` fires within about 1 ms of its term; no thread is started per press (KS-33)
 - A gesture timer fires on this thread: a fast `Hold` action runs here, and a slow one goes to the action executor
-- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl`/`Text` on the action executor
+- Serves `swch on` / `swch off`: the IPC worker queues a request and waits at most 2 s for the answer; the main thread flips the switch and resets the decision core between two key events (pending gestures are dropped and the keys held are re-read from Windows; a key whose press was swallowed keeps its release swallowed) and stops every running macro and queued `Launch`/`OpenUrl`/`Text`/`Paste` on the action executor; a clipboard a `Paste` already changed is still put back at its time
 - Serves config reloads the same way: the watcher thread hands over the new list, and the main thread swaps it in and drops the pending gestures in one step (roadmap item 2.3)
 - Answers the input signals that the control window (a lock, an unlock) and the desktop-switch hook (Ctrl+Alt+Del, a UAC prompt on the secure desktop, and back) note: when keyboard input leaves the desktop it drops the pending gestures, stops the running macros and releases every held key, so the next press of each key is a press; a signal that input came back only reads the foreground window again. Each signal is logged (roadmap item 2.3, KS-29)
 
@@ -184,11 +188,12 @@ Main application:
 
 The `action-executor` thread (roadmap item 2.1, KS-08):
 
-- Runs `Launch`, `OpenUrl`, `Text` and `Sequence`, which the main thread queues without waiting, from the hook callback or, for a `Hold`, from its main loop; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
+- Runs `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence`, which the main thread queues without waiting, from the hook callback or, for a `Hold`, from its main loop; up to 32 wait, and a further one is dropped and counted (`executor_jobs_dropped`)
 - Initialises COM as a single-threaded apartment, as `ShellExecuteW` asks, and pumps its own messages, waiting for them and for its `Delay` timer at once
 - Runs macros side by side on its one thread: a macro goes up to its next `Delay`, which waits on one high-resolution timer, within about 1 ms as `thread::sleep` did, and holds up no other action or macro. A step that blocks inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows) holds up the others while it runs
 - `swch off`, `swch on` (a real change), a reload and exit stop every running macro within 100 ms, also inside a `Delay`, and drop the actions still queued; a step already running finishes first
-- An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl`, `Text` and `Sequence` count in `executor_unavailable` until the daemon restarts
+- Runs a `Paste`, the action or a macro step, in its paste session: a message-only window of the executor thread owns the clipboard while the phrase is on it, from the save of the previous content to its restore. One paste goes at a time, in firing order: the jobs fired after a `Paste` that waits wait behind it, a macro started before it goes on, and a further `Paste` action fired while one waits is dropped and counted (`paste_dropped`). A stop or the executor's end puts a pending clipboard back first, for at most 250 ms more
+- An executor that stopped on its own (it logs one `[ERROR]` line) makes every later `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` count in `executor_unavailable` until the daemon restarts
 
 ## Configuration
 
@@ -371,6 +376,7 @@ binding that duplicates one above it (see [Errors](#errors)).
 | `Launch(exe: "<path>", args: [...])` | Spawn a process. `args` defaults to `[]`. Until roadmap item 3.3 the program gets the daemon's administrator rights (release build) and, for a console program, its console (KS-09, KS-34). |
 | `OpenUrl("<url-or-path>")`           | Hand to OS default handler via `ShellExecuteW`. Works for URLs, `mailto:`, file paths, even .exe. |
 | `Text("<string>")`                   | Type the string at once, as the `Text` macro step does: one `SendInput` batch with `KEYEVENTF_UNICODE`, layout-independent, on the action executor. Once per press unless `repeat: true`. `Text("")` is a load error. Held modifiers combine with it until roadmap item 3.1 (KS-19); very long texts can lose characters in some applications. |
+| `Paste("<string>")`                  | Put the string on the clipboard, send `Ctrl+V` (`keys:` sets another keystroke, such as `"Shift+Insert"`) and put the previous clipboard content back `restore_delay` ms later (default 500, 50 to 5000), later while the target window's thread does not answer, at most 5 s after the keystroke. That check cannot see a busy browser or Electron page: give such windows a longer `restore_delay` with `when:`. Named form: `Paste(text: "...", keys: "Shift+Insert", restore_delay: 800)`. The text stays out of the clipboard history; content a password manager marked private is cleared, not put back; a copy made meanwhile is kept. Waits until no modifier is held (at most 3 s, then it is skipped). One paste at a time. `Paste("")` is a load error. |
 | `Media(<key>)`                       | Synthesize a media/volume key. `<key>` is one of `PlayPause`, `Stop`, `Next`, `Previous`, `VolumeUp`, `VolumeDown`, `VolumeMute`. |
 | `Sequence([...])`                    | Chain multiple steps (text, key presses, delays, window ops) — see below |
 | `DoNothing`                          | Match the combo and drop it (no side effects)                            |
@@ -477,8 +483,8 @@ the `T` types two capitals and leaves CapsLock alone. Write
 - For `Hold`: arming asks the daemon's main thread for a timer that fires
   the action after `<ms>`, within about 1 ms (a high-resolution waitable
   timer, not the 15.6 ms system tick); no thread is started. A fast action
-  runs on the main thread, and `Launch`, `OpenUrl`, `Text` and `Sequence`
-  go to the action executor. A key-up before `<ms>` cancels it; a key-up at or
+  runs on the main thread, and `Launch`, `OpenUrl`, `Text`, `Paste` and
+  `Sequence` go to the action executor. A key-up before `<ms>` cancels it; a key-up at or
   after `<ms>` leaves it to the timer, so a key held for the whole term
   fires its Hold even if the timer runs late. Each timer carries the
   number of the press that started it, so a timer from an earlier press
@@ -605,12 +611,13 @@ macros, as it keeps the bindings.
 )
 ```
 
-Eight step variants:
+Nine step variants:
 
 | Step                  | Effect                                                                                                       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `Delay(<ms>)`         | Wait `<ms>` milliseconds on the action executor's high-resolution timer, which ends the wait within about 1 ms of its time and never before. Blocks neither the hook nor other actions and macros; `swch off`, a reload or exit cut it short. |
 | `Text("<string>")`    | Type the string via `SendInput` with `KEYEVENTF_UNICODE`. Layout-independent; emoji and surrogate pairs work (also an action: `Text("...")`). |
+| `Paste("<string>")`   | Paste the string through the clipboard and put the clipboard back (same as the top-level action, both forms). |
 | `Key("<name>")`       | Synthesize a single key press (down + up). Same name syntax as `keys`.                                       |
 | `Combo("<combo>")`    | Synthesize a chord: modifiers down → payload keys → reverse-order release. `"Ctrl+S"`, `"Alt+F4"`, etc.      |
 | `Window(<op>)`        | Apply `<op>` to the captured target window. `<op>` is one of `Minimize`, `Maximize`, `Restore`, `Close`. It does not wait for the window (`ShowWindowAsync`, a posted `WM_CLOSE`): put a `Delay` after it when the next step depends on the change. |
@@ -870,17 +877,19 @@ it. The console shows the same lines without the time, on stderr, with the
 level on the first line of a message only. Only the startup banner (the
 list of bindings) goes to stdout, and it is never written to the file,
 because a binding can hold the text of a macro. The log never records the
-keys you press or the text you type; lines about the config quote the
+keys you press or the text you type, and no line shows a `Paste`'s phrase
+or the clipboard content; lines about the config quote the
 config, key names included. What the keyboard hook must not log at every
 key press, a `SendInput` that Windows cut short, a `PostMessage` or
 language switch that Windows refused, a Hold whose timer could not be set,
-a `Launch`, `OpenUrl`, `Text` or `Sequence` that the action executor's
-full queue dropped or that found the executor stopped, or a key event that
-found the daemon's decision state in use and passed undecided
+a `Launch`, `OpenUrl`, `Text`, `Paste` or `Sequence` that the action
+executor's full queue dropped or that found the executor stopped, or a key
+event that found the daemon's decision state in use and passed undecided
 (`main_state_refused`), it counts, and so does a callback that ended 17 ms
 or more after its key event or a main thread 17 ms or more away from its
 messages (`hook_late`, after which the main thread reads the modifiers
-again; roadmap item 2.5). It also records how long its longest callback ran. While a count
+again; roadmap item 2.5). The executor counts a `Paste` action it dropped
+because another one waited (`paste_dropped`). It also records how long its longest callback ran. While a count
 is not 0, or that callback took 5 ms or more, one
 `[WARN] counters since the last report: ...` line every minute and at exit
 gives all of them, ending with `longest_callback_us=<microseconds>`; the
@@ -931,7 +940,9 @@ elevated without a prompt; `swch` then talks to it normally.
   - `Win32_UI_Shell` (`ShellExecuteW` for `OpenUrl` and `swch open`; `SHGetKnownFolderPath` for the log folder)
   - `Win32_System_Com` (`CoTaskMemFree` for the path `SHGetKnownFolderPath` returns; `CoInitializeEx` for the action executor's single-threaded apartment)
   - `Win32_System_Console`
+  - `Win32_System_DataExchange` (the clipboard functions for `Paste`)
   - `Win32_System_LibraryLoader` (`GetModuleHandleW` for the control window's class)
+  - `Win32_System_Memory` (`GlobalAlloc` and `GlobalLock` for the clipboard blocks of `Paste`)
   - `Win32_System_Registry`
   - `Win32_System_RemoteDesktop` (`WTSRegisterSessionNotification` for the lock and unlock notifications)
   - `Win32_System_StationsAndDesktops` (`GetThreadDesktop`, `GetUserObjectInformationW`: whether this desktop has keyboard input)
@@ -952,7 +963,7 @@ elevated without a prompt; `swch` then talks to it normally.
 
 ## Implementation Features
 
-- **Native APIs first**: language switching, window operations and messages use Win32 calls; key output (`ToggleCapsLock`, `PressKey`, `Media`, macro `Text`/`Key`/`Combo`) is synthesized with `SendInput`
+- **Native APIs first**: language switching, window operations and messages use Win32 calls; key output (`ToggleCapsLock`, `PressKey`, `Media`, macro `Text`/`Key`/`Combo`) is synthesized with `SendInput`; `Paste` goes through the clipboard (`OpenClipboard`, `SetClipboardData`) and one `SendInput` keystroke
 - **Global hook**: uses `WH_KEYBOARD_LL` to intercept all system keyboard events
 - **Exact, sided modifiers**: a binding fires only with exactly its own modifiers held (`allow_extra_modifiers: true` relaxes that per binding); `Shift` matches either Shift key and `LShift` only the left one, and the same for Ctrl, Alt and Win
 - **Block default behavior**: configurable blocking of standard key actions, for every trigger; a `Tap`, `Hold` or `DoubleTap` on modifiers alone lets them through by default
@@ -1013,6 +1024,17 @@ The hook watchdog (roadmap item 2.4) has limits of its own:
   reinstall after 1, 2, 4 ... up to 64 s of typing there.
 - Raw keyboard input in the daemon's process belongs to the watchdog:
   Windows allows one registration per device class and process.
+
+`Paste` has limits of its own (known issues 93 to 106 in the book):
+
+- A daemon killed or crashed between the paste and the restore leaves the
+  phrase on the clipboard, and the previous content is lost.
+- Some formats are never put back: metafiles, GDI-only content, owner-drawn
+  and private formats, the OLE link formats (Excel's live copy), more than
+  64 MiB, and the formats left when the 50 ms save budget ends.
+- The restore waits only while the target window's thread does not answer:
+  a busy browser or Electron page, a Remote Desktop or VM window can read
+  the clipboard after it. Give them a longer `restore_delay` with `when:`.
 
 For a fully unattended/no-UAC-prompt setup, the alternative is
 `uiAccess="true"` in the manifest — but that requires a binary signed with a

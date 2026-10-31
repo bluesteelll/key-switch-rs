@@ -9,14 +9,25 @@
 //! after the `Delay`. Runs advance oldest first, once per poll, so two
 //! macros fired together interleave at their `Delay` steps and never inside
 //! a stretch of steps between two of them.
+//!
+//! A `Paste` job is a run of one step, and a `Paste` step is a step of its
+//! macro's run, which the runs' paste session works (`paste`): its waits (a
+//! held modifier, a busy clipboard, the restore of the paste before it) are
+//! deadlines of its run, as a `Delay`'s are, and the session's restore is
+//! polled with the runs. One paste tries at a time, the oldest first; while
+//! one waits, the jobs fired after it are held, in order, and a `Paste`
+//! action fired meanwhile is dropped (cut D12).
 
+use std::collections::VecDeque;
 use std::ops::AddAssign;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{Runner, TargetWindow};
+use super::paste::{Attempt, Closing, PasteSession, Ports, Step};
+use super::{QUEUE_CAPACITY, Runner, TargetWindow};
 use crate::core::windows_actions::BindAction;
+use crate::data::paste::PasteSpec;
 use crate::data::sequence::SequenceStep;
 
 /// One slow action, as the thread that fired it queued it.
@@ -28,18 +39,32 @@ pub(crate) struct Job {
     pub(crate) epoch: u64,
 }
 
-/// The macros that run, oldest first.
+/// The macros and pastes that run, oldest first, and the paste session.
 pub(crate) struct Runs {
     active: Vec<Run>,
+    /// The jobs that came while a paste waited, oldest first; they start
+    /// once it is over.
+    held: VecDeque<Job>,
+    session: PasteSession,
+}
+
+/// What a run walks.
+enum Body {
+    /// A `Sequence`'s steps.
+    Macro(Arc<Vec<SequenceStep>>),
+    /// A `Paste` action: one step.
+    Paste(Arc<PasteSpec>),
 }
 
 struct Run {
-    steps: Arc<Vec<SequenceStep>>,
+    body: Body,
     /// The index of the next step.
     next: usize,
     target: TargetWindow,
     epoch: u64,
     resume: Resume,
+    /// The state of the paste at the next step while it waits.
+    attempt: Option<Attempt>,
 }
 
 /// When a run goes on.
@@ -47,7 +72,8 @@ struct Run {
 enum Resume {
     /// At the next poll: a run that has not started.
     Now,
-    /// Once `now` reaches the deadline of its `Delay`.
+    /// Once `now` reaches the deadline of its `Delay` or of its paste's
+    /// wait.
     At(Instant),
     /// Only by being cancelled: the deadline is past what `Instant` holds.
     WhenCancelled,
@@ -77,12 +103,15 @@ pub(crate) struct Calls {
     pub(crate) made: u32,
     /// How many of them panicked.
     pub(crate) panics: u32,
+    /// How many `Paste` actions were dropped because another one waited.
+    pub(crate) dropped_pastes: u32,
 }
 
 impl AddAssign for Calls {
     fn add_assign(&mut self, other: Self) {
         self.made += other.made;
         self.panics += other.panics;
+        self.dropped_pastes += other.dropped_pastes;
     }
 }
 
@@ -93,56 +122,161 @@ pub(crate) struct Polled {
     pub(crate) calls: Calls,
 }
 
+/// A call of the paste session on its ports at `now`; `true` if it asked a
+/// port.
+type SessionCall = fn(&mut PasteSession, &Ports<'_>, Instant) -> bool;
+
 impl Runs {
     pub(crate) fn new() -> Self {
-        Self { active: Vec::new() }
+        Self {
+            active: Vec::new(),
+            held: VecDeque::new(),
+            session: PasteSession::new(),
+        }
     }
 
-    /// Starts `job` unless its epoch is no longer live: a `Sequence`
-    /// becomes a run, which the next poll starts, and any other action
-    /// runs at once.
+    /// Starts `job` unless its epoch is no longer live: a `Sequence` or a
+    /// `Paste` becomes a run, which the next poll starts, and any other
+    /// action runs at once. While a paste waits, the job is held until it
+    /// is over, so that jobs run in firing order (ruling 7); a `Paste`
+    /// fired while another one waits or is held is dropped and counted.
     pub(crate) fn start(&mut self, job: Job, ctx: &mut Ctx<'_>) -> Calls {
         if !(ctx.live)(job.epoch) {
             return Calls::default();
         }
-        match job.action {
-            BindAction::Sequence(steps) => {
-                self.active.push(Run {
-                    steps,
-                    next: 0,
-                    target: job.target,
-                    epoch: job.epoch,
-                    resume: Resume::Now,
-                });
-                Calls::default()
-            }
-            action => call(|| ctx.runner.action(&action)),
+        if matches!(job.action, BindAction::Paste(_)) && self.paste_waits() {
+            return Calls {
+                dropped_pastes: 1,
+                ..Calls::default()
+            };
         }
+        if self.attempt_waits() {
+            self.held.push_back(job);
+            return Calls::default();
+        }
+        self.begin(job, ctx)
     }
 
-    /// Drops every run that is no longer live, then advances each due run
-    /// once, oldest first, up to its next `Delay` or its end.
+    /// Makes `job` a run, or runs it at once if it is no `Sequence` and no
+    /// `Paste`.
+    fn begin(&mut self, job: Job, ctx: &mut Ctx<'_>) -> Calls {
+        let body = match job.action {
+            BindAction::Sequence(steps) => Body::Macro(steps),
+            BindAction::Paste(spec) => Body::Paste(spec),
+            action => return call(|| ctx.runner.action(&action)),
+        };
+        self.active.push(Run {
+            body,
+            next: 0,
+            target: job.target,
+            epoch: job.epoch,
+            resume: Resume::Now,
+            attempt: None,
+        });
+        Calls::default()
+    }
+
+    /// Whether a `Paste` action waits or is held: one more would only paste
+    /// the same phrase again once the key that fires it is released, as a
+    /// repeating key does (cut D12). A macro's `Paste` step does not count.
+    fn paste_waits(&self) -> bool {
+        self.active
+            .iter()
+            .any(|run| matches!(run.body, Body::Paste(_)))
+            || self
+                .held
+                .iter()
+                .any(|job| matches!(job.action, BindAction::Paste(_)))
+    }
+
+    /// Whether the paste of a run waits between its tries.
+    fn attempt_waits(&self) -> bool {
+        self.active.iter().any(|run| run.attempt.is_some())
+    }
+
+    /// Whether the executor may take another job from its queue: the held
+    /// jobs are at most a queue's worth, so that the next ones stay in the
+    /// queue, where `submit` counts what overflows.
+    pub(crate) fn can_take(&self) -> bool {
+        self.held.len() < QUEUE_CAPACITY
+    }
+
+    /// Drops every run and held job that is no longer live, decides whether
+    /// the paste session's restore is due, advances each due run once,
+    /// oldest first, up to its next `Delay`, its paste's next wait or its
+    /// end, starts the held jobs once no paste waits, and puts the
+    /// clipboard back if that is due.
     pub(crate) fn poll(&mut self, ctx: &mut Ctx<'_>) -> Polled {
         let mut calls = Calls::default();
         self.active.retain(|run| (ctx.live)(run.epoch));
-        let mut index = 0;
+        self.held.retain(|job| (ctx.live)(job.epoch));
+        calls += self.session_call(ctx, PasteSession::tick);
+        self.advance_from(0, ctx, &mut calls);
+        // Oldest first, each advanced in this poll, until one leaves its
+        // paste waiting.
+        while !self.attempt_waits()
+            && let Some(job) = self.held.pop_front()
+        {
+            let first = self.active.len();
+            calls += self.begin(job, ctx);
+            self.advance_from(first, ctx, &mut calls);
+        }
+        calls += self.session_call(ctx, PasteSession::restore_if_due);
+        Polled {
+            next: self.next(),
+            calls,
+        }
+    }
+
+    /// Advances each due run from `first` on, oldest first, and drops the
+    /// runs that end.
+    fn advance_from(&mut self, first: usize, ctx: &mut Ctx<'_>, calls: &mut Calls) {
+        let mut index = first;
         while index < self.active.len() {
-            let run = &mut self.active[index];
+            let Runs {
+                active, session, ..
+            } = self;
+            let (older, rest) = active.split_at_mut(index);
+            let run = &mut rest[0];
             let due = match run.resume {
                 Resume::Now => true,
                 Resume::At(deadline) => (ctx.now)() >= deadline,
                 Resume::WhenCancelled => false,
             };
-            if due && !run.advance(ctx, &mut calls) {
-                self.active.remove(index);
+            // The head rule (cut D6): only the oldest paste that waits
+            // tries; a younger run at a Paste step waits until its
+            // deadline.
+            let head = older
+                .iter()
+                .find_map(|run| match (&run.attempt, run.resume) {
+                    (Some(_), Resume::At(deadline)) => Some(deadline),
+                    _ => None,
+                });
+            if due && !run.advance(ctx, calls, session, head) {
+                active.remove(index);
             } else {
                 index += 1;
             }
         }
-        Polled {
-            next: self.next(),
-            calls,
+    }
+
+    /// Makes `f`, a call of the paste session, if a restore waits, under
+    /// `call`, and counts it only if it asked a port. A panic ends the
+    /// session, so that no later poll panics on it again.
+    fn session_call(&mut self, ctx: &mut Ctx<'_>, f: SessionCall) -> Calls {
+        if !self.session.is_pending() {
+            return Calls::default();
         }
+        let now = (ctx.now)();
+        let ports = ctx.runner.paste();
+        let session = &mut self.session;
+        let mut asked = false;
+        let made = call(|| asked = f(session, &ports, now));
+        if made.panics > 0 {
+            let _ = call(|| session.give_up(&ports));
+            return made;
+        }
+        if asked { made } else { Calls::default() }
     }
 
     fn next(&self) -> Next {
@@ -152,17 +286,33 @@ impl Runs {
                 Resume::At(deadline) => Some(deadline),
                 Resume::Now | Resume::WhenCancelled => None,
             })
+            .chain(self.session.next())
             .min()
             .map_or(Next::Idle, Next::At)
     }
 
     /// Drops every run that waits for a deadline, which nothing would wake
-    /// without a timer, and returns how many.
-    pub(crate) fn drop_timed(&mut self) -> usize {
+    /// without a timer, and returns how many; a pending restore of the
+    /// paste session is tried at once.
+    pub(crate) fn drop_timed(&mut self, ctx: &mut Ctx<'_>) -> usize {
         let before = self.active.len();
         self.active
             .retain(|run| !matches!(run.resume, Resume::At(_)));
+        self.session.restore_now(&ctx.runner.paste());
         before - self.active.len()
+    }
+
+    /// The restore of the paste session as the executor stops, tried until
+    /// `until`.
+    pub(crate) fn close(&mut self, ctx: &mut Ctx<'_>, until: Instant) -> Closing {
+        let now = (ctx.now)();
+        self.session.close(&ctx.runner.paste(), now, until)
+    }
+
+    /// The last try at the paste session's restore, and the end of its
+    /// windows, as the executor thread ends.
+    pub(crate) fn abandon(&mut self, runner: &mut dyn Runner) {
+        self.session.abandon(&runner.paste());
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -171,15 +321,62 @@ impl Runs {
 }
 
 impl Run {
-    /// Runs steps up to the next `Delay`, which sets when the run goes on,
-    /// and returns `true`; or up to the run's end (past its last step, its
-    /// epoch no longer live, a step that panicked) and returns `false`.
-    fn advance(&mut self, ctx: &mut Ctx<'_>, calls: &mut Calls) -> bool {
+    /// The spec of the run's next step, if that step is a `Paste`.
+    fn paste_at_next(&self) -> Option<&Arc<PasteSpec>> {
+        match &self.body {
+            Body::Paste(spec) => (self.next == 0).then_some(spec),
+            Body::Macro(steps) => match steps.get(self.next) {
+                Some(SequenceStep::Paste(spec)) => Some(spec),
+                _ => None,
+            },
+        }
+    }
+
+    /// Runs steps up to the next `Delay` or wait of a paste, which sets when
+    /// the run goes on, and returns `true`; or up to the run's end (past its
+    /// last step, its epoch no longer live, a step that panicked) and
+    /// returns `false`. At a Paste step it waits until `head`, the deadline
+    /// of an older run's paste, if there is one.
+    fn advance(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        calls: &mut Calls,
+        session: &mut PasteSession,
+        head: Option<Instant>,
+    ) -> bool {
         loop {
             if !(ctx.live)(self.epoch) {
                 return false;
             }
-            let Some(step) = self.steps.get(self.next) else {
+            if let Some(spec) = self.paste_at_next().cloned() {
+                if let Some(deadline) = head {
+                    self.resume = Resume::At(deadline);
+                    return true;
+                }
+                let epoch = self.epoch;
+                let Ctx { runner, live, now } = ctx;
+                let ports = runner.paste();
+                let live_now = || live(epoch);
+                let attempt = &mut self.attempt;
+                let mut step = Step::Done;
+                let made = call(|| step = session.attempt(attempt, &spec, &ports, *now, &live_now));
+                *calls += made;
+                if made.panics > 0 {
+                    return false;
+                }
+                match step {
+                    Step::Done => self.next += 1,
+                    Step::WaitUntil(at) => {
+                        self.resume = Resume::At(at);
+                        return true;
+                    }
+                }
+                continue;
+            }
+            let Body::Macro(steps) = &self.body else {
+                return false;
+            };
+            let Some(step) = steps.get(self.next) else {
                 return false;
             };
             self.next += 1;
@@ -209,6 +406,7 @@ fn call(f: impl FnOnce()) -> Calls {
     Calls {
         made: 1,
         panics: u32::from(panicked),
+        dropped_pastes: 0,
     }
 }
 
@@ -221,24 +419,48 @@ mod tests {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     use super::*;
+    use crate::core::executor::testing::FakeDesk;
     use crate::core::executor::{Runner, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::sequence::SequenceStep;
+    use crate::platform::clipboard::{CF_UNICODETEXT, Call, FakeClipboard};
 
     /// A fake clock: the base instant plus an offset that the test, or the
     /// runner inside a call, moves forward.
     type Offset = Arc<Mutex<Duration>>;
 
-    /// Records the `Display` text of every call; panics on `panic_on`
-    /// before recording, and moves the clock by `advance` inside the call
-    /// named in it.
+    /// The calls a [`Recorder`] made, shared with its desk's keystrokes.
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    /// Records the `Display` text of every call, and every paste keystroke
+    /// of its fake desk as `keys <names>`; panics on `panic_on` before
+    /// recording, and moves the clock by `advance` inside the call named in
+    /// it.
     struct Recorder {
-        log: Vec<String>,
+        log: Log,
         panic_on: Option<&'static str>,
         advance: Option<(&'static str, Duration, Offset)>,
+        clipboard: FakeClipboard,
+        desk: FakeDesk,
     }
 
     impl Recorder {
+        fn new() -> Self {
+            let log = Log::default();
+            let keys = Arc::clone(&log);
+            Self {
+                log,
+                panic_on: None,
+                advance: None,
+                clipboard: FakeClipboard::new(),
+                desk: FakeDesk::new().with_sink(move |text| {
+                    keys.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(text);
+                }),
+            }
+        }
+
         fn call(&mut self, text: String) {
             if let Some((on, by, offset)) = &self.advance
                 && *on == text
@@ -248,7 +470,10 @@ mod tests {
             if self.panic_on == Some(text.as_str()) {
                 panic!("the recorder panics on {text}");
             }
-            self.log.push(text);
+            self.log
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(text);
         }
     }
 
@@ -259,6 +484,13 @@ mod tests {
 
         fn step(&mut self, step: &SequenceStep, _target: TargetWindow) {
             self.call(step.to_string());
+        }
+
+        fn paste(&mut self) -> Ports<'_> {
+            Ports {
+                clipboard: &self.clipboard,
+                desk: &self.desk,
+            }
         }
     }
 
@@ -275,11 +507,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 runs: Runs::new(),
-                runner: Recorder {
-                    log: Vec::new(),
-                    panic_on: None,
-                    advance: None,
-                },
+                runner: Recorder::new(),
                 base: Instant::now(),
                 offset: Arc::new(Mutex::new(Duration::ZERO)),
                 epoch: Cell::new(0),
@@ -341,9 +569,32 @@ mod tests {
             runs.poll(&mut ctx)
         }
 
+        /// Polls at each next deadline, as the executor's timer wakes it,
+        /// until no run and no restore waits, or the next deadline is past
+        /// `until_ms`.
+        fn run_until_idle(&mut self, until_ms: u64) {
+            for _ in 0..100_000 {
+                let Next::At(at) = self.poll().next else {
+                    return;
+                };
+                if at > self.ms(until_ms) {
+                    return;
+                }
+                let mut offset = self.offset.lock().unwrap_or_else(PoisonError::into_inner);
+                *offset = (*offset).max(at - self.base);
+            }
+            panic!("the runs did not settle");
+        }
+
         /// The calls recorded since the last `taken`.
         fn taken(&mut self) -> Vec<String> {
-            std::mem::take(&mut self.runner.log)
+            std::mem::take(
+                &mut *self
+                    .runner
+                    .log
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            )
         }
     }
 
@@ -357,6 +608,259 @@ mod tests {
 
     fn delay(ms: u64) -> SequenceStep {
         SequenceStep::Delay(ms)
+    }
+
+    /// The spec of a `Paste` of `text` with `Ctrl+V` and `restore_delay`.
+    fn spec(text: &str, restore_delay: u64) -> Arc<PasteSpec> {
+        Arc::new(PasteSpec::new(text, vec![VK_CONTROL, VK_V], restore_delay).expect("a valid spec"))
+    }
+
+    fn paste(text: &str) -> BindAction {
+        BindAction::Paste(spec(text, 50))
+    }
+
+    fn paste_step(text: &str) -> SequenceStep {
+        SequenceStep::Paste(spec(text, 50))
+    }
+
+    #[test]
+    fn a_paste_never_reaches_runner_action_or_step() {
+        // The runs' paste session works a Paste, the action and the step;
+        // the runner's `action` and `step` never see one.
+        let mut fixture = Fixture::new();
+        fixture.start(paste("ab"));
+        fixture.start(sequence(vec![paste_step("cd")]));
+        fixture.run_until_idle(10_000);
+        let taken = fixture.taken();
+        assert_eq!(taken, ["keys Ctrl+V", "keys Ctrl+V"], "both pasted");
+
+        fixture.start(sequence(vec![key(VK_F13), paste_step("ef"), key(VK_F14)]));
+        fixture.run_until_idle(20_000);
+        assert_eq!(fixture.taken(), ["key F13", "keys Ctrl+V", "key F14"]);
+    }
+
+    fn text(text: &str) -> BindAction {
+        BindAction::Text(Arc::from(text))
+    }
+
+    /// `text` as `CF_UNICODETEXT` bytes, its NUL included.
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// A clipboard that holds "ORIG", put there by another program.
+    fn original() -> FakeClipboard {
+        FakeClipboard::new().with_content(0x77, &[(CF_UNICODETEXT, &utf16("ORIG"))])
+    }
+
+    /// Whether `clipboard` holds "ORIG" again.
+    fn holds_the_original(clipboard: &FakeClipboard) -> bool {
+        clipboard
+            .content()
+            .first()
+            .is_some_and(|first| *first == (CF_UNICODETEXT, utf16("ORIG")))
+    }
+
+    impl Fixture {
+        /// A fixture whose runner pastes through `clipboard`.
+        fn with_clipboard(clipboard: &FakeClipboard) -> Self {
+            let mut fixture = Self::new();
+            fixture.runner.clipboard = clipboard.clone();
+            fixture
+        }
+
+        /// Starts `action` and polls once, as the drain does.
+        fn submit(&mut self, action: BindAction) -> Calls {
+            let mut calls = self.start(action);
+            calls += self.poll().calls;
+            calls
+        }
+
+        fn drop_timed(&mut self) -> usize {
+            let Fixture {
+                runs,
+                runner,
+                base,
+                offset,
+                epoch,
+            } = self;
+            let live = |job_epoch: u64| job_epoch == epoch.get();
+            let now = || *base + *offset.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut ctx = Ctx {
+                runner,
+                live: &live,
+                now: &now,
+            };
+            runs.drop_timed(&mut ctx)
+        }
+    }
+
+    #[test]
+    fn jobs_after_a_waiting_paste_run_after_it() {
+        // Ruling 7: firing order, even behind a Paste that waits.
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("ab"));
+        fixture.submit(text("cd"));
+
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.poll();
+
+        assert_eq!(fixture.taken(), ["keys Ctrl+V", "text (2 chars)"]);
+    }
+
+    #[test]
+    fn a_run_started_before_a_waiting_paste_goes_on() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(sequence(vec![key(VK_F13), delay(10), key(VK_F14)]));
+        fixture.submit(paste("ab"));
+        assert_eq!(fixture.taken(), ["key F13"]);
+
+        fixture.at(10);
+        fixture.poll();
+
+        assert_eq!(fixture.taken(), ["key F14"], "the Paste still waits");
+    }
+
+    #[test]
+    fn extra_standalone_pastes_while_one_waits_are_dropped_and_counted() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        for phrase in ["a", "b", "c"] {
+            calls += fixture.submit(paste(phrase));
+        }
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        calls += fixture.poll().calls;
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 2);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+    }
+
+    #[test]
+    fn a_repeat_burst_of_pastes_leaves_no_backlog() {
+        // A held key repeats every 33 ms; each repeat that fires a Paste
+        // while one waits adds nothing.
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        for repeat in 0..30 {
+            fixture.at(repeat * 33);
+            calls += fixture.submit(paste("x"));
+        }
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(30 * 33);
+        calls += fixture.poll().calls;
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 29);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+    }
+
+    #[test]
+    fn a_macro_paste_step_is_never_dropped() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        let mut calls = Calls::default();
+        calls += fixture.submit(paste("a"));
+        calls += fixture.submit(sequence(vec![paste_step("b")]));
+        calls += fixture.submit(sequence(vec![paste_step("c")]));
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(calls.dropped_pastes, 0);
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"; 3]);
+    }
+
+    #[test]
+    fn an_epoch_change_drops_waiting_pastes_and_held_jobs_but_keeps_the_restore() {
+        let clipboard = original();
+        let mut fixture = Fixture::with_clipboard(&clipboard);
+        fixture.submit(paste("A"));
+        fixture.at(10);
+        fixture.submit(paste("B"));
+        fixture.submit(text("cd"));
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"], "B waits for A's restore");
+
+        fixture.epoch.set(1);
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(
+            fixture.taken(),
+            Vec::<String>::new(),
+            "B and the Text never run"
+        );
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+    }
+
+    #[test]
+    fn held_jobs_stop_at_the_queue_capacity() {
+        let mut fixture = Fixture::new();
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("a"));
+        for _ in 0..QUEUE_CAPACITY {
+            fixture.submit(text("t"));
+        }
+        assert!(!fixture.runs.can_take());
+
+        fixture.runner.desk.hold_modifiers(false);
+        fixture.at(5);
+        fixture.poll();
+
+        assert!(fixture.runs.can_take());
+        assert_eq!(fixture.taken().len(), 1 + QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn paste_attempts_go_in_firing_order() {
+        // Only the oldest run at a Paste step tries; a younger one waits
+        // for it, even when the clipboard would open for the younger one.
+        let mut fixture = Fixture::new();
+        fixture.runner.clipboard.busy_opens(1);
+        let shift_insert =
+            Arc::new(PasteSpec::new("b", vec![VK_SHIFT, VK_INSERT], 50).expect("a valid spec"));
+        fixture.start(sequence(vec![paste_step("a")]));
+        fixture.start(sequence(vec![SequenceStep::Paste(shift_insert)]));
+        fixture.run_until_idle(10_000);
+
+        assert_eq!(fixture.taken(), ["keys Ctrl+V", "keys Shift+Insert"]);
+    }
+
+    #[test]
+    fn a_failed_timer_drops_the_waiting_pastes_and_restores_once() {
+        let clipboard = original();
+        let mut fixture = Fixture::with_clipboard(&clipboard);
+        fixture.submit(paste("A"));
+        fixture.runner.desk.hold_modifiers(true);
+        fixture.submit(paste("B"));
+        assert_eq!(fixture.taken(), ["keys Ctrl+V"]);
+
+        let (dropped, lines) = crate::logging::testing::capture(|| fixture.drop_timed());
+
+        assert_eq!(dropped, 1, "B waited");
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert!(
+            lines.iter().any(|line| line.contains(
+                "paste: the executor's timer failed; the clipboard was put back at once"
+            )),
+            "{lines:?}"
+        );
+        fixture.runs.abandon(&mut fixture.runner);
+        let empties = clipboard
+            .calls()
+            .into_iter()
+            .filter(|call| *call == Call::Empty)
+            .count();
+        assert_eq!(empties, 2, "the paste's and the one restore");
+        assert_eq!(fixture.taken(), Vec::<String>::new());
     }
 
     #[test]
@@ -541,8 +1045,22 @@ mod tests {
             fixture.taken(),
             ["launch no-such.exe", "open https://example.com"]
         );
-        assert_eq!(launched, Calls { made: 1, panics: 0 });
-        assert_eq!(opened, Calls { made: 1, panics: 0 });
+        assert_eq!(
+            launched,
+            Calls {
+                made: 1,
+                panics: 0,
+                dropped_pastes: 0
+            }
+        );
+        assert_eq!(
+            opened,
+            Calls {
+                made: 1,
+                panics: 0,
+                dropped_pastes: 0
+            }
+        );
         assert_eq!(fixture.runs.len(), 0);
     }
 
@@ -551,7 +1069,14 @@ mod tests {
         let mut fixture = Fixture::new();
         let typed = fixture.start(BindAction::Text(Arc::from("abc")));
 
-        assert_eq!(typed, Calls { made: 1, panics: 0 });
+        assert_eq!(
+            typed,
+            Calls {
+                made: 1,
+                panics: 0,
+                dropped_pastes: 0
+            }
+        );
         assert_eq!(fixture.taken(), ["text (3 chars)"]);
         assert_eq!(fixture.runs.len(), 0, "a Text is not walked as a macro");
 

@@ -71,7 +71,8 @@ At the very start of the file, before the root `(`, you can put a ron attribute 
 | Attribute | Effect in this file |
 |---|---|
 | `#![enable(implicit_some)]` | Changes nothing: the loader already enables this extension |
-| `#![enable(unwrap_newtypes)]`, `#![enable(unwrap_variant_newtypes)]` | Accepted, but have no effect on this schema |
+| `#![enable(unwrap_variant_newtypes)]` | Changes nothing: the loader already enables this extension, which the named form of `Paste` needs ([§13.11](actions.md#s13-11); [§3.6](#s3-6)) |
+| `#![enable(unwrap_newtypes)]` | Accepted, but has no effect on this schema |
 | `#![enable(explicit_struct_names)]` | Makes the names of **all** structs mandatory. A plain `( bindings: … )` gives ``1:35: Expected the explicit struct name `RawConfig`, but none was found`` (with the attribute and the root `(` on one line, separated by a space), and `sequence: (…)` gives ``… `SequenceSpec` …``. A file in the form `RawConfig( bindings: [ RawBinding( …, sequence: SequenceSpec(…) ) ] )` passes. The requirement does not extend to variants with fields (`Launch(exe: …)`, `PostMessage(…)`) |
 | `#![enable(foo)]` (unknown name) | ``No RON extension named `foo` `` |
 
@@ -94,6 +95,10 @@ The fields `keys`, `sequence`, `chord`, `repeat` and `block_default` have the ty
 - `max_gap_ms: Some(300)` gives `Expected integer`;
 - `when: None` gives ``Unexpected variant named `None` in enum `RawCondition` ``, and `action: None` gives the same for `RawAction`;
 - `trigger: Some(Tap(200))` gives ``Unexpected variant named `Some` in enum `RawTrigger` ``.
+
+The fields `keys` and `restore_delay` of `Paste(text: ..., keys: ..., restore_delay: ...)` take a plain value, not an `Option`: `keys: Some("Shift+Insert")` and `keys: None` give `Expected string`, and `restore_delay: Some(800)` gives `Expected integer` ([§13.11](actions.md#s13-11)).
+
+Since branch `feat/clipboard-paste` the loader also enables ron's `unwrap_variant_newtypes` extension, which the named form of `Paste` needs. It also applies right after an explicit `Some(`: the struct of `sequence` or `chord` is then written without its own parentheses, so `sequence: Some((steps: ["F15", "F15"]))` and `chord: Some((keys: ["F15", "F16"]))` give `Expected identifier`, and `sequence: Some(SequenceSpec(steps: [...]))` gives an unknown-field error. Write `sequence: (steps: [...])` as everywhere in this reference; `sequence: Some(steps: [...])` loads, but is not needed. `keys: Some("F14")`, `block_default: Some(false)` and `repeat: Some(true)` load as before.
 
 <a id="s3-7"></a>
 ### 3.7 Integers

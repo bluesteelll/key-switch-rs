@@ -12,6 +12,8 @@
 //! "restore this window … type … minimize this window" operates on the same
 //! HWND throughout — not on whatever happened to be focused later.
 
+use std::sync::Arc;
+
 use windows::Win32::{
     Foundation::*,
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
@@ -19,6 +21,7 @@ use windows::Win32::{
 
 use crate::core::constants::injected_sentinel;
 use crate::core::windows_actions::{MediaKey, launch_process, shell_open};
+use crate::data::paste::PasteSpec;
 use crate::data::vk_name::vk_name;
 
 #[derive(Debug, Clone)]
@@ -27,6 +30,12 @@ pub enum SequenceStep {
     /// is layout-independent — characters appear regardless of which IME or
     /// keyboard layout the foreground window is using.
     TypeText(String),
+
+    /// Put the phrase on the clipboard, send the paste keystroke, and put
+    /// the clipboard back later, as the `Paste` action does. The action
+    /// executor runs it itself, in its paste session, and never hands it to
+    /// `run_step`. `Display` and `Debug` show its length and keys only.
+    Paste(Arc<PasteSpec>),
 
     /// Synthesize a single virtual-key press (down then up). No modifiers.
     PressKey(VIRTUAL_KEY),
@@ -81,6 +90,7 @@ impl std::fmt::Display for SequenceStep {
                     write!(f, "text {:?}", s)
                 }
             }
+            SequenceStep::Paste(spec) => write!(f, "{spec}"),
             SequenceStep::PressKey(vk) => write!(f, "key {}", vk_name(*vk)),
             SequenceStep::PressCombo(keys) => {
                 let names: Vec<String> = keys.iter().map(|k| vk_name(*k)).collect();
@@ -105,8 +115,13 @@ impl std::fmt::Display for SequenceStep {
 pub(crate) fn run_step(step: &SequenceStep, target: HWND) {
     match step {
         SequenceStep::TypeText(s) => type_text(s),
+        // The executor runs a Paste step itself, in its paste session
+        // (`runs::Run::advance`), and never hands one here.
+        SequenceStep::Paste(_) => {}
         SequenceStep::PressKey(vk) => press_key(*vk),
-        SequenceStep::PressCombo(keys) => press_combo(keys),
+        SequenceStep::PressCombo(keys) => {
+            press_combo(keys);
+        }
         // The executor keeps a Delay itself and never hands one here.
         SequenceStep::Delay(_) => {}
         SequenceStep::Window(op) => apply_window_op(*op, target),
@@ -177,42 +192,106 @@ fn press_key(vk: VIRTUAL_KEY) {
     }
 }
 
+/// How many events of a [`press_combo`] batch `SendInput` inserted, of how
+/// many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComboSent {
+    pub sent: u32,
+    pub of: u32,
+}
+
 /// Press a chord: modifiers go down first, payload key(s) tap, modifiers
 /// release last (reverse order). This matches the standard "hold Shift,
 /// press A, release Shift" sequence Windows expects from human input.
-fn press_combo(keys: &[VIRTUAL_KEY]) {
+///
+/// The macro step `Combo` and the `Paste` keystroke (`executor::paste`)
+/// send it, in one `SendInput`, each event with the sentinel.
+pub(crate) fn press_combo(keys: &[VIRTUAL_KEY]) -> ComboSent {
     if keys.is_empty() {
-        return;
+        return ComboSent { sent: 0, of: 0 };
     }
 
-    let (mods, payload): (Vec<VIRTUAL_KEY>, Vec<VIRTUAL_KEY>) =
-        keys.iter().copied().partition(|vk| is_modifier(*vk));
+    let inputs: Vec<INPUT> = combo_events(keys)
+        .into_iter()
+        .map(|(vk, flags)| vk_input(vk, flags))
+        .collect();
 
-    // 2 INPUTs per key for the modifiers (down + up) and 2 per payload key.
-    let mut inputs: Vec<INPUT> = Vec::with_capacity((mods.len() + payload.len()) * 2);
-
-    for vk in &mods {
-        inputs.push(vk_input(*vk, KEYBD_EVENT_FLAGS(0)));
-    }
-    for vk in &payload {
-        inputs.push(vk_input(*vk, KEYBD_EVENT_FLAGS(0)));
-    }
-    // Reverse-order release.
-    for vk in payload.iter().rev() {
-        inputs.push(vk_input(*vk, KEYEVENTF_KEYUP));
-    }
-    for vk in mods.iter().rev() {
-        inputs.push(vk_input(*vk, KEYEVENTF_KEYUP));
-    }
-
-    // SAFETY: see type_text.
-    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    let sent = send(&inputs);
     if (sent as usize) != inputs.len() {
         log::warn!(
             "press_combo: SendInput sent {sent} of {} inputs",
             inputs.len()
         );
     }
+    ComboSent {
+        sent,
+        of: u32::try_from(inputs.len()).unwrap_or(u32::MAX),
+    }
+}
+
+/// The events of a `press_combo` batch of `keys`, in the order it sends
+/// them: the modifiers down, the payload keys down, the payload keys up in
+/// reverse order, the modifiers up in reverse order. One list, so that the
+/// batch and [`unreleased_keys`] cannot disagree on it.
+fn combo_events(keys: &[VIRTUAL_KEY]) -> Vec<(VIRTUAL_KEY, KEYBD_EVENT_FLAGS)> {
+    let (mods, payload): (Vec<VIRTUAL_KEY>, Vec<VIRTUAL_KEY>) =
+        keys.iter().copied().partition(|vk| is_modifier(*vk));
+    let down = KEYBD_EVENT_FLAGS(0);
+    mods.iter()
+        .chain(&payload)
+        .map(|&vk| (vk, down))
+        .chain(
+            payload
+                .iter()
+                .rev()
+                .chain(mods.iter().rev())
+                .map(|&vk| (vk, KEYEVENTF_KEYUP)),
+        )
+        .collect()
+}
+
+/// The key-ups a `press_combo` batch of `keys` still owes when `SendInput`
+/// inserted only its first `sent` events: those of the keys whose key-down
+/// went out and whose key-up did not, in the order the batch releases them,
+/// so that no key stays down (research critique M1).
+pub(crate) fn unreleased_keys(keys: &[VIRTUAL_KEY], sent: u32) -> Vec<VIRTUAL_KEY> {
+    let events = combo_events(keys);
+    let sent = usize::try_from(sent).map_or(events.len(), |sent| sent.min(events.len()));
+    let (done, left) = events.split_at(sent);
+    left.iter()
+        .filter(|(vk, flags)| {
+            *flags == KEYEVENTF_KEYUP
+                && done
+                    .iter()
+                    .any(|(went, went_flags)| went == vk && *went_flags != KEYEVENTF_KEYUP)
+        })
+        .map(|(vk, _)| *vk)
+        .collect()
+}
+
+/// Sends the key-ups [`unreleased_keys`] names, in one `SendInput`, each
+/// with the sentinel, and returns how many went out.
+// Its only caller, the daemon's desk (`executor::paste`), is compiled out
+// under test.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn release_unreleased(keys: &[VIRTUAL_KEY], sent: u32) -> u32 {
+    let inputs: Vec<INPUT> = unreleased_keys(keys, sent)
+        .into_iter()
+        .map(|vk| vk_input(vk, KEYEVENTF_KEYUP))
+        .collect();
+    if inputs.is_empty() {
+        return 0;
+    }
+    send(&inputs)
+}
+
+/// Sends `inputs` in one `SendInput` and returns how many it inserted.
+fn send(inputs: &[INPUT]) -> u32 {
+    // SAFETY: `inputs` is a live slice of initialised INPUT records that
+    // outlives the call, which only reads it, and cbSize is the size of one
+    // record, so SendInput reads exactly the slice; every record carries the
+    // sentinel (`vk_input`).
+    unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) }
 }
 
 fn vk_input(vk: VIRTUAL_KEY, extra_flags: KEYBD_EVENT_FLAGS) -> INPUT {
@@ -230,7 +309,9 @@ fn vk_input(vk: VIRTUAL_KEY, extra_flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
-fn is_modifier(vk: VIRTUAL_KEY) -> bool {
+/// Whether `vk` is a Shift, Ctrl, Alt or Win code, generic or sided: what
+/// `press_combo` holds down around the other keys.
+pub(crate) fn is_modifier(vk: VIRTUAL_KEY) -> bool {
     matches!(
         vk,
         VK_SHIFT
@@ -330,6 +411,152 @@ mod tests {
     fn display_delay_includes_ms() {
         let s = SequenceStep::Delay(250);
         assert_eq!(format!("{}", s), "delay 250ms");
+    }
+
+    #[test]
+    fn the_key_ups_left_after_a_cut_short_combo() {
+        // The batch of [Ctrl, V]: Ctrl down, V down, V up, Ctrl up.
+        let ctrl_v = [VK_CONTROL, VK_V];
+        let left: Vec<Vec<VIRTUAL_KEY>> =
+            (0..=4).map(|sent| unreleased_keys(&ctrl_v, sent)).collect();
+        assert_eq!(
+            left,
+            [
+                vec![],
+                vec![VK_CONTROL],
+                vec![VK_V, VK_CONTROL],
+                vec![VK_CONTROL],
+                vec![]
+            ]
+        );
+        let shift_insert = [VK_SHIFT, VK_INSERT];
+        let left: Vec<Vec<VIRTUAL_KEY>> = (0..=4)
+            .map(|sent| unreleased_keys(&shift_insert, sent))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                vec![],
+                vec![VK_SHIFT],
+                vec![VK_INSERT, VK_SHIFT],
+                vec![VK_SHIFT],
+                vec![]
+            ]
+        );
+        // Ctrl down, Shift down, V down, V up, Shift up, Ctrl up.
+        let ctrl_shift_v = [VK_CONTROL, VK_SHIFT, VK_V];
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 2), [VK_SHIFT, VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 4), [VK_SHIFT, VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 5), [VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 6), []);
+        assert_eq!(
+            unreleased_keys(&ctrl_shift_v, 99),
+            [],
+            "more than the batch"
+        );
+    }
+
+    #[test]
+    fn a_paste_step_shows_its_length_and_keys_only() {
+        let secret = "P4ssw0rd-QZX";
+        let spec = PasteSpec::new(secret, vec![VK_SHIFT, VK_INSERT], 800).expect("a valid spec");
+        let step = SequenceStep::Paste(Arc::new(spec));
+
+        assert_eq!(step.to_string(), "paste (12 chars, Shift+Insert)");
+        assert_eq!(
+            format!("{step:?}"),
+            "Paste(PasteSpec { chars: 12, keys: Shift+Insert, restore_delay: 800ms })"
+        );
+        let chars: Vec<char> = secret.chars().collect();
+        for rendered in [step.to_string(), format!("{step:?}"), format!("{step:#?}")] {
+            for window in chars.windows(3) {
+                let part: String = window.iter().collect();
+                assert!(!rendered.contains(&part), "{part:?} shows in {rendered}");
+            }
+        }
+    }
+
+    /// The `Paste` keystroke goes out through `press_combo`, so the lane
+    /// adds no place that builds or sends key events (cut D15): the code
+    /// lines that call `SendInput`, build a `KEYBDINPUT` or read the
+    /// sentinel are exactly these, per file, outside the tests modules, the
+    /// bench and the test-only helpers. The input-module lane of roadmap
+    /// item 3.1 replaces this pin by its scan. The tokens are assembled, so
+    /// this file does not match itself.
+    #[test]
+    fn the_paste_adds_no_injection_site() {
+        use crate::scan::{code_of, production_lines, rust_files};
+
+        let tokens: [(&str, &[(&str, usize)]); 3] = [
+            (
+                concat!("Send", "Input("),
+                &[
+                    ("src/core/windows_actions.rs", 1),
+                    ("src/data/sequence.rs", 3),
+                    ("src/hook/keyboard_hook_callback.rs", 1),
+                    ("src/system/system_function.rs", 1),
+                ],
+            ),
+            (
+                concat!("KEYBD", "INPUT {"),
+                &[
+                    ("src/core/windows_actions.rs", 2),
+                    ("src/data/sequence.rs", 2),
+                    ("src/hook/keyboard_hook_callback.rs", 1),
+                    ("src/system/system_function.rs", 2),
+                ],
+            ),
+            (
+                concat!("injected_", "sentinel()"),
+                &[
+                    ("src/core/constants.rs", 2),
+                    ("src/core/windows_actions.rs", 2),
+                    ("src/data/sequence.rs", 2),
+                    ("src/hook/keyboard_hook_callback.rs", 1),
+                    ("src/system/system_function.rs", 2),
+                ],
+            ),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        rust_files(&root.join("src"), &mut files);
+        files.sort();
+        assert!(files.len() > 40, "the scan found the sources: {files:?}");
+
+        let mut report = String::new();
+        for (token, expected) in tokens {
+            let mut found: Vec<(String, usize)> = Vec::new();
+            for file in &files {
+                let relative = file
+                    .strip_prefix(root)
+                    .expect("a file under the manifest folder")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative == "src/bench.rs"
+                    || relative == "src/scan.rs"
+                    || relative.ends_with("/testing.rs")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(file).expect("read a source file");
+                let lines: Vec<&str> = text.lines().collect();
+                let count = production_lines(&lines)
+                    .iter()
+                    .filter(|line| code_of(line).contains(token))
+                    .count();
+                if count > 0 {
+                    found.push((relative, count));
+                }
+            }
+            let expected: Vec<(String, usize)> = expected
+                .iter()
+                .map(|(file, count)| ((*file).to_owned(), *count))
+                .collect();
+            if found != expected {
+                report += &format!("{token}: found {found:?}, expected {expected:?}\n");
+            }
+        }
+        assert!(report.is_empty(), "{report}");
     }
 
     /// Roadmap item 2.1: `ShowWindow` waits until the target window's thread has

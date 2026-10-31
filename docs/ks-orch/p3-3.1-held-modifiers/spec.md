@@ -40,6 +40,17 @@ brief; items marked with them apply only as answered. Scope report: <orch>/phase
    `sequence::type_text` directly, not `run_step`. The held-set read of this item must run on that path too, best
    inside the one Text builder both entries call. Until this lane `Text` behaves as the macro step does today (KS-19;
    actions.md section 13.10).
+
+   Note (lane feat-clipboard-paste, merged before Phase 3): a `Paste`, the action and the step, releases no held
+   modifier today. It waits until none of the 8 sided modifiers is down, through `Desk::modifier_down`
+   (`GetAsyncKeyState` every 5 ms, skipped after 3 s: `MODIFIER_POLL`, `MODIFIER_LIMIT` in
+   `src/core/executor/paste.rs`; known issue 98), checks them again after the clipboard is set, and only then sends
+   the keystroke through `Desk::press`. This lane replaces that wait with this item's release and restore around the
+   paste keystroke: the held set read right before it, through the same pure function and key reader, released, the
+   keystroke sent and the held set restored, in one batch through item 2's builder. The wait, `MODIFIER_LIMIT`, its
+   `[WARN] paste: a modifier key was still held after 3 s; the paste was skipped` line and known issue 98 go with it,
+   and actions.md section 13.11 (steps 3 and 8) changes; the cut decides what the check after the clipboard is set
+   compares then. A `Ctrl+Shift+V -> Paste(..)` binding then pastes while its keys are held (feat-paste critique I4).
 5. The restore guard (scope T9, the key risk): a restore of a modifier whose physical key-up the engine has already
    decided must not leave that modifier down in Windows, on every path (callback, drain, executor). The cut chooses the
    mechanism. A second marker next to the sentinel is allowed only if it is derived in `src/core/constants.rs`,
@@ -84,6 +95,9 @@ Acceptance:
 - Unit (lane feat-text-action's note to item 4): through the `Text` action's entry with a fake key reader holding
   {LCtrl, LAlt}, the batch is what item 2's builder makes of that release set and the Unicode records (the E8 before the
   Alt release and after its restore included), in one `SendInput`, and Windows has the same modifiers down after it.
+- Unit (lane feat-clipboard-paste's note to item 4, critique I4): a `Paste` through `Desk::press` with a fake key
+  reader holding {LCtrl, LShift} sends one batch that releases them, presses the paste keystroke and restores them,
+  and Windows has the same modifiers down after the batch; the paste no longer waits for the keys to go up.
 - Scenario: a held Win with three swallowed repeats asks for one mask (item 8). With Q3 yes: the `LWin` `Tap` and
   `LAlt` `Hold` cases ask for the mask; a `DoubleTap`'s first tap does not.
 - Unit (Q2 yes): `PressKey("Ctrl+S")` loads and builds its batch; `PressKey("Ctrl+Bogus")` fails with the loader's text.

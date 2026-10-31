@@ -7,12 +7,13 @@ use windows::{
 
 use crate::core::constants::injected_sentinel;
 use crate::data::key_combination::KeyCombination;
+use crate::data::paste::PasteSpec;
 use crate::data::sequence::SequenceStep;
 use crate::logging::counters::{self, Counter};
 use crate::system::system_function::SystemFunction;
 
-// `Debug` is written out below, so that the text of a `Text` never reaches
-// a `{:?}`, an `expect` or a panic message.
+// `Debug` is written out below, so that the text of a `Text` or a `Paste`
+// never reaches a `{:?}`, an `expect` or a panic message.
 #[derive(Clone)]
 pub enum BindAction {
     SwitchLanguage,
@@ -48,6 +49,12 @@ pub enum BindAction {
     /// action executor. The `Arc` is built once at load, so a firing only
     /// bumps its count. `Display` and `Debug` show its length only.
     Text(Arc<str>),
+    /// Put the phrase on the clipboard, send the paste keystroke (`Ctrl+V`
+    /// by default) and put the previous clipboard content back after the
+    /// spec's delay, on the action executor (`executor::paste`). The `Arc`
+    /// is built once at load, so a firing only bumps its count. `Display`
+    /// and `Debug` show its length and keys only.
+    Paste(Arc<PasteSpec>),
     /// Synthesize a media / volume / playback key. Maps to one of the
     /// `VK_MEDIA_*` / `VK_VOLUME_*` virtual keys via `SendInput`.
     Media(MediaKey),
@@ -56,7 +63,8 @@ pub enum BindAction {
 
 impl std::fmt::Debug for BindAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Every arm but `Text` writes what `#[derive(Debug)]` wrote. Every
+        // Every arm but `Text` and `Paste` writes what `#[derive(Debug)]`
+        // wrote. Every
         // arm is spelled out, so a new action does not compile until its
         // form is decided here too.
         match self {
@@ -85,6 +93,8 @@ impl std::fmt::Debug for BindAction {
                 .debug_tuple("Text")
                 .field(&format_args!("<{} chars>", text.chars().count()))
                 .finish(),
+            // The spec's own `Debug` shows its length and keys only.
+            BindAction::Paste(spec) => f.debug_tuple("Paste").field(spec).finish(),
             BindAction::Media(key) => f.debug_tuple("Media").field(key).finish(),
             BindAction::DoNothing => f.write_str("DoNothing"),
         }
@@ -149,6 +159,7 @@ impl PartialEq for BindAction {
             (Launch { exe: e1, args: a1 }, Launch { exe: e2, args: a2 }) => e1 == e2 && a1 == a2,
             (OpenUrl(a), OpenUrl(b)) => a == b,
             (Text(a), Text(b)) => a == b,
+            (Paste(a), Paste(b)) => a == b,
             (Media(a), Media(b)) => a == b,
             _ => false,
         }
@@ -223,9 +234,9 @@ pub(crate) fn fast_actions_run() -> Vec<FastAction> {
 
 impl BindAction {
     /// The action as a [`FastAction`], to run where it fires, or `None`
-    /// for `Launch`, `OpenUrl`, `Text` and `Sequence`, which go to the
-    /// action executor. Every arm is spelled out, so a new action does not
-    /// compile until its place is decided.
+    /// for `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence`, which go to
+    /// the action executor. Every arm is spelled out, so a new action does
+    /// not compile until its place is decided.
     pub fn as_fast(&self) -> Option<FastAction> {
         match self {
             BindAction::SwitchLanguage => Some(FastAction::SwitchLanguage),
@@ -246,7 +257,8 @@ impl BindAction {
             BindAction::Sequence(_)
             | BindAction::Launch { .. }
             | BindAction::OpenUrl(_)
-            | BindAction::Text(_) => None,
+            | BindAction::Text(_)
+            | BindAction::Paste(_) => None,
         }
     }
 
@@ -290,6 +302,7 @@ impl BindAction {
             | BindAction::Launch { .. }
             | BindAction::OpenUrl(_)
             | BindAction::Text(_)
+            | BindAction::Paste(_)
             | BindAction::DoNothing => false,
         }
     }
@@ -398,6 +411,7 @@ impl std::fmt::Display for BindAction {
             BindAction::OpenUrl(url) => write!(f, "open {}", url),
             // The length only: the startup list must not show the phrase.
             BindAction::Text(text) => write!(f, "text ({} chars)", text.chars().count()),
+            BindAction::Paste(spec) => write!(f, "{spec}"),
             BindAction::Media(key) => write!(f, "media {:?}", key),
             BindAction::DoNothing => write!(f, "do nothing"),
         }
@@ -435,6 +449,7 @@ mod tests {
             ),
             (BindAction::OpenUrl("https://example.com".to_owned()), false),
             (BindAction::Text(Arc::from("x")), false),
+            (paste("x"), false),
             (BindAction::Media(MediaKey::PlayPause), false),
             (BindAction::Media(MediaKey::Stop), false),
             (BindAction::Media(MediaKey::Next), false),
@@ -467,11 +482,12 @@ mod tests {
     }
 
     #[test]
-    fn only_launch_open_url_text_and_sequence_leave_the_firing_thread() {
+    fn only_launch_open_url_text_paste_and_sequence_leave_the_firing_thread() {
         // Roadmap item 2.1: the fast actions stay where they fire, so their
         // output keeps its order with the keys typed after them; the
-        // others, `Text` among them, whose batch grows with its text, go to
-        // the action executor. Nothing here runs an action.
+        // others, `Text` among them, whose batch grows with its text, and
+        // `Paste`, which works the clipboard, go to the action executor.
+        // Nothing here runs an action.
         let mut actions = vec![
             (BindAction::SwitchLanguage, Some(FastAction::SwitchLanguage)),
             (
@@ -506,6 +522,7 @@ mod tests {
             ),
             (BindAction::OpenUrl("https://example.com".to_owned()), None),
             (BindAction::Text(Arc::from("x")), None),
+            (paste("x"), None),
         ];
         for key in [
             MediaKey::PlayPause,
@@ -587,6 +604,65 @@ mod tests {
     #[test]
     fn a_text_action_has_no_system_function_or_hotkey() {
         let action = BindAction::Text(Arc::from("x"));
+        assert!(action.to_system_function().is_none());
+        assert_eq!(action.get_system_combination(), None);
+    }
+
+    /// A `Paste` of `text` with the default keystroke and delay.
+    fn paste(text: &str) -> BindAction {
+        BindAction::Paste(Arc::new(
+            PasteSpec::new(text, vec![VK_CONTROL, VK_V], 500).expect("a valid spec"),
+        ))
+    }
+
+    #[test]
+    fn a_paste_action_shows_its_length_and_keys_and_never_its_text() {
+        let secret = "P4ssw0rd-QZX";
+        let action = paste(secret);
+
+        assert_eq!(action.to_string(), "paste (12 chars, Ctrl+V)");
+        assert_eq!(
+            format!("{action:?}"),
+            "Paste(PasteSpec { chars: 12, keys: Ctrl+V, restore_delay: 500ms })"
+        );
+        for rendered in [
+            action.to_string(),
+            format!("{action:?}"),
+            format!("{action:#?}"),
+            format!("{:?}", Some(action.clone())),
+            format!("{:?}", vec![action.clone()]),
+        ] {
+            assert!(
+                shows_no_part_of(&rendered, secret),
+                "a part of the text shows in {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn paste_actions_are_equal_when_their_specs_are() {
+        assert_eq!(paste("a"), paste("a"));
+        assert_ne!(paste("a"), paste("b"));
+        let slow = BindAction::Paste(Arc::new(
+            PasteSpec::new("a", vec![VK_CONTROL, VK_V], 800).expect("a valid spec"),
+        ));
+        assert_ne!(paste("a"), slow, "another delay");
+        assert_ne!(paste("a"), BindAction::Text(Arc::from("a")));
+    }
+
+    #[test]
+    fn a_cloned_paste_action_shares_its_spec() {
+        let action = paste("Kind regards,");
+        let cloned = action.clone();
+        let (BindAction::Paste(original), BindAction::Paste(copy)) = (&action, &cloned) else {
+            panic!("a clone of a Paste is a Paste");
+        };
+        assert!(Arc::ptr_eq(original, copy), "the clone copied the spec");
+    }
+
+    #[test]
+    fn a_paste_action_has_no_system_function_or_hotkey() {
+        let action = paste("x");
         assert!(action.to_system_function().is_none());
         assert_eq!(action.get_system_combination(), None);
     }

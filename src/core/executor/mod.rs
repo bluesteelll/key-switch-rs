@@ -1,6 +1,6 @@
 //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
-//! thread that runs the slow actions, `Launch`, `OpenUrl`, `Text` and
-//! `Sequence`, so that the keyboard hook never waits for them.
+//! thread that runs the slow actions, `Launch`, `OpenUrl`, `Text`, `Paste`
+//! and `Sequence`, so that the keyboard hook never waits for them.
 //!
 //! The thread that fires such an action (the hook callback, or the main
 //! loop's timer drain for a Hold or a waiting Tap, both on the daemon's main
@@ -20,6 +20,17 @@
 //! inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows)
 //! holds up the other jobs and runs while it runs.
 //!
+//! A `Paste`, the action or a macro's step, goes through the runs' paste
+//! session ([`paste`], owner request 2026-10-30): a message-only window of
+//! this thread owns the clipboard while the phrase is on it, and the
+//! session puts the previous content back after the restore delay. Its
+//! waits are deadlines of its run, as a `Delay`'s are. One paste goes at a
+//! time, in firing order: the jobs fired after a `Paste` that waits wait
+//! behind it, a run started before it goes on, and a `Paste` action fired
+//! while another one waits is dropped and counted (`paste_dropped`). A
+//! stop, a queue whose senders are gone and `WM_QUIT` put a pending
+//! clipboard back first, for at most `CLOSING_LIMIT`.
+//!
 //! [`ExecutorHandle::cancel_pending`] starts a new epoch (`swch off` or
 //! `on`, a reload, exit): every queued job and every run of the old epoch
 //! is dropped at the executor's next wake, and no further step of such a
@@ -29,6 +40,7 @@
 //! through a [`Runner`]: the daemon's [`Win32Runner`], or a fake one in the
 //! tests, so that no test runs a real action.
 
+pub mod paste;
 mod runs;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -54,7 +66,9 @@ use windows::Win32::{
 use crate::core::windows_actions::{BindAction, launch_process, shell_open};
 use crate::data::sequence::{self, SequenceStep};
 use crate::logging::counters::{Counter, Counters};
+use crate::platform::clipboard;
 use crate::platform::timers::WaitableTimer;
+use paste::Ports;
 use runs::{Calls, Ctx, Job, Next, Runs};
 
 /// How many slow actions wait for the executor before the next one is
@@ -88,8 +102,9 @@ impl TargetWindow {
 
     /// The target to queue with `action`: the foreground window for a
     /// `Sequence`, the only action with `Window(...)` steps, and `NONE`
-    /// otherwise, so that a `Launch`, an `OpenUrl` or a `Text` adds no Win32
-    /// call to the thread that fires it.
+    /// otherwise, so that a `Launch`, an `OpenUrl`, a `Text` or a `Paste`
+    /// adds no Win32 call to the thread that fires it. A `Paste` reads the
+    /// foreground window on the executor, when its attempt starts.
     pub fn for_action(action: &BindAction) -> Self {
         if let BindAction::Sequence(_) = action {
             Self::foreground()
@@ -116,8 +131,11 @@ pub trait Runner: Send + 'static {
     /// Runs a job that is not a `Sequence`: a `Launch`, an `OpenUrl` or a
     /// `Text`.
     fn action(&mut self, action: &BindAction);
-    /// Runs one step of a macro: any step but a `Delay`.
+    /// Runs one step of a macro: any step but a `Delay` or a `Paste`.
     fn step(&mut self, step: &SequenceStep, target: TargetWindow);
+    /// The clipboard and the desk a `Paste` works through, on the executor
+    /// thread.
+    fn paste(&mut self) -> Ports<'_>;
 }
 
 /// The daemon's runner, which runs the actions and steps for real.
@@ -133,6 +151,9 @@ impl Runner for Win32Runner {
             BindAction::OpenUrl(url) => shell_open(url),
             // One `SendInput` for the whole text, the macro step's builder.
             BindAction::Text(text) => sequence::type_text(text),
+            // `Runs` makes a Paste a run, which its paste session works;
+            // one is never handed here.
+            BindAction::Paste(_) => {}
             // The executor walks a macro step by step and never hands one
             // to `action`.
             BindAction::Sequence(_) => {}
@@ -152,6 +173,13 @@ impl Runner for Win32Runner {
 
     fn step(&mut self, step: &SequenceStep, target: TargetWindow) {
         sequence::run_step(step, target.hwnd());
+    }
+
+    fn paste(&mut self) -> Ports<'_> {
+        Ports {
+            clipboard: &clipboard::SYSTEM,
+            desk: &paste::WIN32_DESK,
+        }
     }
 }
 
@@ -512,6 +540,24 @@ enum End {
     Died,
 }
 
+/// The loop's way out once it must end: the restore of a paste is tried
+/// until `until` first, through the loop's one wait (cut D13), and then the
+/// loop returns `end`.
+#[derive(Debug, Clone, Copy)]
+struct Ending {
+    until: Instant,
+    end: End,
+}
+
+impl Ending {
+    fn new(end: End) -> Self {
+        Self {
+            until: Instant::now() + paste::CLOSING_LIMIT,
+            end,
+        }
+    }
+}
+
 /// The executor thread: its prologue, its loop and its epilogue.
 fn run_executor<R: Runner>(
     mut runner: R,
@@ -547,15 +593,21 @@ fn run_executor<R: Runner>(
     // panic of the loop itself.
     let mut runs = Runs::new();
     let end = panic::catch_unwind(AssertUnwindSafe(|| {
-        run_loop(&mut runner, &queue, shared, &mut runs, &mut timer)
+        run_loop(&mut runner, &queue, shared, counters, &mut runs, &mut timer)
     }))
     .unwrap_or_else(|_| {
         log::error!(
-            "the action executor panicked and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
+            "the action executor panicked and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts"
         );
         End::Died
     });
 
+    // A restore that is still pending after a death gets one try, and the
+    // paste windows go, on the thread that made them, before the timer and
+    // the apartment (cut D13).
+    if panic::catch_unwind(AssertUnwindSafe(|| runs.abandon(&mut runner))).is_err() {
+        log::error!("the action executor's paste session panicked as the executor ended");
+    }
     // Closing the timer's only handle destroys it: it signals nothing more.
     drop(timer);
     shared.active_runs.store(0, Ordering::Release);
@@ -572,9 +624,13 @@ fn run_executor<R: Runner>(
     drop(apartment);
 }
 
-fn report_panics(calls: Calls) {
+/// Logs the panics of a pass and counts its dropped pastes.
+fn report(calls: Calls, counters: &Counters) {
     for _ in 0..calls.panics {
         log::error!("an action panicked on the action executor; it keeps running");
+    }
+    for _ in 0..calls.dropped_pastes {
+        counters.bump(Counter::PasteDropped);
     }
 }
 
@@ -587,10 +643,17 @@ fn report_panics(calls: Calls) {
 /// last thing before the wait is a drain that found the queue empty, with
 /// no runner call after it. Such a pump cannot take the timer's signal,
 /// which is not a message.
+///
+/// A stop, a queue whose senders are gone and `WM_QUIT` end the loop
+/// through its closing mode: no job is taken and no run advances, and a
+/// paste's pending restore is tried every `CLOSING_RETRY` through the same
+/// wait until `CLOSING_LIMIT`, so that the clipboard is put back before the
+/// thread ends (cut D13).
 fn run_loop(
     runner: &mut dyn Runner,
     queue: &Receiver<Job>,
     shared: &Shared,
+    counters: &Counters,
     runs: &mut Runs,
     timer: &mut DelayTimer,
 ) -> End {
@@ -602,14 +665,25 @@ fn run_loop(
         now: &now,
     };
     let mut msg = MSG::default();
+    let mut ending: Option<Ending> = None;
     loop {
-        let next = loop {
+        let next = 'pass: loop {
+            if let Some(ending) = ending {
+                match runs.close(&mut ctx, ending.until) {
+                    paste::Closing::Done => return ending.end,
+                    paste::Closing::RetryAt(at) => break 'pass Next::At(at),
+                }
+            }
             let mut calls = Calls::default();
             // Jobs, oldest first, each followed by a poll, so that a due
             // run is late by one job at most.
             loop {
                 if shared.stopping() {
-                    return End::Stopped;
+                    ending = Some(Ending::new(End::Stopped));
+                    continue 'pass;
+                }
+                if !runs.can_take() {
+                    break;
                 }
                 match queue.try_recv() {
                     Ok(job) => {
@@ -617,16 +691,20 @@ fn run_loop(
                         calls += runs.poll(&mut ctx).calls;
                     }
                     Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return End::Stopped,
+                    Err(TryRecvError::Disconnected) => {
+                        ending = Some(Ending::new(End::Stopped));
+                        continue 'pass;
+                    }
                 }
             }
 
             let polled = runs.poll(&mut ctx);
             calls += polled.calls;
-            report_panics(calls);
+            report(calls, counters);
             shared.active_runs.store(runs.len(), Ordering::Release);
             if shared.stopping() {
-                return End::Stopped;
+                ending = Some(Ending::new(End::Stopped));
+                continue 'pass;
             }
             if calls.made == 0 {
                 break polled.next;
@@ -636,7 +714,13 @@ fn run_loop(
         match timer.arm(next, Instant::now()) {
             Arming::Due => continue,
             Arming::Failed(error) => {
-                let stopped = runs.drop_timed();
+                // Nothing would wake the closing mode again (cut critique
+                // M7): it ends after the try it made. A nested `if let`, not
+                // an `if let` guard, which needs Rust 1.95 (MSRV 1.88).
+                if let Some(ending) = ending {
+                    return ending.end;
+                }
+                let stopped = runs.drop_timed(&mut ctx);
                 shared.active_runs.store(runs.len(), Ordering::Release);
                 log::error!(
                     "could not start the Delay timer ({error}); {stopped} macros waiting in a Delay stop"
@@ -662,7 +746,7 @@ fn run_loop(
         }
         if woke == WAIT_FAILED {
             log::error!(
-                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts",
+                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts",
                 windows::core::Error::from_thread()
             );
             return End::Died;
@@ -671,7 +755,7 @@ fn run_loop(
         // the wait began, such as the messages behind a WAKE that `pump`
         // left for after the drain.
         if let Some(end) = pump(&mut msg) {
-            return end;
+            ending.get_or_insert(Ending::new(end));
         }
     }
 }
@@ -686,7 +770,7 @@ fn pump(msg: &mut MSG) -> Option<End> {
             // Nothing of ours posts WM_QUIT; foreign code on this thread
             // asked it to end its loop.
             log::error!(
-                "the action executor received WM_QUIT and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
+                "the action executor received WM_QUIT and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts"
             );
             return Some(End::Died);
         }
@@ -718,12 +802,14 @@ mod tests {
 
     use super::runs::{Ctx, Job, Next, Runs};
     use super::testing::{
-        FakeRunner, Ran, Record, WAIT, leaked_counters, next_record as next, wait_until,
+        FakeDesk, FakeRunner, Ran, Record, WAIT, leaked_counters, next_record as next, wait_until,
     };
     use super::*;
     use crate::core::windows_actions::BindAction;
+    use crate::data::paste::PasteSpec;
     use crate::data::sequence::SequenceStep;
     use crate::logging::counters::{Counter, Counters};
+    use crate::platform::clipboard::{CF_UNICODETEXT, FakeClipboard};
     use crate::platform::timers::{LONGEST, due_time};
 
     fn sequence(steps: Vec<SequenceStep>) -> BindAction {
@@ -1444,7 +1530,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_open_url_and_text_carry_no_window_and_ask_for_none() {
+    fn launch_open_url_text_and_paste_carry_no_window_and_ask_for_none() {
         // Only a Sequence reads the foreground window; for the others the
         // hook thread makes no Win32 call and queues NONE. Where no window
         // has the foreground at all, NONE and the foreground are the same
@@ -1468,6 +1554,14 @@ mod tests {
             TargetWindow::NONE,
             "a Text never reads its window"
         );
+        let paste = BindAction::Paste(Arc::new(
+            PasteSpec::new("Kind regards,", vec![VK_CONTROL, VK_V], 500).expect("a valid spec"),
+        ));
+        assert_eq!(
+            TargetWindow::for_action(&paste),
+            TargetWindow::NONE,
+            "a Paste reads no window on the firing thread"
+        );
     }
 
     #[test]
@@ -1485,6 +1579,281 @@ mod tests {
         assert_eq!(next(&records).text(), "open next");
         assert!(!executor.is_finished());
         assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    /// The spec of a `Paste` of `text` with `Ctrl+V` and `restore_delay`.
+    fn paste_of(text: &str, restore_delay: u64) -> Arc<PasteSpec> {
+        Arc::new(PasteSpec::new(text, vec![VK_CONTROL, VK_V], restore_delay).expect("a valid spec"))
+    }
+
+    fn paste(text: &str, restore_delay: u64) -> BindAction {
+        BindAction::Paste(paste_of(text, restore_delay))
+    }
+
+    /// `text` as `CF_UNICODETEXT` bytes, its NUL included.
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    /// A fake clipboard that holds "ORIG", put there by another program.
+    fn original() -> FakeClipboard {
+        FakeClipboard::new().with_content(0x77, &[(CF_UNICODETEXT, &utf16("ORIG"))])
+    }
+
+    /// Whether `clipboard` holds "ORIG" again.
+    fn holds_the_original(clipboard: &FakeClipboard) -> bool {
+        clipboard
+            .content()
+            .first()
+            .is_some_and(|first| *first == (CF_UNICODETEXT, utf16("ORIG")))
+    }
+
+    #[test]
+    fn a_paste_step_types_in_order_with_the_key_steps_around_it() {
+        let (tx, records) = mpsc::channel();
+        let (executor, _) = start(FakeRunner::new(tx), QUEUE_CAPACITY);
+        executor.handle().submit(
+            sequence(vec![
+                key(VK_TAB),
+                SequenceStep::Paste(paste_of("x", 50)),
+                key(VK_RETURN),
+            ]),
+            TargetWindow::NONE,
+        );
+
+        let ran: Vec<Record> = (0..3).map(|_| next(&records)).collect();
+        let texts: Vec<&str> = ran.iter().map(Record::text).collect();
+        assert_eq!(texts, ["key Tab", "keys Ctrl+V", "key Enter"]);
+        assert_eq!(ran[1].ran, Ran::Keys("keys Ctrl+V".to_owned()));
+        for record in &ran {
+            assert_eq!(record.thread, executor.thread().id());
+            assert_eq!(record.name.as_deref(), Some("action-executor"));
+        }
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_text_after_a_waiting_paste_runs_after_its_keystroke() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, _) = start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(paste("ab", 50), TargetWindow::NONE);
+        wait_until("the Paste waits for the modifiers", || {
+            handle.active_runs() == 1
+        });
+
+        handle.submit(text("cd"), TargetWindow::NONE);
+        desk.hold_modifiers(false);
+
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(next(&records).text(), "text (2 chars)");
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn a_delay_macro_is_not_held_up_by_a_waiting_paste() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, _) = start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(
+            sequence(vec![key(VK_F13), delay(50), key(VK_F14)]),
+            TargetWindow::NONE,
+        );
+        assert_eq!(next(&records).text(), "key F13");
+        handle.submit(paste("ab", 50), TargetWindow::NONE);
+        wait_until("the Paste waits beside the macro", || {
+            handle.active_runs() == 2
+        });
+
+        assert_eq!(next(&records).text(), "key F14", "the Paste still waits");
+        desk.hold_modifiers(false);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn swch_off_cancels_a_waiting_paste_but_keeps_its_restore() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let desk = FakeDesk::new();
+        let (executor, _) = start(
+            FakeRunner::new(tx)
+                .with_clipboard(clipboard.clone())
+                .with_desk(desk.clone()),
+            QUEUE_CAPACITY,
+        );
+        let handle = executor.handle();
+        handle.submit(paste("A", 100), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        desk.hold_modifiers(true);
+        handle.submit(paste("B", 100), TargetWindow::NONE);
+        wait_until("B waits", || handle.active_runs() == 1);
+
+        handle.cancel_pending();
+        wait_until("B is cancelled", || handle.active_runs() == 0);
+        wait_until("A's original is back", || holds_the_original(&clipboard));
+
+        desk.hold_modifiers(false);
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "B never pasted");
+    }
+
+    #[test]
+    fn stop_restores_the_clipboard_before_it_returns_joined() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+
+        let begun = Instant::now();
+        assert_eq!(executor.stop(), Stopped::Joined);
+        let took = begun.elapsed();
+
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+    }
+
+    #[test]
+    fn wm_quit_restores_the_clipboard_before_the_executor_ends() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx)
+                .with_clipboard(clipboard.clone())
+                .with_quit_on("key F13"),
+            QUEUE_CAPACITY,
+        );
+        executor.handle().submit(
+            sequence(vec![SequenceStep::Paste(paste_of("x", 5_000)), key(VK_F13)]),
+            TargetWindow::NONE,
+        );
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(next(&records).text(), "key F13");
+
+        wait_until("the executor ends on WM_QUIT", || executor.is_finished());
+
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert_eq!(executor.stop(), Stopped::Joined);
+    }
+
+    #[test]
+    fn stop_retries_a_busy_clipboard_and_restores_it_before_joined() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        // Another program holds the clipboard open for the first five tries
+        // of the restore, 10 ms apart: well inside the closing limit.
+        clipboard.busy_opens(5);
+
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert!(!clipboard.is_open(), "the clipboard is left closed");
+    }
+
+    #[test]
+    fn stop_gives_up_on_a_clipboard_that_stays_busy_after_the_closing_limit() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        clipboard.busy_opens(1_000_000);
+
+        let begun = Instant::now();
+        assert_eq!(executor.stop(), Stopped::Joined);
+        let took = begun.elapsed();
+
+        assert!(
+            took >= Duration::from_millis(200),
+            "the restore was tried every 10 ms until the limit, not given up at the first busy open: {took:?}"
+        );
+        assert!(
+            took < Duration::from_secs(1),
+            "the stop ends within the closing limit: {took:?}"
+        );
+        assert!(
+            !holds_the_original(&clipboard),
+            "a clipboard that stayed busy was not put back"
+        );
+    }
+
+    #[test]
+    fn the_idle_paste_window_is_destroyed_as_the_executor_ends() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor.handle().submit(paste("x", 50), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        // The restore ends the session and makes the idle window of the next
+        // paste; nothing pends when the stop comes.
+        wait_until("the original is back", || holds_the_original(&clipboard));
+
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        let mut windows = clipboard.windows();
+        assert!(
+            windows.created.len() >= 2,
+            "the session's window and the idle one: {windows:?}"
+        );
+        windows.created.sort_unstable();
+        windows.destroyed.sort_unstable();
+        assert_eq!(
+            windows.destroyed, windows.created,
+            "the epilogue destroys, on the executor's thread, every window the paste made"
+        );
+    }
+
+    #[test]
+    fn a_dropped_paste_is_counted_in_paste_dropped() {
+        let (tx, records) = mpsc::channel();
+        let desk = FakeDesk::new();
+        desk.hold_modifiers(true);
+        let (executor, counters) =
+            start(FakeRunner::new(tx).with_desk(desk.clone()), QUEUE_CAPACITY);
+        let handle = executor.handle();
+        handle.submit(paste("a", 50), TargetWindow::NONE);
+        wait_until("the Paste waits for the modifiers", || {
+            handle.active_runs() == 1
+        });
+
+        handle.submit(paste("b", 50), TargetWindow::NONE);
+        wait_until("the second Paste is counted as dropped", || {
+            counters.get(Counter::PasteDropped) == 1
+        });
+
+        desk.hold_modifiers(false);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        assert_eq!(executor.stop(), Stopped::Joined);
+        assert!(records.try_recv().is_err(), "one keystroke");
     }
 
     /// The apartment of the calling thread, or `None` without COM.
@@ -1515,6 +1884,14 @@ mod tests {
         }
 
         fn step(&mut self, _step: &SequenceStep, _target: TargetWindow) {}
+
+        /// It never sees a Paste; the system ports panic under test.
+        fn paste(&mut self) -> Ports<'_> {
+            Ports {
+                clipboard: &crate::platform::clipboard::SYSTEM,
+                desk: &super::paste::WIN32_DESK,
+            }
+        }
     }
 
     #[test]
@@ -1554,9 +1931,10 @@ mod tests {
     /// timer resumes, so neither the executor nor the steps it runs sleep
     /// or block in a wait of their own. The one wait is the loop's, for its
     /// messages and its Delay timer at once, so that a message never waits
-    /// for the timer nor the timer for a message. The non-test lines of the
-    /// three files count; the names are assembled, so this test does not
-    /// match itself.
+    /// for the timer nor the timer for a message. A paste's waits (a held
+    /// modifier, a busy clipboard, the restore delay) are deadlines on the
+    /// same timer. The non-test lines of the files below count; the names
+    /// are assembled, so this test does not match itself.
     #[test]
     fn macros_never_sleep_or_block_in_a_wait() {
         let the_wait = concat!("MsgWaitFor", "MultipleObjectsEx(");
@@ -1570,8 +1948,10 @@ mod tests {
         let mut sites = Vec::new();
         for file in [
             "src/core/executor/mod.rs",
+            "src/core/executor/paste.rs",
             "src/core/executor/runs.rs",
             "src/data/sequence.rs",
+            "src/platform/clipboard.rs",
         ] {
             let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
             let lines: Vec<&str> = text.lines().collect();

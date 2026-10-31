@@ -16,6 +16,15 @@ test from failing their gates (it failed 2.5's final gate run: p2-2.5-latency-tr
    executor/mod.rs:69), its own `WM_QUIT` handling (main returns quit, :1013-1015; the executor logs and dies,
    :683-689) and main's E5 awake-stretch check before its wait (:802-806, :820). The watchdog keeps its ranged pump
    (`src/hook/watchdog/mod.rs:806-826`) and may use the shared wait primitive with its own timeout and mask.
+
+   Note (lane feat-clipboard-paste, merged before Phase 3): the executor loop has a closing mode (that lane's cut D13,
+   `run_loop` in `src/core/executor/mod.rs`). A stop, a queue whose senders are gone and `WM_QUIT` take no more jobs
+   and try a paste's pending restore every `CLOSING_RETRY` until `CLOSING_LIMIT` (250 ms) through the same wait; a
+   timer that fails to arm ends the mode after the try it made. It stays inside the shared wait: no second wait, no
+   sleep, and `WM_QUIT` still ends in the restore before the thread ends
+   (`stop_restores_the_clipboard_before_it_returns_joined`, `wm_quit_restores_the_clipboard_before_the_executor_ends`).
+   The executor's pump also dispatches the messages of the paste session's message-only window, which owns the
+   clipboard from a save to its restore, so the shared pump keeps `DispatchMessageW` for window messages.
 2. A test that pins `MWMO_INPUTAVAILABLE` for the executor, the twin of
    `hook::main_thread::tests::a_message_posted_behind_a_wake_is_dispatched_without_more_input` (main_thread.rs:1369).
 3. `MainThreadHandle::{set_enabled, reload, request_reinstall}` (main_thread.rs:602-659) share one send, wake and
@@ -51,6 +60,14 @@ test from failing their gates (it failed 2.5's final gate run: p2-2.5-latency-tr
    :1002), and the purity scan, the two `MainThread::run` shape scans (main_thread.rs:2088-2151), the executor scan
    `macros_never_sleep_or_block_in_a_wait` (executor/mod.rs:1481-1522) and the hook-path no-`log::` scan
    (`src/logging/mod.rs:405`) use it. p3-3.1-input-module's `SendInput(` scan will use it too.
+
+   Note (lane feat-clipboard-paste): the scan helpers live in the test-only `src/scan.rs` (`rust_files`,
+   `scanned_sources`, `code_of`, `cfg_not_test_block`, `doc_code_lines`, `production_lines`), moved out of
+   `src/hook/installer.rs`. This item's lexical helper replaces `code_of` there, and two more scans join its list:
+   `platform::clipboard::tests::the_clipboard_calls_are_compiled_out_of_the_tests` (the clipboard and `Global*` calls
+   only in the `cfg(not(test))` `win32` block of `src/platform/clipboard.rs`; none of them, `Win32Runner`,
+   `Win32Desk` or `WIN32_DESK` in `tests/` or a doc fence) and `data::sequence::tests::the_paste_adds_no_injection_site`
+   (until p3-3.1-input-module replaces it with its `SendInput(` scan).
 
 Acceptance:
 - Unit (source scan): outside tests, `MsgWaitForMultipleObjectsEx(` occurs only in `src/platform/message_loop.rs` and

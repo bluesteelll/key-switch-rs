@@ -16,6 +16,11 @@ pub mod system;
 #[cfg(test)]
 mod bench;
 
+// The lexical helpers of the source scans that pin where the hook
+// installers and the clipboard calls may appear.
+#[cfg(test)]
+pub(crate) mod scan;
+
 // Cargo never runs tests inside a build script, so the build script's logic
 // is compiled into the library's test harness and tested from there. Its
 // `main` is unused in that context.
