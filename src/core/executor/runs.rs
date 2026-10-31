@@ -221,24 +221,49 @@ mod tests {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     use super::*;
+    use crate::core::executor::paste::Ports;
+    use crate::core::executor::testing::FakeDesk;
     use crate::core::executor::{Runner, TargetWindow};
     use crate::core::windows_actions::BindAction;
     use crate::data::sequence::SequenceStep;
+    use crate::platform::clipboard::FakeClipboard;
 
     /// A fake clock: the base instant plus an offset that the test, or the
     /// runner inside a call, moves forward.
     type Offset = Arc<Mutex<Duration>>;
 
-    /// Records the `Display` text of every call; panics on `panic_on`
-    /// before recording, and moves the clock by `advance` inside the call
-    /// named in it.
+    /// The calls a [`Recorder`] made, shared with its desk's keystrokes.
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    /// Records the `Display` text of every call, and every paste keystroke
+    /// of its fake desk as `keys <names>`; panics on `panic_on` before
+    /// recording, and moves the clock by `advance` inside the call named in
+    /// it.
     struct Recorder {
-        log: Vec<String>,
+        log: Log,
         panic_on: Option<&'static str>,
         advance: Option<(&'static str, Duration, Offset)>,
+        clipboard: FakeClipboard,
+        desk: FakeDesk,
     }
 
     impl Recorder {
+        fn new() -> Self {
+            let log = Log::default();
+            let keys = Arc::clone(&log);
+            Self {
+                log,
+                panic_on: None,
+                advance: None,
+                clipboard: FakeClipboard::new(),
+                desk: FakeDesk::new().with_sink(move |text| {
+                    keys.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(text);
+                }),
+            }
+        }
+
         fn call(&mut self, text: String) {
             if let Some((on, by, offset)) = &self.advance
                 && *on == text
@@ -248,7 +273,10 @@ mod tests {
             if self.panic_on == Some(text.as_str()) {
                 panic!("the recorder panics on {text}");
             }
-            self.log.push(text);
+            self.log
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(text);
         }
     }
 
@@ -259,6 +287,13 @@ mod tests {
 
         fn step(&mut self, step: &SequenceStep, _target: TargetWindow) {
             self.call(step.to_string());
+        }
+
+        fn paste(&mut self) -> Ports<'_> {
+            Ports {
+                clipboard: &self.clipboard,
+                desk: &self.desk,
+            }
         }
     }
 
@@ -275,11 +310,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 runs: Runs::new(),
-                runner: Recorder {
-                    log: Vec::new(),
-                    panic_on: None,
-                    advance: None,
-                },
+                runner: Recorder::new(),
                 base: Instant::now(),
                 offset: Arc::new(Mutex::new(Duration::ZERO)),
                 epoch: Cell::new(0),
@@ -343,7 +374,13 @@ mod tests {
 
         /// The calls recorded since the last `taken`.
         fn taken(&mut self) -> Vec<String> {
-            std::mem::take(&mut self.runner.log)
+            std::mem::take(
+                &mut *self
+                    .runner
+                    .log
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            )
         }
     }
 

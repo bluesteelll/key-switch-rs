@@ -29,6 +29,7 @@
 //! through a [`Runner`]: the daemon's [`Win32Runner`], or a fake one in the
 //! tests, so that no test runs a real action.
 
+pub mod paste;
 mod runs;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -54,7 +55,9 @@ use windows::Win32::{
 use crate::core::windows_actions::{BindAction, launch_process, shell_open};
 use crate::data::sequence::{self, SequenceStep};
 use crate::logging::counters::{Counter, Counters};
+use crate::platform::clipboard;
 use crate::platform::timers::WaitableTimer;
+use paste::Ports;
 use runs::{Calls, Ctx, Job, Next, Runs};
 
 /// How many slow actions wait for the executor before the next one is
@@ -117,8 +120,11 @@ pub trait Runner: Send + 'static {
     /// Runs a job that is not a `Sequence`: a `Launch`, an `OpenUrl` or a
     /// `Text`.
     fn action(&mut self, action: &BindAction);
-    /// Runs one step of a macro: any step but a `Delay`.
+    /// Runs one step of a macro: any step but a `Delay` or a `Paste`.
     fn step(&mut self, step: &SequenceStep, target: TargetWindow);
+    /// The clipboard and the desk a `Paste` works through, on the executor
+    /// thread.
+    fn paste(&mut self) -> Ports<'_>;
 }
 
 /// The daemon's runner, which runs the actions and steps for real.
@@ -156,6 +162,13 @@ impl Runner for Win32Runner {
 
     fn step(&mut self, step: &SequenceStep, target: TargetWindow) {
         sequence::run_step(step, target.hwnd());
+    }
+
+    fn paste(&mut self) -> Ports<'_> {
+        Ports {
+            clipboard: &clipboard::SYSTEM,
+            desk: &paste::WIN32_DESK,
+        }
     }
 }
 
@@ -1528,6 +1541,14 @@ mod tests {
         }
 
         fn step(&mut self, _step: &SequenceStep, _target: TargetWindow) {}
+
+        /// It never sees a Paste; the system ports panic under test.
+        fn paste(&mut self) -> Ports<'_> {
+            Ports {
+                clipboard: &crate::platform::clipboard::SYSTEM,
+                desk: &super::paste::WIN32_DESK,
+            }
+        }
     }
 
     #[test]
@@ -1567,9 +1588,10 @@ mod tests {
     /// timer resumes, so neither the executor nor the steps it runs sleep
     /// or block in a wait of their own. The one wait is the loop's, for its
     /// messages and its Delay timer at once, so that a message never waits
-    /// for the timer nor the timer for a message. The non-test lines of the
-    /// three files count; the names are assembled, so this test does not
-    /// match itself.
+    /// for the timer nor the timer for a message. A paste's waits (a held
+    /// modifier, a busy clipboard, the restore delay) are deadlines on the
+    /// same timer. The non-test lines of the files below count; the names
+    /// are assembled, so this test does not match itself.
     #[test]
     fn macros_never_sleep_or_block_in_a_wait() {
         let the_wait = concat!("MsgWaitFor", "MultipleObjectsEx(");
@@ -1583,6 +1605,7 @@ mod tests {
         let mut sites = Vec::new();
         for file in [
             "src/core/executor/mod.rs",
+            "src/core/executor/paste.rs",
             "src/core/executor/runs.rs",
             "src/data/sequence.rs",
             "src/platform/clipboard.rs",

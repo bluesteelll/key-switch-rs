@@ -211,25 +211,10 @@ pub(crate) fn press_combo(keys: &[VIRTUAL_KEY]) -> ComboSent {
         return ComboSent { sent: 0, of: 0 };
     }
 
-    let (mods, payload): (Vec<VIRTUAL_KEY>, Vec<VIRTUAL_KEY>) =
-        keys.iter().copied().partition(|vk| is_modifier(*vk));
-
-    // 2 INPUTs per key for the modifiers (down + up) and 2 per payload key.
-    let mut inputs: Vec<INPUT> = Vec::with_capacity((mods.len() + payload.len()) * 2);
-
-    for vk in &mods {
-        inputs.push(vk_input(*vk, KEYBD_EVENT_FLAGS(0)));
-    }
-    for vk in &payload {
-        inputs.push(vk_input(*vk, KEYBD_EVENT_FLAGS(0)));
-    }
-    // Reverse-order release.
-    for vk in payload.iter().rev() {
-        inputs.push(vk_input(*vk, KEYEVENTF_KEYUP));
-    }
-    for vk in mods.iter().rev() {
-        inputs.push(vk_input(*vk, KEYEVENTF_KEYUP));
-    }
+    let inputs: Vec<INPUT> = combo_events(keys)
+        .into_iter()
+        .map(|(vk, flags)| vk_input(vk, flags))
+        .collect();
 
     let sent = send(&inputs);
     if (sent as usize) != inputs.len() {
@@ -242,6 +227,62 @@ pub(crate) fn press_combo(keys: &[VIRTUAL_KEY]) -> ComboSent {
         sent,
         of: u32::try_from(inputs.len()).unwrap_or(u32::MAX),
     }
+}
+
+/// The events of a `press_combo` batch of `keys`, in the order it sends
+/// them: the modifiers down, the payload keys down, the payload keys up in
+/// reverse order, the modifiers up in reverse order. One list, so that the
+/// batch and [`unreleased_keys`] cannot disagree on it.
+fn combo_events(keys: &[VIRTUAL_KEY]) -> Vec<(VIRTUAL_KEY, KEYBD_EVENT_FLAGS)> {
+    let (mods, payload): (Vec<VIRTUAL_KEY>, Vec<VIRTUAL_KEY>) =
+        keys.iter().copied().partition(|vk| is_modifier(*vk));
+    let down = KEYBD_EVENT_FLAGS(0);
+    mods.iter()
+        .chain(&payload)
+        .map(|&vk| (vk, down))
+        .chain(
+            payload
+                .iter()
+                .rev()
+                .chain(mods.iter().rev())
+                .map(|&vk| (vk, KEYEVENTF_KEYUP)),
+        )
+        .collect()
+}
+
+/// The key-ups a `press_combo` batch of `keys` still owes when `SendInput`
+/// inserted only its first `sent` events: those of the keys whose key-down
+/// went out and whose key-up did not, in the order the batch releases them,
+/// so that no key stays down (research critique M1).
+pub(crate) fn unreleased_keys(keys: &[VIRTUAL_KEY], sent: u32) -> Vec<VIRTUAL_KEY> {
+    let events = combo_events(keys);
+    let sent = usize::try_from(sent).map_or(events.len(), |sent| sent.min(events.len()));
+    let (done, left) = events.split_at(sent);
+    left.iter()
+        .filter(|(vk, flags)| {
+            *flags == KEYEVENTF_KEYUP
+                && done
+                    .iter()
+                    .any(|(went, went_flags)| went == vk && *went_flags != KEYEVENTF_KEYUP)
+        })
+        .map(|(vk, _)| *vk)
+        .collect()
+}
+
+/// Sends the key-ups [`unreleased_keys`] names, in one `SendInput`, each
+/// with the sentinel, and returns how many went out.
+// Its only caller, the daemon's desk (`executor::paste`), is compiled out
+// under test.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn release_unreleased(keys: &[VIRTUAL_KEY], sent: u32) -> u32 {
+    let inputs: Vec<INPUT> = unreleased_keys(keys, sent)
+        .into_iter()
+        .map(|vk| vk_input(vk, KEYEVENTF_KEYUP))
+        .collect();
+    if inputs.is_empty() {
+        return 0;
+    }
+    send(&inputs)
 }
 
 /// Sends `inputs` in one `SendInput` and returns how many it inserted.
@@ -370,6 +411,49 @@ mod tests {
     fn display_delay_includes_ms() {
         let s = SequenceStep::Delay(250);
         assert_eq!(format!("{}", s), "delay 250ms");
+    }
+
+    #[test]
+    fn the_key_ups_left_after_a_cut_short_combo() {
+        // The batch of [Ctrl, V]: Ctrl down, V down, V up, Ctrl up.
+        let ctrl_v = [VK_CONTROL, VK_V];
+        let left: Vec<Vec<VIRTUAL_KEY>> =
+            (0..=4).map(|sent| unreleased_keys(&ctrl_v, sent)).collect();
+        assert_eq!(
+            left,
+            [
+                vec![],
+                vec![VK_CONTROL],
+                vec![VK_V, VK_CONTROL],
+                vec![VK_CONTROL],
+                vec![]
+            ]
+        );
+        let shift_insert = [VK_SHIFT, VK_INSERT];
+        let left: Vec<Vec<VIRTUAL_KEY>> = (0..=4)
+            .map(|sent| unreleased_keys(&shift_insert, sent))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                vec![],
+                vec![VK_SHIFT],
+                vec![VK_INSERT, VK_SHIFT],
+                vec![VK_SHIFT],
+                vec![]
+            ]
+        );
+        // Ctrl down, Shift down, V down, V up, Shift up, Ctrl up.
+        let ctrl_shift_v = [VK_CONTROL, VK_SHIFT, VK_V];
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 2), [VK_SHIFT, VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 4), [VK_SHIFT, VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 5), [VK_CONTROL]);
+        assert_eq!(unreleased_keys(&ctrl_shift_v, 6), []);
+        assert_eq!(
+            unreleased_keys(&ctrl_shift_v, 99),
+            [],
+            "more than the batch"
+        );
     }
 
     #[test]
