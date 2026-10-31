@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How many counters there are.
-const SLOTS: usize = 12;
+const SLOTS: usize = 13;
 
 /// A condition that is counted instead of logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,11 +34,11 @@ pub enum Counter {
     HoldTimerNotStarted,
     /// A log line was dropped because the log writer's queue was full.
     LogLinesDropped,
-    /// A `Launch`, `OpenUrl`, `Text` or `Sequence` was dropped because the
-    /// action executor's queue was full.
+    /// A `Launch`, `OpenUrl`, `Text`, `Paste` or `Sequence` was dropped
+    /// because the action executor's queue was full.
     ExecutorJobsDropped,
-    /// A `Launch`, `OpenUrl`, `Text` or `Sequence` fired after the action
-    /// executor had stopped on its own, so it did nothing.
+    /// A `Launch`, `OpenUrl`, `Text`, `Paste` or `Sequence` fired after the
+    /// action executor had stopped on its own, so it did nothing.
     ExecutorUnavailable,
     /// The `PostMessageW` of a `SwitchLanguage`, `SwitchLanguageBackward` or
     /// `PostMessage` action failed.
@@ -67,6 +67,11 @@ pub enum Counter {
     /// reads the modifiers again (roadmap item 2.5). A count costs that
     /// read and decides nothing, so it alone makes no warning.
     HookLate,
+    /// A `Paste` action fired while another `Paste` action waited on the
+    /// action executor, so it was dropped: one paste at a time, and a held
+    /// key builds no backlog (lane feat-clipboard-paste). A `Paste` step of
+    /// a macro is never dropped.
+    PasteDropped,
 }
 
 impl Counter {
@@ -84,6 +89,7 @@ impl Counter {
         Counter::WatchdogTimerNotSet,
         Counter::WatchdogDesktopCheckFailed,
         Counter::HookLate,
+        Counter::PasteDropped,
     ];
 
     /// Whether a count of this counter makes the report a warning. Every
@@ -101,7 +107,8 @@ impl Counter {
             | Counter::MainStateRefused
             | Counter::RawInputUnread
             | Counter::WatchdogTimerNotSet
-            | Counter::WatchdogDesktopCheckFailed => true,
+            | Counter::WatchdogDesktopCheckFailed
+            | Counter::PasteDropped => true,
             Counter::HookLate => false,
         }
     }
@@ -122,6 +129,7 @@ impl fmt::Display for Counter {
             Counter::WatchdogTimerNotSet => "watchdog_timer_not_set",
             Counter::WatchdogDesktopCheckFailed => "watchdog_desktop_check_failed",
             Counter::HookLate => "hook_late",
+            Counter::PasteDropped => "paste_dropped",
         })
     }
 }
@@ -171,6 +179,7 @@ impl Counters {
             Counter::WatchdogTimerNotSet => &self.counts[9],
             Counter::WatchdogDesktopCheckFailed => &self.counts[10],
             Counter::HookLate => &self.counts[11],
+            Counter::PasteDropped => &self.counts[12],
         }
     }
 
@@ -316,12 +325,12 @@ mod tests {
     fn the_summary_names_every_counter_once_one_is_non_zero() {
         assert_eq!(
             text(Snapshot {
-                counts: [3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0],
+                counts: [3, 0, 1, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0],
                 longest_callback: Duration::from_micros(42),
             })
             .as_deref(),
             Some(
-                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=42"
+                "counters since the last report: menu_mask_short=3 key_press_short=0 hold_timer_not_started=1 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=2 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 paste_dropped=0 longest_callback_us=42"
             )
         );
     }
@@ -341,7 +350,7 @@ mod tests {
             late,
             Some(Report {
                 warns: false,
-                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=2 longest_callback_us=30".to_owned()
+                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=2 paste_dropped=0 longest_callback_us=30".to_owned()
             })
         );
 
@@ -368,13 +377,35 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_paste_is_reported_last_and_warns() {
+        // Lane feat-clipboard-paste: the new counter goes last, so every
+        // existing column keeps its place, and a dropped paste is a lost
+        // press, so it warns.
+        let counters = Counters::new();
+        counters.bump(Counter::PasteDropped);
+        let report = summary(&counters.take()).expect("a count makes a report");
+        assert!(report.warns);
+        assert!(
+            report
+                .text
+                .ends_with(" hook_late=0 paste_dropped=1 longest_callback_us=0"),
+            "{}",
+            report.text
+        );
+        assert!(Counter::PasteDropped.warns());
+    }
+
+    #[test]
     fn take_returns_the_counts_and_resets_them() {
         let counters = Counters::new();
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::KeyPressShort);
         counters.bump(Counter::LogLinesDropped);
 
-        assert_eq!(counters.take().counts, [0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            counters.take().counts,
+            [0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(
             counters.take().counts,
             [0; SLOTS],
@@ -417,7 +448,7 @@ mod tests {
             summary(&slow),
             Some(Report {
                 warns: true,
-                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=5000".to_owned()
+                text: "counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 paste_dropped=0 longest_callback_us=5000".to_owned()
             })
         );
     }
@@ -468,7 +499,8 @@ mod tests {
                 "raw_input_unread",
                 "watchdog_timer_not_set",
                 "watchdog_desktop_check_failed",
-                "hook_late"
+                "hook_late",
+                "paste_dropped"
             ]
         );
     }

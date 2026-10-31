@@ -529,6 +529,24 @@ enum End {
     Died,
 }
 
+/// The loop's way out once it must end: the restore of a paste is tried
+/// until `until` first, through the loop's one wait (cut D13), and then the
+/// loop returns `end`.
+#[derive(Debug, Clone, Copy)]
+struct Ending {
+    until: Instant,
+    end: End,
+}
+
+impl Ending {
+    fn new(end: End) -> Self {
+        Self {
+            until: Instant::now() + paste::CLOSING_LIMIT,
+            end,
+        }
+    }
+}
+
 /// The executor thread: its prologue, its loop and its epilogue.
 fn run_executor<R: Runner>(
     mut runner: R,
@@ -564,7 +582,7 @@ fn run_executor<R: Runner>(
     // panic of the loop itself.
     let mut runs = Runs::new();
     let end = panic::catch_unwind(AssertUnwindSafe(|| {
-        run_loop(&mut runner, &queue, shared, &mut runs, &mut timer)
+        run_loop(&mut runner, &queue, shared, counters, &mut runs, &mut timer)
     }))
     .unwrap_or_else(|_| {
         log::error!(
@@ -573,6 +591,12 @@ fn run_executor<R: Runner>(
         End::Died
     });
 
+    // A restore that is still pending after a death gets one try, and the
+    // paste windows go, on the thread that made them, before the timer and
+    // the apartment (cut D13).
+    if panic::catch_unwind(AssertUnwindSafe(|| runs.abandon(&mut runner))).is_err() {
+        log::error!("the action executor's paste session panicked as the executor ended");
+    }
     // Closing the timer's only handle destroys it: it signals nothing more.
     drop(timer);
     shared.active_runs.store(0, Ordering::Release);
@@ -589,9 +613,13 @@ fn run_executor<R: Runner>(
     drop(apartment);
 }
 
-fn report_panics(calls: Calls) {
+/// Logs the panics of a pass and counts its dropped pastes.
+fn report(calls: Calls, counters: &Counters) {
     for _ in 0..calls.panics {
         log::error!("an action panicked on the action executor; it keeps running");
+    }
+    for _ in 0..calls.dropped_pastes {
+        counters.bump(Counter::PasteDropped);
     }
 }
 
@@ -604,10 +632,17 @@ fn report_panics(calls: Calls) {
 /// last thing before the wait is a drain that found the queue empty, with
 /// no runner call after it. Such a pump cannot take the timer's signal,
 /// which is not a message.
+///
+/// A stop, a queue whose senders are gone and `WM_QUIT` end the loop
+/// through its closing mode: no job is taken and no run advances, and a
+/// paste's pending restore is tried every `CLOSING_RETRY` through the same
+/// wait until `CLOSING_LIMIT`, so that the clipboard is put back before the
+/// thread ends (cut D13).
 fn run_loop(
     runner: &mut dyn Runner,
     queue: &Receiver<Job>,
     shared: &Shared,
+    counters: &Counters,
     runs: &mut Runs,
     timer: &mut DelayTimer,
 ) -> End {
@@ -619,14 +654,25 @@ fn run_loop(
         now: &now,
     };
     let mut msg = MSG::default();
+    let mut ending: Option<Ending> = None;
     loop {
-        let next = loop {
+        let next = 'pass: loop {
+            if let Some(ending) = ending {
+                match runs.close(&mut ctx, ending.until) {
+                    paste::Closing::Done => return ending.end,
+                    paste::Closing::RetryAt(at) => break 'pass Next::At(at),
+                }
+            }
             let mut calls = Calls::default();
             // Jobs, oldest first, each followed by a poll, so that a due
             // run is late by one job at most.
             loop {
                 if shared.stopping() {
-                    return End::Stopped;
+                    ending = Some(Ending::new(End::Stopped));
+                    continue 'pass;
+                }
+                if !runs.can_take() {
+                    break;
                 }
                 match queue.try_recv() {
                     Ok(job) => {
@@ -634,16 +680,20 @@ fn run_loop(
                         calls += runs.poll(&mut ctx).calls;
                     }
                     Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return End::Stopped,
+                    Err(TryRecvError::Disconnected) => {
+                        ending = Some(Ending::new(End::Stopped));
+                        continue 'pass;
+                    }
                 }
             }
 
             let polled = runs.poll(&mut ctx);
             calls += polled.calls;
-            report_panics(calls);
+            report(calls, counters);
             shared.active_runs.store(runs.len(), Ordering::Release);
             if shared.stopping() {
-                return End::Stopped;
+                ending = Some(Ending::new(End::Stopped));
+                continue 'pass;
             }
             if calls.made == 0 {
                 break polled.next;
@@ -652,8 +702,11 @@ fn run_loop(
 
         match timer.arm(next, Instant::now()) {
             Arming::Due => continue,
+            // Nothing would wake the closing mode again (cut critique M7):
+            // it ends after the try it made.
+            Arming::Failed(_) if let Some(ending) = ending => return ending.end,
             Arming::Failed(error) => {
-                let stopped = runs.drop_timed();
+                let stopped = runs.drop_timed(&mut ctx);
                 shared.active_runs.store(runs.len(), Ordering::Release);
                 log::error!(
                     "could not start the Delay timer ({error}); {stopped} macros waiting in a Delay stop"
@@ -688,7 +741,7 @@ fn run_loop(
         // the wait began, such as the messages behind a WAKE that `pump`
         // left for after the drain.
         if let Some(end) = pump(&mut msg) {
-            return end;
+            ending.get_or_insert(Ending::new(end));
         }
     }
 }

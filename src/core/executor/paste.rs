@@ -9,13 +9,14 @@
 //! it panics at every call, so no test sends a key or probes a window of the
 //! machine that runs it. The tests hand in a fake desk instead.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use super::TargetWindow;
+use crate::data::paste::PasteSpec;
 use crate::data::sequence::ComboSent;
-use crate::platform::clipboard::Clipboard;
+use crate::platform::clipboard::{Clipboard, OwnerWindow};
 
 /// What a paste reads from and sends to the desktop, besides the
 /// clipboard. Every method runs on the action executor.
@@ -198,6 +199,141 @@ impl Desk for Win32Desk {
     fn release_after(&self, _keys: &[VIRTUAL_KEY], _sent: u32) -> u32 {
         unreachable!("{UNDER_TEST}")
     }
+}
+
+/// How long a Paste waits for the restore of the one before it.
+pub const CHAIN_WAIT_LIMIT: Duration = Duration::from_millis(1_000);
+/// How often a Paste reads the modifiers while one is held.
+pub const MODIFIER_POLL: Duration = Duration::from_millis(5);
+/// How long a Paste waits for the modifiers to be released.
+pub const MODIFIER_LIMIT: Duration = Duration::from_millis(3_000);
+/// How long the clipboard's owner may take to answer before a paste.
+pub const OWNER_PROBE: Duration = Duration::from_millis(100);
+/// The waits between the tries to open a busy clipboard for a paste.
+pub const OPEN_BACKOFF: [Duration; 5] = [
+    Duration::from_millis(5),
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(40),
+    Duration::from_millis(80),
+];
+/// After this long no other format than the text is read for the save.
+pub const SAVE_BUDGET: Duration = Duration::from_millis(50);
+/// The most bytes a save keeps.
+pub const SAVE_CAP: usize = 64 << 20;
+/// How long the restore waits at most for a target that does not answer.
+pub const HUNG_LIMIT: Duration = Duration::from_millis(5_000);
+/// How long the target may take to answer at the restore's deadline.
+pub const TARGET_PROBE: Duration = Duration::from_millis(20);
+/// The wait before the next probe of a target that did not answer.
+pub const TARGET_RETRY: Duration = Duration::from_millis(250);
+/// The wait after a busy target answered, for the keystroke queued for it.
+pub const SETTLE: Duration = Duration::from_millis(100);
+/// The wait between the tries to open a busy clipboard for the restore.
+pub const RESTORE_RETRY: Duration = Duration::from_millis(25);
+/// How long the restore tries to open a busy clipboard.
+pub const RESTORE_RETRY_LIMIT: Duration = Duration::from_millis(1_000);
+/// The wait between the tries of the restore when the executor stops.
+pub const CLOSING_RETRY: Duration = Duration::from_millis(10);
+/// How long the executor's stop waits for a busy clipboard.
+pub const CLOSING_LIMIT: Duration = Duration::from_millis(250);
+
+/// What a Paste that waits keeps between its tries, in its run.
+// The seam is inert until the session's bodies land; this allow goes with
+// them.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct Attempt {
+    foreground: TargetWindow,
+    chain_since: Option<Instant>,
+    modifiers_since: Option<Instant>,
+    prechecked: bool,
+    open_tries: u8,
+    open_since: Option<Instant>,
+}
+
+/// What became of a try of a Paste.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// The paste is over: sent, or skipped and logged.
+    Done,
+    /// It waits; try again once `now` reaches this.
+    WaitUntil(Instant),
+}
+
+/// What the restore at the executor's stop did.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Closing {
+    /// Nothing is left to put back.
+    Done,
+    /// The clipboard was busy: try again then.
+    RetryAt(Instant),
+}
+
+/// The executor's one paste session: the clipboard window and the restore
+/// that waits, if any. It lives in the runs, outside the calls that can
+/// unwind, on the executor thread.
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct PasteSession {
+    window: Option<OwnerWindow>,
+    last_window: Option<OwnerWindow>,
+}
+
+impl PasteSession {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Tries the Paste of `spec`, whose state between tries is `attempt`.
+    pub(crate) fn attempt(
+        &mut self,
+        _attempt: &mut Option<Attempt>,
+        _spec: &PasteSpec,
+        _ports: &Ports<'_>,
+        _now: &dyn Fn() -> Instant,
+        _live: &dyn Fn() -> bool,
+    ) -> Step {
+        Step::Done
+    }
+
+    /// Decides whether the restore is due; `true` if it asked a port.
+    pub(crate) fn tick(&mut self, _ports: &Ports<'_>, _now: Instant) -> bool {
+        false
+    }
+
+    /// Puts the clipboard back if the restore is due; `true` if it asked a
+    /// port.
+    pub(crate) fn restore_if_due(&mut self, _ports: &Ports<'_>, _now: Instant) -> bool {
+        false
+    }
+
+    /// When the session must be polled again, if a restore waits.
+    pub(crate) fn next(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Whether a restore waits.
+    pub(crate) fn is_pending(&self) -> bool {
+        false
+    }
+
+    /// Ends the session after one of its calls panicked.
+    pub(crate) fn give_up(&mut self, _ports: &Ports<'_>) {}
+
+    /// The restore at the executor's stop, tried until `until`.
+    pub(crate) fn close(&mut self, _ports: &Ports<'_>, _now: Instant, _until: Instant) -> Closing {
+        Closing::Done
+    }
+
+    /// The restore now, after the executor's timer failed.
+    pub(crate) fn restore_now(&mut self, _ports: &Ports<'_>) {}
+
+    /// The last try at the restore, and the windows' end, as the executor
+    /// thread ends.
+    pub(crate) fn abandon(&mut self, _ports: &Ports<'_>) {}
 }
 
 #[cfg(test)]

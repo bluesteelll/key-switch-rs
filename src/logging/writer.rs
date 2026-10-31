@@ -357,7 +357,7 @@ mod tests {
 
         assert_eq!(
             console.text(),
-            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=0\n"
+            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=2 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 paste_dropped=0 longest_callback_us=0\n"
         );
         assert!(flush_on(&tx, WAIT), "the flush is acknowledged");
         assert_eq!(
@@ -381,7 +381,7 @@ mod tests {
 
         assert_eq!(
             console.text(),
-            "[INFO] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=1 longest_callback_us=0\n"
+            "[INFO] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=1 paste_dropped=0 longest_callback_us=0\n"
         );
     }
 
@@ -396,7 +396,7 @@ mod tests {
 
         assert_eq!(
             console.text(),
-            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 longest_callback_us=7000\n"
+            "[WARN] counters since the last report: menu_mask_short=0 key_press_short=0 hold_timer_not_started=0 log_lines_dropped=0 executor_jobs_dropped=0 executor_unavailable=0 post_message_failed=0 main_state_refused=0 raw_input_unread=0 watchdog_timer_not_set=0 watchdog_desktop_check_failed=0 hook_late=0 paste_dropped=0 longest_callback_us=7000\n"
         );
     }
 
@@ -493,7 +493,7 @@ mod tests {
 
         assert_eq!(
             counters.take().counts,
-            [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             "one line dropped"
         );
         let Ok(WriterMsg::Line(line)) = rx.try_recv() else {
