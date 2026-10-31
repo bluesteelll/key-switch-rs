@@ -1747,6 +1747,60 @@ mod tests {
     }
 
     #[test]
+    fn stop_retries_a_busy_clipboard_and_restores_it_before_joined() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        // Another program holds the clipboard open for the first five tries
+        // of the restore, 10 ms apart: well inside the closing limit.
+        clipboard.busy_opens(5);
+
+        assert_eq!(executor.stop(), Stopped::Joined);
+
+        assert!(holds_the_original(&clipboard), "{:?}", clipboard.content());
+        assert!(!clipboard.is_open(), "the clipboard is left closed");
+    }
+
+    #[test]
+    fn stop_gives_up_on_a_clipboard_that_stays_busy_after_the_closing_limit() {
+        let (tx, records) = mpsc::channel();
+        let clipboard = original();
+        let (executor, _) = start(
+            FakeRunner::new(tx).with_clipboard(clipboard.clone()),
+            QUEUE_CAPACITY,
+        );
+        executor
+            .handle()
+            .submit(paste("x", 5_000), TargetWindow::NONE);
+        assert_eq!(next(&records).text(), "keys Ctrl+V");
+        clipboard.busy_opens(1_000_000);
+
+        let begun = Instant::now();
+        assert_eq!(executor.stop(), Stopped::Joined);
+        let took = begun.elapsed();
+
+        assert!(
+            took >= Duration::from_millis(200),
+            "the restore was tried every 10 ms until the limit, not given up at the first busy open: {took:?}"
+        );
+        assert!(
+            took < Duration::from_secs(1),
+            "the stop ends within the closing limit: {took:?}"
+        );
+        assert!(
+            !holds_the_original(&clipboard),
+            "a clipboard that stayed busy was not put back"
+        );
+    }
+
+    #[test]
     fn the_idle_paste_window_is_destroyed_as_the_executor_ends() {
         let (tx, records) = mpsc::channel();
         let clipboard = original();
