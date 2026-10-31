@@ -1,6 +1,6 @@
 //! The action executor (roadmap item 2.1, KS-08): one `action-executor`
-//! thread that runs the slow actions, `Launch`, `OpenUrl`, `Text` and
-//! `Sequence`, so that the keyboard hook never waits for them.
+//! thread that runs the slow actions, `Launch`, `OpenUrl`, `Text`, `Paste`
+//! and `Sequence`, so that the keyboard hook never waits for them.
 //!
 //! The thread that fires such an action (the hook callback, or the main
 //! loop's timer drain for a Hold or a waiting Tap, both on the daemon's main
@@ -19,6 +19,17 @@
 //! a millisecond. A `Delay` holds up no other job. Only a step that blocks
 //! inside Windows (a `Launch`, an `OpenUrl`, a dialog `ShellExecuteW` shows)
 //! holds up the other jobs and runs while it runs.
+//!
+//! A `Paste`, the action or a macro's step, goes through the runs' paste
+//! session ([`paste`], owner request 2026-10-30): a message-only window of
+//! this thread owns the clipboard while the phrase is on it, and the
+//! session puts the previous content back after the restore delay. Its
+//! waits are deadlines of its run, as a `Delay`'s are. One paste goes at a
+//! time, in firing order: the jobs fired after a `Paste` that waits wait
+//! behind it, a run started before it goes on, and a `Paste` action fired
+//! while another one waits is dropped and counted (`paste_dropped`). A
+//! stop, a queue whose senders are gone and `WM_QUIT` put a pending
+//! clipboard back first, for at most `CLOSING_LIMIT`.
 //!
 //! [`ExecutorHandle::cancel_pending`] starts a new epoch (`swch off` or
 //! `on`, a reload, exit): every queued job and every run of the old epoch
@@ -586,7 +597,7 @@ fn run_executor<R: Runner>(
     }))
     .unwrap_or_else(|_| {
         log::error!(
-            "the action executor panicked and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
+            "the action executor panicked and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts"
         );
         End::Died
     });
@@ -732,7 +743,7 @@ fn run_loop(
         }
         if woke == WAIT_FAILED {
             log::error!(
-                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts",
+                "the action executor's message loop failed ({}) and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts",
                 windows::core::Error::from_thread()
             );
             return End::Died;
@@ -756,7 +767,7 @@ fn pump(msg: &mut MSG) -> Option<End> {
             // Nothing of ours posts WM_QUIT; foreign code on this thread
             // asked it to end its loop.
             log::error!(
-                "the action executor received WM_QUIT and stopped; Launch, OpenUrl, Text and Sequence do nothing until the daemon restarts"
+                "the action executor received WM_QUIT and stopped; Launch, OpenUrl, Text, Paste and Sequence do nothing until the daemon restarts"
             );
             return Some(End::Died);
         }

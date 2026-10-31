@@ -14,7 +14,9 @@
 //! macro's run, which the runs' paste session works (`paste`): its waits (a
 //! held modifier, a busy clipboard, the restore of the paste before it) are
 //! deadlines of its run, as a `Delay`'s are, and the session's restore is
-//! polled with the runs.
+//! polled with the runs. One paste tries at a time, the oldest first; while
+//! one waits, the jobs fired after it are held, in order, and a `Paste`
+//! action fired meanwhile is dropped (cut D12).
 
 use std::collections::VecDeque;
 use std::ops::AddAssign;
@@ -135,11 +137,29 @@ impl Runs {
 
     /// Starts `job` unless its epoch is no longer live: a `Sequence` or a
     /// `Paste` becomes a run, which the next poll starts, and any other
-    /// action runs at once.
+    /// action runs at once. While a paste waits, the job is held until it
+    /// is over, so that jobs run in firing order (ruling 7); a `Paste`
+    /// fired while another one waits or is held is dropped and counted.
     pub(crate) fn start(&mut self, job: Job, ctx: &mut Ctx<'_>) -> Calls {
         if !(ctx.live)(job.epoch) {
             return Calls::default();
         }
+        if matches!(job.action, BindAction::Paste(_)) && self.paste_waits() {
+            return Calls {
+                dropped_pastes: 1,
+                ..Calls::default()
+            };
+        }
+        if self.attempt_waits() {
+            self.held.push_back(job);
+            return Calls::default();
+        }
+        self.begin(job, ctx)
+    }
+
+    /// Makes `job` a run, or runs it at once if it is no `Sequence` and no
+    /// `Paste`.
+    fn begin(&mut self, job: Job, ctx: &mut Ctx<'_>) -> Calls {
         let body = match job.action {
             BindAction::Sequence(steps) => Body::Macro(steps),
             BindAction::Paste(spec) => Body::Paste(spec),
@@ -156,6 +176,24 @@ impl Runs {
         Calls::default()
     }
 
+    /// Whether a `Paste` action waits or is held: one more would only paste
+    /// the same phrase again once the key that fires it is released, as a
+    /// repeating key does (cut D12). A macro's `Paste` step does not count.
+    fn paste_waits(&self) -> bool {
+        self.active
+            .iter()
+            .any(|run| matches!(run.body, Body::Paste(_)))
+            || self
+                .held
+                .iter()
+                .any(|job| matches!(job.action, BindAction::Paste(_)))
+    }
+
+    /// Whether the paste of a run waits between its tries.
+    fn attempt_waits(&self) -> bool {
+        self.active.iter().any(|run| run.attempt.is_some())
+    }
+
     /// Whether the executor may take another job from its queue: the held
     /// jobs are at most a queue's worth, so that the next ones stay in the
     /// queue, where `submit` counts what overflows.
@@ -163,36 +201,62 @@ impl Runs {
         self.held.len() < QUEUE_CAPACITY
     }
 
-    /// Drops every run that is no longer live, decides whether the paste
-    /// session's restore is due, advances each due run once, oldest first,
-    /// up to its next `Delay`, its paste's next wait or its end, and puts
-    /// the clipboard back if that is due.
+    /// Drops every run and held job that is no longer live, decides whether
+    /// the paste session's restore is due, advances each due run once,
+    /// oldest first, up to its next `Delay`, its paste's next wait or its
+    /// end, starts the held jobs once no paste waits, and puts the
+    /// clipboard back if that is due.
     pub(crate) fn poll(&mut self, ctx: &mut Ctx<'_>) -> Polled {
         let mut calls = Calls::default();
         self.active.retain(|run| (ctx.live)(run.epoch));
         self.held.retain(|job| (ctx.live)(job.epoch));
         calls += self.session_call(ctx, PasteSession::tick);
-        let mut index = 0;
-        while index < self.active.len() {
-            let Runs {
-                active, session, ..
-            } = self;
-            let run = &mut active[index];
-            let due = match run.resume {
-                Resume::Now => true,
-                Resume::At(deadline) => (ctx.now)() >= deadline,
-                Resume::WhenCancelled => false,
-            };
-            if due && !run.advance(ctx, &mut calls, session) {
-                active.remove(index);
-            } else {
-                index += 1;
-            }
+        self.advance_from(0, ctx, &mut calls);
+        // Oldest first, each advanced in this poll, until one leaves its
+        // paste waiting.
+        while !self.attempt_waits()
+            && let Some(job) = self.held.pop_front()
+        {
+            let first = self.active.len();
+            calls += self.begin(job, ctx);
+            self.advance_from(first, ctx, &mut calls);
         }
         calls += self.session_call(ctx, PasteSession::restore_if_due);
         Polled {
             next: self.next(),
             calls,
+        }
+    }
+
+    /// Advances each due run from `first` on, oldest first, and drops the
+    /// runs that end.
+    fn advance_from(&mut self, first: usize, ctx: &mut Ctx<'_>, calls: &mut Calls) {
+        let mut index = first;
+        while index < self.active.len() {
+            let Runs {
+                active, session, ..
+            } = self;
+            let (older, rest) = active.split_at_mut(index);
+            let run = &mut rest[0];
+            let due = match run.resume {
+                Resume::Now => true,
+                Resume::At(deadline) => (ctx.now)() >= deadline,
+                Resume::WhenCancelled => false,
+            };
+            // The head rule (cut D6): only the oldest paste that waits
+            // tries; a younger run at a Paste step waits until its
+            // deadline.
+            let head = older
+                .iter()
+                .find_map(|run| match (&run.attempt, run.resume) {
+                    (Some(_), Resume::At(deadline)) => Some(deadline),
+                    _ => None,
+                });
+            if due && !run.advance(ctx, calls, session, head) {
+                active.remove(index);
+            } else {
+                index += 1;
+            }
         }
     }
 
@@ -271,18 +335,24 @@ impl Run {
     /// Runs steps up to the next `Delay` or wait of a paste, which sets when
     /// the run goes on, and returns `true`; or up to the run's end (past its
     /// last step, its epoch no longer live, a step that panicked) and
-    /// returns `false`.
+    /// returns `false`. At a Paste step it waits until `head`, the deadline
+    /// of an older run's paste, if there is one.
     fn advance(
         &mut self,
         ctx: &mut Ctx<'_>,
         calls: &mut Calls,
         session: &mut PasteSession,
+        head: Option<Instant>,
     ) -> bool {
         loop {
             if !(ctx.live)(self.epoch) {
                 return false;
             }
             if let Some(spec) = self.paste_at_next().cloned() {
+                if let Some(deadline) = head {
+                    self.resume = Resume::At(deadline);
+                    return true;
+                }
                 let epoch = self.epoch;
                 let Ctx { runner, live, now } = ctx;
                 let ports = runner.paste();

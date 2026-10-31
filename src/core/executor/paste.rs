@@ -305,8 +305,6 @@ pub(crate) enum Step {
 }
 
 /// What the restore at the executor's stop did.
-// Only the restore at the stop makes `RetryAt`; this allow goes with it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Closing {
     /// Nothing is left to put back.
@@ -437,6 +435,16 @@ impl Pending {
         self.retry_since = None;
         self.next_try = None;
     }
+}
+
+/// What the end of a session leaves for later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// The idle window of the next paste, made at once so that the next
+    /// paste does not wait for it.
+    NextPaste,
+    /// No window: the executor ends.
+    Exit,
 }
 
 /// What a try at the restore found.
@@ -589,7 +597,7 @@ impl PasteSession {
                         "paste: the clipboard changed after the paste; the previous content was not put back"
                     );
                     drop(opened);
-                    self.end_session(clipboard);
+                    self.end_session(clipboard, After::NextPaste);
                     continue;
                 }
                 if let Err(error) = clipboard.empty() {
@@ -640,7 +648,7 @@ impl PasteSession {
         if let Err(error) = clipboard.write(CF_UNICODETEXT, Payload::Units(spec.units())) {
             put_back(clipboard, pending, Some(&markers));
             drop(opened);
-            self.end_session(clipboard);
+            self.end_session(clipboard, After::NextPaste);
             log::warn!(
                 "paste: could not put the text on the clipboard ({error}); the clipboard was put back and the paste skipped"
             );
@@ -784,7 +792,7 @@ impl PasteSession {
         if pending.next_try.is_some_and(|at| now < at) {
             return false;
         }
-        if let Restore::Busy = self.try_restore(ports.clipboard) {
+        if let Restore::Busy = self.try_restore(ports.clipboard, After::NextPaste) {
             let pending = self
                 .pending
                 .as_mut()
@@ -794,7 +802,7 @@ impl PasteSession {
                 log::warn!(
                     "paste: another program kept the clipboard open for 1 s; the previous content was not put back"
                 );
-                self.end_session(ports.clipboard);
+                self.end_session(ports.clipboard, After::NextPaste);
             } else {
                 pending.next_try = Some(now + RESTORE_RETRY);
             }
@@ -803,9 +811,9 @@ impl PasteSession {
     }
 
     /// One try at the restore: under the session's own open, the original
-    /// goes back if the clipboard still holds the phrase. The session ends
-    /// unless the clipboard was busy.
-    fn try_restore(&mut self, clipboard: &dyn Clipboard) -> Restore {
+    /// goes back if the clipboard still holds the phrase. The session ends,
+    /// leaving `after`, unless the clipboard was busy.
+    fn try_restore(&mut self, clipboard: &dyn Clipboard, after: After) -> Restore {
         let Some(pending) = &self.pending else {
             return Restore::PutBack;
         };
@@ -831,20 +839,20 @@ impl PasteSession {
             Restore::Changed
         };
         drop(opened);
-        self.end_session(clipboard);
+        self.end_session(clipboard, after);
         restore
     }
 
-    /// Ends the session: its saved copy is dropped, which wipes it, its
-    /// window destroyed, and the idle window for the next paste made. A
+    /// Ends the session: its saved copy is dropped, which wipes it, and its
+    /// window destroyed; for the next paste the idle window is made. A
     /// window that cannot be made is tried again, and logged, by the next
     /// paste.
-    fn end_session(&mut self, clipboard: &dyn Clipboard) {
+    fn end_session(&mut self, clipboard: &dyn Clipboard, after: After) {
         if let Some(pending) = self.pending.take() {
             clipboard.destroy_window(pending.window);
             self.last_window = Some(pending.window);
         }
-        if self.window.is_none() {
+        if after == After::NextPaste && self.window.is_none() {
             self.window = clipboard.create_window().ok();
         }
     }
@@ -866,20 +874,60 @@ impl PasteSession {
     /// Ends the session after one of its calls panicked, so that no later
     /// poll panics on it again.
     pub(crate) fn give_up(&mut self, ports: &Ports<'_>) {
-        self.end_session(ports.clipboard);
+        self.end_session(ports.clipboard, After::NextPaste);
     }
 
-    /// The restore at the executor's stop, tried until `until`.
-    pub(crate) fn close(&mut self, _ports: &Ports<'_>, _now: Instant, _until: Instant) -> Closing {
-        Closing::Done
+    /// The restore at the executor's stop (cut D13): due at once, and tried
+    /// every `CLOSING_RETRY` while another program holds the clipboard open,
+    /// until `until`.
+    pub(crate) fn close(&mut self, ports: &Ports<'_>, now: Instant, until: Instant) -> Closing {
+        if self.pending.is_none() {
+            return Closing::Done;
+        }
+        match self.try_restore(ports.clipboard, After::Exit) {
+            Restore::PutBack | Restore::Changed => Closing::Done,
+            Restore::Busy if now < until => Closing::RetryAt((now + CLOSING_RETRY).min(until)),
+            Restore::Busy => {
+                log::warn!("paste: could not put the clipboard back at exit");
+                self.end_session(ports.clipboard, After::Exit);
+                Closing::Done
+            }
+        }
     }
 
-    /// The restore now, after the executor's timer failed.
-    pub(crate) fn restore_now(&mut self, _ports: &Ports<'_>) {}
+    /// The restore now, after the executor's timer failed: nothing would
+    /// wake a later try, so a busy clipboard is given up.
+    pub(crate) fn restore_now(&mut self, ports: &Ports<'_>) {
+        if self.pending.is_none() {
+            return;
+        }
+        match self.try_restore(ports.clipboard, After::NextPaste) {
+            Restore::PutBack => {
+                log::warn!("paste: the executor's timer failed; the clipboard was put back at once")
+            }
+            Restore::Changed => {}
+            Restore::Busy => {
+                log::warn!(
+                    "paste: the executor's timer failed while another program held the clipboard open; the previous content was not put back"
+                );
+                self.end_session(ports.clipboard, After::NextPaste);
+            }
+        }
+    }
 
-    /// The last try at the restore, and the windows' end, as the executor
-    /// thread ends.
-    pub(crate) fn abandon(&mut self, _ports: &Ports<'_>) {}
+    /// The last try at the restore, and the end of the session's windows,
+    /// on the thread that made them, as the executor thread ends.
+    pub(crate) fn abandon(&mut self, ports: &Ports<'_>) {
+        if self.pending.is_some()
+            && let Restore::Busy = self.try_restore(ports.clipboard, After::Exit)
+        {
+            log::warn!("paste: could not put the clipboard back at exit");
+            self.end_session(ports.clipboard, After::Exit);
+        }
+        if let Some(window) = self.window.take() {
+            ports.clipboard.destroy_window(window);
+        }
+    }
 }
 
 /// Whether the clipboard, open by the session, still holds the daemon's

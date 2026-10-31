@@ -35,9 +35,9 @@
 //!    ([`FastAction`](crate::core::windows_actions::FastAction): `PressKey`, `Media`, `ToggleCapsLock`,
 //!    `SwitchLanguage*`, `PostMessage`) runs here, before the hook returns,
 //!    so that its output stays in order with the keys typed after it;
-//!    `Launch`, `OpenUrl`, `Text` and `Sequence` are queued for the action
-//!    executor (`crate::core::executor`, roadmap item 2.1, KS-08) without
-//!    waiting;
+//!    `Launch`, `OpenUrl`, `Text`, `Paste` and `Sequence` are queued for the
+//!    action executor (`crate::core::executor`, roadmap item 2.1, KS-08)
+//!    without waiting;
 //! 8. notes a late event for the main thread (roadmap item 2.5): one that
 //!    reaches its exit 17 ms or more after its time stamp, or that ran that
 //!    long, may have let Windows time out the calls of the key events
