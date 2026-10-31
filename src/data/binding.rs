@@ -530,6 +530,30 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_binding_shows_and_debugs_no_part_of_its_text() {
+        let secret = "P4ssw0rd-QZX";
+        let spec = crate::data::paste::PasteSpec::new(secret, vec![VK_CONTROL, VK_V], 500)
+            .expect("a valid spec");
+        let binding = Binding::new(
+            KeyCombination::new(VK_F13),
+            BindAction::Paste(std::sync::Arc::new(spec)),
+        );
+
+        let line = binding.to_string();
+        assert!(line.ends_with("-> paste (12 chars, Ctrl+V)"), "{line}");
+        let chars: Vec<char> = secret.chars().collect();
+        for rendered in [line, format!("{binding:?}"), format!("{binding:#?}")] {
+            for window in chars.windows(3) {
+                let part: String = window.iter().collect();
+                assert!(
+                    !rendered.contains(&part),
+                    "{part:?} of the text shows in {rendered}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_auto_blocker_duplicates_nothing() {
         let alt_shift = KeyCombination::from_keys([VK_MENU, VK_SHIFT]);
         let blocker = Binding::new_auto_blocker(alt_shift.clone(), BlockerMode::Swallow);

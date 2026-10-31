@@ -88,8 +88,9 @@ impl TargetWindow {
 
     /// The target to queue with `action`: the foreground window for a
     /// `Sequence`, the only action with `Window(...)` steps, and `NONE`
-    /// otherwise, so that a `Launch`, an `OpenUrl` or a `Text` adds no Win32
-    /// call to the thread that fires it.
+    /// otherwise, so that a `Launch`, an `OpenUrl`, a `Text` or a `Paste`
+    /// adds no Win32 call to the thread that fires it. A `Paste` reads the
+    /// foreground window on the executor, when its attempt starts.
     pub fn for_action(action: &BindAction) -> Self {
         if let BindAction::Sequence(_) = action {
             Self::foreground()
@@ -133,6 +134,9 @@ impl Runner for Win32Runner {
             BindAction::OpenUrl(url) => shell_open(url),
             // One `SendInput` for the whole text, the macro step's builder.
             BindAction::Text(text) => sequence::type_text(text),
+            // `Runs` makes a Paste a run, which its paste session works;
+            // one is never handed here.
+            BindAction::Paste(_) => {}
             // The executor walks a macro step by step and never hands one
             // to `action`.
             BindAction::Sequence(_) => {}
@@ -722,6 +726,7 @@ mod tests {
     };
     use super::*;
     use crate::core::windows_actions::BindAction;
+    use crate::data::paste::PasteSpec;
     use crate::data::sequence::SequenceStep;
     use crate::logging::counters::{Counter, Counters};
     use crate::platform::timers::{LONGEST, due_time};
@@ -1444,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_open_url_and_text_carry_no_window_and_ask_for_none() {
+    fn launch_open_url_text_and_paste_carry_no_window_and_ask_for_none() {
         // Only a Sequence reads the foreground window; for the others the
         // hook thread makes no Win32 call and queues NONE. Where no window
         // has the foreground at all, NONE and the foreground are the same
@@ -1467,6 +1472,14 @@ mod tests {
             TargetWindow::for_action(&text("Kind regards,")),
             TargetWindow::NONE,
             "a Text never reads its window"
+        );
+        let paste = BindAction::Paste(Arc::new(
+            PasteSpec::new("Kind regards,", vec![VK_CONTROL, VK_V], 500).expect("a valid spec"),
+        ));
+        assert_eq!(
+            TargetWindow::for_action(&paste),
+            TargetWindow::NONE,
+            "a Paste reads no window on the firing thread"
         );
     }
 

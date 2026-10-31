@@ -102,9 +102,31 @@ pub(crate) fn doc_code_lines(text: &str) -> Vec<(usize, &str)> {
     found
 }
 
+/// The lines of a file before its tests module, the `#[cfg(test)]` line
+/// followed by `mod tests {`: all of them if it has none. They are what the
+/// daemon compiles, the `#[cfg(test)]` items before the module aside.
+pub(crate) fn production_lines<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+    let end = lines
+        .windows(2)
+        .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].trim() == "mod tests {")
+        .unwrap_or(lines.len());
+    &lines[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_production_lines_end_at_the_tests_module() {
+        let lines = ["fn a() {}", "#[cfg(test)]", "mod tests {", "}"];
+        assert_eq!(production_lines(&lines), ["fn a() {}"]);
+        assert_eq!(
+            production_lines(&lines[..1]),
+            ["fn a() {}"],
+            "no tests module"
+        );
+    }
 
     #[test]
     fn the_code_of_a_line_leaves_out_its_comment_and_its_strings() {
