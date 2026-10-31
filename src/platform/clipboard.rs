@@ -1184,6 +1184,26 @@ mod tests {
         );
     }
 
+    /// The wipe cannot be observed after the drop without reading freed
+    /// memory, so the drop is pinned by its source: `Drop for Zeroed` runs
+    /// `wipe`.
+    #[test]
+    fn dropping_a_saved_buffer_runs_the_wipe() {
+        let source = include_str!("clipboard.rs");
+        let header = ["impl Drop for ", "Zeroed {"].concat();
+        let start = source
+            .find(&header)
+            .expect("invariant: the buffer type has a Drop impl");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n}")
+            .expect("invariant: the Drop impl ends with a closing brace")];
+        assert!(
+            body.contains("self.wipe();"),
+            "Drop for Zeroed must call wipe: {body}"
+        );
+    }
+
     #[test]
     fn a_saved_buffer_is_wiped_in_place() {
         let mut saved = Zeroed::new(vec![0xAB; 64]);
