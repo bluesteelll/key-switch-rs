@@ -277,8 +277,8 @@ minor version; such entries sit under **Changed** and start with
   and, as its twin, to `Launch`, each queued for a recording executor
   (lane feat-text-action).
 - Bench row R28: the key-down callback of a key bound to `Paste`, queued for
-  a recording executor whose clipboard and keys are fakes (lane
-  feat-clipboard-paste).
+  a recording executor that drops it behind a waiting `Paste`, whose
+  clipboard and keys are fakes (lane feat-clipboard-paste).
 - `action: Text("...")` (owner request 2026-10-30, roadmap new feature 9):
   types a phrase written in `config.ron` at once, as the macro step
   `Sequence([Text("...")])` does: one `SendInput` batch with

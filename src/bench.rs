@@ -118,12 +118,14 @@
 //!   cost more on the hook path than a `Launch`.
 //! - R27l: R27 with `Launch(exe: "no-such.exe")`, its twin, which also
 //!   copies its `String` at the firing.
-//! - R28: R27 with `Paste("Kind regards, Ivan")` and a restore delay of
-//!   50 ms, queued for an executor whose clipboard and keys are fakes
-//!   (lane feat-clipboard-paste); the awaited record is the fake keystroke
-//!   `keys Ctrl+V`, and each later press waits about 50 ms, untimed, for
-//!   the restore of the one before. Bound: p50 at most R27's p50 plus
-//!   1.0 us, and at most 20 us.
+//! - R28: R27 with `Paste("Kind regards, Ivan")`, 2000 samples, queued for
+//!   an executor whose clipboard and keys are fakes (lane
+//!   feat-clipboard-paste). The fake desk holds a modifier, so a first,
+//!   untimed press leaves a paste waiting and every timed one is dropped
+//!   behind it and counted; between samples the bench spins, untimed and
+//!   for at most 2 s, until the executor took the job, then 20 us more for
+//!   the executor's pass to end, so no sample follows an idle wait. Bound:
+//!   p50 at most R27's p50 plus 1.0 us, and at most 20 us.
 //!
 //! Every event the callback rows hand the callback carries the tick count
 //! as its time stamp, as Windows' events do, and an injected one the
@@ -157,7 +159,7 @@ use windows::core::w;
 
 use crate::config::from_ron_str;
 use crate::core::constants::injected_sentinel;
-use crate::core::executor::testing::{FakeRunner, leaked_counters};
+use crate::core::executor::testing::{FakeDesk, FakeRunner, leaked_counters};
 use crate::core::executor::{Executor, QUEUE_CAPACITY};
 use crate::core::windows_actions::BindAction;
 use crate::data::binding::Binding;
@@ -174,6 +176,7 @@ use crate::hook::keyboard_hook::KeyboardHook;
 use crate::hook::keyboard_hook_callback::{get_hook, keyboard_hook_callback};
 use crate::hook::main_thread::{MainThread, MainThreadError, note_hidden_input, with_main};
 use crate::hook::watchdog::{HookWatchdog, RequestReinstall, SYNTHETIC_RAW};
+use crate::logging::counters::Counter;
 use crate::platform::focus;
 
 /// One row of the table: its label, what it measures and its samples.
@@ -932,7 +935,7 @@ fn r6_lateness(main: &MainThread, ms: u64, count: usize) -> Vec<Duration> {
     samples
 }
 
-/// R27, R27l and R28: the key-down callback of F13 bound to `action`, a slow
+/// R27 and R27l: the key-down callback of F13 bound to `action`, a slow
 /// action, `count` times, with an executor whose runner only records
 /// attached to the process-wide hook. Each key-up is called and the record
 /// awaited, both untimed, so every sample times a queued submit.
@@ -953,6 +956,81 @@ fn r27_slow_action_key_down(action: BindAction, count: usize) -> Vec<Duration> {
         records
             .recv_timeout(Duration::from_secs(2))
             .expect("invariant: the recording runner takes each queued action within 2 s");
+    }
+    get_hook().attach_executor(None);
+    let _ = executor.stop();
+    samples
+}
+
+/// How long R28 spins after the executor counted a job: a margin over what
+/// its pass still runs then (the `active_runs` store, the kept timer and
+/// the entry into its wait). A sample that begins while that pass runs pays for
+/// the overlap with it: R27's `Text` awaited by the same spin, with no
+/// settle, cost about 0.5 us more at the p50 than R27, which blocks in a
+/// receive instead (`<orch>/feat-clipboard-paste/bench-dev-probe.md`,
+/// C9-fix-diagnostic).
+const R28_SETTLE: Duration = Duration::from_micros(20);
+
+/// R28: the key-down callback of F13 bound to `Paste`, `count` times, with
+/// an executor whose runner only records and whose fake desk holds a
+/// modifier, attached to the process-wide hook. A first press, untimed,
+/// leaves a paste waiting on the executor for the release; every timed one
+/// after it is dropped there at once, since at most one `Paste` waits (cut
+/// D12), and counted in `paste_dropped`. Each key-up is called untimed, and
+/// the bench then spins, untimed, until the executor has taken the job:
+/// its drop is counted, or, once the waiting paste gave up at its 3 s cap,
+/// a new attempt read the foreground window. Then it spins
+/// [`R28_SETTLE`] more. No sample follows an idle wait, and the clipboard
+/// is a fake that is never asked.
+fn r28_paste_key_down(count: usize) -> Vec<Duration> {
+    let (tx, _records) = mpsc::channel();
+    let desk = FakeDesk::new();
+    desk.hold_modifiers(true);
+    let counters = leaked_counters();
+    let executor = Executor::start(
+        FakeRunner::new(tx).with_desk(desk.clone()),
+        QUEUE_CAPACITY,
+        counters,
+    )
+    .expect("invariant: the bench's executor starts");
+    get_hook().attach_executor(Some(executor.handle()));
+    let spec = PasteSpec::new("Kind regards, Ivan", vec![VK_CONTROL, VK_V], 50)
+        .expect("invariant: the bench's spec is valid");
+    get_hook().update_bindings(vec![
+        Binding::new(
+            KeyCombination::new(VK_F13),
+            BindAction::Paste(Arc::new(spec)),
+        )
+        .with_allow_extra_modifiers(true),
+    ]);
+    let taken = || {
+        counters.get(Counter::PasteDropped)
+            + u64::try_from(desk.foreground_reads()).unwrap_or(u64::MAX)
+    };
+    let await_taken = |jobs: u64| {
+        let begun = Instant::now();
+        while taken() < jobs {
+            assert!(
+                begun.elapsed() < Duration::from_secs(2),
+                "invariant: the executor takes each queued Paste within 2 s"
+            );
+            thread::yield_now();
+        }
+        let settled = Instant::now();
+        while settled.elapsed() < R28_SETTLE {
+            std::hint::spin_loop();
+        }
+    };
+    call_keyboard_callback(VK_F13, WM_KEYDOWN);
+    call_keyboard_callback(VK_F13, WM_KEYUP);
+    await_taken(1);
+    let mut samples = Vec::with_capacity(count);
+    for jobs in (2..).take(count) {
+        let begun = Instant::now();
+        std::hint::black_box(call_keyboard_callback(VK_F13, WM_KEYDOWN));
+        samples.push(begun.elapsed());
+        call_keyboard_callback(VK_F13, WM_KEYUP);
+        await_taken(jobs);
     }
     get_hook().attach_executor(None);
     let _ = executor.stop();
@@ -1398,14 +1476,8 @@ fn latency_bench() {
         },
         Row {
             id: "R28",
-            what: "keyboard_hook_callback, F13 key-down bound to Paste, queued for a recording executor whose clipboard and desk are fakes",
-            samples: r27_slow_action_key_down(
-                BindAction::Paste(Arc::new(
-                    PasteSpec::new("Kind regards, Ivan", vec![VK_CONTROL, VK_V], 50)
-                        .expect("invariant: the bench's spec is valid"),
-                )),
-                200,
-            ),
+            what: "keyboard_hook_callback, F13 key-down bound to Paste, queued for a recording executor that drops it behind a waiting Paste (fake clipboard and desk)",
+            samples: r28_paste_key_down(2_000),
         },
     ]);
     get_hook().update_bindings(Vec::new());

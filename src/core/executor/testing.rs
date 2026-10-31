@@ -323,6 +323,16 @@ impl FakeDesk {
         self.state().calls.clone()
     }
 
+    /// How many times the foreground window was read so far, without a
+    /// copy of the calls, for a bench that counts the attempts that start.
+    pub(crate) fn foreground_reads(&self) -> usize {
+        self.state()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, DeskCall::Foreground))
+            .count()
+    }
+
     /// The keystrokes sent so far.
     pub(crate) fn pressed(&self) -> Vec<Vec<VIRTUAL_KEY>> {
         self.state()
@@ -489,6 +499,7 @@ mod tests {
         );
         assert_eq!(desk.released(), [(vec![VK_CONTROL, VK_V], 2)]);
         assert_eq!(desk.calls().len(), 9);
+        assert_eq!(desk.foreground_reads(), 3);
 
         desk.hold_modifiers(true);
         desk.set_foreground(0x30);
