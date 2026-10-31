@@ -713,10 +713,13 @@ fn run_loop(
 
         match timer.arm(next, Instant::now()) {
             Arming::Due => continue,
-            // Nothing would wake the closing mode again (cut critique M7):
-            // it ends after the try it made.
-            Arming::Failed(_) if let Some(ending) = ending => return ending.end,
             Arming::Failed(error) => {
+                // Nothing would wake the closing mode again (cut critique
+                // M7): it ends after the try it made. A nested `if let`, not
+                // an `if let` guard, which needs Rust 1.95 (MSRV 1.88).
+                if let Some(ending) = ending {
+                    return ending.end;
+                }
                 let stopped = runs.drop_timed(&mut ctx);
                 shared.active_runs.store(runs.len(), Ordering::Release);
                 log::error!(
