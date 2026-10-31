@@ -1572,6 +1572,7 @@ mod tests {
             "src/core/executor/mod.rs",
             "src/core/executor/runs.rs",
             "src/data/sequence.rs",
+            "src/platform/clipboard.rs",
         ] {
             let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
             let lines: Vec<&str> = text.lines().collect();

@@ -344,9 +344,10 @@ impl Installer for FakeInstaller {
 #[cfg(test)]
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use super::*;
+    use crate::scan::{cfg_not_test_block, code_of, scanned_sources};
 
     #[test]
     fn the_system_installer_panics_at_every_call_under_test() {
@@ -395,78 +396,6 @@ mod tests {
     /// that opens with this line, right after `#[cfg(not(test))]`.
     const WIN32_BLOCK: &str = "mod win32 {";
     const INSTALLER_FILE: &str = "src/hook/installer.rs";
-
-    /// Every `.rs` file under `dir`, recursively.
-    fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("list a source folder") {
-            let path = entry.expect("a folder entry").path();
-            if path.is_dir() {
-                rust_files(&path, files);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                files.push(path);
-            }
-        }
-    }
-
-    /// The sources of the package under `root` that the scan reads, sorted:
-    /// every `.rs` file under `src` and the build script, which Cargo runs
-    /// at every build and `lib.rs` compiles into the test harness.
-    fn scanned_sources(root: &Path) -> Vec<PathBuf> {
-        let mut files = vec![root.join("build.rs")];
-        rust_files(&root.join("src"), &mut files);
-        files.sort();
-        files
-    }
-
-    /// The code of `line`: without its `//` comment and without the text of
-    /// its string literals, so that a message or a doc that names a call
-    /// is not taken for the call.
-    fn code_of(line: &str) -> String {
-        let mut code = String::new();
-        let mut in_string = false;
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if in_string {
-                match c {
-                    '\\' => {
-                        chars.next();
-                    }
-                    '"' => in_string = false,
-                    _ => {}
-                }
-                continue;
-            }
-            match c {
-                '"' => in_string = true,
-                '/' if chars.peek() == Some(&'/') => break,
-                _ => code.push(c),
-            }
-        }
-        code
-    }
-
-    /// The numbers (from 1) of the lines of the block that opens at the
-    /// first line equal to `opening` once trimmed, right after a
-    /// `#[cfg(not(test))]` line, until its braces balance; `None` if there
-    /// is no such block.
-    fn cfg_not_test_block(
-        lines: &[&str],
-        opening: &str,
-    ) -> Option<std::ops::RangeInclusive<usize>> {
-        let start = lines
-            .windows(2)
-            .position(|pair| pair[0].trim() == "#[cfg(not(test))]" && pair[1].trim() == opening)?
-            + 1;
-        let mut depth = 0_i64;
-        for (index, line) in lines.iter().enumerate().skip(start) {
-            let code = code_of(line);
-            depth += code.matches('{').count() as i64 - code.matches('}').count() as i64;
-            if depth == 0 {
-                return Some(start + 1..=index + 1);
-            }
-        }
-        None
-    }
 
     /// What the scan found in the sources it read.
     #[derive(Default)]

@@ -9,8 +9,11 @@
 //! `desktop` tells whether this desktop has keyboard input (roadmap item
 //! 2.3). `focus` tells a dialog box by its class and finds the focus window
 //! of a window's thread, where a language request goes in a dialog (owner
-//! report 2026-10-30).
+//! report 2026-10-30). `clipboard` is the port of the clipboard calls of the
+//! `Paste` action, which the action executor makes, compiled out of the tests
+//! (owner request 2026-10-30).
 
+pub mod clipboard;
 pub mod desktop;
 pub mod focus;
 pub mod foreground;
